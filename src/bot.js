@@ -81,10 +81,11 @@ export function createBot({ config, storage, supportAgent }) {
         openedBy: interaction.user.id
       });
 
-      await channel.send([
+      const welcome = await channel.send([
         `Hola ${interaction.user}, soy **NexaDesk**.`,
         'Cuéntame qué necesitas y te ayudaré con este ticket. Si hace falta, avisaré al staff con el contexto ordenado.'
       ].join('\n'));
+      await saveTranscript(storage, welcome, 'assistant');
 
       await interaction.reply({ content: `Ticket creado: ${channel}`, ephemeral: true });
       return;
@@ -132,10 +133,11 @@ export function createBot({ config, storage, supportAgent }) {
         categoryId: channel.parentId
       });
 
-      await channel.send([
+      const welcome = await channel.send([
         'Hola, soy **NexaDesk**.',
         'Voy a ayudarte con este ticket. Cuéntame qué necesitas y, si hace falta, avisaré al staff con un resumen claro.'
       ].join('\n'));
+      await saveTranscript(storage, welcome, 'assistant');
 
       console.log(`Ticket detected: ${ticket.channelName} (${ticket.channelId})`);
     } catch (error) {
@@ -155,10 +157,12 @@ export function createBot({ config, storage, supportAgent }) {
 
     activeResponses.add(message.channel.id);
     try {
+      await saveTranscript(storage, message, 'user');
       await message.channel.sendTyping();
       const answer = await supportAgent.answerTicketMessage({ message, ticket, guildConfig });
       if (answer) {
-        await message.reply(answer.slice(0, 1900));
+        const reply = await message.reply(answer.slice(0, 1900));
+        await saveTranscript(storage, reply, 'assistant');
       }
     } catch (error) {
       console.error('AI response failed:', error);
@@ -169,6 +173,22 @@ export function createBot({ config, storage, supportAgent }) {
   });
 
   return client;
+}
+
+async function saveTranscript(storage, message, role) {
+  if (!message.content?.trim()) return;
+
+  await storage.addTranscriptMessage({
+    guildId: message.guild?.id,
+    channelId: message.channel.id,
+    messageId: message.id,
+    authorId: message.author.id,
+    authorName: message.author.username,
+    authorBot: message.author.bot,
+    role,
+    content: message.content,
+    createdAt: message.createdAt?.toISOString?.() ?? new Date().toISOString()
+  });
 }
 
 export async function createTicketCategory(client, storage, { guildId, name }) {

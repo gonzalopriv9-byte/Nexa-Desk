@@ -12,11 +12,19 @@ services:
         sync: false
       - key: DISCORD_CLIENT_ID
         sync: false
+      - key: DISCORD_CLIENT_SECRET
+        sync: false
       - key: DISCORD_GUILD_ID
+        sync: false
+      - key: DASHBOARD_PUBLIC_URL
+        sync: false
+      - key: SESSION_SECRET
         sync: false
       - key: RUN_BOT
         value: false
-      - key: DASHBOARD_ADMIN_KEY
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
         sync: false
       - key: GROQ_API_KEY
         sync: false

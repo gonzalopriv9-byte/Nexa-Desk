@@ -1,13 +1,16 @@
 import { config } from './config.js';
-import { JsonStorage } from './storage.js';
+import { createStorage } from './storage.js';
+import { AppEvents } from './events.js';
 import { GroqClient } from './ai/groq-client.js';
 import { OllamaClient } from './ai/ollama-client.js';
 import { OpenAICompatibleClient } from './ai/openai-compatible-client.js';
 import { SupportAgent } from './ai/support-agent.js';
 import { createBot, createTicketCategory, createTicketPanel } from './bot.js';
 import { createServer } from './server.js';
+import { createDiscordRestActions } from './discord-rest-actions.js';
 
-const storage = new JsonStorage(config.DATA_DIR);
+const events = new AppEvents();
+const storage = createStorage(config, events);
 await storage.init();
 
 const aiClient = createAiClient();
@@ -19,13 +22,18 @@ const supportAgent = new SupportAgent({
 });
 
 const bot = createBot({ config, storage, supportAgent });
+const botActions = config.RUN_BOT
+  ? {
+      createTicketCategory: (input) => createTicketCategory(bot, storage, input),
+      createTicketPanel: (input) => createTicketPanel(bot, storage, input)
+    }
+  : createDiscordRestActions({ config, storage });
+
 const app = createServer({
   config,
   storage,
-  bot: {
-    createTicketCategory: (input) => createTicketCategory(bot, storage, input),
-    createTicketPanel: (input) => createTicketPanel(bot, storage, input)
-  }
+  bot: botActions,
+  events
 });
 app.listen(config.PORT, () => {
   console.log(`NexaDesk dashboard listening on http://localhost:${config.PORT}`);

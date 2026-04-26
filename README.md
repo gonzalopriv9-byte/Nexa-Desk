@@ -44,7 +44,7 @@ Open:
 http://localhost:3000
 ```
 
-The dashboard uses `DASHBOARD_ADMIN_KEY` for configuration changes.
+The dashboard uses Discord OAuth. Users only see servers where they are owner, Administrator, or have Manage Server.
 
 The dashboard can:
 
@@ -52,6 +52,7 @@ The dashboard can:
 - Create a Discord ticket category.
 - Publish a ticket panel in a selected text channel.
 - Track recent tickets detected or opened from panels.
+- Receive live ticket/config updates through Server-Sent Events.
 
 For production on Render, set the same env vars in the web service settings. For the Raspberry Pi worker, keep `/home/pi/nexadesk/.env` updated separately.
 
@@ -60,6 +61,33 @@ If the bot is running on the Raspberry Pi, set this in Render so the web service
 ```text
 RUN_BOT=false
 ```
+
+## Discord OAuth
+
+Add this redirect URL in the Discord Developer Portal:
+
+```text
+https://your-render-service.onrender.com/auth/discord/callback
+```
+
+Set:
+
+```text
+DISCORD_CLIENT_SECRET=...
+DASHBOARD_PUBLIC_URL=https://your-render-service.onrender.com
+SESSION_SECRET=long_random_secret
+```
+
+## Supabase
+
+Run [supabase/schema.sql](./supabase/schema.sql) in the Supabase SQL editor, then set:
+
+```text
+SUPABASE_URL=...
+SUPABASE_SERVICE_ROLE_KEY=...
+```
+
+If Supabase vars are missing, NexaDesk falls back to local JSON storage for development.
 
 ## Groq AI
 
