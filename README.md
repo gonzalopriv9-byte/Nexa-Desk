@@ -55,6 +55,12 @@ The dashboard can:
 
 For production on Render, set the same env vars in the web service settings. For the Raspberry Pi worker, keep `/home/pi/nexadesk/.env` updated separately.
 
+If the bot is running on the Raspberry Pi, set this in Render so the web service only serves the dashboard:
+
+```text
+RUN_BOT=false
+```
+
 ## Groq AI
 
 NexaDesk is configured to use Groq by default:

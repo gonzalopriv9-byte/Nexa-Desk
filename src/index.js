@@ -31,7 +31,11 @@ app.listen(config.PORT, () => {
   console.log(`NexaDesk dashboard listening on http://localhost:${config.PORT}`);
 });
 
-await bot.login(config.DISCORD_TOKEN);
+if (config.RUN_BOT) {
+  await bot.login(config.DISCORD_TOKEN);
+} else {
+  console.log('NexaDesk bot login skipped because RUN_BOT=false.');
+}
 
 function createAiClient() {
   if (config.AI_PROVIDER === 'groq') {

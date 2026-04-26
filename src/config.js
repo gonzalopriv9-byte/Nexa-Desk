@@ -14,6 +14,7 @@ const schema = z.object({
   DISCORD_GUILD_ID: z.string().optional(),
   DISCORD_MESSAGE_CONTENT_INTENT: envBoolean.default(false),
   DISCORD_GUILD_MEMBERS_INTENT: envBoolean.default(false),
+  RUN_BOT: envBoolean.default(true),
   PORT: z.coerce.number().default(3000),
   DASHBOARD_ADMIN_KEY: z.string().default('dev-admin-key'),
   DATA_DIR: z.string().default('./data'),
