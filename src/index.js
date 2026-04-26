@@ -9,6 +9,14 @@ import { createBot, createTicketCategory, createTicketPanel } from './bot.js';
 import { createServer } from './server.js';
 import { createDiscordRestActions } from './discord-rest-actions.js';
 
+process.on('unhandledRejection', (reason) => {
+  console.error('Unhandled rejection:', reason);
+});
+
+process.on('uncaughtException', (error) => {
+  console.error('Uncaught exception:', error);
+});
+
 const events = new AppEvents();
 const storage = createStorage(config, events);
 await storage.init();

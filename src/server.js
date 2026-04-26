@@ -48,7 +48,7 @@ export function createServer({ config, storage, bot, events }) {
     res.redirect(url.toString());
   });
 
-  app.get('/auth/discord/callback', async (req, res) => {
+  app.get('/auth/discord/callback', asyncHandler(async (req, res) => {
     try {
       if (!config.DISCORD_CLIENT_SECRET) {
         res.status(500).send('DISCORD_CLIENT_SECRET is not configured.');
@@ -95,7 +95,7 @@ export function createServer({ config, storage, bot, events }) {
       console.error('Discord OAuth failed:', error);
       res.status(500).send('Discord login failed.');
     }
-  });
+  }));
 
   app.post('/logout', (_req, res) => {
     res.clearCookie('nexadesk_session');
@@ -145,26 +145,26 @@ export function createServer({ config, storage, bot, events }) {
     });
   });
 
-  app.get('/api/guilds', async (req, res) => {
+  app.get('/api/guilds', asyncHandler(async (req, res) => {
     const configs = await storage.listGuildConfigs();
     res.json(mergeUserGuilds(req.session, configs));
-  });
+  }));
 
-  app.get('/api/tickets', async (req, res) => {
+  app.get('/api/tickets', asyncHandler(async (req, res) => {
     const tickets = await storage.listTickets();
     res.json(tickets.filter((ticket) => canAccessGuild(req.session, ticket.guildId)));
-  });
+  }));
 
-  app.get('/api/tickets/:channelId/transcript', async (req, res) => {
+  app.get('/api/tickets/:channelId/transcript', asyncHandler(async (req, res) => {
     const ticket = await storage.getTicket(req.params.channelId);
     if (!ticket || !canAccessGuild(req.session, ticket.guildId)) {
       res.status(404).json({ error: 'Ticket not found' });
       return;
     }
     res.json(await storage.listTranscriptMessages(req.params.channelId));
-  });
+  }));
 
-  app.post('/api/guilds/:guildId', requireGuildAccess, async (req, res) => {
+  app.post('/api/guilds/:guildId', requireGuildAccess, asyncHandler(async (req, res) => {
     const guild = req.session.guilds.find((item) => item.id === req.params.guildId);
     const updated = await storage.upsertGuildConfig(req.params.guildId, {
       guildName: req.body.guildName || guild?.name,
@@ -173,9 +173,9 @@ export function createServer({ config, storage, bot, events }) {
       serverInfo: req.body.serverInfo
     });
     res.json(updated);
-  });
+  }));
 
-  app.post('/api/guilds/:guildId/categories', requireGuildAccess, async (req, res) => {
+  app.post('/api/guilds/:guildId/categories', requireGuildAccess, asyncHandler(async (req, res) => {
     try {
       const updated = await bot.createTicketCategory({
         guildId: req.params.guildId,
@@ -185,9 +185,9 @@ export function createServer({ config, storage, bot, events }) {
     } catch (error) {
       res.status(400).json({ error: error.message });
     }
-  });
+  }));
 
-  app.post('/api/guilds/:guildId/panels', requireGuildAccess, async (req, res) => {
+  app.post('/api/guilds/:guildId/panels', requireGuildAccess, asyncHandler(async (req, res) => {
     try {
       const updated = await bot.createTicketPanel({
         guildId: req.params.guildId,
@@ -200,9 +200,9 @@ export function createServer({ config, storage, bot, events }) {
     } catch (error) {
       res.status(400).json({ error: error.message });
     }
-  });
+  }));
 
-  app.get('/', async (req, res) => {
+  app.get('/', asyncHandler(async (req, res) => {
     const [configs, tickets] = await Promise.all([
       storage.listGuildConfigs(),
       storage.listTickets()
@@ -212,9 +212,34 @@ export function createServer({ config, storage, bot, events }) {
       guilds: mergeUserGuilds(req.session, configs),
       tickets: tickets.filter((ticket) => canAccessGuild(req.session, ticket.guildId))
     }));
+  }));
+
+  app.use((error, req, res, _next) => {
+    console.error('Dashboard request failed:', error);
+    if (req.path.startsWith('/api/')) {
+      res.status(500).json({ error: normalizeError(error) });
+      return;
+    }
+    res.status(500).type('html').send(renderError(normalizeError(error)));
   });
 
   return app;
+}
+
+function asyncHandler(handler) {
+  return (req, res, next) => {
+    Promise.resolve(handler(req, res, next)).catch(next);
+  };
+}
+
+function normalizeError(error) {
+  if (error instanceof Error) return error.message;
+  if (typeof error === 'string') return error;
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return 'Unknown error';
+  }
 }
 
 function requireGuildAccess(req, res, next) {
@@ -340,6 +365,36 @@ function renderLogin(config) {
     <h1>NexaDesk</h1>
     <p>Inicia sesion con Discord para ver y gestionar solo los servidores donde tienes permisos.</p>
     ${isReady ? '<a href="/auth/discord">Entrar con Discord</a>' : '<p class="error">Falta DISCORD_CLIENT_SECRET en el entorno.</p>'}
+  </main>
+</body>
+</html>`;
+}
+
+function renderError(message) {
+  return `<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NexaDesk Error</title>
+  <style>
+    :root { color-scheme: dark; --bg:#05080a; --line:#20323a; --text:#f2fbfc; --muted:#8ea3aa; --danger:#ff5f57; }
+    body { margin:0; min-height:100vh; display:grid; place-items:center; font-family:"Segoe UI",ui-sans-serif,system-ui,sans-serif; background:var(--bg); color:var(--text); }
+    main { width:min(620px, calc(100% - 32px)); border:1px solid var(--line); border-radius:8px; padding:24px; background:#0b1216; }
+    h1 { margin:0 0 10px; }
+    p { color:var(--muted); }
+    code { color:var(--danger); overflow-wrap:anywhere; }
+    a { color:#4bd8ee; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>No se pudo cargar el dashboard</h1>
+    <p>La sesion de Discord funciona, pero fallo una dependencia del dashboard.</p>
+    <code>${escapeHtml(message)}</code>
+    <p>Revisa variables de Supabase o ejecuta el schema si el error menciona tablas.</p>
+    <a href="/logout" onclick="event.preventDefault(); document.querySelector('form').submit()">Cerrar sesion</a>
+    <form method="post" action="/logout"></form>
   </main>
 </body>
 </html>`;
