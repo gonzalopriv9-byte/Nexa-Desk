@@ -29,6 +29,7 @@ export function createBot({ config, storage, supportAgent }) {
   });
 
   const activeResponses = new Set();
+  const panelCreatedChannels = new Set();
 
   client.once(Events.ClientReady, (readyClient) => {
     console.log(`NexaDesk online as ${readyClient.user.tag}`);
@@ -71,6 +72,7 @@ export function createBot({ config, storage, supportAgent }) {
           }
         ]
       });
+      panelCreatedChannels.add(channel.id);
 
       await storage.createTicket({
         guildId: interaction.guild.id,
@@ -88,6 +90,7 @@ export function createBot({ config, storage, supportAgent }) {
       await saveTranscript(storage, welcome, 'assistant');
 
       await interaction.reply({ content: `Ticket creado: ${channel}`, ephemeral: true });
+      setTimeout(() => panelCreatedChannels.delete(channel.id), 30_000);
       return;
     }
 
@@ -124,6 +127,7 @@ export function createBot({ config, storage, supportAgent }) {
 
       const guildConfig = await storage.getGuildConfig(channel.guild.id);
       if (!guildConfig?.ticketCategoryId || channel.parentId !== guildConfig.ticketCategoryId) return;
+      if (panelCreatedChannels.has(channel.id) || await storage.getTicket(channel.id)) return;
 
       const ticket = await storage.createTicket({
         guildId: channel.guild.id,
@@ -161,7 +165,12 @@ export function createBot({ config, storage, supportAgent }) {
       await message.channel.sendTyping();
       const answer = await supportAgent.answerTicketMessage({ message, ticket, guildConfig });
       if (answer) {
-        const reply = await message.reply(answer.slice(0, 1900));
+        const escalation = parseEscalation(answer);
+        if (escalation.shouldEscalate) {
+          await notifyStaffRole(message, guildConfig, ticket, escalation.reason);
+        }
+
+        const reply = await message.reply(escalation.publicAnswer.slice(0, 1900));
         await saveTranscript(storage, reply, 'assistant');
       }
     } catch (error) {
@@ -173,6 +182,41 @@ export function createBot({ config, storage, supportAgent }) {
   });
 
   return client;
+}
+
+function parseEscalation(answer) {
+  const trimmed = answer.trim();
+  if (!trimmed.startsWith('[ESCALATE]')) {
+    return { shouldEscalate: false, publicAnswer: trimmed };
+  }
+
+  const reason = trimmed.replace('[ESCALATE]', '').trim();
+  return {
+    shouldEscalate: true,
+    reason: reason || 'El ticket requiere revision humana.',
+    publicAnswer: reason || 'Voy a avisar al staff para que revise este ticket.'
+  };
+}
+
+async function notifyStaffRole(message, guildConfig, ticket, reason) {
+  if (!guildConfig.staffRoleId) return;
+
+  try {
+    const guild = message.guild;
+    const members = await guild.members.fetch();
+    const staffMembers = members.filter((member) => member.roles.cache.has(guildConfig.staffRoleId) && !member.user.bot);
+    const body = [
+      `NexaDesk necesita staff en **${guild.name}**.`,
+      `Ticket: #${ticket.channelName} (${message.channel.url})`,
+      `Motivo: ${reason}`
+    ].join('\n');
+
+    await Promise.allSettled(
+      [...staffMembers.values()].slice(0, 10).map((member) => member.send(body))
+    );
+  } catch (error) {
+    console.error('Failed to notify staff role:', error);
+  }
 }
 
 async function saveTranscript(storage, message, role) {

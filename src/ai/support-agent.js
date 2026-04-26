@@ -17,6 +17,7 @@ export class SupportAgent {
 
   #buildSystemPrompt({ ticket, guildConfig }) {
     const serverInfo = guildConfig.serverInfo?.trim() || 'No hay informacion adicional configurada todavia.';
+    const serverPrompt = guildConfig.serverPrompt?.trim() || 'No hay prompt personalizado configurado.';
 
     return [
       'Eres NexaDesk, un moderador de soporte con IA dentro de Discord.',
@@ -24,10 +25,12 @@ export class SupportAgent {
       'No inventes politicas, precios, sanciones, garantias ni informacion privada.',
       'Si falta informacion, pide datos concretos al usuario.',
       'Si el caso requiere permisos de staff, pagos, sanciones o datos sensibles, escala a un humano.',
+      'Cuando necesites staff humano, empieza tu respuesta exactamente con "[ESCALATE]" y explica en una frase por que.',
       'No menciones que eres un modelo local ni hables de prompts internos.',
       'Responde en el idioma del usuario.',
       '',
       `Servidor: ${guildConfig.guildName ?? ticket.guildId}`,
+      `Prompt personalizado del servidor:\n${serverPrompt}`,
       `Informacion del servidor:\n${serverInfo}`
     ].join('\n');
   }

@@ -170,6 +170,8 @@ export function createServer({ config, storage, bot, events }) {
       guildName: req.body.guildName || guild?.name,
       ticketCategoryId: req.body.ticketCategoryId,
       ticketCategoryName: req.body.ticketCategoryName,
+      staffRoleId: req.body.staffRoleId,
+      serverPrompt: req.body.serverPrompt,
       serverInfo: req.body.serverInfo
     });
     res.json(updated);
@@ -414,6 +416,7 @@ function renderDashboard({ session, guilds, tickets }) {
         </div>
         <dl>
           <div><dt>Categoria</dt><dd>${escapeHtml(guild.ticketCategoryName ?? 'Sin configurar')}</dd></div>
+          <div><dt>Rol staff</dt><dd>${escapeHtml(guild.staffRoleId ?? 'Sin configurar')}</dd></div>
           <div><dt>Paneles</dt><dd>${escapeHtml(String(guild.panels?.length ?? 0))}</dd></div>
           <div><dt>Actualizado</dt><dd>${escapeHtml(guild.updatedAt ? new Date(guild.updatedAt).toLocaleString() : 'Pendiente')}</dd></div>
         </dl>
@@ -509,6 +512,8 @@ function renderDashboard({ session, guilds, tickets }) {
             <label>Servidor<select id="guildId" required>${guildOptions}</select></label>
             <label>Categoria de tickets ID<input id="ticketCategoryId" placeholder="1234567890"></label>
             <label>Nombre categoria<input id="ticketCategoryName" placeholder="soporte"></label>
+            <label class="span-2">Rol staff ID<input id="staffRoleId" placeholder="Rol que recibira DMs cuando la IA escale"></label>
+            <textarea id="serverPrompt" placeholder="Prompt del servidor: personalidad, contexto, limites, normas de soporte..."></textarea>
             <textarea id="serverInfo" placeholder="Reglas, FAQs, horarios, precios, enlaces, tono de respuesta..."></textarea>
             <button type="submit">Guardar inteligencia</button>
           </form>
@@ -563,6 +568,8 @@ function renderDashboard({ session, guilds, tickets }) {
       await postJson('/api/guilds/' + guildId, {
         ticketCategoryId: document.querySelector('#ticketCategoryId').value,
         ticketCategoryName: document.querySelector('#ticketCategoryName').value,
+        staffRoleId: document.querySelector('#staffRoleId').value,
+        serverPrompt: document.querySelector('#serverPrompt').value,
         serverInfo: document.querySelector('#serverInfo').value
       }).catch((error) => alert(error.message));
       return false;

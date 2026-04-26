@@ -231,6 +231,8 @@ function toGuildRow(guild) {
     guild_name: guild.guildName,
     ticket_category_id: guild.ticketCategoryId,
     ticket_category_name: guild.ticketCategoryName,
+    staff_role_id: guild.staffRoleId,
+    server_prompt: guild.serverPrompt,
     server_info: guild.serverInfo,
     panels: guild.panels ?? [],
     updated_at: guild.updatedAt
@@ -243,6 +245,8 @@ function fromGuildRow(row) {
     guildName: row.guild_name,
     ticketCategoryId: row.ticket_category_id,
     ticketCategoryName: row.ticket_category_name,
+    staffRoleId: row.staff_role_id,
+    serverPrompt: row.server_prompt,
     serverInfo: row.server_info,
     panels: row.panels ?? [],
     updatedAt: row.updated_at

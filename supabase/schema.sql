@@ -3,6 +3,8 @@ create table if not exists public.guild_configs (
   guild_name text,
   ticket_category_id text,
   ticket_category_name text,
+  staff_role_id text,
+  server_prompt text,
   server_info text,
   panels jsonb not null default '[]'::jsonb,
   updated_at timestamptz not null default now()
@@ -38,3 +40,6 @@ create table if not exists public.transcript_messages (
 
 create index if not exists transcript_messages_channel_id_idx on public.transcript_messages (channel_id);
 create index if not exists transcript_messages_created_at_idx on public.transcript_messages (created_at);
+
+alter table public.guild_configs add column if not exists staff_role_id text;
+alter table public.guild_configs add column if not exists server_prompt text;
