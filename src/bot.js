@@ -118,25 +118,29 @@ export function createBot({ config, storage, supportAgent }) {
   });
 
   client.on(Events.ChannelCreate, async (channel) => {
-    if (!channel.guild || channel.type !== ChannelType.GuildText) return;
+    try {
+      if (!channel.guild || channel.type !== ChannelType.GuildText) return;
 
-    const guildConfig = await storage.getGuildConfig(channel.guild.id);
-    if (!guildConfig?.ticketCategoryId || channel.parentId !== guildConfig.ticketCategoryId) return;
+      const guildConfig = await storage.getGuildConfig(channel.guild.id);
+      if (!guildConfig?.ticketCategoryId || channel.parentId !== guildConfig.ticketCategoryId) return;
 
-    const ticket = await storage.createTicket({
-      guildId: channel.guild.id,
-      guildName: channel.guild.name,
-      channelId: channel.id,
-      channelName: channel.name,
-      categoryId: channel.parentId
-    });
+      const ticket = await storage.createTicket({
+        guildId: channel.guild.id,
+        guildName: channel.guild.name,
+        channelId: channel.id,
+        channelName: channel.name,
+        categoryId: channel.parentId
+      });
 
-    await channel.send([
-      'Hola, soy **NexaDesk**.',
-      'Voy a ayudarte con este ticket. Cuéntame qué necesitas y, si hace falta, avisaré al staff con un resumen claro.'
-    ].join('\n'));
+      await channel.send([
+        'Hola, soy **NexaDesk**.',
+        'Voy a ayudarte con este ticket. Cuéntame qué necesitas y, si hace falta, avisaré al staff con un resumen claro.'
+      ].join('\n'));
 
-    console.log(`Ticket detected: ${ticket.channelName} (${ticket.channelId})`);
+      console.log(`Ticket detected: ${ticket.channelName} (${ticket.channelId})`);
+    } catch (error) {
+      console.error(`Failed to initialize ticket channel ${channel.id}:`, error);
+    }
   });
 
   client.on(Events.MessageCreate, async (message) => {
