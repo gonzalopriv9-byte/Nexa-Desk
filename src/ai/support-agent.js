@@ -6,8 +6,9 @@ export class SupportAgent {
   }
 
   async answerTicketMessage({ message, ticket, guildConfig }) {
+    const latestGuildConfig = await this.storage.getGuildConfig(message.guild.id) ?? guildConfig;
     const history = await this.#loadHistory(message.channel);
-    const system = this.#buildSystemPrompt({ ticket, guildConfig });
+    const system = this.#buildSystemPrompt({ ticket, guildConfig: latestGuildConfig });
 
     return this.aiClient.generate({
       system,
@@ -30,6 +31,7 @@ export class SupportAgent {
       'Responde en el idioma del usuario.',
       '',
       `Servidor: ${guildConfig.guildName ?? ticket.guildId}`,
+      `Contexto actualizado en: ${guildConfig.updatedAt ?? 'sin fecha registrada'}`,
       `Prompt personalizado del servidor:\n${serverPrompt}`,
       `Informacion del servidor:\n${serverInfo}`
     ].join('\n');

@@ -156,6 +156,7 @@ export function createBot({ config, storage, supportAgent }) {
     const ticket = await storage.getTicket(message.channel.id);
     if (!ticket || activeResponses.has(message.channel.id)) return;
 
+    // Always reload the latest server context before asking the AI.
     const guildConfig = await storage.getGuildConfig(message.guild.id);
     if (!guildConfig) return;
 
