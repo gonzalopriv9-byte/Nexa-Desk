@@ -1,6 +1,8 @@
 import express from 'express';
 import helmet from 'helmet';
 import morgan from 'morgan';
+import cookieParser from 'cookie-parser';
+import crypto from 'node:crypto';
 
 export function createServer({ config, storage, bot }) {
   const app = express();
@@ -9,9 +11,57 @@ export function createServer({ config, storage, bot }) {
   app.use(morgan('tiny'));
   app.use(express.json());
   app.use(express.urlencoded({ extended: true }));
+  app.use(cookieParser(config.DASHBOARD_ADMIN_KEY));
 
   app.get('/health', (_req, res) => {
     res.json({ ok: true, service: 'nexadesk' });
+  });
+
+  app.get('/login', (req, res) => {
+    if (isLoggedIn(req)) {
+      res.redirect('/');
+      return;
+    }
+    res.type('html').send(renderLogin());
+  });
+
+  app.post('/login', (req, res) => {
+    if (req.body.adminKey !== config.DASHBOARD_ADMIN_KEY) {
+      res.status(401).type('html').send(renderLogin('Clave incorrecta.'));
+      return;
+    }
+
+    res.cookie('nexadesk_session', createSessionToken(config), {
+      httpOnly: true,
+      sameSite: 'lax',
+      secure: process.env.NODE_ENV === 'production',
+      signed: true,
+      maxAge: 1000 * 60 * 60 * 12
+    });
+    res.redirect('/');
+  });
+
+  app.post('/logout', (req, res) => {
+    res.clearCookie('nexadesk_session');
+    res.redirect('/login');
+  });
+
+  app.use((req, res, next) => {
+    if (req.path === '/health') {
+      next();
+      return;
+    }
+
+    if (!isLoggedIn(req)) {
+      if (req.path.startsWith('/api/')) {
+        res.status(401).json({ error: 'Login required' });
+        return;
+      }
+      res.redirect('/login');
+      return;
+    }
+
+    next();
   });
 
   app.get('/api/guilds', async (_req, res) => {
@@ -72,12 +122,80 @@ export function createServer({ config, storage, bot }) {
 function requireAdmin(config) {
   return (req, res, next) => {
     const key = req.header('x-admin-key') || req.body.adminKey;
-    if (key !== config.DASHBOARD_ADMIN_KEY) {
+    if (!isLoggedIn(req) && key !== config.DASHBOARD_ADMIN_KEY) {
       res.status(401).json({ error: 'Invalid admin key' });
       return;
     }
     next();
   };
+}
+
+function createSessionToken(config) {
+  const signature = crypto
+    .createHmac('sha256', config.DASHBOARD_ADMIN_KEY)
+    .update('nexadesk-dashboard')
+    .digest('hex');
+  return `dashboard.${signature}`;
+}
+
+function isLoggedIn(req) {
+  return req.signedCookies?.nexadesk_session?.startsWith('dashboard.');
+}
+
+function renderLogin(error = '') {
+  return `<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NexaDesk Login</title>
+  <style>
+    :root { color-scheme: dark; --bg:#05080a; --panel:#0b1216; --line:#20323a; --text:#f2fbfc; --muted:#8ea3aa; --cyan:#4bd8ee; --amber:#ffb238; --danger:#ff5f57; }
+    * { box-sizing: border-box; }
+    body {
+      min-height: 100vh;
+      margin: 0;
+      display: grid;
+      place-items: center;
+      font-family: "Segoe UI", ui-sans-serif, system-ui, sans-serif;
+      background:
+        radial-gradient(circle at 20% 0%, rgba(75,216,238,.18), transparent 28%),
+        linear-gradient(135deg, rgba(255,178,56,.08), transparent 35%),
+        repeating-linear-gradient(90deg, rgba(255,255,255,.025) 0 1px, transparent 1px 72px),
+        var(--bg);
+      color: var(--text);
+    }
+    main {
+      width: min(440px, calc(100% - 32px));
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(11,18,22,.92);
+      padding: 26px;
+    }
+    .mark { display:grid; place-items:center; width:44px; height:44px; border:1px solid rgba(75,216,238,.45); border-radius:8px; background:linear-gradient(145deg, rgba(75,216,238,.18), rgba(255,178,56,.12)); font-weight:900; }
+    h1 { margin: 18px 0 8px; font-size: 30px; letter-spacing: 0; }
+    p { color: var(--muted); margin: 0 0 22px; }
+    label { display: grid; gap: 8px; color: var(--muted); font-size: 14px; }
+    input, button { width: 100%; border-radius: 6px; border: 1px solid var(--line); background: #05080a; color: var(--text); padding: 12px; font: inherit; }
+    button { margin-top: 14px; background: linear-gradient(135deg, var(--cyan), var(--amber)); color: #05080a; border: 0; font-weight: 800; cursor: pointer; }
+    .error { color: var(--danger); margin-bottom: 14px; }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="mark">ND</div>
+    <h1>NexaDesk</h1>
+    <p>Acceso local al centro de operaciones.</p>
+    ${error ? `<p class="error">${escapeHtml(error)}</p>` : ''}
+    <form method="post" action="/login">
+      <label>Admin key
+        <input name="adminKey" type="password" autocomplete="current-password" autofocus required>
+      </label>
+      <button type="submit">Entrar</button>
+    </form>
+  </main>
+</body>
+</html>`;
 }
 
 function renderDashboard({ guilds, tickets }) {
@@ -235,6 +353,12 @@ function renderDashboard({ guilds, tickets }) {
       color: var(--text);
       border: 1px solid var(--line);
     }
+    .logout-form {
+      display: flex;
+      justify-content: flex-end;
+      margin: -6px 0 12px;
+    }
+    .logout-form button { width: auto; padding: 9px 12px; }
     table { width: 100%; border-collapse: collapse; }
     th, td { text-align: left; padding: 12px; border-bottom: 1px solid var(--line); }
     th { color: var(--muted); font-size: 13px; }
@@ -271,6 +395,9 @@ function renderDashboard({ guilds, tickets }) {
         </div>
       </aside>
     </header>
+    <form method="post" action="/logout" class="logout-form">
+      <button class="secondary-button" type="submit">Cerrar sesion</button>
+    </form>
 
     <div class="stats">
       <div class="stat"><strong>${guilds.length}</strong><span>Servidores configurados</span></div>
@@ -291,9 +418,7 @@ function renderDashboard({ guilds, tickets }) {
             <label>Servidor
               <select id="guildId" required>${guildOptions}</select>
             </label>
-            <label>Admin key
-              <input id="adminKey" name="adminKey" type="password" required>
-            </label>
+            <input id="adminKey" name="adminKey" type="hidden" value="">
             <label>Categoria de tickets ID
               <input id="ticketCategoryId" name="ticketCategoryId" placeholder="1234567890">
             </label>
@@ -311,9 +436,7 @@ function renderDashboard({ guilds, tickets }) {
             <label>Servidor
               <select id="categoryGuildId" required>${guildOptions}</select>
             </label>
-            <label>Admin key
-              <input id="categoryAdminKey" type="password" required>
-            </label>
+            <input id="categoryAdminKey" type="hidden" value="">
             <label class="span-2">Nombre de categoria
               <input id="categoryName" placeholder="NexaDesk Tickets" required>
             </label>
@@ -327,9 +450,7 @@ function renderDashboard({ guilds, tickets }) {
             <label>Servidor
               <select id="panelGuildId" required>${guildOptions}</select>
             </label>
-            <label>Admin key
-              <input id="panelAdminKey" type="password" required>
-            </label>
+            <input id="panelAdminKey" type="hidden" value="">
             <label>Canal del panel ID
               <input id="panelChannelId" placeholder="Canal donde publicar el panel" required>
             </label>
