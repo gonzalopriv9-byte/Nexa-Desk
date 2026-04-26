@@ -5,7 +5,7 @@ import { GroqClient } from './ai/groq-client.js';
 import { OllamaClient } from './ai/ollama-client.js';
 import { OpenAICompatibleClient } from './ai/openai-compatible-client.js';
 import { SupportAgent } from './ai/support-agent.js';
-import { createBot, createTicketCategory, createTicketPanel } from './bot.js';
+import { createBot, createTicketCategory, createTicketPanel, listGuildChannels, listGuildRoles } from './bot.js';
 import { createServer } from './server.js';
 import { createDiscordRestActions } from './discord-rest-actions.js';
 
@@ -33,7 +33,9 @@ const bot = createBot({ config, storage, supportAgent });
 const botActions = config.RUN_BOT
   ? {
       createTicketCategory: (input) => createTicketCategory(bot, storage, input),
-      createTicketPanel: (input) => createTicketPanel(bot, storage, input)
+      createTicketPanel: (input) => createTicketPanel(bot, storage, input),
+      listGuildRoles: (input) => listGuildRoles(bot, input),
+      listGuildChannels: (input) => listGuildChannels(bot, input)
     }
   : createDiscordRestActions({ config, storage });
 

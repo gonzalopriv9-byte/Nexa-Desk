@@ -164,6 +164,14 @@ export function createServer({ config, storage, bot, events }) {
     res.json(await storage.listTranscriptMessages(req.params.channelId));
   }));
 
+  app.get('/api/guilds/:guildId/roles', requireGuildAccess, asyncHandler(async (req, res) => {
+    res.json(await bot.listGuildRoles({ guildId: req.params.guildId }));
+  }));
+
+  app.get('/api/guilds/:guildId/channels', requireGuildAccess, asyncHandler(async (req, res) => {
+    res.json(await bot.listGuildChannels({ guildId: req.params.guildId }));
+  }));
+
   app.post('/api/guilds/:guildId', requireGuildAccess, asyncHandler(async (req, res) => {
     const guild = req.session.guilds.find((item) => item.id === req.params.guildId);
     const updated = await storage.upsertGuildConfig(req.params.guildId, {
@@ -510,9 +518,9 @@ function renderDashboard({ session, guilds, tickets }) {
           <h2>Conocimiento del servidor</h2>
           <form onsubmit="return saveConfig(event)">
             <label>Servidor<select id="guildId" required>${guildOptions}</select></label>
-            <label>Categoria de tickets ID<input id="ticketCategoryId" placeholder="1234567890"></label>
-            <label>Nombre categoria<input id="ticketCategoryName" placeholder="soporte"></label>
-            <label class="span-2">Rol staff ID<input id="staffRoleId" placeholder="Rol que recibira DMs cuando la IA escale"></label>
+            <label>Categoria de tickets<select id="ticketCategoryId"></select></label>
+            <label>Nombre categoria<input id="ticketCategoryName" placeholder="Se rellena al elegir categoria"></label>
+            <label class="span-2">Rol staff<select id="staffRoleId"></select></label>
             <textarea id="serverPrompt" placeholder="Prompt del servidor: personalidad, contexto, limites, normas de soporte..."></textarea>
             <textarea id="serverInfo" placeholder="Reglas, FAQs, horarios, precios, enlaces, tono de respuesta..."></textarea>
             <button type="submit">Guardar inteligencia</button>
@@ -530,7 +538,7 @@ function renderDashboard({ session, guilds, tickets }) {
           <h2>Crear panel</h2>
           <form onsubmit="return createPanel(event)">
             <label>Servidor<select id="panelGuildId" required>${guildOptions}</select></label>
-            <label>Canal del panel ID<input id="panelChannelId" placeholder="Canal donde publicar el panel" required></label>
+            <label>Canal del panel<select id="panelChannelId" required></select></label>
             <label>Boton<input id="panelButtonLabel" value="Abrir ticket"></label>
             <label class="span-2">Titulo<input id="panelTitle" value="Centro de soporte"></label>
             <textarea id="panelDescription">Pulsa el boton para abrir un ticket. NexaDesk analizara tu caso y avisara al staff si hace falta.</textarea>
@@ -546,6 +554,8 @@ function renderDashboard({ session, guilds, tickets }) {
   </main>
   <script>
     const state = { tickets: ${JSON.stringify(tickets)} };
+    const guildConfigs = ${JSON.stringify(guilds)};
+    let guildMeta = {};
     function ticketRow(ticket) {
       return '<tr><td>#' + escapeHtml(ticket.channelName) + '</td><td>' + escapeHtml(ticket.guildName) + '</td><td>' + escapeHtml(ticket.status) + '</td><td>' + escapeHtml(new Date(ticket.createdAt).toLocaleString()) + '</td></tr>';
     }
@@ -562,12 +572,47 @@ function renderDashboard({ session, guilds, tickets }) {
       if (!response.ok) throw new Error((await response.json()).error || 'Request failed');
       return response.json();
     }
+    async function loadGuildMeta(guildId) {
+      if (!guildId) return;
+      const [roles, channels] = await Promise.all([
+        fetch('/api/guilds/' + guildId + '/roles').then((response) => response.json()),
+        fetch('/api/guilds/' + guildId + '/channels').then((response) => response.json())
+      ]);
+      guildMeta[guildId] = { roles, channels };
+      renderGuildSelectors(guildId);
+    }
+    function renderGuildSelectors(guildId) {
+      const meta = guildMeta[guildId];
+      if (!meta) return;
+      const config = guildConfigs.find((guild) => guild.guildId === guildId) || {};
+      const categories = meta.channels.filter((channel) => channel.type === 4);
+      const textChannels = meta.channels.filter((channel) => channel.type === 0);
+      document.querySelector('#ticketCategoryId').innerHTML = '<option value="">Sin categoria</option>' + categories.map((channel) => '<option value="' + channel.id + '">' + escapeHtml(channel.name) + '</option>').join('');
+      document.querySelector('#staffRoleId').innerHTML = '<option value="">Sin rol staff</option>' + meta.roles.map((role) => '<option value="' + role.id + '">' + escapeHtml(role.name) + '</option>').join('');
+      document.querySelector('#panelChannelId').innerHTML = textChannels.map((channel) => '<option value="' + channel.id + '">#' + escapeHtml(channel.name) + '</option>').join('');
+      document.querySelector('#ticketCategoryId').value = config.ticketCategoryId || '';
+      document.querySelector('#staffRoleId').value = config.staffRoleId || '';
+      document.querySelector('#ticketCategoryName').value = config.ticketCategoryName || selectedOptionText('#ticketCategoryId');
+    }
+    function selectedOptionText(selector) {
+      const option = document.querySelector(selector)?.selectedOptions?.[0];
+      return option && option.value ? option.textContent : '';
+    }
+    function syncGuildForm(sourceId) {
+      const guildId = document.querySelector(sourceId).value;
+      for (const selector of ['#guildId', '#categoryGuildId', '#panelGuildId']) {
+        const element = document.querySelector(selector);
+        if (element && element.value !== guildId) element.value = guildId;
+      }
+      loadGuildMeta(guildId).catch((error) => alert(error.message));
+    }
     async function saveConfig(event) {
       event.preventDefault();
       const guildId = document.querySelector('#guildId').value;
+      const categoryName = selectedOptionText('#ticketCategoryId') || document.querySelector('#ticketCategoryName').value;
       await postJson('/api/guilds/' + guildId, {
         ticketCategoryId: document.querySelector('#ticketCategoryId').value,
-        ticketCategoryName: document.querySelector('#ticketCategoryName').value,
+        ticketCategoryName: categoryName,
         staffRoleId: document.querySelector('#staffRoleId').value,
         serverPrompt: document.querySelector('#serverPrompt').value,
         serverInfo: document.querySelector('#serverInfo').value
@@ -607,6 +652,13 @@ function renderDashboard({ session, guilds, tickets }) {
       document.querySelector('#liveState').textContent = 'Reconectando';
       document.querySelector('#liveState').className = '';
     };
+    for (const selector of ['#guildId', '#categoryGuildId', '#panelGuildId']) {
+      document.querySelector(selector)?.addEventListener('change', () => syncGuildForm(selector));
+    }
+    document.querySelector('#ticketCategoryId')?.addEventListener('change', () => {
+      document.querySelector('#ticketCategoryName').value = selectedOptionText('#ticketCategoryId');
+    });
+    syncGuildForm('#guildId');
   </script>
 </body>
 </html>`;

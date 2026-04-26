@@ -62,6 +62,32 @@ export function createDiscordRestActions({ config, storage }) {
           }
         ]
       });
+    },
+
+    async listGuildRoles({ guildId }) {
+      const roles = await rest.get(Routes.guildRoles(guildId));
+      return roles
+        .filter((role) => role.name !== '@everyone')
+        .sort((a, b) => Number(b.position ?? 0) - Number(a.position ?? 0))
+        .map((role) => ({
+          id: role.id,
+          name: role.name,
+          color: role.color,
+          position: role.position
+        }));
+    },
+
+    async listGuildChannels({ guildId }) {
+      const channels = await rest.get(Routes.guildChannels(guildId));
+      return channels
+        .filter((channel) => channel.type === ChannelType.GuildText || channel.type === ChannelType.GuildCategory)
+        .sort((a, b) => Number(a.position ?? 0) - Number(b.position ?? 0))
+        .map((channel) => ({
+          id: channel.id,
+          name: channel.name,
+          type: channel.type,
+          parentId: channel.parent_id
+        }));
     }
   };
 }

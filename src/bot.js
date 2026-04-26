@@ -286,3 +286,31 @@ export async function createTicketPanel(client, storage, { guildId, channelId, t
     ]
   });
 }
+
+export async function listGuildRoles(client, { guildId }) {
+  const guild = await client.guilds.fetch(guildId);
+  const roles = await guild.roles.fetch();
+  return [...roles.values()]
+    .filter((role) => role.name !== '@everyone')
+    .sort((a, b) => b.position - a.position)
+    .map((role) => ({
+      id: role.id,
+      name: role.name,
+      color: role.color,
+      position: role.position
+    }));
+}
+
+export async function listGuildChannels(client, { guildId }) {
+  const guild = await client.guilds.fetch(guildId);
+  const channels = await guild.channels.fetch();
+  return [...channels.values()]
+    .filter((channel) => channel && (channel.type === ChannelType.GuildText || channel.type === ChannelType.GuildCategory))
+    .sort((a, b) => a.position - b.position)
+    .map((channel) => ({
+      id: channel.id,
+      name: channel.name,
+      type: channel.type,
+      parentId: channel.parentId
+    }));
+}
