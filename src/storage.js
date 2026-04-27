@@ -44,6 +44,11 @@ export class JsonStorage {
 
   async createTicket(ticket) {
     const tickets = await this.#readJson(this.ticketsFile);
+    const existing = tickets[ticket.channelId];
+    if (existing) {
+      return { ...existing, alreadyExists: true };
+    }
+
     tickets[ticket.channelId] = {
       ...ticket,
       status: 'open',
@@ -52,7 +57,7 @@ export class JsonStorage {
     };
     await this.#writeJson(this.ticketsFile, tickets);
     this.events?.publish('ticket.created', tickets[ticket.channelId]);
-    return tickets[ticket.channelId];
+    return { ...tickets[ticket.channelId], alreadyExists: false };
   }
 
   async getTicket(channelId) {
@@ -153,6 +158,11 @@ export class SupabaseStorage {
   }
 
   async createTicket(ticket) {
+    const existing = await this.getTicket(ticket.channelId);
+    if (existing) {
+      return { ...existing, alreadyExists: true };
+    }
+
     const now = new Date().toISOString();
     const next = {
       ...ticket,
@@ -168,7 +178,7 @@ export class SupabaseStorage {
     if (error) throw error;
     const saved = fromTicketRow(data);
     this.events?.publish('ticket.created', saved);
-    return saved;
+    return { ...saved, alreadyExists: false };
   }
 
   async getTicket(channelId) {

@@ -74,7 +74,7 @@ export function createBot({ config, storage, supportAgent }) {
       });
       panelCreatedChannels.add(channel.id);
 
-      await storage.createTicket({
+      const ticket = await storage.createTicket({
         guildId: interaction.guild.id,
         guildName: interaction.guild.name,
         channelId: channel.id,
@@ -82,6 +82,10 @@ export function createBot({ config, storage, supportAgent }) {
         categoryId: guildConfig.ticketCategoryId,
         openedBy: interaction.user.id
       });
+      if (ticket.alreadyExists) {
+        await interaction.reply({ content: `Ticket creado: ${channel}`, ephemeral: true });
+        return;
+      }
 
       const welcome = await channel.send([
         `Hola ${interaction.user}, soy **NexaDesk**.`,
@@ -128,6 +132,7 @@ export function createBot({ config, storage, supportAgent }) {
       const guildConfig = await storage.getGuildConfig(channel.guild.id);
       if (!guildConfig?.ticketCategoryId || channel.parentId !== guildConfig.ticketCategoryId) return;
       if (panelCreatedChannels.has(channel.id) || await storage.getTicket(channel.id)) return;
+      if (await wasCreatedByNexaDeskPanel(channel)) return;
 
       const ticket = await storage.createTicket({
         guildId: channel.guild.id,
@@ -136,6 +141,7 @@ export function createBot({ config, storage, supportAgent }) {
         channelName: channel.name,
         categoryId: channel.parentId
       });
+      if (ticket.alreadyExists) return;
 
       const welcome = await channel.send([
         'Hola, soy **NexaDesk**.',
@@ -186,6 +192,19 @@ export function createBot({ config, storage, supportAgent }) {
   });
 
   return client;
+}
+
+async function wasCreatedByNexaDeskPanel(channel) {
+  try {
+    const logs = await channel.guild.fetchAuditLogs({
+      type: 10,
+      limit: 5
+    });
+    const entry = logs.entries.find((item) => item.target?.id === channel.id);
+    return entry?.reason === 'NexaDesk panel ticket creation';
+  } catch {
+    return false;
+  }
 }
 
 function parseEscalation(answer) {
