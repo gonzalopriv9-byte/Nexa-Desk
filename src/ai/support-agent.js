@@ -44,7 +44,32 @@ export class SupportAgent {
       .filter((item) => item.content?.trim())
       .map((item) => ({
         role: item.author.bot ? 'assistant' : 'user',
-        content: `${item.author.username}: ${item.content}`.slice(0, 1800)
+        content: formatHistoryMessage(item).slice(0, 1800)
       }));
   }
+}
+
+function formatHistoryMessage(message) {
+  const content = stripAssistantPrefix(message.content, message.client.user?.username);
+  if (message.author.bot) return content;
+  return `${message.author.username}: ${content}`;
+}
+
+function stripAssistantPrefix(content, botName = 'AI SUPPORT') {
+  let cleaned = content.trim();
+  const names = ['AI SUPPORT', 'NexaDesk', botName].filter(Boolean);
+
+  for (let i = 0; i < 5; i += 1) {
+    const before = cleaned;
+    for (const name of names) {
+      cleaned = cleaned.replace(new RegExp(`^${escapeRegExp(name)}\\s*:\\s*`, 'i'), '').trim();
+    }
+    if (before === cleaned) break;
+  }
+
+  return cleaned;
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }

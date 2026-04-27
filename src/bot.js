@@ -85,7 +85,7 @@ export function createBot({ config, storage, supportAgent }) {
 
       const welcome = await channel.send([
         `Hola ${interaction.user}, soy **NexaDesk**.`,
-        'Cuéntame qué necesitas y te ayudaré con este ticket. Si hace falta, avisaré al staff con el contexto ordenado.'
+        'Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al staff con el contexto ordenado.'
       ].join('\n'));
       await saveTranscript(storage, welcome, 'assistant');
 
@@ -139,7 +139,7 @@ export function createBot({ config, storage, supportAgent }) {
 
       const welcome = await channel.send([
         'Hola, soy **NexaDesk**.',
-        'Voy a ayudarte con este ticket. Cuéntame qué necesitas y, si hace falta, avisaré al staff con un resumen claro.'
+        'Voy a ayudarte con este ticket. Cuentame que necesitas y, si hace falta, avisare al staff con un resumen claro.'
       ].join('\n'));
       await saveTranscript(storage, welcome, 'assistant');
 
@@ -171,7 +171,10 @@ export function createBot({ config, storage, supportAgent }) {
           await notifyStaffRole(message, guildConfig, ticket, escalation.reason);
         }
 
-        const reply = await message.reply(escalation.publicAnswer.slice(0, 1900));
+        const reply = await message.reply({
+          content: buildPublicReply(escalation, guildConfig).slice(0, 1900),
+          allowedMentions: { roles: escalation.shouldEscalate && guildConfig.staffRoleId ? [guildConfig.staffRoleId] : [] }
+        });
         await saveTranscript(storage, reply, 'assistant');
       }
     } catch (error) {
@@ -186,17 +189,35 @@ export function createBot({ config, storage, supportAgent }) {
 }
 
 function parseEscalation(answer) {
-  const trimmed = answer.trim();
-  if (!trimmed.startsWith('[ESCALATE]')) {
+  const trimmed = cleanBotAnswer(answer);
+  const escalateMatch = trimmed.match(/^\[ESCALATE\]\s*/i);
+  if (!escalateMatch) {
     return { shouldEscalate: false, publicAnswer: trimmed };
   }
 
-  const reason = trimmed.replace('[ESCALATE]', '').trim();
+  const reason = trimmed.replace(/^\[ESCALATE\]\s*/i, '').trim();
   return {
     shouldEscalate: true,
     reason: reason || 'El ticket requiere revision humana.',
     publicAnswer: reason || 'Voy a avisar al staff para que revise este ticket.'
   };
+}
+
+function buildPublicReply(escalation, guildConfig) {
+  if (!escalation.shouldEscalate) return escalation.publicAnswer;
+
+  const mention = guildConfig.staffRoleId ? `<@&${guildConfig.staffRoleId}> ` : '';
+  return `${mention}${escalation.publicAnswer}`;
+}
+
+function cleanBotAnswer(answer) {
+  let cleaned = answer.trim();
+  for (let i = 0; i < 6; i += 1) {
+    const before = cleaned;
+    cleaned = cleaned.replace(/^(AI SUPPORT|NexaDesk)\s*:\s*/i, '').trim();
+    if (before === cleaned) break;
+  }
+  return cleaned;
 }
 
 async function notifyStaffRole(message, guildConfig, ticket, reason) {
@@ -315,3 +336,4 @@ export async function listGuildChannels(client, { guildId }) {
       parentId: channel.parentId
     }));
 }
+
