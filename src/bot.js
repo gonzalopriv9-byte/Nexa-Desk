@@ -210,7 +210,7 @@ async function wasCreatedByNexaDeskPanel(channel) {
 function parseEscalation(answer) {
   const trimmed = cleanBotAnswer(answer);
   const escalateMatch = trimmed.match(/^\[ESCALATE\]\s*/i);
-  if (!escalateMatch) {
+  if (!escalateMatch && !looksLikeEscalation(trimmed)) {
     return { shouldEscalate: false, publicAnswer: trimmed };
   }
 
@@ -220,6 +220,19 @@ function parseEscalation(answer) {
     reason: reason || 'El ticket requiere revision humana.',
     publicAnswer: reason || 'Voy a avisar al staff para que revise este ticket.'
   };
+}
+
+function looksLikeEscalation(answer) {
+  return [
+    /\bstaff\b/i,
+    /\bmoderador(?:es)?\b/i,
+    /\bmiembro del staff\b/i,
+    /\brequiere(?:\s+de)?\s+(?:un\s+)?(?:staff|moderador|humano)/i,
+    /\bnecesito\s+(?:la\s+)?(?:aprobacion|ayuda|intervencion)\s+de\b/i,
+    /\bse unira a este ticket\b/i,
+    /\bavisar(?:e|é)?\s+al\s+staff\b/i,
+    /\bcontactar(?:e|é)?\s+con\s+staff\b/i
+  ].some((pattern) => pattern.test(answer));
 }
 
 function buildPublicReply(escalation, guildConfig) {
