@@ -33,16 +33,8 @@ export function createBot({ config, storage, supportAgent }) {
   const panelCreatedChannels = new Set();
 
   client.once(Events.ClientReady, (readyClient) => {
-    readyClient.user.setPresence({
-      status: 'online',
-      activities: [
-        {
-          name: 'How can I help you today?',
-          state: 'How can I help you today?',
-          type: ActivityType.Custom
-        }
-      ]
-    });
+    applyBotPresence(readyClient);
+    setInterval(() => applyBotPresence(readyClient), 5 * 60 * 1000).unref();
     console.log(`NexaDesk online as ${readyClient.user.tag}`);
   });
 
@@ -218,6 +210,30 @@ export function createBot({ config, storage, supportAgent }) {
   });
 
   return client;
+}
+
+function applyBotPresence(client) {
+  try {
+    client.user.setStatus('online');
+    client.user.setActivity('How can I help you today?', {
+      type: ActivityType.Custom,
+      state: 'How can I help you today?'
+    });
+    client.user.setPresence({
+      status: 'online',
+      afk: false,
+      activities: [
+        {
+          name: 'How can I help you today?',
+          state: 'How can I help you today?',
+          type: ActivityType.Custom
+        }
+      ]
+    });
+    console.log('NexaDesk presence set to online.');
+  } catch (error) {
+    console.error('Failed to set NexaDesk presence:', error);
+  }
 }
 
 async function wasCreatedByNexaDeskPanel(channel) {
