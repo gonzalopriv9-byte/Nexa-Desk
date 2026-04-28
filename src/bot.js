@@ -1,5 +1,6 @@
 import {
   ActionRowBuilder,
+  ActivityType,
   ButtonBuilder,
   ButtonStyle,
   ChannelType,
@@ -32,6 +33,16 @@ export function createBot({ config, storage, supportAgent }) {
   const panelCreatedChannels = new Set();
 
   client.once(Events.ClientReady, (readyClient) => {
+    readyClient.user.setPresence({
+      status: 'online',
+      activities: [
+        {
+          name: 'How can I help you today?',
+          state: 'How can I help you today?',
+          type: ActivityType.Custom
+        }
+      ]
+    });
     console.log(`NexaDesk online as ${readyClient.user.tag}`);
   });
 

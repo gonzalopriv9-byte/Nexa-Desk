@@ -18,13 +18,15 @@ const commands = [
 
 const rest = new REST({ version: '10' }).setToken(config.DISCORD_TOKEN);
 
-if (!config.DISCORD_GUILD_ID) {
-  throw new Error('Set DISCORD_GUILD_ID in .env before registering commands.');
+const useGuildScope = process.argv.includes('--guild');
+const route = useGuildScope && config.DISCORD_GUILD_ID
+  ? Routes.applicationGuildCommands(config.DISCORD_CLIENT_ID, config.DISCORD_GUILD_ID)
+  : Routes.applicationCommands(config.DISCORD_CLIENT_ID);
+
+if (useGuildScope && !config.DISCORD_GUILD_ID) {
+  throw new Error('Set DISCORD_GUILD_ID in .env or register global commands without --guild.');
 }
 
-await rest.put(
-  Routes.applicationGuildCommands(config.DISCORD_CLIENT_ID, config.DISCORD_GUILD_ID),
-  { body: commands }
-);
+await rest.put(route, { body: commands });
 
-console.log('Registered NexaDesk slash commands.');
+console.log(`Registered NexaDesk slash commands ${useGuildScope ? 'for guild' : 'globally'}.`);
