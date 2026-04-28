@@ -25,8 +25,10 @@ export function createBot({ config, storage, supportAgent }) {
     intents.push(GatewayIntentBits.GuildMembers);
   }
 
+  const presence = buildBotPresence();
   const client = new Client({
-    intents
+    intents,
+    presence
   });
 
   const activeResponses = new Set();
@@ -214,26 +216,27 @@ export function createBot({ config, storage, supportAgent }) {
 
 function applyBotPresence(client) {
   try {
+    const presence = buildBotPresence();
     client.user.setStatus('online');
-    client.user.setActivity('How can I help you today?', {
-      type: ActivityType.Custom,
-      state: 'How can I help you today?'
-    });
-    client.user.setPresence({
-      status: 'online',
-      afk: false,
-      activities: [
-        {
-          name: 'How can I help you today?',
-          state: 'How can I help you today?',
-          type: ActivityType.Custom
-        }
-      ]
-    });
-    console.log('NexaDesk presence set to online.');
+    client.user.setActivity('How can I help you today?', { type: ActivityType.Playing });
+    client.user.setPresence(presence);
+    console.log(`NexaDesk presence set to ${presence.status}.`);
   } catch (error) {
     console.error('Failed to set NexaDesk presence:', error);
   }
+}
+
+function buildBotPresence() {
+  return {
+    status: 'online',
+    afk: false,
+    activities: [
+      {
+        name: 'How can I help you today?',
+        type: ActivityType.Playing
+      }
+    ]
+  };
 }
 
 async function wasCreatedByNexaDeskPanel(channel) {

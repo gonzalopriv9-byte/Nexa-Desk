@@ -19,12 +19,21 @@ const commands = [
 const rest = new REST({ version: '10' }).setToken(config.DISCORD_TOKEN);
 
 const useGuildScope = process.argv.includes('--guild');
+const clearGuildScope = process.argv.includes('--clear-guild');
 const route = useGuildScope && config.DISCORD_GUILD_ID
   ? Routes.applicationGuildCommands(config.DISCORD_CLIENT_ID, config.DISCORD_GUILD_ID)
   : Routes.applicationCommands(config.DISCORD_CLIENT_ID);
 
-if (useGuildScope && !config.DISCORD_GUILD_ID) {
-  throw new Error('Set DISCORD_GUILD_ID in .env or register global commands without --guild.');
+if ((useGuildScope || clearGuildScope) && !config.DISCORD_GUILD_ID) {
+  throw new Error('Set DISCORD_GUILD_ID in .env before using --guild or --clear-guild.');
+}
+
+if (clearGuildScope) {
+  await rest.put(
+    Routes.applicationGuildCommands(config.DISCORD_CLIENT_ID, config.DISCORD_GUILD_ID),
+    { body: [] }
+  );
+  console.log('Cleared NexaDesk guild slash commands.');
 }
 
 await rest.put(route, { body: commands });
