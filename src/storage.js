@@ -88,6 +88,21 @@ export class JsonStorage {
     return transcripts[channelId] ?? [];
   }
 
+  async getDashboardStats(guildIds = []) {
+    const guildIdSet = new Set(guildIds);
+    const guilds = Object.values(await this.#readJson(this.guildsFile))
+      .filter((guild) => guildIdSet.has(guild.guildId));
+    const tickets = Object.values(await this.#readJson(this.ticketsFile))
+      .filter((ticket) => guildIdSet.has(ticket.guildId));
+    const transcripts = await this.#readJson(this.transcriptsFile);
+    const ticketIds = new Set(tickets.map((ticket) => ticket.channelId));
+    const transcriptMessages = Object.entries(transcripts)
+      .filter(([channelId]) => ticketIds.has(channelId))
+      .reduce((total, [, messages]) => total + messages.length, 0);
+
+    return buildStats({ guilds, tickets, transcriptMessages });
+  }
+
   async #ensureJson(filePath, defaultValue) {
     try {
       await fs.access(filePath);
@@ -97,7 +112,7 @@ export class JsonStorage {
   }
 
   async #readJson(filePath) {
-    return JSON.parse(await fs.readFile(filePath, 'utf8'));
+    return JSON.parse((await fs.readFile(filePath, 'utf8')).replace(/^\uFEFF/, ''));
   }
 
   async #writeJson(filePath, value) {
@@ -221,6 +236,42 @@ export class SupabaseStorage {
     if (error) throw error;
     return data.map(fromTranscriptRow);
   }
+
+  async getDashboardStats(guildIds = []) {
+    if (!guildIds.length) {
+      return buildStats({ guilds: [], tickets: [], transcriptMessages: 0 });
+    }
+
+    const [{ data: guilds, error: guildsError }, { data: tickets, error: ticketsError }] = await Promise.all([
+      this.client
+        .from('guild_configs')
+        .select('*')
+        .in('guild_id', guildIds),
+      this.client
+        .from('tickets')
+        .select('*')
+        .in('guild_id', guildIds)
+    ]);
+    if (guildsError) throw guildsError;
+    if (ticketsError) throw ticketsError;
+
+    const channelIds = tickets.map((ticket) => ticket.channel_id);
+    let transcriptMessages = 0;
+    if (channelIds.length) {
+      const { count, error } = await this.client
+        .from('transcript_messages')
+        .select('id', { count: 'exact', head: true })
+        .in('channel_id', channelIds);
+      if (error) throw error;
+      transcriptMessages = count ?? 0;
+    }
+
+    return buildStats({
+      guilds: guilds.map(fromGuildRow),
+      tickets: tickets.map(fromTicketRow),
+      transcriptMessages
+    });
+  }
 }
 
 export function createStorage(config, events) {
@@ -317,5 +368,33 @@ function fromTranscriptRow(row) {
     role: row.role,
     content: row.content,
     createdAt: row.created_at
+  };
+}
+
+function buildStats({ guilds, tickets, transcriptMessages }) {
+  const now = Date.now();
+  const dayMs = 24 * 60 * 60 * 1000;
+  const weekMs = 7 * dayMs;
+  const panels = guilds.reduce((total, guild) => total + (guild.panels?.length ?? 0), 0);
+  const configuredGuilds = guilds.filter((guild) => guild.ticketCategoryId).length;
+  const openTickets = tickets.filter((ticket) => ticket.status === 'open').length;
+  const ticketsToday = tickets.filter((ticket) => now - new Date(ticket.createdAt).getTime() <= dayMs).length;
+  const ticketsThisWeek = tickets.filter((ticket) => now - new Date(ticket.createdAt).getTime() <= weekMs).length;
+  const escalationReadyGuilds = guilds.filter((guild) => guild.staffRoleId).length;
+  const aiReadyGuilds = guilds.filter((guild) => guild.serverPrompt || guild.serverInfo).length;
+
+  return {
+    totalGuilds: guilds.length,
+    configuredGuilds,
+    unconfiguredGuilds: Math.max(guilds.length - configuredGuilds, 0),
+    totalTickets: tickets.length,
+    openTickets,
+    closedTickets: tickets.filter((ticket) => ticket.status !== 'open').length,
+    ticketsToday,
+    ticketsThisWeek,
+    panels,
+    transcriptMessages,
+    escalationReadyGuilds,
+    aiReadyGuilds
   };
 }

@@ -3,10 +3,14 @@ import helmet from 'helmet';
 import morgan from 'morgan';
 import cookieParser from 'cookie-parser';
 import crypto from 'node:crypto';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const DISCORD_API = 'https://discord.com/api/v10';
 const MANAGE_GUILD = 0x20n;
 const ADMINISTRATOR = 0x8n;
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const ASSETS_DIR = path.resolve(__dirname, '..', 'assets');
 
 export function createServer({ config, storage, bot, events }) {
   const app = express();
@@ -16,6 +20,14 @@ export function createServer({ config, storage, bot, events }) {
   app.use(express.json());
   app.use(express.urlencoded({ extended: true }));
   app.use(cookieParser(config.SESSION_SECRET));
+  app.use('/assets', express.static(ASSETS_DIR, {
+    immutable: true,
+    maxAge: '7d'
+  }));
+
+  app.get('/favicon.ico', (_req, res) => {
+    res.sendFile(path.join(ASSETS_DIR, 'nexadesk-logo.png'));
+  });
 
   app.get('/health', (_req, res) => {
     res.json({ ok: true, service: 'nexadesk' });
@@ -155,6 +167,10 @@ export function createServer({ config, storage, bot, events }) {
     res.json(tickets.filter((ticket) => canAccessGuild(req.session, ticket.guildId)));
   }));
 
+  app.get('/api/stats', asyncHandler(async (req, res) => {
+    res.json(await storage.getDashboardStats(req.session.guilds.map((guild) => guild.id)));
+  }));
+
   app.get('/api/tickets/:channelId/transcript', asyncHandler(async (req, res) => {
     const ticket = await storage.getTicket(req.params.channelId);
     if (!ticket || !canAccessGuild(req.session, ticket.guildId)) {
@@ -213,14 +229,17 @@ export function createServer({ config, storage, bot, events }) {
   }));
 
   app.get('/', asyncHandler(async (req, res) => {
-    const [configs, tickets] = await Promise.all([
+    const manageableGuildIds = req.session.guilds.map((guild) => guild.id);
+    const [configs, tickets, stats] = await Promise.all([
       storage.listGuildConfigs(),
-      storage.listTickets()
+      storage.listTickets(),
+      storage.getDashboardStats(manageableGuildIds)
     ]);
     res.type('html').send(renderDashboard({
       session: req.session,
       guilds: mergeUserGuilds(req.session, configs),
-      tickets: tickets.filter((ticket) => canAccessGuild(req.session, ticket.guildId))
+      tickets: tickets.filter((ticket) => canAccessGuild(req.session, ticket.guildId)),
+      stats
     }));
   }));
 
@@ -357,6 +376,8 @@ function renderLogin(config) {
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>NexaDesk Login</title>
+  <link rel="icon" type="image/png" href="/assets/nexadesk-logo.png">
+  <link rel="apple-touch-icon" href="/assets/nexadesk-logo.png">
   <style>
     :root { color-scheme: dark; --bg:#05080a; --panel:#0b1216; --panel-2:#101a20; --line:#20323a; --text:#f2fbfc; --muted:#8ea3aa; --cyan:#4bd8ee; --amber:#ffb238; --danger:#ff5f57; --ok:#63e6a7; }
     * { box-sizing: border-box; }
@@ -365,6 +386,7 @@ function renderLogin(config) {
     main { position:relative; z-index:1; width:min(1180px, calc(100% - 32px)); min-height:100vh; margin:0 auto; display:grid; grid-template-columns:1.25fr .75fr; gap:32px; align-items:center; padding:44px 0; }
     .intro { animation:rise .7s ease both; }
     .brand { display:flex; gap:14px; align-items:center; margin-bottom:32px; }
+    .brand-logo { width:48px; height:48px; object-fit:cover; border-radius:10px; border:1px solid rgba(75,216,238,.45); box-shadow:0 0 42px rgba(75,216,238,.16); }
     .mark { display:grid; place-items:center; width:48px; height:48px; border:1px solid rgba(75,216,238,.45); border-radius:8px; background:linear-gradient(145deg, rgba(75,216,238,.2), rgba(255,178,56,.13)); font-weight:900; box-shadow:0 0 42px rgba(75,216,238,.16); }
     .eyebrow { color:var(--cyan); text-transform:uppercase; letter-spacing:.12em; font-size:12px; margin:0 0 14px; }
     h1 { margin:0; font-size:clamp(44px, 7vw, 92px); line-height:.92; letter-spacing:0; max-width:780px; }
@@ -396,7 +418,7 @@ function renderLogin(config) {
   </div>
   <main>
     <section class="intro">
-      <div class="brand"><div class="mark">ND</div><strong>NexaDesk</strong></div>
+      <div class="brand"><img class="brand-logo" src="/assets/nexadesk-logo.png" alt="NexaDesk"><strong>NexaDesk</strong></div>
       <p class="eyebrow">AI ticket command center</p>
       <h1>Soporte de Discord que sabe cuando actuar y cuando escalar.</h1>
       <p>Gestiona paneles, categorias, prompts, transcripts y escalados de staff desde una consola limpia, conectada a Discord y lista para equipos reales.</p>
@@ -468,7 +490,7 @@ function renderError(message) {
 </html>`;
 }
 
-function renderDashboard({ session, guilds, tickets }) {
+function renderDashboard({ session, guilds, tickets, stats }) {
   const guildOptions = guilds
     .map((guild) => `<option value="${escapeHtml(guild.guildId)}">${escapeHtml(guild.guildName ?? guild.guildId)}</option>`)
     .join('');
@@ -489,12 +511,18 @@ function renderDashboard({ session, guilds, tickets }) {
     .map((ticket) => renderTicketRow(ticket))
     .join('');
 
+  const healthScore = stats.totalGuilds
+    ? Math.round(((stats.configuredGuilds + stats.escalationReadyGuilds + stats.aiReadyGuilds) / (stats.totalGuilds * 3)) * 100)
+    : 0;
+
   return `<!doctype html>
 <html lang="es">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>NexaDesk Dashboard</title>
+  <link rel="icon" type="image/png" href="/assets/nexadesk-logo.png">
+  <link rel="apple-touch-icon" href="/assets/nexadesk-logo.png">
   <style>
     :root { color-scheme:dark; --bg:#05080a; --panel:#0b1216; --panel-2:#101a20; --line:#20323a; --soft-line:rgba(255,255,255,.08); --text:#f2fbfc; --muted:#8ea3aa; --cyan:#4bd8ee; --amber:#ffb238; --ok:#63e6a7; --danger:#ff5f57; }
     * { box-sizing:border-box; }
@@ -511,6 +539,7 @@ function renderDashboard({ session, guilds, tickets }) {
     h3 { font-size:18px; }
     p { margin:8px 0 0; color:var(--muted); line-height:1.55; }
     .brand-lockup { display:flex; gap:14px; align-items:center; margin-bottom:22px; }
+    .brand-logo { width:42px; height:42px; object-fit:cover; border-radius:11px; border:1px solid rgba(75,216,238,.45); box-shadow:0 0 38px rgba(75,216,238,.16); }
     .mark { display:grid; place-items:center; width:42px; height:42px; border:1px solid rgba(75,216,238,.45); background:linear-gradient(145deg, rgba(75,216,238,.18), rgba(255,178,56,.12)); border-radius:10px; font-weight:900; }
     .nav-brand { display:flex; align-items:center; gap:12px; margin-bottom:18px; }
     .nav-link { display:block; color:var(--muted); text-decoration:none; border:1px solid transparent; border-radius:10px; padding:10px 11px; margin:4px 0; }
@@ -525,7 +554,16 @@ function renderDashboard({ session, guilds, tickets }) {
     .stats { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; margin-bottom:16px; }
     .stat { padding:16px; background:linear-gradient(180deg,var(--panel-2),var(--panel)); }
     .stat strong { display:block; font-size:28px; }
+    .stat small { display:block; margin-top:6px; }
     .stat span, label, th, dt, small { color:var(--muted); }
+    .command-center { display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px; margin-bottom:16px; }
+    .insight-card { border:1px solid var(--line); border-radius:14px; padding:16px; background:linear-gradient(145deg, rgba(75,216,238,.08), rgba(255,178,56,.04)); }
+    .insight-card strong { display:block; font-size:24px; margin-top:8px; }
+    .meter { height:9px; border-radius:999px; overflow:hidden; background:#071014; border:1px solid var(--soft-line); margin-top:12px; }
+    .meter span { display:block; height:100%; width:var(--value); background:linear-gradient(90deg,var(--cyan),var(--amber)); }
+    .mini-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; margin-top:12px; }
+    .mini-grid div { border:1px solid var(--soft-line); border-radius:10px; padding:10px; background:rgba(5,8,10,.38); }
+    .mini-grid strong { font-size:18px; margin:0; }
     .workspace { display:grid; grid-template-columns:310px minmax(0,1fr); gap:16px; align-items:start; }
     .section-heading { display:flex; align-items:end; justify-content:space-between; gap:16px; margin:6px 0 14px; }
     .section-heading p { margin:4px 0 0; }
@@ -564,8 +602,8 @@ function renderDashboard({ session, guilds, tickets }) {
     #loadingPhrase { color:var(--text); font-weight:800; }
     @keyframes rise { from { opacity:0; transform:translateY(14px); } to { opacity:1; transform:translateY(0); } }
     @keyframes spin { to { transform:rotate(360deg); } }
-    @media (max-width:1120px) { .app-shell,.workspace,.topbar { grid-template-columns:1fr; } .sidebar { position:relative; height:auto; top:auto; } .nav-foot { position:static; margin-top:18px; } }
-    @media (max-width:760px) { form,.control-grid,.stats,.server-status { grid-template-columns:1fr; } label,button { margin-top:12px; } .app-shell { width:min(100% - 24px, 1440px); } }
+    @media (max-width:1120px) { .app-shell,.workspace,.topbar,.command-center { grid-template-columns:1fr; } .sidebar { position:relative; height:auto; top:auto; } .nav-foot { position:static; margin-top:18px; } }
+    @media (max-width:760px) { form,.control-grid,.stats,.server-status,.mini-grid { grid-template-columns:1fr; } label,button { margin-top:12px; } .app-shell { width:min(100% - 24px, 1440px); } }
   </style>
 </head>
 <body>
@@ -577,7 +615,7 @@ function renderDashboard({ session, guilds, tickets }) {
   </div>
   <div class="app-shell">
   <aside class="sidebar">
-    <div class="nav-brand"><div class="mark">ND</div><strong>NexaDesk</strong></div>
+    <div class="nav-brand"><img class="brand-logo" src="/assets/nexadesk-logo.png" alt="NexaDesk"><strong>NexaDesk</strong></div>
     <a class="nav-link" href="#overview">Resumen</a>
     <a class="nav-link" href="#servers">Servidores</a>
     <a class="nav-link" href="#settings">Configuracion</a>
@@ -589,7 +627,7 @@ function renderDashboard({ session, guilds, tickets }) {
   <main>
     <div class="topbar">
       <header>
-        <div class="brand-lockup"><div class="mark">ND</div><strong>NexaDesk Command</strong></div>
+        <div class="brand-lockup"><img class="brand-logo" src="/assets/nexadesk-logo.png" alt="NexaDesk"><strong>NexaDesk Command</strong></div>
         <h1>Centro de control para soporte con IA.</h1>
         <p>Elige un servidor, configura el contexto, prepara el escalado humano y publica paneles sin copiar IDs.</p>
       </header>
@@ -603,10 +641,32 @@ function renderDashboard({ session, guilds, tickets }) {
       </aside>
     </div>
     <div class="stats" id="overview">
-      <div class="stat"><strong id="guildCount">${guilds.length}</strong><span>Servidores disponibles</span></div>
-      <div class="stat"><strong id="ticketCount">${tickets.length}</strong><span>Tickets detectados</span></div>
-      <div class="stat"><strong id="openCount">${tickets.filter((ticket) => ticket.status === 'open').length}</strong><span>Tickets abiertos</span></div>
+      <div class="stat"><strong id="guildCount">${stats.totalGuilds}</strong><span>Servidores disponibles</span><small>${stats.configuredGuilds} configurados · ${stats.unconfiguredGuilds} pendientes</small></div>
+      <div class="stat"><strong id="ticketCount">${stats.totalTickets}</strong><span>Tickets detectados</span><small>${stats.ticketsToday} hoy · ${stats.ticketsThisWeek} esta semana</small></div>
+      <div class="stat"><strong id="openCount">${stats.openTickets}</strong><span>Tickets abiertos</span><small>${stats.closedTickets} cerrados o archivados</small></div>
     </div>
+    <section class="command-center">
+      <article class="insight-card">
+        <p class="kicker">Salud global</p>
+        <strong id="healthScore">${healthScore}%</strong>
+        <p>Promedio de servidores con categoria, staff y contexto IA configurados.</p>
+        <div class="meter" style="--value:${healthScore}%"><span></span></div>
+      </article>
+      <article class="insight-card">
+        <p class="kicker">Automatizacion</p>
+        <div class="mini-grid">
+          <div><strong id="panelCount">${stats.panels}</strong><small>Paneles publicados</small></div>
+          <div><strong id="aiReadyCount">${stats.aiReadyGuilds}</strong><small>Servidores con IA lista</small></div>
+        </div>
+      </article>
+      <article class="insight-card">
+        <p class="kicker">Actividad</p>
+        <div class="mini-grid">
+          <div><strong id="transcriptCount">${stats.transcriptMessages}</strong><small>Mensajes guardados</small></div>
+          <div><strong id="staffReadyCount">${stats.escalationReadyGuilds}</strong><small>Escalado con staff</small></div>
+        </div>
+      </article>
+    </section>
     <div class="section-heading">
       <div><h2>Configura tu servidor</h2><p>Un flujo claro: servidor activo, IA, staff y paneles.</p></div>
     </div>
@@ -684,7 +744,10 @@ function renderDashboard({ session, guilds, tickets }) {
         document.querySelector('#loading')?.classList.add('is-hidden');
       }, 550);
     });
-    const state = { tickets: ${JSON.stringify(tickets)} };
+    const state = {
+      tickets: ${JSON.stringify(tickets)},
+      stats: ${JSON.stringify(stats)}
+    };
     const guildConfigs = ${JSON.stringify(guilds)};
     let guildMeta = {};
     function ticketRow(ticket) {
@@ -697,8 +760,23 @@ function renderDashboard({ session, guilds, tickets }) {
       document.querySelector('#ticketRows').innerHTML = state.tickets.length ? state.tickets.map(ticketRow).join('') : '<tr><td colspan="4">Aun no hay tickets detectados.</td></tr>';
       document.querySelector('#emptyTickets')?.remove();
       document.querySelector('#ticketRows')?.closest('table')?.removeAttribute('hidden');
-      document.querySelector('#ticketCount').textContent = state.tickets.length;
-      document.querySelector('#openCount').textContent = state.tickets.filter((ticket) => ticket.status === 'open').length;
+    }
+    function renderStats() {
+      const stats = state.stats;
+      const health = stats.totalGuilds ? Math.round(((stats.configuredGuilds + stats.escalationReadyGuilds + stats.aiReadyGuilds) / (stats.totalGuilds * 3)) * 100) : 0;
+      document.querySelector('#guildCount').textContent = stats.totalGuilds;
+      document.querySelector('#ticketCount').textContent = stats.totalTickets;
+      document.querySelector('#openCount').textContent = stats.openTickets;
+      document.querySelector('#healthScore').textContent = health + '%';
+      document.querySelector('.meter')?.style.setProperty('--value', health + '%');
+      document.querySelector('#panelCount').textContent = stats.panels;
+      document.querySelector('#aiReadyCount').textContent = stats.aiReadyGuilds;
+      document.querySelector('#transcriptCount').textContent = stats.transcriptMessages;
+      document.querySelector('#staffReadyCount').textContent = stats.escalationReadyGuilds;
+    }
+    async function refreshStats() {
+      state.stats = await fetch('/api/stats').then((response) => response.json());
+      renderStats();
     }
     async function postJson(url, body) {
       const response = await fetch(url, { method:'POST', headers:{ 'content-type':'application/json' }, body:JSON.stringify(body) });
@@ -789,9 +867,15 @@ function renderDashboard({ session, guilds, tickets }) {
       state.tickets = [message.payload, ...state.tickets.filter((ticket) => ticket.channelId !== message.payload.channelId)];
       document.querySelector('#lastSync').textContent = new Date().toLocaleTimeString();
       renderTickets();
+      refreshStats().catch(() => {});
     });
     source.addEventListener('guild.updated', () => {
       document.querySelector('#lastSync').textContent = new Date().toLocaleTimeString();
+      refreshStats().catch(() => {});
+    });
+    source.addEventListener('transcript.message', () => {
+      document.querySelector('#lastSync').textContent = new Date().toLocaleTimeString();
+      refreshStats().catch(() => {});
     });
     source.onerror = () => {
       document.querySelector('#liveState').textContent = 'Reconectando';
