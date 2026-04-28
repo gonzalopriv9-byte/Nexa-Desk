@@ -169,6 +169,21 @@ export function createBot({ config, storage, supportAgent }) {
     activeResponses.add(message.channel.id);
     try {
       await saveTranscript(storage, message, 'user');
+      if (isUserRequestingStaff(message.content)) {
+        const escalation = {
+          shouldEscalate: true,
+          reason: 'El usuario solicita asistencia manual de staff.',
+          publicAnswer: 'El usuario solicita asistencia manual de staff.'
+        };
+        await notifyStaffRole(message, guildConfig, ticket, escalation.reason);
+        const reply = await message.reply({
+          content: buildPublicReply(escalation, guildConfig).slice(0, 1900),
+          allowedMentions: { roles: guildConfig.staffRoleId ? [guildConfig.staffRoleId] : [] }
+        });
+        await saveTranscript(storage, reply, 'assistant');
+        return;
+      }
+
       await message.channel.sendTyping();
       const answer = await supportAgent.answerTicketMessage({ message, ticket, guildConfig });
       if (answer) {
@@ -235,10 +250,21 @@ function looksLikeEscalation(answer) {
   ].some((pattern) => pattern.test(answer));
 }
 
+function isUserRequestingStaff(content) {
+  return [
+    /\bstaff\b/i,
+    /\bmoderador(?:es)?\b/i,
+    /\bhumano\b/i,
+    /\basistencia\s+manual\b/i,
+    /\bmenciona(?:s|r)?\b.*\b(staff|moderador(?:es)?)\b/i,
+    /\bavisa(?:s|r)?\b.*\b(staff|moderador(?:es)?)\b/i
+  ].some((pattern) => pattern.test(content));
+}
+
 function buildPublicReply(escalation, guildConfig) {
   if (!escalation.shouldEscalate) return escalation.publicAnswer;
 
-  const mention = guildConfig.staffRoleId ? `<@&${guildConfig.staffRoleId}> ` : '';
+  const mention = guildConfig.staffRoleId ? `<@&${guildConfig.staffRoleId}> ` : 'No hay rol staff configurado. ';
   return `${mention}${escalation.publicAnswer}`;
 }
 
