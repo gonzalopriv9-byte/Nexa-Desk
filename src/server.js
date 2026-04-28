@@ -473,20 +473,15 @@ function renderDashboard({ session, guilds, tickets }) {
     .map((guild) => `<option value="${escapeHtml(guild.guildId)}">${escapeHtml(guild.guildName ?? guild.guildId)}</option>`)
     .join('');
 
-  const guildCards = guilds
+  const guildList = guilds
     .map((guild) => `
-      <article class="surface guild-card">
-        <div>
-          <p class="kicker">${guild.connected ? 'Conectado' : 'Disponible'}</p>
-          <h3>${escapeHtml(guild.guildName ?? guild.guildId)}</h3>
-        </div>
-        <dl>
-          <div><dt>Categoria</dt><dd>${escapeHtml(guild.ticketCategoryName ?? 'Sin configurar')}</dd></div>
-          <div><dt>Rol staff</dt><dd>${escapeHtml(guild.staffRoleId ?? 'Sin configurar')}</dd></div>
-          <div><dt>Paneles</dt><dd>${escapeHtml(String(guild.panels?.length ?? 0))}</dd></div>
-          <div><dt>Actualizado</dt><dd>${escapeHtml(guild.updatedAt ? new Date(guild.updatedAt).toLocaleString() : 'Pendiente')}</dd></div>
-        </dl>
-      </article>
+      <button class="guild-pill" type="button" data-guild-id="${escapeHtml(guild.guildId)}">
+        <span>
+          <strong>${escapeHtml(guild.guildName ?? guild.guildId)}</strong>
+          <small>${guild.connected ? 'Configurado' : 'Disponible'} · ${escapeHtml(String(guild.panels?.length ?? 0))} paneles</small>
+        </span>
+        <i>${guild.ticketCategoryName ? 'Listo' : 'Pendiente'}</i>
+      </button>
     `)
     .join('');
 
@@ -501,65 +496,76 @@ function renderDashboard({ session, guilds, tickets }) {
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>NexaDesk Dashboard</title>
   <style>
-    :root { color-scheme:dark; --bg:#05080a; --panel:#0b1216; --panel-2:#101a20; --line:#20323a; --text:#f2fbfc; --muted:#8ea3aa; --cyan:#4bd8ee; --amber:#ffb238; --ok:#63e6a7; --danger:#ff5f57; }
+    :root { color-scheme:dark; --bg:#05080a; --panel:#0b1216; --panel-2:#101a20; --line:#20323a; --soft-line:rgba(255,255,255,.08); --text:#f2fbfc; --muted:#8ea3aa; --cyan:#4bd8ee; --amber:#ffb238; --ok:#63e6a7; --danger:#ff5f57; }
     * { box-sizing:border-box; }
-    body { margin:0; font-family:"Segoe UI",ui-sans-serif,system-ui,sans-serif; background:radial-gradient(circle at 12% 0%, rgba(75,216,238,.18), transparent 28%), radial-gradient(circle at 88% 10%, rgba(255,178,56,.11), transparent 28%), repeating-linear-gradient(90deg, rgba(255,255,255,.025) 0 1px, transparent 1px 72px), var(--bg); color:var(--text); }
-    .app-shell { width:min(1360px, calc(100% - 28px)); margin:0 auto; display:grid; grid-template-columns:260px 1fr; gap:18px; padding:18px 0 44px; }
-    .sidebar { position:sticky; top:18px; height:calc(100vh - 36px); border:1px solid var(--line); border-radius:8px; background:rgba(7,16,20,.88); padding:16px; animation:rise .55s ease both; }
+    body { margin:0; font-family:"Segoe UI",ui-sans-serif,system-ui,sans-serif; background:radial-gradient(circle at 10% 0%, rgba(75,216,238,.16), transparent 30%), radial-gradient(circle at 92% 12%, rgba(255,178,56,.13), transparent 28%), repeating-linear-gradient(90deg, rgba(255,255,255,.022) 0 1px, transparent 1px 72px), var(--bg); color:var(--text); }
+    .app-shell { width:min(1440px, calc(100% - 40px)); margin:0 auto; display:grid; grid-template-columns:220px minmax(0,1fr); gap:22px; padding:22px 0 52px; }
+    .sidebar { position:sticky; top:22px; height:calc(100vh - 44px); border:1px solid var(--line); border-radius:14px; background:rgba(7,16,20,.88); padding:16px; animation:rise .55s ease both; }
     main { min-width:0; animation:rise .55s ease .08s both; }
-    header { min-height:220px; display:grid; grid-template-columns:1.4fr .9fr; gap:24px; align-items:center; margin-bottom:18px; border:1px solid var(--line); border-radius:8px; padding:24px; background:linear-gradient(135deg, rgba(16,26,32,.9), rgba(7,16,20,.74)); }
+    .topbar { display:grid; grid-template-columns:minmax(0,1fr) 360px; gap:16px; align-items:stretch; margin-bottom:16px; }
+    header { border:1px solid var(--line); border-radius:16px; padding:24px; background:linear-gradient(135deg, rgba(16,26,32,.94), rgba(7,16,20,.78)); overflow:hidden; position:relative; }
+    header::after { content:""; position:absolute; width:260px; height:260px; right:-120px; top:-140px; border-radius:50%; background:rgba(75,216,238,.12); filter:blur(10px); }
     h1,h2,h3 { margin:0; letter-spacing:0; }
-    h1 { font-size:clamp(38px, 6vw, 76px); line-height:.94; max-width:760px; }
-    h2 { font-size:18px; margin-bottom:16px; }
-    h3 { font-size:17px; }
-    p { margin:8px 0 0; color:var(--muted); }
+    h1 { font-size:clamp(32px, 4.6vw, 58px); line-height:.96; max-width:760px; position:relative; z-index:1; }
+    h2 { font-size:19px; margin-bottom:12px; }
+    h3 { font-size:18px; }
+    p { margin:8px 0 0; color:var(--muted); line-height:1.55; }
     .brand-lockup { display:flex; gap:14px; align-items:center; margin-bottom:22px; }
-    .mark { display:grid; place-items:center; width:42px; height:42px; border:1px solid rgba(75,216,238,.45); background:linear-gradient(145deg, rgba(75,216,238,.18), rgba(255,178,56,.12)); border-radius:8px; font-weight:900; }
+    .mark { display:grid; place-items:center; width:42px; height:42px; border:1px solid rgba(75,216,238,.45); background:linear-gradient(145deg, rgba(75,216,238,.18), rgba(255,178,56,.12)); border-radius:10px; font-weight:900; }
     .nav-brand { display:flex; align-items:center; gap:12px; margin-bottom:18px; }
-    .nav-link { display:block; color:var(--muted); text-decoration:none; border:1px solid transparent; border-radius:6px; padding:10px 11px; margin:4px 0; }
+    .nav-link { display:block; color:var(--muted); text-decoration:none; border:1px solid transparent; border-radius:10px; padding:10px 11px; margin:4px 0; }
     .nav-link:hover { color:var(--text); border-color:var(--line); background:#0b1216; }
     .nav-foot { position:absolute; left:16px; right:16px; bottom:16px; }
-    .hero-panel,.surface,.stat { border:1px solid var(--line); border-radius:8px; background:rgba(11,18,22,.86); }
+    .hero-panel,.surface,.stat,.active-server { border:1px solid var(--line); border-radius:14px; background:rgba(11,18,22,.86); }
     .hero-panel { padding:18px; background:linear-gradient(180deg, rgba(16,26,32,.92), rgba(5,8,10,.92)); }
     .signal-list { display:grid; gap:10px; margin-top:16px; }
-    .signal { display:flex; justify-content:space-between; gap:18px; padding:10px 0; border-bottom:1px solid rgba(255,255,255,.06); color:var(--muted); }
+    .signal { display:flex; justify-content:space-between; gap:18px; padding:10px 0; border-bottom:1px solid var(--soft-line); color:var(--muted); }
     .signal strong { color:var(--text); }
-    .surface { padding:20px; margin:18px 0; animation:rise .55s ease both; }
-    .stats { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; }
+    .surface { padding:20px; animation:rise .55s ease both; }
+    .stats { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; margin-bottom:16px; }
     .stat { padding:16px; background:linear-gradient(180deg,var(--panel-2),var(--panel)); }
     .stat strong { display:block; font-size:28px; }
-    .stat span, label, th, dt { color:var(--muted); }
-    .workspace { display:grid; grid-template-columns:.9fr 1.1fr; gap:18px; align-items:start; }
-    .section-heading { display:flex; align-items:end; justify-content:space-between; gap:16px; margin:24px 0 8px; }
+    .stat span, label, th, dt, small { color:var(--muted); }
+    .workspace { display:grid; grid-template-columns:310px minmax(0,1fr); gap:16px; align-items:start; }
+    .section-heading { display:flex; align-items:end; justify-content:space-between; gap:16px; margin:6px 0 14px; }
     .section-heading p { margin:4px 0 0; }
+    .active-server { padding:18px; margin-bottom:16px; background:linear-gradient(135deg, rgba(75,216,238,.08), rgba(255,178,56,.06)); }
+    .active-server select { margin-top:12px; }
+    .server-status { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; margin-top:12px; }
+    .server-status div { border:1px solid var(--soft-line); border-radius:10px; padding:10px; background:rgba(5,8,10,.42); }
+    .server-status strong { display:block; font-size:13px; margin-top:4px; }
+    .guild-list { display:grid; gap:8px; max-height:560px; overflow:auto; padding-right:4px; }
+    .guild-pill { display:flex; align-items:center; justify-content:space-between; gap:12px; text-align:left; border:1px solid var(--soft-line); background:#071014; color:var(--text); border-radius:12px; padding:12px; cursor:pointer; }
+    .guild-pill:hover,.guild-pill.is-active { border-color:rgba(75,216,238,.62); background:rgba(75,216,238,.08); }
+    .guild-pill strong,.guild-pill small { display:block; }
+    .guild-pill i { color:var(--amber); font-style:normal; font-size:12px; }
+    .control-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px; }
+    .control-card { border:1px solid var(--line); border-radius:14px; padding:18px; background:linear-gradient(180deg, rgba(16,26,32,.92), rgba(7,16,20,.92)); }
+    .control-card.wide { grid-column:1 / -1; }
+    .card-head { display:flex; gap:12px; align-items:flex-start; margin-bottom:14px; }
+    .step { display:grid; place-items:center; width:30px; height:30px; border-radius:9px; color:#071014; background:linear-gradient(135deg,var(--cyan),var(--amber)); font-weight:900; flex:0 0 auto; }
     form { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
     label { display:grid; gap:6px; font-size:14px; }
-    input,select,textarea,button { width:100%; border-radius:6px; border:1px solid var(--line); background:#071014; color:var(--text); padding:10px 12px; font:inherit; }
+    input,select,textarea,button { width:100%; border-radius:10px; border:1px solid var(--line); background:#071014; color:var(--text); padding:11px 12px; font:inherit; }
     textarea { min-height:140px; resize:vertical; grid-column:1 / -1; }
     .span-2 { grid-column:1 / -1; }
-    button { background:linear-gradient(135deg,var(--cyan),var(--amber)); color:#071014; border:0; font-weight:800; cursor:pointer; }
+    button { background:linear-gradient(135deg,var(--cyan),var(--amber)); color:#071014; border:0; font-weight:900; cursor:pointer; }
     .secondary-button { background:#0b1216; color:var(--text); border:1px solid var(--line); }
-    .logout-form { display:flex; justify-content:flex-end; margin:-6px 0 12px; }
-    .logout-form button { width:auto; padding:9px 12px; }
     table { width:100%; border-collapse:collapse; }
     th,td { text-align:left; padding:12px; border-bottom:1px solid var(--line); }
-    .guild-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
-    .guild-card { margin:0; }
-    dl { margin:14px 0 0; display:grid; gap:8px; }
-    dd { margin:2px 0 0; }
     .kicker { color:var(--cyan); font-size:12px; text-transform:uppercase; letter-spacing:.08em; }
-    .tabs { display:grid; gap:18px; }
-    .notice { border-left:3px solid var(--amber); padding-left:12px; color:var(--muted); }
+    .notice,.empty-state { border:1px dashed rgba(255,178,56,.42); border-radius:12px; padding:16px; color:var(--muted); background:rgba(255,178,56,.04); }
+    .empty-state strong { color:var(--text); display:block; margin-bottom:5px; }
     .live { color:var(--ok); }
     .loading { position:fixed; inset:0; z-index:20; display:grid; place-items:center; background:rgba(5,8,10,.9); backdrop-filter:blur(12px); transition:opacity .35s ease, visibility .35s ease; }
     .loading.is-hidden { opacity:0; visibility:hidden; }
-    .loader { width:min(420px, calc(100% - 32px)); border:1px solid var(--line); background:#0b1216; border-radius:8px; padding:24px; text-align:center; }
+    .loader { width:min(420px, calc(100% - 32px)); border:1px solid var(--line); background:#0b1216; border-radius:14px; padding:24px; text-align:center; }
     .pulse { width:46px; height:46px; margin:0 auto 16px; border-radius:50%; border:2px solid rgba(75,216,238,.18); border-top-color:var(--cyan); animation:spin 1s linear infinite; }
     #loadingPhrase { color:var(--text); font-weight:800; }
     @keyframes rise { from { opacity:0; transform:translateY(14px); } to { opacity:1; transform:translateY(0); } }
     @keyframes spin { to { transform:rotate(360deg); } }
-    @media (max-width:980px) { .app-shell { grid-template-columns:1fr; } .sidebar { position:relative; height:auto; top:auto; } .nav-foot { position:static; margin-top:18px; } }
-    @media (max-width:760px) { header,form,.workspace { display:block; } .stats,.guild-grid { grid-template-columns:1fr; } label,button { margin-top:12px; } }
+    @media (max-width:1120px) { .app-shell,.workspace,.topbar { grid-template-columns:1fr; } .sidebar { position:relative; height:auto; top:auto; } .nav-foot { position:static; margin-top:18px; } }
+    @media (max-width:760px) { form,.control-grid,.stats,.server-status { grid-template-columns:1fr; } label,button { margin-top:12px; } .app-shell { width:min(100% - 24px, 1440px); } }
   </style>
 </head>
 <body>
@@ -574,20 +580,19 @@ function renderDashboard({ session, guilds, tickets }) {
     <div class="nav-brand"><div class="mark">ND</div><strong>NexaDesk</strong></div>
     <a class="nav-link" href="#overview">Resumen</a>
     <a class="nav-link" href="#servers">Servidores</a>
-    <a class="nav-link" href="#knowledge">IA y contexto</a>
-    <a class="nav-link" href="#automation">Paneles</a>
+    <a class="nav-link" href="#settings">Configuracion</a>
     <a class="nav-link" href="#tickets">Tickets</a>
     <div class="nav-foot">
       <form method="post" action="/logout"><button class="secondary-button" type="submit">Cerrar sesion</button></form>
     </div>
   </aside>
   <main>
-    <header>
-      <div>
+    <div class="topbar">
+      <header>
         <div class="brand-lockup"><div class="mark">ND</div><strong>NexaDesk Command</strong></div>
-        <h1>Soporte inteligente para tickets de Discord.</h1>
-        <p>Gestiona categorias, paneles, base de conocimiento y tickets asistidos por IA desde un centro operativo conectado a Supabase.</p>
-      </div>
+        <h1>Centro de control para soporte con IA.</h1>
+        <p>Elige un servidor, configura el contexto, prepara el escalado humano y publica paneles sin copiar IDs.</p>
+      </header>
       <aside class="hero-panel">
         <p class="kicker">Sesion Discord</p>
         <div class="signal-list">
@@ -596,54 +601,66 @@ function renderDashboard({ session, guilds, tickets }) {
           <div class="signal"><span>Ultima sync</span><strong id="lastSync">${escapeHtml(new Date().toLocaleTimeString())}</strong></div>
         </div>
       </aside>
-    </header>
+    </div>
     <div class="stats" id="overview">
       <div class="stat"><strong id="guildCount">${guilds.length}</strong><span>Servidores disponibles</span></div>
       <div class="stat"><strong id="ticketCount">${tickets.length}</strong><span>Tickets detectados</span></div>
       <div class="stat"><strong id="openCount">${tickets.filter((ticket) => ticket.status === 'open').length}</strong><span>Tickets abiertos</span></div>
     </div>
     <div class="section-heading">
-      <div><h2>Operacion del servidor</h2><p>Configura IA, permisos y entradas de soporte desde un flujo guiado.</p></div>
+      <div><h2>Configura tu servidor</h2><p>Un flujo claro: servidor activo, IA, staff y paneles.</p></div>
     </div>
+    <section class="active-server">
+      <p class="kicker">Servidor activo</p>
+      <select id="guildId" required>${guildOptions}</select>
+      <div class="server-status">
+        <div><span>Categoria</span><strong id="activeCategory">Sin configurar</strong></div>
+        <div><span>Staff</span><strong id="activeStaff">Sin configurar</strong></div>
+        <div><span>Paneles</span><strong id="activePanels">0</strong></div>
+      </div>
+    </section>
     <div class="workspace">
-      <section class="surface" id="servers"><h2>Servidores</h2><div class="guild-grid" id="guildGrid">${guildCards || '<p class="notice">No tienes servidores gestionables.</p>'}</div></section>
-      <section class="surface tabs" id="knowledge">
-        <div>
-          <h2>Conocimiento del servidor</h2>
+      <section class="surface" id="servers">
+        <h2>Servidores</h2>
+        <p>Selecciona uno para editarlo. Solo aparecen servidores donde tienes permisos.</p>
+        <div class="guild-list" id="guildGrid">${guildList || '<p class="notice">No tienes servidores gestionables.</p>'}</div>
+      </section>
+      <section class="control-grid" id="settings">
+        <article class="control-card wide">
+          <div class="card-head"><span class="step">1</span><div><h2>IA y contexto</h2><p>Define como debe responder NexaDesk dentro de este servidor.</p></div></div>
           <form onsubmit="return saveConfig(event)">
-            <label>Servidor<select id="guildId" required>${guildOptions}</select></label>
+            <input id="ticketCategoryName" type="hidden">
             <label>Categoria de tickets<select id="ticketCategoryId"></select></label>
-            <label>Nombre categoria<input id="ticketCategoryName" placeholder="Se rellena al elegir categoria"></label>
-            <label class="span-2">Rol staff<select id="staffRoleId"></select></label>
-            <textarea id="serverPrompt" placeholder="Prompt del servidor: personalidad, contexto, limites, normas de soporte..."></textarea>
-            <textarea id="serverInfo" placeholder="Reglas, FAQs, horarios, precios, enlaces, tono de respuesta..."></textarea>
-            <button type="submit">Guardar inteligencia</button>
+            <label>Rol staff<select id="staffRoleId"></select></label>
+            <textarea id="serverPrompt" placeholder="Prompt del servidor: personalidad, tono, limites, cuando escalar..."></textarea>
+            <textarea id="serverInfo" placeholder="Reglas, FAQs, horarios, precios, enlaces y respuestas frecuentes..."></textarea>
+            <button class="span-2" type="submit">Guardar contexto y escalado</button>
           </form>
-        </div>
-        <div id="automation">
-          <h2>Crear categoria</h2>
+        </article>
+        <article class="control-card">
+          <div class="card-head"><span class="step">2</span><div><h2>Categoria de tickets</h2><p>Crea una categoria nueva y dejala activa automaticamente.</p></div></div>
           <form onsubmit="return createCategory(event)">
-            <label>Servidor<select id="categoryGuildId" required>${guildOptions}</select></label>
+            <select id="categoryGuildId" hidden required>${guildOptions}</select>
             <label class="span-2">Nombre de categoria<input id="categoryName" placeholder="NexaDesk Tickets" required></label>
-            <button type="submit">Crear y activar categoria</button>
+            <button class="span-2" type="submit">Crear y activar categoria</button>
           </form>
-        </div>
-        <div>
-          <h2>Crear panel</h2>
+        </article>
+        <article class="control-card">
+          <div class="card-head"><span class="step">3</span><div><h2>Panel de soporte</h2><p>Publica el boton que abre tickets en el canal elegido.</p></div></div>
           <form onsubmit="return createPanel(event)">
-            <label>Servidor<select id="panelGuildId" required>${guildOptions}</select></label>
+            <select id="panelGuildId" hidden required>${guildOptions}</select>
             <label>Canal del panel<select id="panelChannelId" required></select></label>
             <label>Boton<input id="panelButtonLabel" value="Abrir ticket"></label>
             <label class="span-2">Titulo<input id="panelTitle" value="Centro de soporte"></label>
             <textarea id="panelDescription">Pulsa el boton para abrir un ticket. NexaDesk analizara tu caso y avisara al staff si hace falta.</textarea>
-            <button type="submit">Publicar panel</button>
+            <button class="span-2" type="submit">Publicar panel</button>
           </form>
-        </div>
+        </article>
       </section>
     </div>
     <section class="surface" id="tickets">
       <h2>Tickets recientes</h2>
-      <table><thead><tr><th>Canal</th><th>Servidor</th><th>Estado</th><th>Creado</th></tr></thead><tbody id="ticketRows">${ticketRows || '<tr><td colspan="4">Aun no hay tickets detectados.</td></tr>'}</tbody></table>
+      ${ticketRows ? `<table><thead><tr><th>Canal</th><th>Servidor</th><th>Estado</th><th>Creado</th></tr></thead><tbody id="ticketRows">${ticketRows}</tbody></table>` : '<div class="empty-state" id="emptyTickets"><strong>Aun no hay tickets detectados.</strong><span>Crea un panel o abre un ticket en una categoria configurada para ver actividad en tiempo real aqui.</span></div><table hidden><thead><tr><th>Canal</th><th>Servidor</th><th>Estado</th><th>Creado</th></tr></thead><tbody id="ticketRows"></tbody></table>'}
     </section>
   </main>
   </div>
@@ -678,6 +695,8 @@ function renderDashboard({ session, guilds, tickets }) {
     }
     function renderTickets() {
       document.querySelector('#ticketRows').innerHTML = state.tickets.length ? state.tickets.map(ticketRow).join('') : '<tr><td colspan="4">Aun no hay tickets detectados.</td></tr>';
+      document.querySelector('#emptyTickets')?.remove();
+      document.querySelector('#ticketRows')?.closest('table')?.removeAttribute('hidden');
       document.querySelector('#ticketCount').textContent = state.tickets.length;
       document.querySelector('#openCount').textContent = state.tickets.filter((ticket) => ticket.status === 'open').length;
     }
@@ -707,6 +726,13 @@ function renderDashboard({ session, guilds, tickets }) {
       document.querySelector('#ticketCategoryId').value = config.ticketCategoryId || '';
       document.querySelector('#staffRoleId').value = config.staffRoleId || '';
       document.querySelector('#ticketCategoryName').value = config.ticketCategoryName || selectedOptionText('#ticketCategoryId');
+      document.querySelector('#serverPrompt').value = config.serverPrompt || '';
+      document.querySelector('#serverInfo').value = config.serverInfo || '';
+      document.querySelector('#activeCategory').textContent = config.ticketCategoryName || selectedOptionText('#ticketCategoryId') || 'Sin configurar';
+      const staffOption = document.querySelector('#staffRoleId')?.selectedOptions?.[0];
+      document.querySelector('#activeStaff').textContent = staffOption?.value ? staffOption.textContent : 'Sin configurar';
+      document.querySelector('#activePanels').textContent = String(config.panels?.length ?? 0);
+      document.querySelectorAll('.guild-pill').forEach((button) => button.classList.toggle('is-active', button.dataset.guildId === guildId));
     }
     function selectedOptionText(selector) {
       const option = document.querySelector(selector)?.selectedOptions?.[0];
@@ -724,13 +750,18 @@ function renderDashboard({ session, guilds, tickets }) {
       event.preventDefault();
       const guildId = document.querySelector('#guildId').value;
       const categoryName = selectedOptionText('#ticketCategoryId') || document.querySelector('#ticketCategoryName').value;
-      await postJson('/api/guilds/' + guildId, {
+      const updated = await postJson('/api/guilds/' + guildId, {
         ticketCategoryId: document.querySelector('#ticketCategoryId').value,
         ticketCategoryName: categoryName,
         staffRoleId: document.querySelector('#staffRoleId').value,
         serverPrompt: document.querySelector('#serverPrompt').value,
         serverInfo: document.querySelector('#serverInfo').value
       }).catch((error) => alert(error.message));
+      if (updated) {
+        const index = guildConfigs.findIndex((guild) => guild.guildId === guildId);
+        if (index >= 0) guildConfigs[index] = { ...guildConfigs[index], ...updated };
+        renderGuildSelectors(guildId);
+      }
       return false;
     }
     async function createCategory(event) {
@@ -769,6 +800,12 @@ function renderDashboard({ session, guilds, tickets }) {
     for (const selector of ['#guildId', '#categoryGuildId', '#panelGuildId']) {
       document.querySelector(selector)?.addEventListener('change', () => syncGuildForm(selector));
     }
+    document.querySelectorAll('.guild-pill').forEach((button) => {
+      button.addEventListener('click', () => {
+        document.querySelector('#guildId').value = button.dataset.guildId;
+        syncGuildForm('#guildId');
+      });
+    });
     document.querySelector('#ticketCategoryId')?.addEventListener('change', () => {
       document.querySelector('#ticketCategoryName').value = selectedOptionText('#ticketCategoryId');
     });
