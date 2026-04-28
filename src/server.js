@@ -358,24 +358,82 @@ function renderLogin(config) {
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>NexaDesk Login</title>
   <style>
-    :root { color-scheme: dark; --bg:#05080a; --line:#20323a; --text:#f2fbfc; --muted:#8ea3aa; --cyan:#4bd8ee; --amber:#ffb238; --danger:#ff5f57; }
+    :root { color-scheme: dark; --bg:#05080a; --panel:#0b1216; --panel-2:#101a20; --line:#20323a; --text:#f2fbfc; --muted:#8ea3aa; --cyan:#4bd8ee; --amber:#ffb238; --danger:#ff5f57; --ok:#63e6a7; }
     * { box-sizing: border-box; }
-    body { min-height:100vh; margin:0; display:grid; place-items:center; font-family:"Segoe UI",ui-sans-serif,system-ui,sans-serif; background:radial-gradient(circle at 20% 0%, rgba(75,216,238,.18), transparent 28%), linear-gradient(135deg, rgba(255,178,56,.08), transparent 35%), repeating-linear-gradient(90deg, rgba(255,255,255,.025) 0 1px, transparent 1px 72px), var(--bg); color:var(--text); }
-    main { width:min(460px, calc(100% - 32px)); border:1px solid var(--line); border-radius:8px; background:rgba(11,18,22,.92); padding:26px; }
-    .mark { display:grid; place-items:center; width:44px; height:44px; border:1px solid rgba(75,216,238,.45); border-radius:8px; background:linear-gradient(145deg, rgba(75,216,238,.18), rgba(255,178,56,.12)); font-weight:900; }
-    h1 { margin:18px 0 8px; font-size:30px; letter-spacing:0; }
-    p { color:var(--muted); margin:0 0 22px; }
-    a { display:block; text-align:center; width:100%; border-radius:6px; background:linear-gradient(135deg, var(--cyan), var(--amber)); color:#05080a; padding:12px; font-weight:800; text-decoration:none; }
+    body { min-height:100vh; margin:0; font-family:"Segoe UI",ui-sans-serif,system-ui,sans-serif; background:radial-gradient(circle at 18% 0%, rgba(75,216,238,.22), transparent 28%), radial-gradient(circle at 88% 18%, rgba(255,178,56,.16), transparent 25%), repeating-linear-gradient(90deg, rgba(255,255,255,.026) 0 1px, transparent 1px 72px), var(--bg); color:var(--text); overflow-x:hidden; }
+    body::before { content:""; position:fixed; inset:0; pointer-events:none; background:linear-gradient(180deg, transparent, rgba(5,8,10,.78)); }
+    main { position:relative; z-index:1; width:min(1180px, calc(100% - 32px)); min-height:100vh; margin:0 auto; display:grid; grid-template-columns:1.25fr .75fr; gap:32px; align-items:center; padding:44px 0; }
+    .intro { animation:rise .7s ease both; }
+    .brand { display:flex; gap:14px; align-items:center; margin-bottom:32px; }
+    .mark { display:grid; place-items:center; width:48px; height:48px; border:1px solid rgba(75,216,238,.45); border-radius:8px; background:linear-gradient(145deg, rgba(75,216,238,.2), rgba(255,178,56,.13)); font-weight:900; box-shadow:0 0 42px rgba(75,216,238,.16); }
+    .eyebrow { color:var(--cyan); text-transform:uppercase; letter-spacing:.12em; font-size:12px; margin:0 0 14px; }
+    h1 { margin:0; font-size:clamp(44px, 7vw, 92px); line-height:.92; letter-spacing:0; max-width:780px; }
+    p { color:var(--muted); margin:18px 0 0; max-width:690px; font-size:17px; line-height:1.6; }
+    .feature-row { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; margin-top:34px; }
+    .feature { border:1px solid var(--line); background:rgba(11,18,22,.72); border-radius:8px; padding:14px; }
+    .feature strong { display:block; margin-bottom:6px; }
+    .login-card { border:1px solid var(--line); border-radius:8px; background:linear-gradient(180deg, rgba(16,26,32,.94), rgba(7,16,20,.94)); padding:24px; animation:rise .7s ease .12s both; box-shadow:0 24px 90px rgba(0,0,0,.28); }
+    .status-line { display:flex; justify-content:space-between; gap:12px; color:var(--muted); border-bottom:1px solid rgba(255,255,255,.08); padding:11px 0; }
+    .status-line strong { color:var(--text); }
+    a.login-button { display:block; text-align:center; width:100%; border-radius:6px; background:linear-gradient(135deg, var(--cyan), var(--amber)); color:#05080a; padding:13px; font-weight:900; text-decoration:none; margin-top:22px; }
+    .loading { position:fixed; inset:0; z-index:10; display:none; place-items:center; background:rgba(5,8,10,.88); backdrop-filter:blur(12px); }
+    .loading.is-active { display:grid; }
+    .loader { width:min(440px, calc(100% - 32px)); border:1px solid var(--line); background:#0b1216; border-radius:8px; padding:24px; text-align:center; }
+    .pulse { width:48px; height:48px; margin:0 auto 18px; border-radius:50%; border:2px solid rgba(75,216,238,.2); border-top-color:var(--cyan); animation:spin 1s linear infinite; }
+    #loadingPhrase { color:var(--text); font-weight:800; margin:0; }
     .error { color:var(--danger); margin-top:14px; }
+    @keyframes rise { from { opacity:0; transform:translateY(18px); } to { opacity:1; transform:translateY(0); } }
+    @keyframes spin { to { transform:rotate(360deg); } }
+    @media (max-width:860px) { main { grid-template-columns:1fr; align-items:start; padding-top:28px; } .feature-row { grid-template-columns:1fr; } }
   </style>
 </head>
 <body>
+  <div class="loading" id="loading">
+    <div class="loader">
+      <div class="pulse"></div>
+      <p id="loadingPhrase">Preparando a tu agente de confianza</p>
+    </div>
+  </div>
   <main>
-    <div class="mark">ND</div>
-    <h1>NexaDesk</h1>
-    <p>Inicia sesion con Discord para ver y gestionar solo los servidores donde tienes permisos.</p>
-    ${isReady ? '<a href="/auth/discord">Entrar con Discord</a>' : '<p class="error">Falta DISCORD_CLIENT_SECRET en el entorno.</p>'}
+    <section class="intro">
+      <div class="brand"><div class="mark">ND</div><strong>NexaDesk</strong></div>
+      <p class="eyebrow">AI ticket command center</p>
+      <h1>Soporte de Discord que sabe cuando actuar y cuando escalar.</h1>
+      <p>Gestiona paneles, categorias, prompts, transcripts y escalados de staff desde una consola limpia, conectada a Discord y lista para equipos reales.</p>
+      <div class="feature-row">
+        <div class="feature"><strong>Contexto vivo</strong><span>La IA lee la configuracion actual del servidor antes de responder.</span></div>
+        <div class="feature"><strong>Escalado claro</strong><span>Cuando hace falta staff, NexaDesk menciona y avisa al rol correcto.</span></div>
+        <div class="feature"><strong>Paneles propios</strong><span>Crea entradas de soporte sin depender de copiar IDs manualmente.</span></div>
+      </div>
+    </section>
+    <aside class="login-card">
+      <p class="eyebrow">Acceso seguro</p>
+      <h2>Entrar con Discord</h2>
+      <p>Solo veras servidores donde tengas permisos de gestion.</p>
+      <div class="status-line"><span>OAuth</span><strong>Discord</strong></div>
+      <div class="status-line"><span>Datos</span><strong>Supabase</strong></div>
+      <div class="status-line"><span>Realtime</span><strong>Activo</strong></div>
+      ${isReady ? '<a class="login-button" id="loginButton" href="/auth/discord">Continuar con Discord</a>' : '<p class="error">Falta DISCORD_CLIENT_SECRET en el entorno.</p>'}
+    </aside>
   </main>
+  <script>
+    const phrases = [
+      'Preparando a tu agente de confianza',
+      'Sincronizando servidores gestionables',
+      'Cargando el centro de soporte',
+      'Afinando el contexto de NexaDesk',
+      'Conectando con Discord de forma segura'
+    ];
+    let phraseIndex = 0;
+    const phrase = document.querySelector('#loadingPhrase');
+    setInterval(() => {
+      phraseIndex = (phraseIndex + 1) % phrases.length;
+      if (phrase) phrase.textContent = phrases[phraseIndex];
+    }, 1300);
+    document.querySelector('#loginButton')?.addEventListener('click', () => {
+      document.querySelector('#loading')?.classList.add('is-active');
+    });
+  </script>
 </body>
 </html>`;
 }
@@ -443,11 +501,13 @@ function renderDashboard({ session, guilds, tickets }) {
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>NexaDesk Dashboard</title>
   <style>
-    :root { color-scheme:dark; --bg:#05080a; --panel:#0b1216; --panel-2:#101a20; --line:#20323a; --text:#f2fbfc; --muted:#8ea3aa; --cyan:#4bd8ee; --amber:#ffb238; --ok:#63e6a7; }
+    :root { color-scheme:dark; --bg:#05080a; --panel:#0b1216; --panel-2:#101a20; --line:#20323a; --text:#f2fbfc; --muted:#8ea3aa; --cyan:#4bd8ee; --amber:#ffb238; --ok:#63e6a7; --danger:#ff5f57; }
     * { box-sizing:border-box; }
-    body { margin:0; font-family:"Segoe UI",ui-sans-serif,system-ui,sans-serif; background:radial-gradient(circle at 12% 0%, rgba(75,216,238,.18), transparent 28%), linear-gradient(135deg, rgba(255,178,56,.08), transparent 35%), repeating-linear-gradient(90deg, rgba(255,255,255,.025) 0 1px, transparent 1px 72px), var(--bg); color:var(--text); }
-    main { width:min(1240px, calc(100% - 32px)); margin:0 auto; padding:30px 0 48px; }
-    header { min-height:220px; display:grid; grid-template-columns:1.4fr .9fr; gap:24px; align-items:center; margin-bottom:22px; border-bottom:1px solid var(--line); }
+    body { margin:0; font-family:"Segoe UI",ui-sans-serif,system-ui,sans-serif; background:radial-gradient(circle at 12% 0%, rgba(75,216,238,.18), transparent 28%), radial-gradient(circle at 88% 10%, rgba(255,178,56,.11), transparent 28%), repeating-linear-gradient(90deg, rgba(255,255,255,.025) 0 1px, transparent 1px 72px), var(--bg); color:var(--text); }
+    .app-shell { width:min(1360px, calc(100% - 28px)); margin:0 auto; display:grid; grid-template-columns:260px 1fr; gap:18px; padding:18px 0 44px; }
+    .sidebar { position:sticky; top:18px; height:calc(100vh - 36px); border:1px solid var(--line); border-radius:8px; background:rgba(7,16,20,.88); padding:16px; animation:rise .55s ease both; }
+    main { min-width:0; animation:rise .55s ease .08s both; }
+    header { min-height:220px; display:grid; grid-template-columns:1.4fr .9fr; gap:24px; align-items:center; margin-bottom:18px; border:1px solid var(--line); border-radius:8px; padding:24px; background:linear-gradient(135deg, rgba(16,26,32,.9), rgba(7,16,20,.74)); }
     h1,h2,h3 { margin:0; letter-spacing:0; }
     h1 { font-size:clamp(38px, 6vw, 76px); line-height:.94; max-width:760px; }
     h2 { font-size:18px; margin-bottom:16px; }
@@ -455,17 +515,23 @@ function renderDashboard({ session, guilds, tickets }) {
     p { margin:8px 0 0; color:var(--muted); }
     .brand-lockup { display:flex; gap:14px; align-items:center; margin-bottom:22px; }
     .mark { display:grid; place-items:center; width:42px; height:42px; border:1px solid rgba(75,216,238,.45); background:linear-gradient(145deg, rgba(75,216,238,.18), rgba(255,178,56,.12)); border-radius:8px; font-weight:900; }
+    .nav-brand { display:flex; align-items:center; gap:12px; margin-bottom:18px; }
+    .nav-link { display:block; color:var(--muted); text-decoration:none; border:1px solid transparent; border-radius:6px; padding:10px 11px; margin:4px 0; }
+    .nav-link:hover { color:var(--text); border-color:var(--line); background:#0b1216; }
+    .nav-foot { position:absolute; left:16px; right:16px; bottom:16px; }
     .hero-panel,.surface,.stat { border:1px solid var(--line); border-radius:8px; background:rgba(11,18,22,.86); }
     .hero-panel { padding:18px; background:linear-gradient(180deg, rgba(16,26,32,.92), rgba(5,8,10,.92)); }
     .signal-list { display:grid; gap:10px; margin-top:16px; }
     .signal { display:flex; justify-content:space-between; gap:18px; padding:10px 0; border-bottom:1px solid rgba(255,255,255,.06); color:var(--muted); }
     .signal strong { color:var(--text); }
-    .surface { padding:20px; margin:18px 0; }
+    .surface { padding:20px; margin:18px 0; animation:rise .55s ease both; }
     .stats { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; }
     .stat { padding:16px; background:linear-gradient(180deg,var(--panel-2),var(--panel)); }
     .stat strong { display:block; font-size:28px; }
     .stat span, label, th, dt { color:var(--muted); }
-    .workspace { display:grid; grid-template-columns:.9fr 1.1fr; gap:18px; }
+    .workspace { display:grid; grid-template-columns:.9fr 1.1fr; gap:18px; align-items:start; }
+    .section-heading { display:flex; align-items:end; justify-content:space-between; gap:16px; margin:24px 0 8px; }
+    .section-heading p { margin:4px 0 0; }
     form { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
     label { display:grid; gap:6px; font-size:14px; }
     input,select,textarea,button { width:100%; border-radius:6px; border:1px solid var(--line); background:#071014; color:var(--text); padding:10px 12px; font:inherit; }
@@ -485,10 +551,36 @@ function renderDashboard({ session, guilds, tickets }) {
     .tabs { display:grid; gap:18px; }
     .notice { border-left:3px solid var(--amber); padding-left:12px; color:var(--muted); }
     .live { color:var(--ok); }
+    .loading { position:fixed; inset:0; z-index:20; display:grid; place-items:center; background:rgba(5,8,10,.9); backdrop-filter:blur(12px); transition:opacity .35s ease, visibility .35s ease; }
+    .loading.is-hidden { opacity:0; visibility:hidden; }
+    .loader { width:min(420px, calc(100% - 32px)); border:1px solid var(--line); background:#0b1216; border-radius:8px; padding:24px; text-align:center; }
+    .pulse { width:46px; height:46px; margin:0 auto 16px; border-radius:50%; border:2px solid rgba(75,216,238,.18); border-top-color:var(--cyan); animation:spin 1s linear infinite; }
+    #loadingPhrase { color:var(--text); font-weight:800; }
+    @keyframes rise { from { opacity:0; transform:translateY(14px); } to { opacity:1; transform:translateY(0); } }
+    @keyframes spin { to { transform:rotate(360deg); } }
+    @media (max-width:980px) { .app-shell { grid-template-columns:1fr; } .sidebar { position:relative; height:auto; top:auto; } .nav-foot { position:static; margin-top:18px; } }
     @media (max-width:760px) { header,form,.workspace { display:block; } .stats,.guild-grid { grid-template-columns:1fr; } label,button { margin-top:12px; } }
   </style>
 </head>
 <body>
+  <div class="loading" id="loading">
+    <div class="loader">
+      <div class="pulse"></div>
+      <p id="loadingPhrase">Preparando a tu agente de confianza</p>
+    </div>
+  </div>
+  <div class="app-shell">
+  <aside class="sidebar">
+    <div class="nav-brand"><div class="mark">ND</div><strong>NexaDesk</strong></div>
+    <a class="nav-link" href="#overview">Resumen</a>
+    <a class="nav-link" href="#servers">Servidores</a>
+    <a class="nav-link" href="#knowledge">IA y contexto</a>
+    <a class="nav-link" href="#automation">Paneles</a>
+    <a class="nav-link" href="#tickets">Tickets</a>
+    <div class="nav-foot">
+      <form method="post" action="/logout"><button class="secondary-button" type="submit">Cerrar sesion</button></form>
+    </div>
+  </aside>
   <main>
     <header>
       <div>
@@ -505,15 +597,17 @@ function renderDashboard({ session, guilds, tickets }) {
         </div>
       </aside>
     </header>
-    <form method="post" action="/logout" class="logout-form"><button class="secondary-button" type="submit">Cerrar sesion</button></form>
-    <div class="stats">
+    <div class="stats" id="overview">
       <div class="stat"><strong id="guildCount">${guilds.length}</strong><span>Servidores disponibles</span></div>
       <div class="stat"><strong id="ticketCount">${tickets.length}</strong><span>Tickets detectados</span></div>
       <div class="stat"><strong id="openCount">${tickets.filter((ticket) => ticket.status === 'open').length}</strong><span>Tickets abiertos</span></div>
     </div>
+    <div class="section-heading">
+      <div><h2>Operacion del servidor</h2><p>Configura IA, permisos y entradas de soporte desde un flujo guiado.</p></div>
+    </div>
     <div class="workspace">
-      <section class="surface"><h2>Servidores</h2><div class="guild-grid" id="guildGrid">${guildCards || '<p class="notice">No tienes servidores gestionables.</p>'}</div></section>
-      <section class="surface tabs">
+      <section class="surface" id="servers"><h2>Servidores</h2><div class="guild-grid" id="guildGrid">${guildCards || '<p class="notice">No tienes servidores gestionables.</p>'}</div></section>
+      <section class="surface tabs" id="knowledge">
         <div>
           <h2>Conocimiento del servidor</h2>
           <form onsubmit="return saveConfig(event)">
@@ -526,7 +620,7 @@ function renderDashboard({ session, guilds, tickets }) {
             <button type="submit">Guardar inteligencia</button>
           </form>
         </div>
-        <div>
+        <div id="automation">
           <h2>Crear categoria</h2>
           <form onsubmit="return createCategory(event)">
             <label>Servidor<select id="categoryGuildId" required>${guildOptions}</select></label>
@@ -547,12 +641,32 @@ function renderDashboard({ session, guilds, tickets }) {
         </div>
       </section>
     </div>
-    <section class="surface">
+    <section class="surface" id="tickets">
       <h2>Tickets recientes</h2>
       <table><thead><tr><th>Canal</th><th>Servidor</th><th>Estado</th><th>Creado</th></tr></thead><tbody id="ticketRows">${ticketRows || '<tr><td colspan="4">Aun no hay tickets detectados.</td></tr>'}</tbody></table>
     </section>
   </main>
+  </div>
   <script>
+    const loadingPhrases = [
+      'Preparando a tu agente de confianza',
+      'Sincronizando roles y canales',
+      'Ordenando tickets recientes',
+      'Cargando contexto de tus servidores',
+      'Activando el centro de soporte'
+    ];
+    let loadingPhraseIndex = 0;
+    const loadingPhrase = document.querySelector('#loadingPhrase');
+    const loadingTimer = setInterval(() => {
+      loadingPhraseIndex = (loadingPhraseIndex + 1) % loadingPhrases.length;
+      if (loadingPhrase) loadingPhrase.textContent = loadingPhrases[loadingPhraseIndex];
+    }, 1200);
+    window.addEventListener('load', () => {
+      setTimeout(() => {
+        clearInterval(loadingTimer);
+        document.querySelector('#loading')?.classList.add('is-hidden');
+      }, 550);
+    });
     const state = { tickets: ${JSON.stringify(tickets)} };
     const guildConfigs = ${JSON.stringify(guilds)};
     let guildMeta = {};
