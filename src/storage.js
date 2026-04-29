@@ -65,6 +65,22 @@ export class JsonStorage {
     return tickets[channelId] ?? null;
   }
 
+  async updateTicket(channelId, patch) {
+    const tickets = await this.#readJson(this.ticketsFile);
+    const existing = tickets[channelId];
+    if (!existing) return null;
+
+    tickets[channelId] = {
+      ...existing,
+      ...patch,
+      channelId,
+      updatedAt: new Date().toISOString()
+    };
+    await this.#writeJson(this.ticketsFile, tickets);
+    this.events?.publish('ticket.updated', tickets[channelId]);
+    return tickets[channelId];
+  }
+
   async listTickets() {
     const tickets = await this.#readJson(this.ticketsFile);
     return Object.values(tickets).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
@@ -206,6 +222,42 @@ export class SupabaseStorage {
     return data ? fromTicketRow(data) : null;
   }
 
+  async updateTicket(channelId, patch) {
+    const existing = await this.getTicket(channelId);
+    if (!existing) return null;
+
+    const next = {
+      ...existing,
+      ...patch,
+      channelId,
+      updatedAt: new Date().toISOString()
+    };
+    let { data, error } = await this.client
+      .from('tickets')
+      .update(toTicketRow(next))
+      .eq('channel_id', channelId)
+      .select()
+      .single();
+    if (error && String(error.message ?? '').includes('ai_disabled')) {
+      const compatibleRow = toTicketRow({ ...next });
+      delete compatibleRow.ai_disabled;
+      delete compatibleRow.ai_disabled_by;
+      delete compatibleRow.ai_disabled_at;
+      const retry = await this.client
+        .from('tickets')
+        .update(compatibleRow)
+        .eq('channel_id', channelId)
+        .select()
+        .single();
+      data = retry.data;
+      error = retry.error;
+    }
+    if (error) throw error;
+    const saved = fromTicketRow(data);
+    this.events?.publish('ticket.updated', saved);
+    return saved;
+  }
+
   async listTickets() {
     const { data, error } = await this.client
       .from('tickets')
@@ -315,7 +367,7 @@ function fromGuildRow(row) {
 }
 
 function toTicketRow(ticket) {
-  return {
+  const row = {
     channel_id: ticket.channelId,
     guild_id: ticket.guildId,
     guild_name: ticket.guildName,
@@ -326,6 +378,10 @@ function toTicketRow(ticket) {
     created_at: ticket.createdAt,
     updated_at: ticket.updatedAt
   };
+  if ('aiDisabled' in ticket) row.ai_disabled = ticket.aiDisabled ?? false;
+  if ('aiDisabledBy' in ticket) row.ai_disabled_by = ticket.aiDisabledBy;
+  if ('aiDisabledAt' in ticket) row.ai_disabled_at = ticket.aiDisabledAt;
+  return row;
 }
 
 function fromTicketRow(row) {
@@ -337,6 +393,9 @@ function fromTicketRow(row) {
     categoryId: row.category_id,
     openedBy: row.opened_by,
     status: row.status,
+    aiDisabled: row.ai_disabled ?? row.status === 'ai_disabled',
+    aiDisabledBy: row.ai_disabled_by,
+    aiDisabledAt: row.ai_disabled_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at
   };

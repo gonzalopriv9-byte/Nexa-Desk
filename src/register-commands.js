@@ -13,6 +13,15 @@ const commands = [
         .addChannelTypes(ChannelType.GuildCategory)
         .setRequired(true)
     )
+    .toJSON(),
+  new SlashCommandBuilder()
+    .setName('desactivar')
+    .setDescription('Desactiva funciones de NexaDesk en el ticket actual.')
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName('ia')
+        .setDescription('Desactiva la IA en este ticket para que el staff lo atienda manualmente.')
+    )
     .toJSON()
 ];
 

@@ -128,6 +128,10 @@ export function createBot({ config, storage, supportAgent }) {
         ephemeral: true
       });
     }
+
+    if (interaction.commandName === 'desactivar' && interaction.options.getSubcommand() === 'ia') {
+      await handleDisableAiCommand({ interaction, storage });
+    }
   });
 
   client.on(Events.ChannelCreate, async (channel) => {
@@ -166,6 +170,7 @@ export function createBot({ config, storage, supportAgent }) {
 
     const ticket = await storage.getTicket(message.channel.id);
     if (!ticket || activeResponses.has(message.channel.id)) return;
+    if (isAiDisabledTicket(ticket)) return;
 
     // Always reload the latest server context before asking the AI.
     const guildConfig = await storage.getGuildConfig(message.guild.id);
@@ -212,6 +217,69 @@ export function createBot({ config, storage, supportAgent }) {
   });
 
   return client;
+}
+
+async function handleDisableAiCommand({ interaction, storage }) {
+  if (!interaction.inGuild() || !interaction.channelId) {
+    await interaction.reply({ content: 'Este comando solo se puede usar dentro de un ticket del servidor.', ephemeral: true });
+    return;
+  }
+
+  const [ticket, guildConfig] = await Promise.all([
+    storage.getTicket(interaction.channelId),
+    storage.getGuildConfig(interaction.guildId)
+  ]);
+
+  if (!ticket) {
+    await interaction.reply({ content: 'Este canal no esta registrado como ticket de NexaDesk.', ephemeral: true });
+    return;
+  }
+
+  if (!guildConfig?.staffRoleId) {
+    await interaction.reply({ content: 'Primero configura el rol de staff desde la dashboard.', ephemeral: true });
+    return;
+  }
+
+  if (!memberHasRole(interaction.member, guildConfig.staffRoleId)) {
+    await interaction.reply({ content: 'Solo el staff configurado para este servidor puede desactivar la IA.', ephemeral: true });
+    return;
+  }
+
+  if (ticket.aiDisabled) {
+    await interaction.reply({ content: 'La IA ya estaba desactivada en este ticket.', ephemeral: true });
+    return;
+  }
+
+  const updated = await storage.updateTicket(interaction.channelId, {
+    status: 'ai_disabled',
+    aiDisabled: true,
+    aiDisabledBy: interaction.user.id,
+    aiDisabledAt: new Date().toISOString()
+  });
+
+  if (!updated) {
+    await interaction.reply({ content: 'No pude actualizar este ticket. Intentalo de nuevo.', ephemeral: true });
+    return;
+  }
+
+  await interaction.reply({
+    content: 'IA desactivada en este ticket. NexaDesk dejara de escuchar y responder en este canal para que el staff lo atienda manualmente.'
+  });
+}
+
+function isAiDisabledTicket(ticket) {
+  return ticket?.aiDisabled || ticket?.status === 'ai_disabled';
+}
+
+function memberHasRole(member, roleId) {
+  if (!member || !roleId) return false;
+  if (Array.isArray(member.roles)) return member.roles.includes(roleId);
+  if (member.roles?.cache) return member.roles.cache.has(roleId);
+  if (member.roles?.valueOf) {
+    const roles = member.roles.valueOf();
+    if (Array.isArray(roles)) return roles.includes(roleId);
+  }
+  return false;
 }
 
 function applyBotPresence(client) {
