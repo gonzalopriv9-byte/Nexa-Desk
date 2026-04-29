@@ -1,4 +1,4 @@
-import express from 'express';
+﻿import express from 'express';
 import helmet from 'helmet';
 import morgan from 'morgan';
 import cookieParser from 'cookie-parser';
@@ -26,7 +26,7 @@ export function createServer({ config, storage, bot, events }) {
   }));
 
   app.get('/favicon.ico', (_req, res) => {
-    res.sendFile(path.join(ASSETS_DIR, 'nexadesk-logo.png'));
+    res.sendFile(path.join(ASSETS_DIR, 'nexadesk-logo.svg'));
   });
 
   app.get('/health', (_req, res) => {
@@ -376,32 +376,33 @@ function renderLogin(config) {
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>NexaDesk Login</title>
-  <link rel="icon" type="image/png" href="/assets/nexadesk-logo.png">
-  <link rel="apple-touch-icon" href="/assets/nexadesk-logo.png">
+  <link rel="icon" type="image/svg+xml" href="/assets/nexadesk-logo.svg">
+  <link rel="apple-touch-icon" href="/assets/nexadesk-logo.svg">
   <style>
-    :root { color-scheme: dark; --bg:#05080a; --panel:#0b1216; --panel-2:#101a20; --line:#20323a; --text:#f2fbfc; --muted:#8ea3aa; --cyan:#4bd8ee; --amber:#ffb238; --danger:#ff5f57; --ok:#63e6a7; }
+    :root { color-scheme: dark; --bg:#050505; --panel:#101010; --panel-2:#181818; --line:#343434; --text:#ffffff; --muted:#a8a8a8; --ink:#050505; --paper:#ffffff; --danger:#ff5f57; --ok:#ffffff; }
     * { box-sizing: border-box; }
-    body { min-height:100vh; margin:0; font-family:"Segoe UI",ui-sans-serif,system-ui,sans-serif; background:radial-gradient(circle at 18% 0%, rgba(75,216,238,.22), transparent 28%), radial-gradient(circle at 88% 18%, rgba(255,178,56,.16), transparent 25%), repeating-linear-gradient(90deg, rgba(255,255,255,.026) 0 1px, transparent 1px 72px), var(--bg); color:var(--text); overflow-x:hidden; }
+    body { min-height:100vh; margin:0; font-family:"Segoe UI",ui-sans-serif,system-ui,sans-serif; background:radial-gradient(circle at 16% 0%, rgba(255,255,255,.13), transparent 28%), repeating-linear-gradient(90deg, rgba(255,255,255,.04) 0 1px, transparent 1px 72px), repeating-linear-gradient(0deg, rgba(255,255,255,.025) 0 1px, transparent 1px 72px), var(--bg); color:var(--text); overflow-x:hidden; }
     body::before { content:""; position:fixed; inset:0; pointer-events:none; background:linear-gradient(180deg, transparent, rgba(5,8,10,.78)); }
     main { position:relative; z-index:1; width:min(1180px, calc(100% - 32px)); min-height:100vh; margin:0 auto; display:grid; grid-template-columns:1.25fr .75fr; gap:32px; align-items:center; padding:44px 0; }
     .intro { animation:rise .7s ease both; }
     .brand { display:flex; gap:14px; align-items:center; margin-bottom:32px; }
-    .brand-logo { width:48px; height:48px; object-fit:cover; border-radius:10px; border:1px solid rgba(75,216,238,.45); box-shadow:0 0 42px rgba(75,216,238,.16); }
-    .mark { display:grid; place-items:center; width:48px; height:48px; border:1px solid rgba(75,216,238,.45); border-radius:8px; background:linear-gradient(145deg, rgba(75,216,238,.2), rgba(255,178,56,.13)); font-weight:900; box-shadow:0 0 42px rgba(75,216,238,.16); }
-    .eyebrow { color:var(--cyan); text-transform:uppercase; letter-spacing:.12em; font-size:12px; margin:0 0 14px; }
+    .brand-logo { width:48px; height:48px; object-fit:cover; border-radius:10px; border:1px solid rgba(255,255,255,.55); box-shadow:0 0 44px rgba(255,255,255,.11); }
+    .mark { display:grid; place-items:center; width:48px; height:48px; border:1px solid rgba(255,255,255,.55); border-radius:8px; background:#fff; color:#050505; font-weight:900; box-shadow:0 0 42px rgba(255,255,255,.12); }
+    .eyebrow { color:var(--paper); text-transform:uppercase; letter-spacing:.12em; font-size:12px; margin:0 0 14px; }
     h1 { margin:0; font-size:clamp(44px, 7vw, 92px); line-height:.92; letter-spacing:0; max-width:780px; }
     p { color:var(--muted); margin:18px 0 0; max-width:690px; font-size:17px; line-height:1.6; }
     .feature-row { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; margin-top:34px; }
-    .feature { border:1px solid var(--line); background:rgba(11,18,22,.72); border-radius:8px; padding:14px; }
+    .feature { border:1px solid var(--line); background:rgba(255,255,255,.045); border-radius:8px; padding:14px; }
     .feature strong { display:block; margin-bottom:6px; }
-    .login-card { border:1px solid var(--line); border-radius:8px; background:linear-gradient(180deg, rgba(16,26,32,.94), rgba(7,16,20,.94)); padding:24px; animation:rise .7s ease .12s both; box-shadow:0 24px 90px rgba(0,0,0,.28); }
+    .login-card { border:1px solid var(--line); border-radius:8px; background:linear-gradient(180deg, rgba(24,24,24,.96), rgba(8,8,8,.96)); padding:24px; animation:rise .7s ease .12s both; box-shadow:0 24px 90px rgba(0,0,0,.34); }
+    .brand-banner { width:100%; border:1px solid var(--line); border-radius:10px; margin-bottom:18px; display:block; background:#050505; }
     .status-line { display:flex; justify-content:space-between; gap:12px; color:var(--muted); border-bottom:1px solid rgba(255,255,255,.08); padding:11px 0; }
     .status-line strong { color:var(--text); }
-    a.login-button { display:block; text-align:center; width:100%; border-radius:6px; background:linear-gradient(135deg, var(--cyan), var(--amber)); color:#05080a; padding:13px; font-weight:900; text-decoration:none; margin-top:22px; }
+    a.login-button { display:block; text-align:center; width:100%; border-radius:6px; background:#fff; color:#050505; padding:13px; font-weight:900; text-decoration:none; margin-top:22px; }
     .loading { position:fixed; inset:0; z-index:10; display:none; place-items:center; background:rgba(5,8,10,.88); backdrop-filter:blur(12px); }
     .loading.is-active { display:grid; }
     .loader { width:min(440px, calc(100% - 32px)); border:1px solid var(--line); background:#0b1216; border-radius:8px; padding:24px; text-align:center; }
-    .pulse { width:48px; height:48px; margin:0 auto 18px; border-radius:50%; border:2px solid rgba(75,216,238,.2); border-top-color:var(--cyan); animation:spin 1s linear infinite; }
+    .pulse { width:48px; height:48px; margin:0 auto 18px; border-radius:50%; border:2px solid rgba(255,255,255,.18); border-top-color:#fff; animation:spin 1s linear infinite; }
     #loadingPhrase { color:var(--text); font-weight:800; margin:0; }
     .error { color:var(--danger); margin-top:14px; }
     @keyframes rise { from { opacity:0; transform:translateY(18px); } to { opacity:1; transform:translateY(0); } }
@@ -418,7 +419,7 @@ function renderLogin(config) {
   </div>
   <main>
     <section class="intro">
-      <div class="brand"><img class="brand-logo" src="/assets/nexadesk-logo.png" alt="NexaDesk"><strong>NexaDesk</strong></div>
+      <div class="brand"><img class="brand-logo" src="/assets/nexadesk-logo.svg" alt="NexaDesk"><strong>NexaDesk</strong></div>
       <p class="eyebrow">AI ticket command center</p>
       <h1>Soporte de Discord que sabe cuando actuar y cuando escalar.</h1>
       <p>Gestiona paneles, categorias, prompts, transcripts y escalados de staff desde una consola limpia, conectada a Discord y lista para equipos reales.</p>
@@ -429,6 +430,7 @@ function renderLogin(config) {
       </div>
     </section>
     <aside class="login-card">
+      <img class="brand-banner" src="/assets/nexadesk-banner.svg" alt="NexaDesk animated monochrome banner">
       <p class="eyebrow">Acceso seguro</p>
       <h2>Entrar con Discord</h2>
       <p>Solo veras servidores donde tengas permisos de gestion.</p>
@@ -474,7 +476,7 @@ function renderError(message) {
     h1 { margin:0 0 10px; }
     p { color:var(--muted); }
     code { color:var(--danger); overflow-wrap:anywhere; }
-    a { color:#4bd8ee; }
+    a { color:#ffffff; }
   </style>
 </head>
 <body>
@@ -500,7 +502,7 @@ function renderDashboard({ session, guilds, tickets, stats }) {
       <button class="guild-pill" type="button" data-guild-id="${escapeHtml(guild.guildId)}">
         <span>
           <strong>${escapeHtml(guild.guildName ?? guild.guildId)}</strong>
-          <small>${guild.connected ? 'Configurado' : 'Disponible'} · ${escapeHtml(String(guild.panels?.length ?? 0))} paneles</small>
+          <small>${guild.connected ? 'Configurado' : 'Disponible'} - ${escapeHtml(String(guild.panels?.length ?? 0))} paneles</small>
         </span>
         <i>${guild.ticketCategoryName ? 'Listo' : 'Pendiente'}</i>
       </button>
@@ -521,32 +523,33 @@ function renderDashboard({ session, guilds, tickets, stats }) {
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>NexaDesk Dashboard</title>
-  <link rel="icon" type="image/png" href="/assets/nexadesk-logo.png">
-  <link rel="apple-touch-icon" href="/assets/nexadesk-logo.png">
+  <link rel="icon" type="image/svg+xml" href="/assets/nexadesk-logo.svg">
+  <link rel="apple-touch-icon" href="/assets/nexadesk-logo.svg">
   <style>
-    :root { color-scheme:dark; --bg:#05080a; --panel:#0b1216; --panel-2:#101a20; --line:#20323a; --soft-line:rgba(255,255,255,.08); --text:#f2fbfc; --muted:#8ea3aa; --cyan:#4bd8ee; --amber:#ffb238; --ok:#63e6a7; --danger:#ff5f57; }
+    :root { color-scheme:dark; --bg:#050505; --panel:#101010; --panel-2:#181818; --line:#343434; --soft-line:rgba(255,255,255,.1); --text:#ffffff; --muted:#a8a8a8; --paper:#ffffff; --ink:#050505; --ok:#ffffff; --danger:#ff5f57; }
     * { box-sizing:border-box; }
-    body { margin:0; font-family:"Segoe UI",ui-sans-serif,system-ui,sans-serif; background:radial-gradient(circle at 10% 0%, rgba(75,216,238,.16), transparent 30%), radial-gradient(circle at 92% 12%, rgba(255,178,56,.13), transparent 28%), repeating-linear-gradient(90deg, rgba(255,255,255,.022) 0 1px, transparent 1px 72px), var(--bg); color:var(--text); }
+    body { margin:0; font-family:"Segoe UI",ui-sans-serif,system-ui,sans-serif; background:radial-gradient(circle at 10% 0%, rgba(255,255,255,.12), transparent 30%), repeating-linear-gradient(90deg, rgba(255,255,255,.035) 0 1px, transparent 1px 72px), repeating-linear-gradient(0deg, rgba(255,255,255,.025) 0 1px, transparent 1px 72px), var(--bg); color:var(--text); }
     .app-shell { width:min(1440px, calc(100% - 40px)); margin:0 auto; display:grid; grid-template-columns:220px minmax(0,1fr); gap:22px; padding:22px 0 52px; }
     .sidebar { position:sticky; top:22px; height:calc(100vh - 44px); border:1px solid var(--line); border-radius:14px; background:rgba(7,16,20,.88); padding:16px; animation:rise .55s ease both; }
     main { min-width:0; animation:rise .55s ease .08s both; }
     .topbar { display:grid; grid-template-columns:minmax(0,1fr) 360px; gap:16px; align-items:stretch; margin-bottom:16px; }
-    header { border:1px solid var(--line); border-radius:16px; padding:24px; background:linear-gradient(135deg, rgba(16,26,32,.94), rgba(7,16,20,.78)); overflow:hidden; position:relative; }
-    header::after { content:""; position:absolute; width:260px; height:260px; right:-120px; top:-140px; border-radius:50%; background:rgba(75,216,238,.12); filter:blur(10px); }
+    header { border:1px solid var(--line); border-radius:16px; padding:24px; background:linear-gradient(135deg, rgba(24,24,24,.96), rgba(8,8,8,.82)); overflow:hidden; position:relative; }
+    header::after { content:""; position:absolute; width:260px; height:260px; right:-120px; top:-140px; border-radius:50%; background:rgba(255,255,255,.1); filter:blur(10px); }
     h1,h2,h3 { margin:0; letter-spacing:0; }
     h1 { font-size:clamp(32px, 4.6vw, 58px); line-height:.96; max-width:760px; position:relative; z-index:1; }
     h2 { font-size:19px; margin-bottom:12px; }
     h3 { font-size:18px; }
     p { margin:8px 0 0; color:var(--muted); line-height:1.55; }
     .brand-lockup { display:flex; gap:14px; align-items:center; margin-bottom:22px; }
-    .brand-logo { width:42px; height:42px; object-fit:cover; border-radius:11px; border:1px solid rgba(75,216,238,.45); box-shadow:0 0 38px rgba(75,216,238,.16); }
-    .mark { display:grid; place-items:center; width:42px; height:42px; border:1px solid rgba(75,216,238,.45); background:linear-gradient(145deg, rgba(75,216,238,.18), rgba(255,178,56,.12)); border-radius:10px; font-weight:900; }
+    .brand-logo { width:42px; height:42px; object-fit:cover; border-radius:11px; border:1px solid rgba(255,255,255,.55); box-shadow:0 0 38px rgba(255,255,255,.12); }
+    .mark { display:grid; place-items:center; width:42px; height:42px; border:1px solid rgba(255,255,255,.55); background:#fff; color:#050505; border-radius:10px; font-weight:900; }
     .nav-brand { display:flex; align-items:center; gap:12px; margin-bottom:18px; }
     .nav-link { display:block; color:var(--muted); text-decoration:none; border:1px solid transparent; border-radius:10px; padding:10px 11px; margin:4px 0; }
     .nav-link:hover { color:var(--text); border-color:var(--line); background:#0b1216; }
     .nav-foot { position:absolute; left:16px; right:16px; bottom:16px; }
     .hero-panel,.surface,.stat,.active-server { border:1px solid var(--line); border-radius:14px; background:rgba(11,18,22,.86); }
-    .hero-panel { padding:18px; background:linear-gradient(180deg, rgba(16,26,32,.92), rgba(5,8,10,.92)); }
+    .hero-panel { padding:18px; background:linear-gradient(180deg, rgba(24,24,24,.94), rgba(5,5,5,.94)); }
+    .dashboard-banner { width:100%; height:150px; object-fit:cover; border:1px solid var(--line); border-radius:14px; background:#050505; margin-bottom:16px; }
     .signal-list { display:grid; gap:10px; margin-top:16px; }
     .signal { display:flex; justify-content:space-between; gap:18px; padding:10px 0; border-bottom:1px solid var(--soft-line); color:var(--muted); }
     .signal strong { color:var(--text); }
@@ -557,48 +560,48 @@ function renderDashboard({ session, guilds, tickets, stats }) {
     .stat small { display:block; margin-top:6px; }
     .stat span, label, th, dt, small { color:var(--muted); }
     .command-center { display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px; margin-bottom:16px; }
-    .insight-card { border:1px solid var(--line); border-radius:14px; padding:16px; background:linear-gradient(145deg, rgba(75,216,238,.08), rgba(255,178,56,.04)); }
+    .insight-card { border:1px solid var(--line); border-radius:14px; padding:16px; background:linear-gradient(145deg, rgba(255,255,255,.08), rgba(255,255,255,.025)); }
     .insight-card strong { display:block; font-size:24px; margin-top:8px; }
     .meter { height:9px; border-radius:999px; overflow:hidden; background:#071014; border:1px solid var(--soft-line); margin-top:12px; }
-    .meter span { display:block; height:100%; width:var(--value); background:linear-gradient(90deg,var(--cyan),var(--amber)); }
+    .meter span { display:block; height:100%; width:var(--value); background:#fff; }
     .mini-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; margin-top:12px; }
     .mini-grid div { border:1px solid var(--soft-line); border-radius:10px; padding:10px; background:rgba(5,8,10,.38); }
     .mini-grid strong { font-size:18px; margin:0; }
     .workspace { display:grid; grid-template-columns:310px minmax(0,1fr); gap:16px; align-items:start; }
     .section-heading { display:flex; align-items:end; justify-content:space-between; gap:16px; margin:6px 0 14px; }
     .section-heading p { margin:4px 0 0; }
-    .active-server { padding:18px; margin-bottom:16px; background:linear-gradient(135deg, rgba(75,216,238,.08), rgba(255,178,56,.06)); }
+    .active-server { padding:18px; margin-bottom:16px; background:linear-gradient(135deg, rgba(255,255,255,.075), rgba(255,255,255,.025)); }
     .active-server select { margin-top:12px; }
     .server-status { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; margin-top:12px; }
     .server-status div { border:1px solid var(--soft-line); border-radius:10px; padding:10px; background:rgba(5,8,10,.42); }
     .server-status strong { display:block; font-size:13px; margin-top:4px; }
     .guild-list { display:grid; gap:8px; max-height:560px; overflow:auto; padding-right:4px; }
     .guild-pill { display:flex; align-items:center; justify-content:space-between; gap:12px; text-align:left; border:1px solid var(--soft-line); background:#071014; color:var(--text); border-radius:12px; padding:12px; cursor:pointer; }
-    .guild-pill:hover,.guild-pill.is-active { border-color:rgba(75,216,238,.62); background:rgba(75,216,238,.08); }
+    .guild-pill:hover,.guild-pill.is-active { border-color:rgba(255,255,255,.72); background:rgba(255,255,255,.08); }
     .guild-pill strong,.guild-pill small { display:block; }
-    .guild-pill i { color:var(--amber); font-style:normal; font-size:12px; }
+    .guild-pill i { color:#fff; font-style:normal; font-size:12px; }
     .control-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px; }
-    .control-card { border:1px solid var(--line); border-radius:14px; padding:18px; background:linear-gradient(180deg, rgba(16,26,32,.92), rgba(7,16,20,.92)); }
+    .control-card { border:1px solid var(--line); border-radius:14px; padding:18px; background:linear-gradient(180deg, rgba(24,24,24,.94), rgba(8,8,8,.94)); }
     .control-card.wide { grid-column:1 / -1; }
     .card-head { display:flex; gap:12px; align-items:flex-start; margin-bottom:14px; }
-    .step { display:grid; place-items:center; width:30px; height:30px; border-radius:9px; color:#071014; background:linear-gradient(135deg,var(--cyan),var(--amber)); font-weight:900; flex:0 0 auto; }
+    .step { display:grid; place-items:center; width:30px; height:30px; border-radius:9px; color:#050505; background:#fff; font-weight:900; flex:0 0 auto; }
     form { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
     label { display:grid; gap:6px; font-size:14px; }
-    input,select,textarea,button { width:100%; border-radius:10px; border:1px solid var(--line); background:#071014; color:var(--text); padding:11px 12px; font:inherit; }
+    input,select,textarea,button { width:100%; border-radius:10px; border:1px solid var(--line); background:#080808; color:var(--text); padding:11px 12px; font:inherit; }
     textarea { min-height:140px; resize:vertical; grid-column:1 / -1; }
     .span-2 { grid-column:1 / -1; }
-    button { background:linear-gradient(135deg,var(--cyan),var(--amber)); color:#071014; border:0; font-weight:900; cursor:pointer; }
-    .secondary-button { background:#0b1216; color:var(--text); border:1px solid var(--line); }
+    button { background:#fff; color:#050505; border:0; font-weight:900; cursor:pointer; }
+    .secondary-button { background:#0a0a0a; color:var(--text); border:1px solid var(--line); }
     table { width:100%; border-collapse:collapse; }
     th,td { text-align:left; padding:12px; border-bottom:1px solid var(--line); }
-    .kicker { color:var(--cyan); font-size:12px; text-transform:uppercase; letter-spacing:.08em; }
-    .notice,.empty-state { border:1px dashed rgba(255,178,56,.42); border-radius:12px; padding:16px; color:var(--muted); background:rgba(255,178,56,.04); }
+    .kicker { color:#fff; font-size:12px; text-transform:uppercase; letter-spacing:.08em; }
+    .notice,.empty-state { border:1px dashed rgba(255,255,255,.38); border-radius:12px; padding:16px; color:var(--muted); background:rgba(255,255,255,.045); }
     .empty-state strong { color:var(--text); display:block; margin-bottom:5px; }
     .live { color:var(--ok); }
     .loading { position:fixed; inset:0; z-index:20; display:grid; place-items:center; background:rgba(5,8,10,.9); backdrop-filter:blur(12px); transition:opacity .35s ease, visibility .35s ease; }
     .loading.is-hidden { opacity:0; visibility:hidden; }
     .loader { width:min(420px, calc(100% - 32px)); border:1px solid var(--line); background:#0b1216; border-radius:14px; padding:24px; text-align:center; }
-    .pulse { width:46px; height:46px; margin:0 auto 16px; border-radius:50%; border:2px solid rgba(75,216,238,.18); border-top-color:var(--cyan); animation:spin 1s linear infinite; }
+    .pulse { width:46px; height:46px; margin:0 auto 16px; border-radius:50%; border:2px solid rgba(255,255,255,.18); border-top-color:#fff; animation:spin 1s linear infinite; }
     #loadingPhrase { color:var(--text); font-weight:800; }
     @keyframes rise { from { opacity:0; transform:translateY(14px); } to { opacity:1; transform:translateY(0); } }
     @keyframes spin { to { transform:rotate(360deg); } }
@@ -615,7 +618,7 @@ function renderDashboard({ session, guilds, tickets, stats }) {
   </div>
   <div class="app-shell">
   <aside class="sidebar">
-    <div class="nav-brand"><img class="brand-logo" src="/assets/nexadesk-logo.png" alt="NexaDesk"><strong>NexaDesk</strong></div>
+    <div class="nav-brand"><img class="brand-logo" src="/assets/nexadesk-logo.svg" alt="NexaDesk"><strong>NexaDesk</strong></div>
     <a class="nav-link" href="#overview">Resumen</a>
     <a class="nav-link" href="#servers">Servidores</a>
     <a class="nav-link" href="#settings">Configuracion</a>
@@ -625,9 +628,10 @@ function renderDashboard({ session, guilds, tickets, stats }) {
     </div>
   </aside>
   <main>
+    <img class="dashboard-banner" src="/assets/nexadesk-banner.svg" alt="NexaDesk animated monochrome banner">
     <div class="topbar">
       <header>
-        <div class="brand-lockup"><img class="brand-logo" src="/assets/nexadesk-logo.png" alt="NexaDesk"><strong>NexaDesk Command</strong></div>
+        <div class="brand-lockup"><img class="brand-logo" src="/assets/nexadesk-logo.svg" alt="NexaDesk"><strong>NexaDesk Command</strong></div>
         <h1>Centro de control para soporte con IA.</h1>
         <p>Elige un servidor, configura el contexto, prepara el escalado humano y publica paneles sin copiar IDs.</p>
       </header>
@@ -641,8 +645,8 @@ function renderDashboard({ session, guilds, tickets, stats }) {
       </aside>
     </div>
     <div class="stats" id="overview">
-      <div class="stat"><strong id="guildCount">${stats.totalGuilds}</strong><span>Servidores disponibles</span><small>${stats.configuredGuilds} configurados · ${stats.unconfiguredGuilds} pendientes</small></div>
-      <div class="stat"><strong id="ticketCount">${stats.totalTickets}</strong><span>Tickets detectados</span><small>${stats.ticketsToday} hoy · ${stats.ticketsThisWeek} esta semana</small></div>
+      <div class="stat"><strong id="guildCount">${stats.totalGuilds}</strong><span>Servidores disponibles</span><small>${stats.configuredGuilds} configurados - ${stats.unconfiguredGuilds} pendientes</small></div>
+      <div class="stat"><strong id="ticketCount">${stats.totalTickets}</strong><span>Tickets detectados</span><small>${stats.ticketsToday} hoy - ${stats.ticketsThisWeek} esta semana</small></div>
       <div class="stat"><strong id="openCount">${stats.openTickets}</strong><span>Tickets abiertos</span><small>${stats.closedTickets} cerrados o archivados</small></div>
     </div>
     <section class="command-center">

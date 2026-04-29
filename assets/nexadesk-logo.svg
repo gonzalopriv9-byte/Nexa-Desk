@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">NexaDesk logo</title>
+  <desc id="desc">Minimal black and white NexaDesk monogram with a support message mark.</desc>
+  <rect width="512" height="512" rx="112" fill="#050505"/>
+  <path d="M132 142h248c28 0 50 22 50 50v112c0 28-22 50-50 50H252l-82 58c-16 11-38 0-38-20v-38c-28 0-50-22-50-50V192c0-28 22-50 50-50Z" fill="none" stroke="#fff" stroke-width="28" stroke-linejoin="round"/>
+  <path d="M167 224h178M167 278h122" stroke="#fff" stroke-width="28" stroke-linecap="round"/>
+  <path d="M386 116 126 396" stroke="#fff" stroke-width="22" stroke-linecap="round" opacity=".18"/>
+</svg>

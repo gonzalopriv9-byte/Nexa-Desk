@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 520" role="img" aria-labelledby="title desc">
+  <title id="title">NexaDesk monochrome animated banner</title>
+  <desc id="desc">A stark black and white animated banner with a minimal support mark and bold NexaDesk wordmark.</desc>
+  <style>
+    @keyframes drift { 0% { transform: translateX(-220px); } 100% { transform: translateX(220px); } }
+    @keyframes scan { 0% { transform: translateX(-720px) skewX(-18deg); opacity: 0; } 18% { opacity: .22; } 48% { opacity: .08; } 100% { transform: translateX(1760px) skewX(-18deg); opacity: 0; } }
+    @keyframes blink { 0%, 44%, 100% { opacity: .22; } 48%, 58% { opacity: 1; } }
+    @keyframes draw { to { stroke-dashoffset: 0; } }
+    @keyframes lift { from { opacity: 0; transform: translateY(18px); } to { opacity: 1; transform: translateY(0); } }
+    .grid { animation: drift 18s linear infinite alternate; }
+    .scan { animation: scan 5.8s ease-in-out infinite; transform-origin: center; }
+    .pulse-a { animation: blink 3.4s ease-in-out infinite; }
+    .pulse-b { animation: blink 3.4s ease-in-out .34s infinite; }
+    .pulse-c { animation: blink 3.4s ease-in-out .68s infinite; }
+    .draw { stroke-dasharray: 980; stroke-dashoffset: 980; animation: draw 2.4s ease forwards; }
+    .copy { animation: lift .75s ease both; }
+  </style>
+  <rect width="1600" height="520" fill="#050505"/>
+  <g class="grid" opacity=".08" stroke="#fff">
+    <path d="M-240 86h2080M-240 172h2080M-240 258h2080M-240 344h2080M-240 430h2080"/>
+    <path d="M0-80v700M160-80v700M320-80v700M480-80v700M640-80v700M800-80v700M960-80v700M1120-80v700M1280-80v700M1440-80v700M1600-80v700"/>
+  </g>
+  <rect class="scan" x="0" y="-120" width="240" height="760" fill="#fff"/>
+  <path class="draw" d="M120 260C120 130 206 72 318 72h2c112 0 198 58 198 188s-86 188-198 188h-2c-112 0-198-58-198-188Z" fill="none" stroke="#fff" stroke-width="2" opacity=".6"/>
+  <g transform="translate(190 150)">
+    <rect x="0" y="0" width="260" height="220" rx="52" fill="#fff"/>
+    <path d="M58 62h144c18 0 32 14 32 32v58c0 18-14 32-32 32h-74l-43 31c-10 7-23 0-23-12v-19h-4c-18 0-32-14-32-32V94c0-18 14-32 32-32Z" fill="none" stroke="#050505" stroke-width="16" stroke-linejoin="round"/>
+    <path d="M77 106h102M77 137h68" stroke="#050505" stroke-width="15" stroke-linecap="round"/>
+  </g>
+  <g class="copy" transform="translate(575 116)">
+    <text x="0" y="96" fill="#fff" font-family="Arial Black, Arial, sans-serif" font-size="104" font-weight="900" letter-spacing="-5">NexaDesk</text>
+    <text x="6" y="154" fill="#fff" font-family="Arial, sans-serif" font-size="25" font-weight="800" letter-spacing="6">SUPPORT WITHOUT NOISE</text>
+    <rect x="6" y="190" width="570" height="2" fill="#fff" opacity=".72"/>
+    <text x="6" y="248" fill="#fff" opacity=".82" font-family="Arial, sans-serif" font-size="29" font-weight="500">AI tickets. Human escalation. Zero clutter.</text>
+  </g>
+  <g transform="translate(1340 132)" fill="#fff">
+    <circle class="pulse-a" cx="0" cy="0" r="8"/>
+    <circle class="pulse-b" cx="34" cy="0" r="8"/>
+    <circle class="pulse-c" cx="68" cy="0" r="8"/>
+  </g>
+  <path d="M1120 390h350" stroke="#fff" stroke-width="2" opacity=".28"/>
+  <path d="M1160 420h250" stroke="#fff" stroke-width="2" opacity=".16"/>
+</svg>
