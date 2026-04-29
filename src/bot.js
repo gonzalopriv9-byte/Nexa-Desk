@@ -262,6 +262,18 @@ async function handleDisableAiCommand({ interaction, storage }) {
     return;
   }
 
+  await storage.addTranscriptMessage({
+    guildId: interaction.guildId,
+    channelId: interaction.channelId,
+    messageId: interaction.id,
+    authorId: interaction.user.id,
+    authorName: interaction.user.username,
+    authorBot: false,
+    role: 'system',
+    content: `IA desactivada por ${interaction.user.username}. El ticket pasa a atencion manual del staff.`,
+    createdAt: new Date().toISOString()
+  });
+
   await interaction.reply({
     content: 'IA desactivada en este ticket. NexaDesk dejara de escuchar y responder en este canal para que el staff lo atienda manualmente.'
   });

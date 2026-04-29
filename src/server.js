@@ -594,9 +594,21 @@ function renderDashboard({ session, guilds, tickets, stats }) {
     .secondary-button { background:#0a0a0a; color:var(--text); border:1px solid var(--line); }
     table { width:100%; border-collapse:collapse; }
     th,td { text-align:left; padding:12px; border-bottom:1px solid var(--line); }
+    .table-action { width:auto; padding:8px 10px; font-size:13px; }
     .kicker { color:#fff; font-size:12px; text-transform:uppercase; letter-spacing:.08em; }
     .notice,.empty-state { border:1px dashed rgba(255,255,255,.38); border-radius:12px; padding:16px; color:var(--muted); background:rgba(255,255,255,.045); }
     .empty-state strong { color:var(--text); display:block; margin-bottom:5px; }
+    .ticket-tools { display:flex; align-items:center; justify-content:space-between; gap:16px; margin-bottom:14px; }
+    .transcript-viewer { margin-top:16px; border:1px solid var(--line); border-radius:14px; background:#080808; overflow:hidden; }
+    .transcript-viewer[hidden] { display:none; }
+    .transcript-head { display:flex; justify-content:space-between; gap:12px; align-items:center; padding:14px 16px; border-bottom:1px solid var(--line); background:#101010; }
+    .transcript-head strong { display:block; }
+    .transcript-head span { color:var(--muted); font-size:13px; }
+    .transcript-body { display:grid; gap:10px; max-height:420px; overflow:auto; padding:16px; }
+    .transcript-message { border:1px solid var(--soft-line); border-radius:12px; padding:12px; background:rgba(255,255,255,.035); }
+    .transcript-message.assistant { border-color:rgba(255,255,255,.28); background:rgba(255,255,255,.07); }
+    .transcript-meta { display:flex; justify-content:space-between; gap:12px; color:var(--muted); font-size:12px; margin-bottom:7px; }
+    .transcript-content { white-space:pre-wrap; overflow-wrap:anywhere; line-height:1.45; }
     .live { color:var(--ok); }
     .loading { position:fixed; inset:0; z-index:20; display:grid; place-items:center; background:rgba(5,8,10,.9); backdrop-filter:blur(12px); transition:opacity .35s ease, visibility .35s ease; }
     .loading.is-hidden { opacity:0; visibility:hidden; }
@@ -723,8 +735,17 @@ function renderDashboard({ session, guilds, tickets, stats }) {
       </section>
     </div>
     <section class="surface" id="tickets">
-      <h2>Tickets recientes</h2>
-      ${ticketRows ? `<table><thead><tr><th>Canal</th><th>Servidor</th><th>Estado</th><th>Creado</th></tr></thead><tbody id="ticketRows">${ticketRows}</tbody></table>` : '<div class="empty-state" id="emptyTickets"><strong>Aun no hay tickets detectados.</strong><span>Crea un panel o abre un ticket en una categoria configurada para ver actividad en tiempo real aqui.</span></div><table hidden><thead><tr><th>Canal</th><th>Servidor</th><th>Estado</th><th>Creado</th></tr></thead><tbody id="ticketRows"></tbody></table>'}
+      <div class="ticket-tools">
+        <div><h2>Tickets recientes</h2><p>Abre una transcripcion para revisar la conversacion guardada por servidor.</p></div>
+      </div>
+      ${ticketRows ? `<table><thead><tr><th>Canal</th><th>Servidor</th><th>Estado</th><th>Creado</th><th>Transcripcion</th></tr></thead><tbody id="ticketRows">${ticketRows}</tbody></table>` : '<div class="empty-state" id="emptyTickets"><strong>Aun no hay tickets detectados.</strong><span>Crea un panel o abre un ticket en una categoria configurada para ver actividad en tiempo real aqui.</span></div><table hidden><thead><tr><th>Canal</th><th>Servidor</th><th>Estado</th><th>Creado</th><th>Transcripcion</th></tr></thead><tbody id="ticketRows"></tbody></table>'}
+      <aside class="transcript-viewer" id="transcriptViewer" hidden>
+        <div class="transcript-head">
+          <div><strong id="transcriptTitle">Transcripcion</strong><span id="transcriptMeta">Selecciona un ticket para cargar mensajes.</span></div>
+          <button class="secondary-button table-action" type="button" onclick="closeTranscript()">Cerrar</button>
+        </div>
+        <div class="transcript-body" id="transcriptBody"></div>
+      </aside>
     </section>
   </main>
   </div>
@@ -750,20 +771,55 @@ function renderDashboard({ session, guilds, tickets, stats }) {
     });
     const state = {
       tickets: ${JSON.stringify(tickets)},
-      stats: ${JSON.stringify(stats)}
+      stats: ${JSON.stringify(stats)},
+      activeTranscriptChannelId: null
     };
     const guildConfigs = ${JSON.stringify(guilds)};
     let guildMeta = {};
     function ticketRow(ticket) {
-      return '<tr><td>#' + escapeHtml(ticket.channelName) + '</td><td>' + escapeHtml(ticket.guildName) + '</td><td>' + escapeHtml(ticket.status) + '</td><td>' + escapeHtml(new Date(ticket.createdAt).toLocaleString()) + '</td></tr>';
+      return '<tr><td>#' + escapeHtml(ticket.channelName) + '</td><td>' + escapeHtml(ticket.guildName) + '</td><td>' + escapeHtml(ticket.status) + '</td><td>' + escapeHtml(new Date(ticket.createdAt).toLocaleString()) + '</td><td><button class="table-action secondary-button" type="button" data-transcript-channel="' + escapeHtml(ticket.channelId) + '">Ver</button></td></tr>';
     }
     function escapeHtml(value) {
       return String(value ?? '').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll(\"'\",'&#039;');
     }
     function renderTickets() {
-      document.querySelector('#ticketRows').innerHTML = state.tickets.length ? state.tickets.map(ticketRow).join('') : '<tr><td colspan="4">Aun no hay tickets detectados.</td></tr>';
+      document.querySelector('#ticketRows').innerHTML = state.tickets.length ? state.tickets.map(ticketRow).join('') : '<tr><td colspan="5">Aun no hay tickets detectados.</td></tr>';
       document.querySelector('#emptyTickets')?.remove();
       document.querySelector('#ticketRows')?.closest('table')?.removeAttribute('hidden');
+      bindTranscriptButtons();
+    }
+    function bindTranscriptButtons() {
+      document.querySelectorAll('[data-transcript-channel]').forEach((button) => {
+        button.onclick = () => openTranscript(button.dataset.transcriptChannel);
+      });
+    }
+    async function openTranscript(channelId) {
+      const ticket = state.tickets.find((item) => item.channelId === channelId);
+      state.activeTranscriptChannelId = channelId;
+      document.querySelector('#transcriptViewer').hidden = false;
+      document.querySelector('#transcriptTitle').textContent = ticket ? '#' + ticket.channelName : 'Transcripcion';
+      document.querySelector('#transcriptMeta').textContent = ticket ? ticket.guildName + ' - ' + ticket.status : 'Cargando mensajes';
+      document.querySelector('#transcriptBody').innerHTML = '<p class="notice">Cargando transcripcion...</p>';
+      try {
+        const messages = await fetch('/api/tickets/' + channelId + '/transcript').then((response) => {
+          if (!response.ok) throw new Error('No se pudo cargar la transcripcion.');
+          return response.json();
+        });
+        renderTranscriptMessages(messages);
+      } catch (error) {
+        document.querySelector('#transcriptBody').innerHTML = '<p class="notice">' + escapeHtml(error.message) + '</p>';
+      }
+    }
+    function closeTranscript() {
+      state.activeTranscriptChannelId = null;
+      document.querySelector('#transcriptViewer').hidden = true;
+      document.querySelector('#transcriptBody').innerHTML = '';
+    }
+    function renderTranscriptMessages(messages) {
+      document.querySelector('#transcriptMeta').textContent = messages.length + ' mensajes guardados';
+      document.querySelector('#transcriptBody').innerHTML = messages.length
+        ? messages.map((message) => '<article class="transcript-message ' + escapeHtml(message.role || '') + '"><div class="transcript-meta"><strong>' + escapeHtml(message.authorName || message.role || 'Desconocido') + '</strong><span>' + escapeHtml(new Date(message.createdAt).toLocaleString()) + '</span></div><div class="transcript-content">' + escapeHtml(message.content || '') + '</div></article>').join('')
+        : '<p class="notice">Este ticket aun no tiene mensajes guardados.</p>';
     }
     function renderStats() {
       const stats = state.stats;
@@ -873,6 +929,13 @@ function renderDashboard({ session, guilds, tickets, stats }) {
       renderTickets();
       refreshStats().catch(() => {});
     });
+    source.addEventListener('ticket.updated', (event) => {
+      const message = JSON.parse(event.data);
+      state.tickets = state.tickets.map((ticket) => ticket.channelId === message.payload.channelId ? message.payload : ticket);
+      document.querySelector('#lastSync').textContent = new Date().toLocaleTimeString();
+      renderTickets();
+      refreshStats().catch(() => {});
+    });
     source.addEventListener('guild.updated', () => {
       document.querySelector('#lastSync').textContent = new Date().toLocaleTimeString();
       refreshStats().catch(() => {});
@@ -880,6 +943,7 @@ function renderDashboard({ session, guilds, tickets, stats }) {
     source.addEventListener('transcript.message', () => {
       document.querySelector('#lastSync').textContent = new Date().toLocaleTimeString();
       refreshStats().catch(() => {});
+      if (state.activeTranscriptChannelId) openTranscript(state.activeTranscriptChannelId).catch(() => {});
     });
     source.onerror = () => {
       document.querySelector('#liveState').textContent = 'Reconectando';
@@ -897,6 +961,7 @@ function renderDashboard({ session, guilds, tickets, stats }) {
     document.querySelector('#ticketCategoryId')?.addEventListener('change', () => {
       document.querySelector('#ticketCategoryName').value = selectedOptionText('#ticketCategoryId');
     });
+    bindTranscriptButtons();
     syncGuildForm('#guildId');
   </script>
 </body>
@@ -904,7 +969,7 @@ function renderDashboard({ session, guilds, tickets, stats }) {
 }
 
 function renderTicketRow(ticket) {
-  return `<tr><td>#${escapeHtml(ticket.channelName)}</td><td>${escapeHtml(ticket.guildName)}</td><td>${escapeHtml(ticket.status)}</td><td>${escapeHtml(new Date(ticket.createdAt).toLocaleString())}</td></tr>`;
+  return `<tr><td>#${escapeHtml(ticket.channelName)}</td><td>${escapeHtml(ticket.guildName)}</td><td>${escapeHtml(ticket.status)}</td><td>${escapeHtml(new Date(ticket.createdAt).toLocaleString())}</td><td><button class="table-action secondary-button" type="button" data-transcript-channel="${escapeHtml(ticket.channelId)}">Ver</button></td></tr>`;
 }
 
 function escapeHtml(value = '') {
