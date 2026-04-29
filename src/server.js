@@ -395,7 +395,12 @@ function renderLogin(config) {
     .feature { border:1px solid var(--line); background:rgba(255,255,255,.045); border-radius:8px; padding:14px; }
     .feature strong { display:block; margin-bottom:6px; }
     .login-card { border:1px solid var(--line); border-radius:8px; background:linear-gradient(180deg, rgba(24,24,24,.96), rgba(8,8,8,.96)); padding:24px; animation:rise .7s ease .12s both; box-shadow:0 24px 90px rgba(0,0,0,.34); }
-    .brand-banner { width:100%; border:1px solid var(--line); border-radius:10px; margin-bottom:18px; display:block; background:#050505; }
+    .banner-frame { position:relative; overflow:hidden; border:1px solid var(--line); border-radius:12px; background:#050505; box-shadow:0 22px 70px rgba(0,0,0,.42), 0 0 0 1px rgba(255,255,255,.03) inset; animation:bannerIn .8s cubic-bezier(.2,.8,.2,1) both, bannerGlow 4.8s ease-in-out infinite; }
+    .banner-frame::before { content:""; position:absolute; inset:-40% auto -40% -35%; width:34%; z-index:2; pointer-events:none; background:linear-gradient(90deg, transparent, rgba(255,255,255,.34), transparent); filter:blur(10px); transform:skewX(-18deg); animation:bannerScan 5.4s ease-in-out infinite; }
+    .banner-frame::after { content:""; position:absolute; inset:0; z-index:1; pointer-events:none; background:radial-gradient(circle at 25% 50%, rgba(255,255,255,.16), transparent 28%), linear-gradient(90deg, rgba(255,255,255,.06), transparent 24%, transparent 76%, rgba(255,255,255,.06)); mix-blend-mode:screen; opacity:.58; }
+    .banner-frame img { position:relative; z-index:0; display:block; width:100%; background:#050505; transform:scale(1.006); filter:contrast(1.04) brightness(.96); transition:transform .7s cubic-bezier(.2,.8,.2,1), filter .7s ease; }
+    .banner-frame:hover img { transform:scale(1.03); filter:contrast(1.12) brightness(1.08); }
+    .brand-banner-frame { margin-bottom:18px; }
     .status-line { display:flex; justify-content:space-between; gap:12px; color:var(--muted); border-bottom:1px solid rgba(255,255,255,.08); padding:11px 0; }
     .status-line strong { color:var(--text); }
     a.login-button { display:block; text-align:center; width:100%; border-radius:6px; background:#fff; color:#050505; padding:13px; font-weight:900; text-decoration:none; margin-top:22px; }
@@ -406,7 +411,11 @@ function renderLogin(config) {
     #loadingPhrase { color:var(--text); font-weight:800; margin:0; }
     .error { color:var(--danger); margin-top:14px; }
     @keyframes rise { from { opacity:0; transform:translateY(18px); } to { opacity:1; transform:translateY(0); } }
+    @keyframes bannerIn { from { opacity:0; transform:translateY(18px) scale(.985); filter:blur(10px); } to { opacity:1; transform:translateY(0) scale(1); filter:blur(0); } }
+    @keyframes bannerScan { 0%, 12% { transform:translateX(0) skewX(-18deg); opacity:0; } 30% { opacity:.85; } 58%, 100% { transform:translateX(430%) skewX(-18deg); opacity:0; } }
+    @keyframes bannerGlow { 0%,100% { box-shadow:0 22px 70px rgba(0,0,0,.42), 0 0 0 1px rgba(255,255,255,.03) inset; } 50% { box-shadow:0 22px 90px rgba(255,255,255,.08), 0 0 0 1px rgba(255,255,255,.09) inset; } }
     @keyframes spin { to { transform:rotate(360deg); } }
+    @media (prefers-reduced-motion:reduce) { .banner-frame,.banner-frame::before,.banner-frame img { animation:none; transition:none; } }
     @media (max-width:860px) { main { grid-template-columns:1fr; align-items:start; padding-top:28px; } .feature-row { grid-template-columns:1fr; } }
   </style>
 </head>
@@ -430,7 +439,7 @@ function renderLogin(config) {
       </div>
     </section>
     <aside class="login-card">
-      <img class="brand-banner" src="/assets/nexadesk-banner.svg" alt="NexaDesk animated monochrome banner">
+      <div class="banner-frame brand-banner-frame"><img src="/assets/nexadesk-banner.svg" alt="NexaDesk animated monochrome banner"></div>
       <p class="eyebrow">Acceso seguro</p>
       <h2>Entrar con Discord</h2>
       <p>Solo veras servidores donde tengas permisos de gestion.</p>
@@ -549,7 +558,13 @@ function renderDashboard({ session, guilds, tickets, stats }) {
     .nav-foot { position:absolute; left:16px; right:16px; bottom:16px; }
     .hero-panel,.surface,.stat,.active-server { border:1px solid var(--line); border-radius:14px; background:rgba(11,18,22,.86); }
     .hero-panel { padding:18px; background:linear-gradient(180deg, rgba(24,24,24,.94), rgba(5,5,5,.94)); }
-    .dashboard-banner { width:100%; height:150px; object-fit:cover; border:1px solid var(--line); border-radius:14px; background:#050505; margin-bottom:16px; }
+    .banner-frame { position:relative; overflow:hidden; border:1px solid var(--line); border-radius:14px; background:#050505; box-shadow:0 22px 70px rgba(0,0,0,.42), 0 0 0 1px rgba(255,255,255,.03) inset; animation:bannerIn .8s cubic-bezier(.2,.8,.2,1) both, bannerGlow 4.8s ease-in-out infinite; }
+    .banner-frame::before { content:""; position:absolute; inset:-40% auto -40% -35%; width:34%; z-index:2; pointer-events:none; background:linear-gradient(90deg, transparent, rgba(255,255,255,.34), transparent); filter:blur(10px); transform:skewX(-18deg); animation:bannerScan 5.4s ease-in-out infinite; }
+    .banner-frame::after { content:""; position:absolute; inset:0; z-index:1; pointer-events:none; background:radial-gradient(circle at 25% 50%, rgba(255,255,255,.16), transparent 28%), linear-gradient(90deg, rgba(255,255,255,.06), transparent 24%, transparent 76%, rgba(255,255,255,.06)); mix-blend-mode:screen; opacity:.58; }
+    .banner-frame img { position:relative; z-index:0; display:block; width:100%; background:#050505; transform:scale(1.006); filter:contrast(1.04) brightness(.96); transition:transform .7s cubic-bezier(.2,.8,.2,1), filter .7s ease; }
+    .banner-frame:hover img { transform:scale(1.03); filter:contrast(1.12) brightness(1.08); }
+    .dashboard-banner-frame { height:150px; margin-bottom:16px; }
+    .dashboard-banner-frame img { height:100%; object-fit:cover; }
     .signal-list { display:grid; gap:10px; margin-top:16px; }
     .signal { display:flex; justify-content:space-between; gap:18px; padding:10px 0; border-bottom:1px solid var(--soft-line); color:var(--muted); }
     .signal strong { color:var(--text); }
@@ -616,7 +631,11 @@ function renderDashboard({ session, guilds, tickets, stats }) {
     .pulse { width:46px; height:46px; margin:0 auto 16px; border-radius:50%; border:2px solid rgba(255,255,255,.18); border-top-color:#fff; animation:spin 1s linear infinite; }
     #loadingPhrase { color:var(--text); font-weight:800; }
     @keyframes rise { from { opacity:0; transform:translateY(14px); } to { opacity:1; transform:translateY(0); } }
+    @keyframes bannerIn { from { opacity:0; transform:translateY(18px) scale(.985); filter:blur(10px); } to { opacity:1; transform:translateY(0) scale(1); filter:blur(0); } }
+    @keyframes bannerScan { 0%, 12% { transform:translateX(0) skewX(-18deg); opacity:0; } 30% { opacity:.85; } 58%, 100% { transform:translateX(430%) skewX(-18deg); opacity:0; } }
+    @keyframes bannerGlow { 0%,100% { box-shadow:0 22px 70px rgba(0,0,0,.42), 0 0 0 1px rgba(255,255,255,.03) inset; } 50% { box-shadow:0 22px 90px rgba(255,255,255,.08), 0 0 0 1px rgba(255,255,255,.09) inset; } }
     @keyframes spin { to { transform:rotate(360deg); } }
+    @media (prefers-reduced-motion:reduce) { .banner-frame,.banner-frame::before,.banner-frame img { animation:none; transition:none; } }
     @media (max-width:1120px) { .app-shell,.workspace,.topbar,.command-center { grid-template-columns:1fr; } .sidebar { position:relative; height:auto; top:auto; } .nav-foot { position:static; margin-top:18px; } }
     @media (max-width:760px) { form,.control-grid,.stats,.server-status,.mini-grid { grid-template-columns:1fr; } label,button { margin-top:12px; } .app-shell { width:min(100% - 24px, 1440px); } }
   </style>
@@ -640,7 +659,7 @@ function renderDashboard({ session, guilds, tickets, stats }) {
     </div>
   </aside>
   <main>
-    <img class="dashboard-banner" src="/assets/nexadesk-banner.svg" alt="NexaDesk animated monochrome banner">
+    <div class="banner-frame dashboard-banner-frame"><img src="/assets/nexadesk-banner.svg" alt="NexaDesk animated monochrome banner"></div>
     <div class="topbar">
       <header>
         <div class="brand-lockup"><img class="brand-logo" src="/assets/nexadesk-logo.svg" alt="NexaDesk"><strong>NexaDesk Command</strong></div>
