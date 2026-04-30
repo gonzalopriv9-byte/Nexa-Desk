@@ -436,7 +436,7 @@ function buildStats({ guilds, tickets, transcriptMessages }) {
   const weekMs = 7 * dayMs;
   const panels = guilds.reduce((total, guild) => total + (guild.panels?.length ?? 0), 0);
   const configuredGuilds = guilds.filter((guild) => guild.ticketCategoryId).length;
-  const openTickets = tickets.filter((ticket) => ticket.status === 'open').length;
+  const openTickets = tickets.filter((ticket) => ticket.status !== 'closed').length;
   const ticketsToday = tickets.filter((ticket) => now - new Date(ticket.createdAt).getTime() <= dayMs).length;
   const ticketsThisWeek = tickets.filter((ticket) => now - new Date(ticket.createdAt).getTime() <= weekMs).length;
   const escalationReadyGuilds = guilds.filter((guild) => guild.staffRoleId).length;
@@ -448,7 +448,7 @@ function buildStats({ guilds, tickets, transcriptMessages }) {
     unconfiguredGuilds: Math.max(guilds.length - configuredGuilds, 0),
     totalTickets: tickets.length,
     openTickets,
-    closedTickets: tickets.filter((ticket) => ticket.status !== 'open').length,
+    closedTickets: tickets.filter((ticket) => ticket.status === 'closed').length,
     ticketsToday,
     ticketsThisWeek,
     panels,

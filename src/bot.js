@@ -184,10 +184,10 @@ export function createBot({ config, storage, supportAgent }) {
           reason: 'El usuario solicita asistencia manual de staff.',
           publicAnswer: 'El usuario solicita asistencia manual de staff.'
         };
-        await notifyStaffRole(message, guildConfig, ticket, escalation.reason);
+        const shouldMentionStaff = await registerTicketEscalation({ storage, message, guildConfig, ticket, reason: escalation.reason });
         const reply = await message.reply({
-          content: buildPublicReply(escalation, guildConfig).slice(0, 1900),
-          allowedMentions: { roles: guildConfig.staffRoleId ? [guildConfig.staffRoleId] : [] }
+          content: buildPublicReply(escalation, guildConfig, { mentionStaff: shouldMentionStaff }).slice(0, 1900),
+          allowedMentions: { roles: shouldMentionStaff && guildConfig.staffRoleId ? [guildConfig.staffRoleId] : [] }
         });
         await saveTranscript(storage, reply, 'assistant');
         return;
@@ -197,13 +197,13 @@ export function createBot({ config, storage, supportAgent }) {
       const answer = await supportAgent.answerTicketMessage({ message, ticket, guildConfig });
       if (answer) {
         const escalation = parseEscalation(answer);
-        if (escalation.shouldEscalate) {
-          await notifyStaffRole(message, guildConfig, ticket, escalation.reason);
-        }
+        const shouldMentionStaff = escalation.shouldEscalate
+          ? await registerTicketEscalation({ storage, message, guildConfig, ticket, reason: escalation.reason })
+          : false;
 
         const reply = await message.reply({
-          content: buildPublicReply(escalation, guildConfig).slice(0, 1900),
-          allowedMentions: { roles: escalation.shouldEscalate && guildConfig.staffRoleId ? [guildConfig.staffRoleId] : [] }
+          content: buildPublicReply(escalation, guildConfig, { mentionStaff: shouldMentionStaff }).slice(0, 1900),
+          allowedMentions: { roles: shouldMentionStaff && guildConfig.staffRoleId ? [guildConfig.staffRoleId] : [] }
         });
         await saveTranscript(storage, reply, 'assistant');
       }
@@ -280,6 +280,10 @@ async function handleDisableAiCommand({ interaction, storage }) {
 
 function isAiDisabledTicket(ticket) {
   return ticket?.aiDisabled || ticket?.status === 'ai_disabled';
+}
+
+function isTicketEscalated(ticket) {
+  return ticket?.status === 'escalated' || isAiDisabledTicket(ticket);
 }
 
 function memberHasRole(member, roleId) {
@@ -368,11 +372,14 @@ function isUserRequestingStaff(content) {
   ].some((pattern) => pattern.test(content));
 }
 
-function buildPublicReply(escalation, guildConfig) {
-  if (!escalation.shouldEscalate) return escalation.publicAnswer;
+function buildPublicReply(escalation, guildConfig, { mentionStaff = false } = {}) {
+  const publicAnswer = cleanStaffMentions(escalation.publicAnswer, guildConfig);
+  if (!escalation.shouldEscalate) return publicAnswer;
+
+  if (!mentionStaff) return publicAnswer;
 
   const mention = guildConfig.staffRoleId ? `<@&${guildConfig.staffRoleId}> ` : 'No hay rol staff configurado. ';
-  return `${mention}${escalation.publicAnswer}`;
+  return `${mention}${publicAnswer}`;
 }
 
 function cleanBotAnswer(answer) {
@@ -383,6 +390,36 @@ function cleanBotAnswer(answer) {
     if (before === cleaned) break;
   }
   return cleaned;
+}
+
+function cleanStaffMentions(answer, guildConfig) {
+  let cleaned = answer.trim();
+  if (guildConfig.staffRoleId) {
+    cleaned = cleaned.replace(new RegExp(`<@&${escapeRegExp(guildConfig.staffRoleId)}>`, 'g'), '');
+  }
+  cleaned = cleaned
+    .replace(/@Staff\b/gi, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+  return cleaned || 'Voy a dejar el ticket preparado para que lo revise el staff.';
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+async function registerTicketEscalation({ storage, message, guildConfig, ticket, reason }) {
+  if (isTicketEscalated(ticket)) return false;
+
+  if (guildConfig.staffRoleId) {
+    await notifyStaffRole(message, guildConfig, ticket, reason);
+  }
+
+  await storage.updateTicket(ticket.channelId, {
+    status: 'escalated'
+  });
+
+  return Boolean(guildConfig.staffRoleId);
 }
 
 async function notifyStaffRole(message, guildConfig, ticket, reason) {
