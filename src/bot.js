@@ -36,7 +36,6 @@ export function createBot({ config, storage, supportAgent }) {
 
   client.once(Events.ClientReady, (readyClient) => {
     applyBotPresence(readyClient);
-    setInterval(() => applyBotPresence(readyClient), 60 * 1000).unref();
     console.log(`NexaDesk online as ${readyClient.user.tag}`);
   });
 
@@ -297,23 +296,10 @@ function memberHasRole(member, roleId) {
 function applyBotPresence(client) {
   try {
     const presence = buildBotPresence();
-    client.user.setStatus('online');
-    client.user.setActivity('How can I help you today?', { type: ActivityType.Playing });
     client.user.setPresence(presence);
-    forceShardPresence(client, presence);
-    console.log(`NexaDesk presence set to ${presence.status}. WS status=${client.ws.status} ping=${client.ws.ping}`);
+    console.log(`NexaDesk presence set to ${presence.status}.`);
   } catch (error) {
     console.error('Failed to set NexaDesk presence:', error);
-  }
-}
-
-function forceShardPresence(client, presence) {
-  try {
-    for (const shard of client.ws.shards.values()) {
-      shard.send({ op: 3, d: presence });
-    }
-  } catch (error) {
-    console.warn('Raw presence refresh skipped:', error.message);
   }
 }
 

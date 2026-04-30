@@ -50,7 +50,11 @@ app.listen(config.PORT, () => {
 });
 
 if (config.RUN_BOT) {
-  await bot.login(config.DISCORD_TOKEN);
+  try {
+    await bot.login(config.DISCORD_TOKEN);
+  } catch (error) {
+    console.error('NexaDesk bot login failed. Dashboard remains online. Update DISCORD_TOKEN and restart the service.', error);
+  }
 } else {
   console.log('NexaDesk bot login skipped because RUN_BOT=false.');
 }
