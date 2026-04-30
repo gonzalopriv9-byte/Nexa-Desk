@@ -10,7 +10,9 @@ NexaDesk is a Discord support bot that watches ticket categories, joins newly-cr
 - Dashboard actions to create ticket categories and publish ticket panels.
 - Ticket panel button that creates private ticket channels.
 - AI replies inside ticket channels.
-- Simple web dashboard/API ready for Render.
+- Discord OAuth dashboard/API ready for Render.
+- Direct bot invite flow from the server selector when NexaDesk is not installed yet.
+- Staff escalation with `/desactivar ia` and saved transcripts per server.
 - Local JSON storage for fast development.
 - Ollama-compatible AI client prepared for a Raspberry Pi.
 
@@ -53,6 +55,7 @@ The dashboard can:
 - Publish a ticket panel in a selected text channel.
 - Track recent tickets detected or opened from panels.
 - Receive live ticket/config updates through Server-Sent Events.
+- Open a direct Discord invite for manageable servers where the bot is not installed.
 
 For production on Render, set the same env vars in the web service settings. For the Raspberry Pi worker, keep `/home/pi/nexadesk/.env` updated separately.
 
@@ -76,6 +79,20 @@ Set:
 DISCORD_CLIENT_SECRET=...
 DASHBOARD_PUBLIC_URL=https://your-render-service.onrender.com
 SESSION_SECRET=long_random_secret
+```
+
+Enable these privileged intents for production support replies and staff DM escalation:
+
+```text
+MESSAGE CONTENT INTENT
+SERVER MEMBERS INTENT
+```
+
+Then set:
+
+```text
+DISCORD_MESSAGE_CONTENT_INTENT=true
+DISCORD_GUILD_MEMBERS_INTENT=true
 ```
 
 ## Supabase
@@ -138,7 +155,14 @@ OPENAI_COMPAT_MODEL=local
 Invite NexaDesk with:
 
 ```text
-https://discord.com/oauth2/authorize?client_id=1497894098722492598&permissions=274878221376&integration_type=0&scope=bot+applications.commands
+https://discord.com/oauth2/authorize?client_id=1497894098722492598&permissions=216080&scope=bot%20applications.commands
 ```
 
 The bot needs access to the test guild before `npm run register` can create guild slash commands.
+
+Recommended launch check:
+
+```bash
+npm audit --omit=dev --audit-level=high
+npm run register
+```

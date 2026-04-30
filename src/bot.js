@@ -539,3 +539,19 @@ export async function listGuildChannels(client, { guildId }) {
     }));
 }
 
+export async function listInstalledGuildIds(client) {
+  await waitForClientReady(client);
+  return [...client.guilds.cache.keys()];
+}
+
+async function waitForClientReady(client, timeoutMs = 3000) {
+  if (client.isReady()) return;
+  await new Promise((resolve) => {
+    const timer = setTimeout(resolve, timeoutMs);
+    client.once(Events.ClientReady, () => {
+      clearTimeout(timer);
+      resolve();
+    });
+  });
+}
+

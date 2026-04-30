@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 const DISCORD_API = 'https://discord.com/api/v10';
 const MANAGE_GUILD = 0x20n;
 const ADMINISTRATOR = 0x8n;
+const BOT_INVITE_PERMISSIONS = '216080';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ASSETS_DIR = path.resolve(__dirname, '..', 'assets');
 
@@ -134,6 +135,10 @@ export function createServer({ config, storage, bot, events }) {
     next();
   });
 
+  app.get('/invite/:guildId', requireGuildAccess, (req, res) => {
+    res.redirect(buildBotInviteUrl(config, req.params.guildId));
+  });
+
   app.get('/api/me', (req, res) => {
     res.json(req.session);
   });
@@ -159,7 +164,8 @@ export function createServer({ config, storage, bot, events }) {
 
   app.get('/api/guilds', asyncHandler(async (req, res) => {
     const configs = await storage.listGuildConfigs();
-    res.json(mergeUserGuilds(req.session, configs));
+    const installedGuildIds = await getInstalledGuildIds(bot, configs);
+    res.json(mergeUserGuilds(req.session, configs, installedGuildIds, config));
   }));
 
   app.get('/api/tickets', asyncHandler(async (req, res) => {
@@ -168,7 +174,11 @@ export function createServer({ config, storage, bot, events }) {
   }));
 
   app.get('/api/stats', asyncHandler(async (req, res) => {
-    res.json(await storage.getDashboardStats(req.session.guilds.map((guild) => guild.id)));
+    const configs = await storage.listGuildConfigs();
+    const installedGuildIds = await getInstalledGuildIds(bot, configs);
+    const guilds = mergeUserGuilds(req.session, configs, installedGuildIds, config);
+    const stats = await storage.getDashboardStats(req.session.guilds.map((guild) => guild.id));
+    res.json(enrichDashboardStats(stats, guilds));
   }));
 
   app.get('/api/tickets/:channelId/transcript', asyncHandler(async (req, res) => {
@@ -235,11 +245,13 @@ export function createServer({ config, storage, bot, events }) {
       storage.listTickets(),
       storage.getDashboardStats(manageableGuildIds)
     ]);
+    const installedGuildIds = await getInstalledGuildIds(bot, configs);
+    const guilds = mergeUserGuilds(req.session, configs, installedGuildIds, config);
     res.type('html').send(renderDashboard({
       session: req.session,
-      guilds: mergeUserGuilds(req.session, configs),
+      guilds,
       tickets: tickets.filter((ticket) => canAccessGuild(req.session, ticket.guildId)),
-      stats
+      stats: enrichDashboardStats(stats, guilds)
     }));
   }));
 
@@ -324,17 +336,64 @@ function canAccessGuild(session, guildId) {
   return session.guilds.some((guild) => guild.id === guildId);
 }
 
-function mergeUserGuilds(session, configs) {
+async function getInstalledGuildIds(bot, configs = []) {
+  try {
+    if (typeof bot.listInstalledGuildIds !== 'function') {
+      return new Set(configs.map((config) => config.guildId).filter(Boolean));
+    }
+
+    const guildIds = await Promise.race([
+      bot.listInstalledGuildIds(),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('Installed guild lookup timed out')), 3500))
+    ]);
+    return new Set(guildIds);
+  } catch (error) {
+    console.warn('Could not resolve installed guilds. Falling back to configured guilds:', normalizeError(error));
+    return new Set(configs.map((config) => config.guildId).filter(Boolean));
+  }
+}
+
+function mergeUserGuilds(session, configs, installedGuildIds = new Set(), config = null) {
   return session.guilds.map((guild) => {
-    const config = configs.find((item) => item.guildId === guild.id);
+    const guildConfig = configs.find((item) => item.guildId === guild.id);
+    const installed = installedGuildIds.has(guild.id);
     return {
-      ...config,
+      ...guildConfig,
       guildId: guild.id,
-      guildName: config?.guildName ?? guild.name,
+      guildName: guildConfig?.guildName ?? guild.name,
       icon: guild.icon,
-      connected: Boolean(config)
+      configured: Boolean(guildConfig),
+      connected: installed,
+      installed,
+      inviteUrl: config ? buildBotInviteUrl(config, guild.id) : `/invite/${guild.id}`
     };
   });
+}
+
+function enrichDashboardStats(stats, guilds) {
+  const configuredGuilds = guilds.filter((guild) => guild.ticketCategoryId).length;
+  const installedGuilds = guilds.filter((guild) => guild.installed).length;
+  return {
+    ...stats,
+    totalGuilds: guilds.length,
+    configuredGuilds,
+    unconfiguredGuilds: Math.max(guilds.length - configuredGuilds, 0),
+    installedGuilds,
+    notInstalledGuilds: Math.max(guilds.length - installedGuilds, 0),
+    escalationReadyGuilds: guilds.filter((guild) => guild.staffRoleId).length,
+    aiReadyGuilds: guilds.filter((guild) => guild.serverPrompt || guild.serverInfo).length,
+    panels: guilds.reduce((total, guild) => total + (guild.panels?.length ?? 0), 0)
+  };
+}
+
+function buildBotInviteUrl(config, guildId) {
+  const url = new URL(`${DISCORD_API}/oauth2/authorize`);
+  url.searchParams.set('client_id', config.DISCORD_CLIENT_ID);
+  url.searchParams.set('permissions', BOT_INVITE_PERMISSIONS);
+  url.searchParams.set('scope', 'bot applications.commands');
+  url.searchParams.set('guild_id', guildId);
+  url.searchParams.set('disable_guild_select', 'true');
+  return url.toString();
 }
 
 function signSession(config, session) {
@@ -503,17 +562,17 @@ function renderError(message) {
 
 function renderDashboard({ session, guilds, tickets, stats }) {
   const guildOptions = guilds
-    .map((guild) => `<option value="${escapeHtml(guild.guildId)}">${escapeHtml(guild.guildName ?? guild.guildId)}</option>`)
+    .map((guild) => `<option value="${escapeHtml(guild.guildId)}" data-installed="${guild.installed ? 'true' : 'false'}" data-invite-url="${escapeHtml(guild.inviteUrl)}">${escapeHtml(guild.guildName ?? guild.guildId)}${guild.installed ? '' : ' - instalar bot'}</option>`)
     .join('');
 
   const guildList = guilds
     .map((guild) => `
-      <button class="guild-pill" type="button" data-guild-id="${escapeHtml(guild.guildId)}">
+      <button class="guild-pill ${guild.installed ? '' : 'is-not-installed'}" type="button" data-guild-id="${escapeHtml(guild.guildId)}" data-installed="${guild.installed ? 'true' : 'false'}" data-invite-url="${escapeHtml(guild.inviteUrl)}">
         <span>
           <strong>${escapeHtml(guild.guildName ?? guild.guildId)}</strong>
-          <small>${guild.connected ? 'Configurado' : 'Disponible'} - ${escapeHtml(String(guild.panels?.length ?? 0))} paneles</small>
+          <small>${guild.installed ? (guild.configured ? 'Configurado' : 'Instalado sin configurar') : 'Bot no instalado'} - ${escapeHtml(String(guild.panels?.length ?? 0))} paneles</small>
         </span>
-        <i>${guild.ticketCategoryName ? 'Listo' : 'Pendiente'}</i>
+        <i>${guild.installed ? (guild.ticketCategoryName ? 'Listo' : 'Pendiente') : 'Invitar'}</i>
       </button>
     `)
     .join('');
@@ -522,8 +581,9 @@ function renderDashboard({ session, guilds, tickets, stats }) {
     .map((ticket) => renderTicketRow(ticket))
     .join('');
 
-  const healthScore = stats.totalGuilds
-    ? Math.round(((stats.configuredGuilds + stats.escalationReadyGuilds + stats.aiReadyGuilds) / (stats.totalGuilds * 3)) * 100)
+  const readinessGuilds = stats.installedGuilds || stats.totalGuilds;
+  const healthScore = readinessGuilds
+    ? Math.round(((stats.configuredGuilds + stats.escalationReadyGuilds + stats.aiReadyGuilds) / (readinessGuilds * 3)) * 100)
     : 0;
 
   return `<!doctype html>
@@ -593,8 +653,14 @@ function renderDashboard({ session, guilds, tickets, stats }) {
     .guild-list { display:grid; gap:8px; max-height:560px; overflow:auto; padding-right:4px; }
     .guild-pill { display:flex; align-items:center; justify-content:space-between; gap:12px; text-align:left; border:1px solid var(--soft-line); background:#071014; color:var(--text); border-radius:12px; padding:12px; cursor:pointer; }
     .guild-pill:hover,.guild-pill.is-active { border-color:rgba(255,255,255,.72); background:rgba(255,255,255,.08); }
+    .guild-pill.is-not-installed { border-style:dashed; background:rgba(255,255,255,.035); }
+    .guild-pill.is-not-installed i { color:#050505; background:#fff; padding:5px 8px; border-radius:999px; font-weight:900; }
     .guild-pill strong,.guild-pill small { display:block; }
     .guild-pill i { color:#fff; font-style:normal; font-size:12px; }
+    .install-banner { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:14px; align-items:center; margin-top:14px; border:1px dashed rgba(255,255,255,.45); border-radius:12px; padding:14px; background:rgba(255,255,255,.055); }
+    .install-banner[hidden] { display:none; }
+    .install-banner strong { display:block; }
+    .install-banner a { display:inline-flex; align-items:center; justify-content:center; min-width:150px; border-radius:10px; padding:11px 12px; color:#050505; background:#fff; text-decoration:none; font-weight:900; }
     .control-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px; }
     .control-card { border:1px solid var(--line); border-radius:14px; padding:18px; background:linear-gradient(180deg, rgba(24,24,24,.94), rgba(8,8,8,.94)); }
     .control-card.wide { grid-column:1 / -1; }
@@ -606,6 +672,7 @@ function renderDashboard({ session, guilds, tickets, stats }) {
     textarea { min-height:140px; resize:vertical; grid-column:1 / -1; }
     .span-2 { grid-column:1 / -1; }
     button { background:#fff; color:#050505; border:0; font-weight:900; cursor:pointer; }
+    button:disabled,input:disabled,select:disabled,textarea:disabled { opacity:.48; cursor:not-allowed; }
     .secondary-button { background:#0a0a0a; color:var(--text); border:1px solid var(--line); }
     table { width:100%; border-collapse:collapse; }
     th,td { text-align:left; padding:12px; border-bottom:1px solid var(--line); }
@@ -625,6 +692,8 @@ function renderDashboard({ session, guilds, tickets, stats }) {
     .transcript-meta { display:flex; justify-content:space-between; gap:12px; color:var(--muted); font-size:12px; margin-bottom:7px; }
     .transcript-content { white-space:pre-wrap; overflow-wrap:anywhere; line-height:1.45; }
     .live { color:var(--ok); }
+    .toast { position:fixed; right:24px; bottom:24px; z-index:30; max-width:min(420px, calc(100% - 32px)); border:1px solid var(--line); border-radius:14px; background:#101010; color:var(--text); padding:14px 16px; box-shadow:0 22px 70px rgba(0,0,0,.55); transform:translateY(18px); opacity:0; pointer-events:none; transition:opacity .25s ease, transform .25s ease; }
+    .toast.is-visible { opacity:1; transform:translateY(0); }
     .loading { position:fixed; inset:0; z-index:20; display:grid; place-items:center; background:rgba(5,8,10,.9); backdrop-filter:blur(12px); transition:opacity .35s ease, visibility .35s ease; }
     .loading.is-hidden { opacity:0; visibility:hidden; }
     .loader { width:min(420px, calc(100% - 32px)); border:1px solid var(--line); background:#0b1216; border-radius:14px; padding:24px; text-align:center; }
@@ -676,7 +745,7 @@ function renderDashboard({ session, guilds, tickets, stats }) {
       </aside>
     </div>
     <div class="stats" id="overview">
-      <div class="stat"><strong id="guildCount">${stats.totalGuilds}</strong><span>Servidores disponibles</span><small>${stats.configuredGuilds} configurados - ${stats.unconfiguredGuilds} pendientes</small></div>
+      <div class="stat"><strong id="guildCount">${stats.totalGuilds}</strong><span>Servidores gestionables</span><small id="guildInstallMeta">${stats.installedGuilds ?? 0} con bot - ${stats.notInstalledGuilds ?? 0} por invitar</small></div>
       <div class="stat"><strong id="ticketCount">${stats.totalTickets}</strong><span>Tickets detectados</span><small>${stats.ticketsToday} hoy - ${stats.ticketsThisWeek} esta semana</small></div>
       <div class="stat"><strong id="openCount">${stats.openTickets}</strong><span>Tickets abiertos</span><small>${stats.closedTickets} cerrados o archivados</small></div>
     </div>
@@ -684,7 +753,7 @@ function renderDashboard({ session, guilds, tickets, stats }) {
       <article class="insight-card">
         <p class="kicker">Salud global</p>
         <strong id="healthScore">${healthScore}%</strong>
-        <p>Promedio de servidores con categoria, staff y contexto IA configurados.</p>
+        <p>Promedio de servidores instalados con categoria, staff y contexto IA configurados.</p>
         <div class="meter" style="--value:${healthScore}%"><span></span></div>
       </article>
       <article class="insight-card">
@@ -712,6 +781,10 @@ function renderDashboard({ session, guilds, tickets, stats }) {
         <div><span>Categoria</span><strong id="activeCategory">Sin configurar</strong></div>
         <div><span>Staff</span><strong id="activeStaff">Sin configurar</strong></div>
         <div><span>Paneles</span><strong id="activePanels">0</strong></div>
+      </div>
+      <div class="install-banner" id="installBanner" hidden>
+        <div><strong>NexaDesk no esta instalado en este servidor.</strong><p>Al seleccionarlo puedes invitar el bot directamente con permisos recomendados.</p></div>
+        <a id="installLink" href="#">Invitar bot</a>
       </div>
     </section>
     <div class="workspace">
@@ -768,6 +841,7 @@ function renderDashboard({ session, guilds, tickets, stats }) {
     </section>
   </main>
   </div>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
   <script>
     const loadingPhrases = [
       'Preparando a tu agente de confianza',
@@ -842,8 +916,10 @@ function renderDashboard({ session, guilds, tickets, stats }) {
     }
     function renderStats() {
       const stats = state.stats;
-      const health = stats.totalGuilds ? Math.round(((stats.configuredGuilds + stats.escalationReadyGuilds + stats.aiReadyGuilds) / (stats.totalGuilds * 3)) * 100) : 0;
+      const readinessGuilds = stats.installedGuilds || stats.totalGuilds;
+      const health = readinessGuilds ? Math.round(((stats.configuredGuilds + stats.escalationReadyGuilds + stats.aiReadyGuilds) / (readinessGuilds * 3)) * 100) : 0;
       document.querySelector('#guildCount').textContent = stats.totalGuilds;
+      document.querySelector('#guildInstallMeta').textContent = (stats.installedGuilds || 0) + ' con bot - ' + (stats.notInstalledGuilds || 0) + ' por invitar';
       document.querySelector('#ticketCount').textContent = stats.totalTickets;
       document.querySelector('#openCount').textContent = stats.openTickets;
       document.querySelector('#healthScore').textContent = health + '%';
@@ -854,19 +930,65 @@ function renderDashboard({ session, guilds, tickets, stats }) {
       document.querySelector('#staffReadyCount').textContent = stats.escalationReadyGuilds;
     }
     async function refreshStats() {
-      state.stats = await fetch('/api/stats').then((response) => response.json());
+      state.stats = await getJson('/api/stats');
       renderStats();
+    }
+    async function getJson(url) {
+      const response = await fetch(url);
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.error || 'Request failed');
+      return body;
     }
     async function postJson(url, body) {
       const response = await fetch(url, { method:'POST', headers:{ 'content-type':'application/json' }, body:JSON.stringify(body) });
-      if (!response.ok) throw new Error((await response.json()).error || 'Request failed');
-      return response.json();
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || 'Request failed');
+      return data;
+    }
+    function showToast(message) {
+      const toast = document.querySelector('#toast');
+      if (!toast) return;
+      toast.textContent = message;
+      toast.classList.add('is-visible');
+      clearTimeout(showToast.timer);
+      showToast.timer = setTimeout(() => toast.classList.remove('is-visible'), 3200);
+    }
+    function getGuildConfig(guildId) {
+      return guildConfigs.find((guild) => guild.guildId === guildId) || null;
+    }
+    function setConfigurationDisabled(disabled) {
+      for (const selector of ['#ticketCategoryId', '#staffRoleId', '#serverPrompt', '#serverInfo', '#categoryName', '#panelChannelId', '#panelButtonLabel', '#panelTitle', '#panelDescription']) {
+        const element = document.querySelector(selector);
+        if (element) element.disabled = disabled;
+      }
+      document.querySelectorAll('#settings button').forEach((button) => {
+        button.disabled = disabled;
+      });
+    }
+    function renderInstallRequired(guild) {
+      setConfigurationDisabled(true);
+      document.querySelector('#installBanner').hidden = false;
+      document.querySelector('#installLink').href = guild.inviteUrl;
+      document.querySelector('#ticketCategoryId').innerHTML = '<option>Instala NexaDesk para cargar categorias</option>';
+      document.querySelector('#staffRoleId').innerHTML = '<option>Instala NexaDesk para cargar roles</option>';
+      document.querySelector('#panelChannelId').innerHTML = '<option>Instala NexaDesk para cargar canales</option>';
+      document.querySelector('#activeCategory').textContent = 'Bot no instalado';
+      document.querySelector('#activeStaff').textContent = 'Bot no instalado';
+      document.querySelector('#activePanels').textContent = String(guild.panels?.length ?? 0);
+      document.querySelectorAll('.guild-pill').forEach((button) => button.classList.toggle('is-active', button.dataset.guildId === guild.guildId));
     }
     async function loadGuildMeta(guildId) {
       if (!guildId) return;
+      const guild = getGuildConfig(guildId);
+      if (guild && !guild.installed) {
+        renderInstallRequired(guild);
+        return;
+      }
+      setConfigurationDisabled(false);
+      document.querySelector('#installBanner').hidden = true;
       const [roles, channels] = await Promise.all([
-        fetch('/api/guilds/' + guildId + '/roles').then((response) => response.json()),
-        fetch('/api/guilds/' + guildId + '/channels').then((response) => response.json())
+        getJson('/api/guilds/' + guildId + '/roles'),
+        getJson('/api/guilds/' + guildId + '/channels')
       ]);
       guildMeta[guildId] = { roles, channels };
       renderGuildSelectors(guildId);
@@ -895,13 +1017,19 @@ function renderDashboard({ session, guilds, tickets, stats }) {
       const option = document.querySelector(selector)?.selectedOptions?.[0];
       return option && option.value ? option.textContent : '';
     }
-    function syncGuildForm(sourceId) {
+    function syncGuildForm(sourceId, { inviteIfMissing = true } = {}) {
       const guildId = document.querySelector(sourceId).value;
+      const guild = getGuildConfig(guildId);
       for (const selector of ['#guildId', '#categoryGuildId', '#panelGuildId']) {
         const element = document.querySelector(selector);
         if (element && element.value !== guildId) element.value = guildId;
       }
-      loadGuildMeta(guildId).catch((error) => alert(error.message));
+      if (guild && !guild.installed && inviteIfMissing) {
+        showToast('Abriendo invitacion de NexaDesk para ' + guild.guildName + '...');
+        window.location.href = guild.inviteUrl;
+        return;
+      }
+      loadGuildMeta(guildId).catch((error) => showToast(error.message));
     }
     async function saveConfig(event) {
       event.preventDefault();
@@ -913,17 +1041,18 @@ function renderDashboard({ session, guilds, tickets, stats }) {
         staffRoleId: document.querySelector('#staffRoleId').value,
         serverPrompt: document.querySelector('#serverPrompt').value,
         serverInfo: document.querySelector('#serverInfo').value
-      }).catch((error) => alert(error.message));
+      }).catch((error) => showToast(error.message));
       if (updated) {
         const index = guildConfigs.findIndex((guild) => guild.guildId === guildId);
         if (index >= 0) guildConfigs[index] = { ...guildConfigs[index], ...updated };
         renderGuildSelectors(guildId);
+        showToast('Configuracion guardada.');
       }
       return false;
     }
     async function createCategory(event) {
       event.preventDefault();
-      await postJson('/api/guilds/' + document.querySelector('#categoryGuildId').value + '/categories', { name: document.querySelector('#categoryName').value }).then(() => location.reload()).catch((error) => alert(error.message));
+      await postJson('/api/guilds/' + document.querySelector('#categoryGuildId').value + '/categories', { name: document.querySelector('#categoryName').value }).then(() => location.reload()).catch((error) => showToast(error.message));
       return false;
     }
     async function createPanel(event) {
@@ -933,7 +1062,7 @@ function renderDashboard({ session, guilds, tickets, stats }) {
         title: document.querySelector('#panelTitle').value,
         description: document.querySelector('#panelDescription').value,
         buttonLabel: document.querySelector('#panelButtonLabel').value
-      }).then(() => location.reload()).catch((error) => alert(error.message));
+      }).then(() => location.reload()).catch((error) => showToast(error.message));
       return false;
     }
     const source = new EventSource('/api/events');
@@ -973,6 +1102,11 @@ function renderDashboard({ session, guilds, tickets, stats }) {
     }
     document.querySelectorAll('.guild-pill').forEach((button) => {
       button.addEventListener('click', () => {
+        if (button.dataset.installed === 'false') {
+          showToast('Abriendo invitacion de NexaDesk...');
+          window.location.href = button.dataset.inviteUrl;
+          return;
+        }
         document.querySelector('#guildId').value = button.dataset.guildId;
         syncGuildForm('#guildId');
       });
@@ -981,7 +1115,7 @@ function renderDashboard({ session, guilds, tickets, stats }) {
       document.querySelector('#ticketCategoryName').value = selectedOptionText('#ticketCategoryId');
     });
     bindTranscriptButtons();
-    syncGuildForm('#guildId');
+    syncGuildForm('#guildId', { inviteIfMissing: false });
   </script>
 </body>
 </html>`;

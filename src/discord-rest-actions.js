@@ -88,6 +88,11 @@ export function createDiscordRestActions({ config, storage }) {
           type: channel.type,
           parentId: channel.parent_id
         }));
+    },
+
+    async listInstalledGuildIds() {
+      const guilds = await rest.get(Routes.userGuilds());
+      return guilds.map((guild) => guild.id);
     }
   };
 }
