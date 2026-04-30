@@ -65,6 +65,8 @@ If the bot is running on the Raspberry Pi, set this in Render so the web service
 RUN_BOT=false
 ```
 
+Render still needs `DISCORD_TOKEN` even with `RUN_BOT=false`, because the dashboard uses the bot token to read roles/channels and create categories or panels. If Discord resets the token, update it both on the Pi and in Render.
+
 ## Discord OAuth
 
 Add this redirect URL in the Discord Developer Portal:

@@ -274,6 +274,13 @@ function asyncHandler(handler) {
 }
 
 function normalizeError(error) {
+  const message = error instanceof Error ? error.message : String(error ?? '');
+  if (/Expected token to be set/i.test(message)) {
+    return 'Falta DISCORD_TOKEN en Render. Pon el token actual del bot en Environment y redeploy para cargar roles, canales y paneles.';
+  }
+  if (/401|Unauthorized|Invalid Form Body|TOKEN_INVALID|invalid token/i.test(message)) {
+    return 'El DISCORD_TOKEN configurado en Render no es valido o fue reseteado. Actualizalo con el token actual del bot y redeploy.';
+  }
   if (error instanceof Error) return error.message;
   if (typeof error === 'string') return error;
   try {
@@ -783,7 +790,7 @@ function renderDashboard({ session, guilds, tickets, stats }) {
         <div><span>Paneles</span><strong id="activePanels">0</strong></div>
       </div>
       <div class="install-banner" id="installBanner" hidden>
-        <div><strong>NexaDesk no esta instalado en este servidor.</strong><p>Al seleccionarlo puedes invitar el bot directamente con permisos recomendados.</p></div>
+        <div><strong id="installTitle">NexaDesk no esta instalado en este servidor.</strong><p id="installText">Al seleccionarlo puedes invitar el bot directamente con permisos recomendados.</p></div>
         <a id="installLink" href="#">Invitar bot</a>
       </div>
     </section>
@@ -968,7 +975,11 @@ function renderDashboard({ session, guilds, tickets, stats }) {
     function renderInstallRequired(guild) {
       setConfigurationDisabled(true);
       document.querySelector('#installBanner').hidden = false;
+      document.querySelector('#installTitle').textContent = 'NexaDesk no esta instalado en este servidor.';
+      document.querySelector('#installText').textContent = 'Al seleccionarlo puedes invitar el bot directamente con permisos recomendados.';
       document.querySelector('#installLink').href = guild.inviteUrl;
+      document.querySelector('#installLink').textContent = 'Invitar bot';
+      document.querySelector('#installLink').target = '';
       document.querySelector('#ticketCategoryId').innerHTML = '<option>Instala NexaDesk para cargar categorias</option>';
       document.querySelector('#staffRoleId').innerHTML = '<option>Instala NexaDesk para cargar roles</option>';
       document.querySelector('#panelChannelId').innerHTML = '<option>Instala NexaDesk para cargar canales</option>';
@@ -976,6 +987,23 @@ function renderDashboard({ session, guilds, tickets, stats }) {
       document.querySelector('#activeStaff').textContent = 'Bot no instalado';
       document.querySelector('#activePanels').textContent = String(guild.panels?.length ?? 0);
       document.querySelectorAll('.guild-pill').forEach((button) => button.classList.toggle('is-active', button.dataset.guildId === guild.guildId));
+    }
+    function renderGuildLoadError(guildId, message) {
+      const guild = getGuildConfig(guildId) || {};
+      setConfigurationDisabled(true);
+      document.querySelector('#installBanner').hidden = false;
+      document.querySelector('#installTitle').textContent = 'Render necesita el token del bot.';
+      document.querySelector('#installText').textContent = message;
+      document.querySelector('#installLink').href = 'https://dashboard.render.com/';
+      document.querySelector('#installLink').target = '_blank';
+      document.querySelector('#installLink').textContent = 'Abrir Render';
+      document.querySelector('#ticketCategoryId').innerHTML = '<option>No se pudieron cargar categorias</option>';
+      document.querySelector('#staffRoleId').innerHTML = '<option>No se pudieron cargar roles</option>';
+      document.querySelector('#panelChannelId').innerHTML = '<option>No se pudieron cargar canales</option>';
+      document.querySelector('#activeCategory').textContent = 'Token requerido';
+      document.querySelector('#activeStaff').textContent = 'Token requerido';
+      document.querySelector('#activePanels').textContent = String(guild.panels?.length ?? 0);
+      document.querySelectorAll('.guild-pill').forEach((button) => button.classList.toggle('is-active', button.dataset.guildId === guildId));
     }
     async function loadGuildMeta(guildId) {
       if (!guildId) return;
@@ -1029,7 +1057,10 @@ function renderDashboard({ session, guilds, tickets, stats }) {
         window.location.href = guild.inviteUrl;
         return;
       }
-      loadGuildMeta(guildId).catch((error) => showToast(error.message));
+      loadGuildMeta(guildId).catch((error) => {
+        renderGuildLoadError(guildId, error.message);
+        showToast(error.message);
+      });
     }
     async function saveConfig(event) {
       event.preventDefault();
