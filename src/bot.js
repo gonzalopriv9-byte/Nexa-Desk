@@ -11,6 +11,7 @@ import {
   GatewayIntentBits,
   PermissionFlagsBits
 } from 'discord.js';
+import { buildPanelEmbed, normalizePanelOptions, panelWelcomeMessage } from './panel-options.js';
 import { buildTranscriptFileName, buildTranscriptText } from './transcripts.js';
 
 const EMOJIS = {
@@ -49,7 +50,9 @@ export function createBot({ config, storage, supportAgent }) {
   client.on(Events.InteractionCreate, async (interaction) => {
     if (interaction.isButton() && interaction.customId === 'nexadesk:create_ticket') {
       const guildConfig = await storage.getGuildConfig(interaction.guildId);
-      if (!guildConfig?.ticketCategoryId) {
+      const panel = findPanelForInteraction(guildConfig, interaction);
+      const ticketCategoryId = panel?.ticketCategoryId || guildConfig?.ticketCategoryId;
+      if (!ticketCategoryId) {
         await interaction.reply({ content: 'El sistema de tickets todavia no tiene una categoria configurada.', ephemeral: true });
         return;
       }
@@ -57,7 +60,7 @@ export function createBot({ config, storage, supportAgent }) {
       const channel = await interaction.guild.channels.create({
         name: `ticket-${interaction.user.username}`.toLowerCase().replace(/[^a-z0-9-]/g, '-').slice(0, 90),
         type: ChannelType.GuildText,
-        parent: guildConfig.ticketCategoryId,
+        parent: ticketCategoryId,
         reason: 'NexaDesk panel ticket creation',
         permissionOverwrites: [
           {
@@ -90,7 +93,7 @@ export function createBot({ config, storage, supportAgent }) {
         guildName: interaction.guild.name,
         channelId: channel.id,
         channelName: channel.name,
-        categoryId: guildConfig.ticketCategoryId,
+        categoryId: ticketCategoryId,
         openedBy: interaction.user.id
       });
       if (ticket.alreadyExists) {
@@ -98,10 +101,7 @@ export function createBot({ config, storage, supportAgent }) {
         return;
       }
 
-      const welcome = await channel.send([
-        `${EMOJIS.global} Hola ${interaction.user}, soy **NexaDesk**.`,
-        'Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al staff con el contexto ordenado.'
-      ].join('\n'));
+      const welcome = await channel.send(`${EMOJIS.global} ${panelWelcomeMessage(panel, `${interaction.user}`)}`);
       await saveTranscript(storage, welcome, 'assistant');
 
       await interaction.reply({ content: `Ticket creado: ${channel}`, ephemeral: true });
@@ -704,6 +704,13 @@ async function wasCreatedByNexaDeskPanel(channel) {
   }
 }
 
+function findPanelForInteraction(guildConfig, interaction) {
+  const panels = guildConfig?.panels ?? [];
+  return panels.find((panel) => panel.messageId === interaction.message?.id)
+    ?? panels.find((panel) => panel.channelId === interaction.channelId)
+    ?? null;
+}
+
 function parseEscalation(answer) {
   const trimmed = cleanBotAnswer(answer);
   const escalateMatch = trimmed.match(/^\[ESCALATE\]\s*/i);
@@ -863,25 +870,25 @@ export async function createTicketCategory(client, storage, { guildId, name }) {
   });
 }
 
-export async function createTicketPanel(client, storage, { guildId, channelId, title, description, buttonLabel }) {
+export async function createTicketPanel(client, storage, { guildId, channelId, ...panelInput }) {
   const guild = await client.guilds.fetch(guildId);
   const channel = await guild.channels.fetch(channelId);
   if (!channel || channel.type !== ChannelType.GuildText) {
     throw new Error('Panel channel must be a text channel.');
   }
 
-  const embed = new EmbedBuilder()
-    .setTitle(title)
-    .setDescription(description)
-    .setColor(0x4bd8ee)
-    .setFooter({ text: 'NexaDesk AI Support' });
+  const panel = normalizePanelOptions(panelInput);
+  const embed = new EmbedBuilder(buildPanelEmbed(panel));
 
-  const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId('nexadesk:create_ticket')
-      .setLabel(buttonLabel)
-      .setStyle(ButtonStyle.Primary)
-  );
+  const button = new ButtonBuilder()
+    .setCustomId('nexadesk:create_ticket')
+    .setLabel(panel.buttonLabel)
+    .setStyle(panelButtonStyle(panel.buttonStyle));
+
+  const emoji = parsePanelEmoji(panel.buttonEmoji);
+  if (emoji) button.setEmoji(emoji);
+
+  const row = new ActionRowBuilder().addComponents(button);
 
   const message = await channel.send({ embeds: [embed], components: [row] });
   const existing = await storage.getGuildConfig(guildId);
@@ -891,13 +898,39 @@ export async function createTicketPanel(client, storage, { guildId, channelId, t
       ...(existing?.panels ?? []),
       {
         channelId,
+        channelName: panelInput.channelName,
         messageId: message.id,
-        title,
-        buttonLabel,
+        ...panel,
         createdAt: new Date().toISOString()
       }
     ]
   });
+}
+
+function panelButtonStyle(style) {
+  return {
+    primary: ButtonStyle.Primary,
+    secondary: ButtonStyle.Secondary,
+    success: ButtonStyle.Success,
+    danger: ButtonStyle.Danger
+  }[style] ?? ButtonStyle.Primary;
+}
+
+function parsePanelEmoji(value) {
+  const text = String(value ?? '').trim();
+  if (!text) return null;
+  if (/^:[\w-]+:$/.test(text)) return null;
+
+  const customEmoji = text.match(/^<(a?):([A-Za-z0-9_]+):(\d+)>$/);
+  if (customEmoji) {
+    return {
+      animated: customEmoji[1] === 'a',
+      name: customEmoji[2],
+      id: customEmoji[3]
+    };
+  }
+
+  return { name: text };
 }
 
 export async function listGuildRoles(client, { guildId }) {

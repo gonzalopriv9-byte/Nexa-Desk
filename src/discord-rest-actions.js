@@ -1,4 +1,5 @@
 import { REST, Routes, ChannelType } from 'discord.js';
+import { buildPanelButton, buildPanelEmbed, normalizePanelOptions } from './panel-options.js';
 
 export function createDiscordRestActions({ config, storage }) {
   const botToken = config.DISCORD_TOKEN?.trim();
@@ -25,30 +26,17 @@ export function createDiscordRestActions({ config, storage }) {
       });
     },
 
-    async createTicketPanel({ guildId, channelId, title, description, buttonLabel }) {
+    async createTicketPanel({ guildId, channelId, ...panelInput }) {
       requireBotToken(botToken);
       const guild = await rest.get(Routes.guild(guildId));
+      const panel = normalizePanelOptions(panelInput);
       const message = await rest.post(Routes.channelMessages(channelId), {
         body: {
-          embeds: [
-            {
-              title,
-              description,
-              color: 0x4bd8ee,
-              footer: { text: 'NexaDesk AI Support' }
-            }
-          ],
+          embeds: [buildPanelEmbed(panel)],
           components: [
             {
               type: 1,
-              components: [
-                {
-                  type: 2,
-                  style: 1,
-                  custom_id: 'nexadesk:create_ticket',
-                  label: buttonLabel
-                }
-              ]
+              components: [buildPanelButton(panel)]
             }
           ]
         }
@@ -61,9 +49,9 @@ export function createDiscordRestActions({ config, storage }) {
           ...(existing?.panels ?? []),
           {
             channelId,
+            channelName: panelInput.channelName,
             messageId: message.id,
-            title,
-            buttonLabel,
+            ...panel,
             createdAt: new Date().toISOString()
           }
         ]

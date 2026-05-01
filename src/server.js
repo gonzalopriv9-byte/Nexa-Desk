@@ -242,9 +242,21 @@ export function createServer({ config, storage, bot, events }) {
       const updated = await bot.createTicketPanel({
         guildId: req.params.guildId,
         channelId: req.body.channelId,
+        channelName: req.body.channelName,
         title: req.body.title || 'Soporte',
         description: req.body.description || 'Pulsa el boton para abrir un ticket.',
-        buttonLabel: req.body.buttonLabel || 'Abrir ticket'
+        buttonLabel: req.body.buttonLabel || 'Abrir ticket',
+        buttonStyle: req.body.buttonStyle,
+        buttonEmoji: req.body.buttonEmoji,
+        embedColor: req.body.embedColor,
+        authorName: req.body.authorName,
+        authorIconUrl: req.body.authorIconUrl,
+        footerText: req.body.footerText,
+        imageUrl: req.body.imageUrl,
+        thumbnailUrl: req.body.thumbnailUrl,
+        ticketCategoryId: req.body.ticketCategoryId,
+        ticketCategoryName: req.body.ticketCategoryName,
+        welcomeMessage: req.body.welcomeMessage
       });
       res.json(updated);
     } catch (error) {
@@ -618,6 +630,7 @@ function renderDashboard({ session, guilds, tickets, stats }) {
   <style>
     :root { color-scheme:dark; --bg:#050505; --panel:#101010; --panel-2:#181818; --line:#343434; --soft-line:rgba(255,255,255,.1); --text:#ffffff; --muted:#a8a8a8; --paper:#ffffff; --ink:#050505; --ok:#ffffff; --danger:#ff5f57; }
     * { box-sizing:border-box; }
+    html { scroll-behavior:smooth; }
     body { margin:0; font-family:"Segoe UI",ui-sans-serif,system-ui,sans-serif; background:radial-gradient(circle at 10% 0%, rgba(255,255,255,.12), transparent 30%), repeating-linear-gradient(90deg, rgba(255,255,255,.035) 0 1px, transparent 1px 72px), repeating-linear-gradient(0deg, rgba(255,255,255,.025) 0 1px, transparent 1px 72px), var(--bg); color:var(--text); }
     .app-shell { width:min(1440px, calc(100% - 40px)); margin:0 auto; display:grid; grid-template-columns:220px minmax(0,1fr); gap:22px; padding:22px 0 52px; }
     .sidebar { position:sticky; top:22px; height:calc(100vh - 44px); border:1px solid var(--line); border-radius:14px; background:rgba(7,16,20,.88); padding:16px; animation:rise .55s ease both; }
@@ -634,7 +647,7 @@ function renderDashboard({ session, guilds, tickets, stats }) {
     .brand-logo { width:42px; height:42px; object-fit:cover; border-radius:11px; border:1px solid rgba(255,255,255,.55); box-shadow:0 0 38px rgba(255,255,255,.12); }
     .mark { display:grid; place-items:center; width:42px; height:42px; border:1px solid rgba(255,255,255,.55); background:#fff; color:#050505; border-radius:10px; font-weight:900; }
     .nav-brand { display:flex; align-items:center; gap:12px; margin-bottom:18px; }
-    .nav-link { display:block; color:var(--muted); text-decoration:none; border:1px solid transparent; border-radius:10px; padding:10px 11px; margin:4px 0; }
+    .nav-link { display:block; color:var(--muted); text-decoration:none; border:1px solid transparent; border-radius:10px; padding:10px 11px; margin:4px 0; transition:color .22s ease, border-color .22s ease, background .22s ease, transform .22s ease; }
     .nav-link:hover { color:var(--text); border-color:var(--line); background:#0b1216; }
     .nav-foot { position:absolute; left:16px; right:16px; bottom:16px; }
     .hero-panel,.surface,.stat,.active-server { border:1px solid var(--line); border-radius:14px; background:rgba(11,18,22,.86); }
@@ -649,7 +662,8 @@ function renderDashboard({ session, guilds, tickets, stats }) {
     .signal-list { display:grid; gap:10px; margin-top:16px; }
     .signal { display:flex; justify-content:space-between; gap:18px; padding:10px 0; border-bottom:1px solid var(--soft-line); color:var(--muted); }
     .signal strong { color:var(--text); }
-    .surface { padding:20px; animation:rise .55s ease both; }
+    .surface { padding:20px; animation:rise .55s ease both; transition:border-color .28s ease, transform .28s ease, box-shadow .28s ease; }
+    .surface:hover { border-color:rgba(255,255,255,.22); box-shadow:0 24px 80px rgba(0,0,0,.24); }
     .stats { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; margin-bottom:16px; }
     .stat { padding:16px; background:linear-gradient(180deg,var(--panel-2),var(--panel)); }
     .stat strong { display:block; font-size:28px; }
@@ -672,7 +686,8 @@ function renderDashboard({ session, guilds, tickets, stats }) {
     .server-status div { border:1px solid var(--soft-line); border-radius:10px; padding:10px; background:rgba(5,8,10,.42); }
     .server-status strong { display:block; font-size:13px; margin-top:4px; }
     .guild-list { display:grid; gap:8px; max-height:560px; overflow:auto; padding-right:4px; }
-    .guild-pill { display:flex; align-items:center; justify-content:space-between; gap:12px; text-align:left; border:1px solid var(--soft-line); background:#071014; color:var(--text); border-radius:12px; padding:12px; cursor:pointer; }
+    .guild-pill { display:flex; align-items:center; justify-content:space-between; gap:12px; text-align:left; border:1px solid var(--soft-line); background:#071014; color:var(--text); border-radius:12px; padding:12px; cursor:pointer; transition:transform .22s cubic-bezier(.2,.8,.2,1), border-color .22s ease, background .22s ease; }
+    .guild-pill:hover { transform:translateX(3px); }
     .guild-pill:hover,.guild-pill.is-active { border-color:rgba(255,255,255,.72); background:rgba(255,255,255,.08); }
     .guild-pill.is-not-installed { border-style:dashed; background:rgba(255,255,255,.035); }
     .guild-pill.is-not-installed i { color:#050505; background:#fff; padding:5px 8px; border-radius:999px; font-weight:900; }
@@ -683,18 +698,52 @@ function renderDashboard({ session, guilds, tickets, stats }) {
     .install-banner strong { display:block; }
     .install-banner a { display:inline-flex; align-items:center; justify-content:center; min-width:150px; border-radius:10px; padding:11px 12px; color:#050505; background:#fff; text-decoration:none; font-weight:900; }
     .control-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px; }
-    .control-card { border:1px solid var(--line); border-radius:14px; padding:18px; background:linear-gradient(180deg, rgba(24,24,24,.94), rgba(8,8,8,.94)); }
+    .control-card { border:1px solid var(--line); border-radius:14px; padding:18px; background:linear-gradient(180deg, rgba(24,24,24,.94), rgba(8,8,8,.94)); transition:transform .28s cubic-bezier(.2,.8,.2,1), border-color .28s ease, box-shadow .28s ease; }
+    .control-card:hover { transform:translateY(-2px); border-color:rgba(255,255,255,.26); box-shadow:0 24px 80px rgba(0,0,0,.28); }
     .control-card.wide { grid-column:1 / -1; }
     .card-head { display:flex; gap:12px; align-items:flex-start; margin-bottom:14px; }
     .step { display:grid; place-items:center; width:30px; height:30px; border-radius:9px; color:#050505; background:#fff; font-weight:900; flex:0 0 auto; }
     form { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
     label { display:grid; gap:6px; font-size:14px; }
-    input,select,textarea,button { width:100%; border-radius:10px; border:1px solid var(--line); background:#080808; color:var(--text); padding:11px 12px; font:inherit; }
+    input,select,textarea,button { width:100%; border-radius:10px; border:1px solid var(--line); background:#080808; color:var(--text); padding:11px 12px; font:inherit; transition:border-color .22s ease, background .22s ease, transform .22s ease, box-shadow .22s ease; }
+    input:focus,select:focus,textarea:focus { outline:0; border-color:rgba(255,255,255,.72); box-shadow:0 0 0 4px rgba(255,255,255,.08); background:#0d0d0d; }
+    input[type="color"] { min-height:44px; padding:5px; cursor:pointer; }
     textarea { min-height:140px; resize:vertical; grid-column:1 / -1; }
     .span-2 { grid-column:1 / -1; }
     button { background:#fff; color:#050505; border:0; font-weight:900; cursor:pointer; }
+    button:hover { transform:translateY(-1px); box-shadow:0 14px 34px rgba(255,255,255,.12); }
     button:disabled,input:disabled,select:disabled,textarea:disabled { opacity:.48; cursor:not-allowed; }
     .secondary-button { background:#0a0a0a; color:var(--text); border:1px solid var(--line); }
+    .form-section { grid-column:1 / -1; display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; padding:14px; border:1px solid var(--soft-line); border-radius:14px; background:rgba(255,255,255,.035); }
+    .section-label { grid-column:1 / -1; display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:2px; }
+    .section-label strong { font-size:14px; text-transform:uppercase; letter-spacing:.08em; }
+    .section-label span { color:var(--muted); font-size:13px; }
+    .panel-builder { grid-template-columns:minmax(0,1.05fr) minmax(320px,.95fr); align-items:start; }
+    .panel-fields { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
+    .panel-preview-wrap { position:sticky; top:22px; display:grid; gap:12px; }
+    .discord-preview { border:1px solid var(--line); border-radius:16px; background:linear-gradient(180deg,#151515,#080808); padding:16px; box-shadow:0 28px 90px rgba(0,0,0,.32); overflow:hidden; }
+    .preview-message { display:grid; grid-template-columns:42px minmax(0,1fr); gap:12px; align-items:start; }
+    .preview-avatar { width:42px; height:42px; border-radius:50%; border:1px solid rgba(255,255,255,.36); background:#fff; color:#050505; display:grid; place-items:center; font-weight:900; }
+    .preview-name { display:flex; gap:8px; align-items:center; margin-bottom:8px; font-weight:800; }
+    .preview-badge { color:#050505; background:#fff; border-radius:5px; padding:2px 5px; font-size:10px; font-weight:900; }
+    .embed-preview { border-left:4px solid var(--preview-color,#fff); border-radius:6px; background:#101010; padding:12px; max-width:520px; transition:border-color .22s ease, transform .22s ease; }
+    .embed-author,.embed-footer { color:var(--muted); font-size:12px; overflow-wrap:anywhere; }
+    .embed-title { color:#fff; font-weight:900; margin-top:6px; overflow-wrap:anywhere; }
+    .embed-description { color:#d7d7d7; white-space:pre-wrap; overflow-wrap:anywhere; margin-top:6px; line-height:1.45; }
+    .embed-media { display:grid; grid-template-columns:74px minmax(0,1fr); gap:10px; margin-top:10px; }
+    .embed-thumb,.embed-image { border:1px solid var(--soft-line); border-radius:10px; background:rgba(255,255,255,.055); min-height:58px; display:grid; place-items:center; color:var(--muted); font-size:12px; overflow:hidden; }
+    .embed-image { min-height:92px; }
+    .preview-button { margin-top:10px; width:auto; display:inline-flex; padding:9px 12px; border-radius:8px; color:#fff; background:#5865f2; transition:background .22s ease, transform .22s ease; }
+    .preview-button.secondary { background:#4f545c; }
+    .preview-button.success { background:#248046; }
+    .preview-button.danger { background:#da373c; }
+    .panel-history { border:1px solid var(--soft-line); border-radius:14px; background:rgba(255,255,255,.035); padding:12px; }
+    .panel-history h3 { font-size:15px; margin-bottom:10px; }
+    .panel-stack { display:grid; gap:8px; max-height:220px; overflow:auto; }
+    .panel-card { border:1px solid var(--soft-line); border-radius:12px; padding:11px; background:rgba(5,5,5,.42); transition:transform .22s ease, border-color .22s ease, background .22s ease; }
+    .panel-card:hover { transform:translateX(3px); border-color:rgba(255,255,255,.3); background:rgba(255,255,255,.07); }
+    .panel-card strong,.panel-card small { display:block; }
+    .panel-card small { margin-top:4px; }
     table { width:100%; border-collapse:collapse; }
     th,td { text-align:left; padding:12px; border-bottom:1px solid var(--line); }
     .table-action { width:auto; padding:8px 10px; font-size:13px; }
@@ -728,8 +777,8 @@ function renderDashboard({ session, guilds, tickets, stats }) {
     @keyframes bannerGlow { 0%,100% { box-shadow:0 22px 70px rgba(0,0,0,.42), 0 0 0 1px rgba(255,255,255,.03) inset; } 50% { box-shadow:0 22px 90px rgba(255,255,255,.08), 0 0 0 1px rgba(255,255,255,.09) inset; } }
     @keyframes spin { to { transform:rotate(360deg); } }
     @media (prefers-reduced-motion:reduce) { .banner-frame,.banner-frame::before,.banner-frame img { animation:none; transition:none; } }
-    @media (max-width:1120px) { .app-shell,.workspace,.topbar,.command-center { grid-template-columns:1fr; } .sidebar { position:relative; height:auto; top:auto; } .nav-foot { position:static; margin-top:18px; } }
-    @media (max-width:760px) { form,.control-grid,.stats,.server-status,.mini-grid { grid-template-columns:1fr; } label,button { margin-top:12px; } .app-shell { width:min(100% - 24px, 1440px); } }
+    @media (max-width:1120px) { .app-shell,.workspace,.topbar,.command-center,.panel-builder { grid-template-columns:1fr; } .sidebar { position:relative; height:auto; top:auto; } .nav-foot { position:static; margin-top:18px; } .panel-preview-wrap { position:relative; top:auto; } }
+    @media (max-width:760px) { form,.control-grid,.stats,.server-status,.mini-grid,.panel-fields,.form-section { grid-template-columns:1fr; } label,button { margin-top:12px; } .app-shell { width:min(100% - 24px, 1440px); } }
   </style>
 </head>
 <body>
@@ -836,15 +885,70 @@ function renderDashboard({ session, guilds, tickets, stats }) {
             <button class="span-2" type="submit">Crear y activar categoria</button>
           </form>
         </article>
-        <article class="control-card">
-          <div class="card-head"><span class="step">3</span><div><h2>Panel de soporte</h2><p>Publica el boton que abre tickets en el canal elegido.</p></div></div>
-          <form onsubmit="return createPanel(event)">
-            <select id="panelGuildId" hidden required>${guildOptions}</select>
-            <label>Canal del panel<select id="panelChannelId" required></select></label>
-            <label>Boton<input id="panelButtonLabel" value="Abrir ticket"></label>
-            <label class="span-2">Titulo<input id="panelTitle" value="Centro de soporte"></label>
-            <textarea id="panelDescription">Pulsa el boton para abrir un ticket. NexaDesk analizara tu caso y avisara al staff si hace falta.</textarea>
-            <button class="span-2" type="submit">Publicar panel</button>
+        <article class="control-card wide">
+          <div class="card-head"><span class="step">3</span><div><h2>Panel de soporte</h2><p>Disena el embed, decide donde se abre el ticket y revisa el resultado antes de publicarlo.</p></div></div>
+          <form class="panel-builder" onsubmit="return createPanel(event)">
+            <div class="panel-fields">
+              <select id="panelGuildId" hidden required>${guildOptions}</select>
+              <div class="form-section">
+                <div class="section-label"><strong>Destino</strong><span>Canal publico y categoria privada</span></div>
+                <label>Canal donde publicar<select id="panelChannelId" required></select></label>
+                <label>Categoria donde abrir tickets<select id="panelTicketCategoryId"></select></label>
+              </div>
+              <div class="form-section">
+                <div class="section-label"><strong>Boton</strong><span>Texto, color y emoji</span></div>
+                <label>Texto del boton<input id="panelButtonLabel" value="Abrir ticket"></label>
+                <label>Estilo<select id="panelButtonStyle">
+                  <option value="primary">Azul Discord</option>
+                  <option value="secondary">Gris limpio</option>
+                  <option value="success">Verde correcto</option>
+                  <option value="danger">Rojo urgente</option>
+                </select></label>
+                <label class="span-2">Emoji del boton<input id="panelButtonEmoji" placeholder="Ej: &lt;a:Global:1499728413974593708&gt;"></label>
+              </div>
+              <div class="form-section">
+                <div class="section-label"><strong>Embed</strong><span>Contenido visual del panel</span></div>
+                <label>Titulo<input id="panelTitle" value="Centro de soporte"></label>
+                <label>Color<input id="panelEmbedColor" type="color" value="#ffffff"></label>
+                <label class="span-2">Autor<input id="panelAuthorName" placeholder="NexaDesk Support"></label>
+                <label class="span-2">Icono del autor<input id="panelAuthorIconUrl" placeholder="https://..."></label>
+                <textarea id="panelDescription">Pulsa el boton para abrir un ticket. NexaDesk analizara tu caso y avisara al staff si hace falta.</textarea>
+                <label>Thumbnail<input id="panelThumbnailUrl" placeholder="https://..."></label>
+                <label>Imagen grande<input id="panelImageUrl" placeholder="https://..."></label>
+                <label class="span-2">Footer<input id="panelFooterText" value="NexaDesk AI Support"></label>
+              </div>
+              <div class="form-section">
+                <div class="section-label"><strong>Primer mensaje</strong><span>Usa {user} para mencionar al usuario</span></div>
+                <textarea id="panelWelcomeMessage">Hola {user}, soy NexaDesk.
+Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al staff con el contexto ordenado.</textarea>
+              </div>
+              <button class="span-2" type="submit">Publicar panel personalizado</button>
+            </div>
+            <aside class="panel-preview-wrap">
+              <div class="discord-preview">
+                <div class="preview-message">
+                  <div class="preview-avatar">N</div>
+                  <div>
+                    <div class="preview-name">NexaDesk <span class="preview-badge">APP</span></div>
+                    <article class="embed-preview" id="panelPreview">
+                      <div class="embed-author" id="previewAuthor"></div>
+                      <div class="embed-title" id="previewTitle">Centro de soporte</div>
+                      <div class="embed-description" id="previewDescription">Pulsa el boton para abrir un ticket. NexaDesk analizara tu caso y avisara al staff si hace falta.</div>
+                      <div class="embed-media">
+                        <div class="embed-thumb" id="previewThumbnail">Thumbnail opcional</div>
+                        <div class="embed-image" id="previewImage">Imagen opcional</div>
+                      </div>
+                      <div class="embed-footer" id="previewFooter">NexaDesk AI Support</div>
+                    </article>
+                    <button class="preview-button" id="previewButton" type="button">Abrir ticket</button>
+                  </div>
+                </div>
+              </div>
+              <div class="panel-history">
+                <h3>Paneles de este servidor</h3>
+                <div class="panel-stack" id="panelHistory"><p class="notice">Selecciona un servidor para ver sus paneles.</p></div>
+              </div>
+            </aside>
           </form>
         </article>
       </section>
@@ -960,6 +1064,16 @@ function renderDashboard({ session, guilds, tickets, stats }) {
       state.stats = await getJson('/api/stats');
       renderStats();
     }
+    async function refreshGuilds() {
+      const guilds = await getJson('/api/guilds');
+      guildConfigs.splice(0, guildConfigs.length, ...guilds);
+      const activeGuildId = document.querySelector('#guildId')?.value;
+      if (activeGuildId) {
+        const activeGuild = getGuildConfig(activeGuildId);
+        renderPanelHistory(activeGuild || {});
+        renderGuildSelectors(activeGuildId);
+      }
+    }
     async function getJson(url) {
       const response = await fetch(url);
       const body = await response.json().catch(() => ({}));
@@ -984,7 +1098,7 @@ function renderDashboard({ session, guilds, tickets, stats }) {
       return guildConfigs.find((guild) => guild.guildId === guildId) || null;
     }
     function setConfigurationDisabled(disabled) {
-      for (const selector of ['#ticketCategoryId', '#staffRoleId', '#serverPrompt', '#serverInfo', '#categoryName', '#panelChannelId', '#panelButtonLabel', '#panelTitle', '#panelDescription']) {
+      for (const selector of ['#ticketCategoryId', '#staffRoleId', '#serverPrompt', '#serverInfo', '#categoryName', '#panelChannelId', '#panelTicketCategoryId', '#panelButtonLabel', '#panelButtonStyle', '#panelButtonEmoji', '#panelTitle', '#panelEmbedColor', '#panelAuthorName', '#panelAuthorIconUrl', '#panelDescription', '#panelThumbnailUrl', '#panelImageUrl', '#panelFooterText', '#panelWelcomeMessage']) {
         const element = document.querySelector(selector);
         if (element) element.disabled = disabled;
       }
@@ -1003,9 +1117,11 @@ function renderDashboard({ session, guilds, tickets, stats }) {
       document.querySelector('#ticketCategoryId').innerHTML = '<option>Instala NexaDesk para cargar categorias</option>';
       document.querySelector('#staffRoleId').innerHTML = '<option>Instala NexaDesk para cargar roles</option>';
       document.querySelector('#panelChannelId').innerHTML = '<option>Instala NexaDesk para cargar canales</option>';
+      document.querySelector('#panelTicketCategoryId').innerHTML = '<option>Instala NexaDesk para cargar categorias</option>';
       document.querySelector('#activeCategory').textContent = 'Bot no instalado';
       document.querySelector('#activeStaff').textContent = 'Bot no instalado';
       document.querySelector('#activePanels').textContent = String(guild.panels?.length ?? 0);
+      renderPanelHistory(guild);
       document.querySelectorAll('.guild-pill').forEach((button) => button.classList.toggle('is-active', button.dataset.guildId === guild.guildId));
     }
     function renderGuildLoadError(guildId, message) {
@@ -1020,9 +1136,11 @@ function renderDashboard({ session, guilds, tickets, stats }) {
       document.querySelector('#ticketCategoryId').innerHTML = '<option>No se pudieron cargar categorias</option>';
       document.querySelector('#staffRoleId').innerHTML = '<option>No se pudieron cargar roles</option>';
       document.querySelector('#panelChannelId').innerHTML = '<option>No se pudieron cargar canales</option>';
+      document.querySelector('#panelTicketCategoryId').innerHTML = '<option>No se pudieron cargar categorias</option>';
       document.querySelector('#activeCategory').textContent = 'Token requerido';
       document.querySelector('#activeStaff').textContent = 'Token requerido';
       document.querySelector('#activePanels').textContent = String(guild.panels?.length ?? 0);
+      renderPanelHistory(guild);
       document.querySelectorAll('.guild-pill').forEach((button) => button.classList.toggle('is-active', button.dataset.guildId === guildId));
     }
     async function loadGuildMeta(guildId) {
@@ -1050,6 +1168,8 @@ function renderDashboard({ session, guilds, tickets, stats }) {
       document.querySelector('#ticketCategoryId').innerHTML = '<option value="">Sin categoria</option>' + categories.map((channel) => '<option value="' + channel.id + '">' + escapeHtml(channel.name) + '</option>').join('');
       document.querySelector('#staffRoleId').innerHTML = '<option value="">Sin rol staff</option>' + meta.roles.map((role) => '<option value="' + role.id + '">' + escapeHtml(role.name) + '</option>').join('');
       document.querySelector('#panelChannelId').innerHTML = textChannels.map((channel) => '<option value="' + channel.id + '">#' + escapeHtml(channel.name) + '</option>').join('');
+      document.querySelector('#panelTicketCategoryId').innerHTML = '<option value="">Usar categoria principal</option>' + categories.map((channel) => '<option value="' + channel.id + '">' + escapeHtml(channel.name) + '</option>').join('');
+      document.querySelector('#panelTicketCategoryId').value = config.ticketCategoryId || '';
       document.querySelector('#ticketCategoryId').value = config.ticketCategoryId || '';
       document.querySelector('#staffRoleId').value = config.staffRoleId || '';
       document.querySelector('#ticketCategoryName').value = config.ticketCategoryName || selectedOptionText('#ticketCategoryId');
@@ -1059,6 +1179,8 @@ function renderDashboard({ session, guilds, tickets, stats }) {
       const staffOption = document.querySelector('#staffRoleId')?.selectedOptions?.[0];
       document.querySelector('#activeStaff').textContent = staffOption?.value ? staffOption.textContent : 'Sin configurar';
       document.querySelector('#activePanels').textContent = String(config.panels?.length ?? 0);
+      renderPanelHistory(config);
+      updatePanelPreview();
       document.querySelectorAll('.guild-pill').forEach((button) => button.classList.toggle('is-active', button.dataset.guildId === guildId));
     }
     function selectedOptionText(selector) {
@@ -1106,14 +1228,65 @@ function renderDashboard({ session, guilds, tickets, stats }) {
       await postJson('/api/guilds/' + document.querySelector('#categoryGuildId').value + '/categories', { name: document.querySelector('#categoryName').value }).then(() => location.reload()).catch((error) => showToast(error.message));
       return false;
     }
+    function renderPanelHistory(guild = {}) {
+      const panels = guild.panels || [];
+      const panelHistory = document.querySelector('#panelHistory');
+      if (!panelHistory) return;
+      panelHistory.innerHTML = panels.length
+        ? panels.slice().reverse().map((panel) => '<article class="panel-card"><strong>' + escapeHtml(panel.title || 'Panel sin titulo') + '</strong><small>Canal: ' + escapeHtml(panel.channelName || panel.channelId || 'sin canal') + '</small><small>Categoria: ' + escapeHtml(panel.ticketCategoryName || guild.ticketCategoryName || 'principal') + '</small><small>Boton: ' + escapeHtml(panel.buttonLabel || 'Abrir ticket') + '</small></article>').join('')
+        : '<p class="notice">Aun no hay paneles publicados en este servidor.</p>';
+    }
+    function updatePanelPreview() {
+      const color = document.querySelector('#panelEmbedColor')?.value || '#ffffff';
+      const author = document.querySelector('#panelAuthorName')?.value || '';
+      const title = document.querySelector('#panelTitle')?.value || 'Centro de soporte';
+      const description = document.querySelector('#panelDescription')?.value || 'Pulsa el boton para abrir un ticket.';
+      const footer = document.querySelector('#panelFooterText')?.value || 'NexaDesk AI Support';
+      const thumbnail = document.querySelector('#panelThumbnailUrl')?.value || '';
+      const image = document.querySelector('#panelImageUrl')?.value || '';
+      const buttonLabel = document.querySelector('#panelButtonLabel')?.value || 'Abrir ticket';
+      const buttonStyle = document.querySelector('#panelButtonStyle')?.value || 'primary';
+      const buttonEmoji = document.querySelector('#panelButtonEmoji')?.value || '';
+      document.querySelector('#panelPreview')?.style.setProperty('--preview-color', color);
+      document.querySelector('#previewAuthor').textContent = author;
+      document.querySelector('#previewTitle').textContent = title;
+      document.querySelector('#previewDescription').textContent = description;
+      document.querySelector('#previewFooter').textContent = footer;
+      document.querySelector('#previewThumbnail').textContent = thumbnail ? 'Thumbnail cargada' : 'Thumbnail opcional';
+      document.querySelector('#previewImage').textContent = image ? 'Imagen cargada' : 'Imagen opcional';
+      const previewButton = document.querySelector('#previewButton');
+      if (previewButton) {
+        previewButton.textContent = (buttonEmoji ? buttonEmoji + ' ' : '') + buttonLabel;
+        previewButton.className = 'preview-button ' + buttonStyle;
+      }
+    }
     async function createPanel(event) {
       event.preventDefault();
-      await postJson('/api/guilds/' + document.querySelector('#panelGuildId').value + '/panels', {
+      const guildId = document.querySelector('#panelGuildId').value;
+      const updated = await postJson('/api/guilds/' + guildId + '/panels', {
         channelId: document.querySelector('#panelChannelId').value,
+        channelName: selectedOptionText('#panelChannelId'),
+        ticketCategoryId: document.querySelector('#panelTicketCategoryId').value,
+        ticketCategoryName: selectedOptionText('#panelTicketCategoryId'),
         title: document.querySelector('#panelTitle').value,
         description: document.querySelector('#panelDescription').value,
-        buttonLabel: document.querySelector('#panelButtonLabel').value
-      }).then(() => location.reload()).catch((error) => showToast(error.message));
+        buttonLabel: document.querySelector('#panelButtonLabel').value,
+        buttonStyle: document.querySelector('#panelButtonStyle').value,
+        buttonEmoji: document.querySelector('#panelButtonEmoji').value,
+        embedColor: document.querySelector('#panelEmbedColor').value,
+        authorName: document.querySelector('#panelAuthorName').value,
+        authorIconUrl: document.querySelector('#panelAuthorIconUrl').value,
+        footerText: document.querySelector('#panelFooterText').value,
+        imageUrl: document.querySelector('#panelImageUrl').value,
+        thumbnailUrl: document.querySelector('#panelThumbnailUrl').value,
+        welcomeMessage: document.querySelector('#panelWelcomeMessage').value
+      }).catch((error) => showToast(error.message));
+      if (updated) {
+        const index = guildConfigs.findIndex((guild) => guild.guildId === guildId);
+        if (index >= 0) guildConfigs[index] = { ...guildConfigs[index], ...updated };
+        renderGuildSelectors(guildId);
+        showToast('Panel publicado con personalizacion completa.');
+      }
       return false;
     }
     const source = new EventSource('/api/events');
@@ -1137,6 +1310,7 @@ function renderDashboard({ session, guilds, tickets, stats }) {
     });
     source.addEventListener('guild.updated', () => {
       document.querySelector('#lastSync').textContent = new Date().toLocaleTimeString();
+      refreshGuilds().catch(() => {});
       refreshStats().catch(() => {});
     });
     source.addEventListener('transcript.message', () => {
@@ -1164,8 +1338,16 @@ function renderDashboard({ session, guilds, tickets, stats }) {
     });
     document.querySelector('#ticketCategoryId')?.addEventListener('change', () => {
       document.querySelector('#ticketCategoryName').value = selectedOptionText('#ticketCategoryId');
+      if (!document.querySelector('#panelTicketCategoryId')?.value) {
+        document.querySelector('#panelTicketCategoryId').value = document.querySelector('#ticketCategoryId').value;
+      }
     });
+    for (const selector of ['#panelTitle', '#panelDescription', '#panelButtonLabel', '#panelButtonStyle', '#panelButtonEmoji', '#panelEmbedColor', '#panelAuthorName', '#panelThumbnailUrl', '#panelImageUrl', '#panelFooterText']) {
+      document.querySelector(selector)?.addEventListener('input', updatePanelPreview);
+      document.querySelector(selector)?.addEventListener('change', updatePanelPreview);
+    }
     bindTranscriptButtons();
+    updatePanelPreview();
     syncGuildForm('#guildId', { inviteIfMissing: false });
   </script>
 </body>
