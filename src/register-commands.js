@@ -22,6 +22,25 @@ const commands = [
         .setName('ia')
         .setDescription('Desactiva la IA en este ticket para que el staff lo atienda manualmente.')
     )
+    .toJSON(),
+  new SlashCommandBuilder()
+    .setName('transcripcion')
+    .setDescription('Gestiona transcripciones de tickets.')
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName('enviar')
+        .setDescription('Envia la transcripcion del ticket por MD al usuario.')
+        .addUserOption((option) =>
+          option
+            .setName('usuario')
+            .setDescription('Usuario al que se enviara la transcripcion. Si se omite, se usa el opener del ticket.')
+            .setRequired(false)
+        )
+    )
+    .toJSON(),
+  new SlashCommandBuilder()
+    .setName('globalstats')
+    .setDescription('Muestra estadisticas globales de NexaDesk.')
     .toJSON()
 ];
 

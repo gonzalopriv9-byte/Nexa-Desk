@@ -13,6 +13,8 @@ NexaDesk is a Discord support bot that watches ticket categories, joins newly-cr
 - Discord OAuth dashboard/API ready for Render.
 - Direct bot invite flow from the server selector when NexaDesk is not installed yet.
 - Staff escalation with `/desactivar ia` and saved transcripts per server.
+- Transcript delivery by DM with `/transcripcion enviar`.
+- Global bot metrics with `/globalstats`.
 - Local JSON storage for fast development.
 - Ollama-compatible AI client prepared for a Raspberry Pi.
 
@@ -54,6 +56,7 @@ The dashboard can:
 - Create a Discord ticket category.
 - Publish a ticket panel in a selected text channel.
 - Track recent tickets detected or opened from panels.
+- View and download ticket transcripts as TXT files.
 - Receive live ticket/config updates through Server-Sent Events.
 - Open a direct Discord invite for manageable servers where the bot is not installed.
 
@@ -168,3 +171,14 @@ Recommended launch check:
 npm audit --omit=dev --audit-level=high
 npm run register
 ```
+
+## Slash commands
+
+```text
+/setup category:<category>
+/desactivar ia
+/transcripcion enviar [usuario]
+/globalstats
+```
+
+`/transcripcion enviar` sends the current ticket transcript by DM to the ticket opener. If the ticket was created by another bot and NexaDesk cannot detect the opener, pass `usuario`.

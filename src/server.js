@@ -5,6 +5,7 @@ import cookieParser from 'cookie-parser';
 import crypto from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { buildTranscriptFileName, buildTranscriptText } from './transcripts.js';
 
 const DISCORD_API = 'https://discord.com/api/v10';
 const MANAGE_GUILD = 0x20n;
@@ -188,6 +189,19 @@ export function createServer({ config, storage, bot, events }) {
       return;
     }
     res.json(await storage.listTranscriptMessages(req.params.channelId));
+  }));
+
+  app.get('/api/tickets/:channelId/transcript.txt', asyncHandler(async (req, res) => {
+    const ticket = await storage.getTicket(req.params.channelId);
+    if (!ticket || !canAccessGuild(req.session, ticket.guildId)) {
+      res.status(404).type('text/plain').send('Ticket not found');
+      return;
+    }
+
+    const messages = await storage.listTranscriptMessages(req.params.channelId);
+    res.setHeader('content-type', 'text/plain; charset=utf-8');
+    res.setHeader('content-disposition', `attachment; filename="${buildTranscriptFileName(ticket)}"`);
+    res.send(buildTranscriptText({ ticket, messages }));
   }));
 
   app.get('/api/guilds/:guildId/roles', requireGuildAccess, asyncHandler(async (req, res) => {
@@ -693,6 +707,8 @@ function renderDashboard({ session, guilds, tickets, stats }) {
     .transcript-head { display:flex; justify-content:space-between; gap:12px; align-items:center; padding:14px 16px; border-bottom:1px solid var(--line); background:#101010; }
     .transcript-head strong { display:block; }
     .transcript-head span { color:var(--muted); font-size:13px; }
+    .transcript-actions { display:flex; gap:8px; align-items:center; }
+    .transcript-download { display:inline-flex; align-items:center; justify-content:center; width:auto; border-radius:10px; border:1px solid var(--line); background:#0a0a0a; color:var(--text); padding:8px 10px; font-size:13px; font-weight:900; text-decoration:none; }
     .transcript-body { display:grid; gap:10px; max-height:420px; overflow:auto; padding:16px; }
     .transcript-message { border:1px solid var(--soft-line); border-radius:12px; padding:12px; background:rgba(255,255,255,.035); }
     .transcript-message.assistant { border-color:rgba(255,255,255,.28); background:rgba(255,255,255,.07); }
@@ -841,7 +857,10 @@ function renderDashboard({ session, guilds, tickets, stats }) {
       <aside class="transcript-viewer" id="transcriptViewer" hidden>
         <div class="transcript-head">
           <div><strong id="transcriptTitle">Transcripcion</strong><span id="transcriptMeta">Selecciona un ticket para cargar mensajes.</span></div>
-          <button class="secondary-button table-action" type="button" onclick="closeTranscript()">Cerrar</button>
+          <div class="transcript-actions">
+            <a class="transcript-download" id="downloadTranscript" href="#" download>Descargar TXT</a>
+            <button class="secondary-button table-action" type="button" onclick="closeTranscript()">Cerrar</button>
+          </div>
         </div>
         <div class="transcript-body" id="transcriptBody"></div>
       </aside>
@@ -899,6 +918,7 @@ function renderDashboard({ session, guilds, tickets, stats }) {
       document.querySelector('#transcriptViewer').hidden = false;
       document.querySelector('#transcriptTitle').textContent = ticket ? '#' + ticket.channelName : 'Transcripcion';
       document.querySelector('#transcriptMeta').textContent = ticket ? ticket.guildName + ' - ' + ticket.status : 'Cargando mensajes';
+      document.querySelector('#downloadTranscript').href = '/api/tickets/' + channelId + '/transcript.txt';
       document.querySelector('#transcriptBody').innerHTML = '<p class="notice">Cargando transcripcion...</p>';
       try {
         const messages = await fetch('/api/tickets/' + channelId + '/transcript').then((response) => {

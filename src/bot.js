@@ -1,6 +1,7 @@
 import {
   ActionRowBuilder,
   ActivityType,
+  AttachmentBuilder,
   ButtonBuilder,
   ButtonStyle,
   ChannelType,
@@ -10,6 +11,12 @@ import {
   GatewayIntentBits,
   PermissionFlagsBits
 } from 'discord.js';
+import { buildTranscriptFileName, buildTranscriptText } from './transcripts.js';
+
+const EMOJIS = {
+  wifi: '<a:wifi:1499732411829846116>',
+  global: '<a:Global:1499728413974593708>'
+};
 
 export function createBot({ config, storage, supportAgent }) {
   const intents = [
@@ -92,7 +99,7 @@ export function createBot({ config, storage, supportAgent }) {
       }
 
       const welcome = await channel.send([
-        `Hola ${interaction.user}, soy **NexaDesk**.`,
+        `${EMOJIS.global} Hola ${interaction.user}, soy **NexaDesk**.`,
         'Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al staff con el contexto ordenado.'
       ].join('\n'));
       await saveTranscript(storage, welcome, 'assistant');
@@ -130,6 +137,16 @@ export function createBot({ config, storage, supportAgent }) {
 
     if (interaction.commandName === 'desactivar' && interaction.options.getSubcommand() === 'ia') {
       await handleDisableAiCommand({ interaction, storage });
+      return;
+    }
+
+    if (interaction.commandName === 'transcripcion' && interaction.options.getSubcommand() === 'enviar') {
+      await handleSendTranscriptCommand({ interaction, storage });
+      return;
+    }
+
+    if (interaction.commandName === 'globalstats') {
+      await handleGlobalStatsCommand({ interaction, storage, client });
     }
   });
 
@@ -152,7 +169,7 @@ export function createBot({ config, storage, supportAgent }) {
       if (ticket.alreadyExists) return;
 
       const welcome = await channel.send([
-        'Hola, soy **NexaDesk**.',
+        `${EMOJIS.global} Hola, soy **NexaDesk**.`,
         'Voy a ayudarte con este ticket. Cuentame que necesitas y, si hace falta, avisare al staff con un resumen claro.'
       ].join('\n'));
       await saveTranscript(storage, welcome, 'assistant');
@@ -278,6 +295,127 @@ async function handleDisableAiCommand({ interaction, storage }) {
   });
 }
 
+async function handleSendTranscriptCommand({ interaction, storage }) {
+  if (!interaction.inGuild() || !interaction.channelId) {
+    await interaction.reply({ content: 'Este comando solo se puede usar dentro de un ticket del servidor.', ephemeral: true });
+    return;
+  }
+
+  await interaction.deferReply({ ephemeral: true });
+
+  const [ticket, guildConfig] = await Promise.all([
+    storage.getTicket(interaction.channelId),
+    storage.getGuildConfig(interaction.guildId)
+  ]);
+
+  if (!ticket) {
+    await interaction.editReply('Este canal no esta registrado como ticket de NexaDesk.');
+    return;
+  }
+
+  if (!canManageTicketTranscripts(interaction, guildConfig)) {
+    await interaction.editReply('Solo staff o usuarios con Manage Server pueden enviar transcripciones.');
+    return;
+  }
+
+  const messages = await storage.listTranscriptMessages(interaction.channelId);
+  const targetUser = interaction.options.getUser('usuario') ?? await resolveTranscriptRecipient(interaction.client, ticket, messages);
+  if (!targetUser) {
+    await interaction.editReply('No pude detectar a quien enviar la transcripcion. Usa `/transcripcion enviar usuario:@usuario`.');
+    return;
+  }
+
+  const transcriptText = buildTranscriptText({ ticket, messages });
+  const fileName = buildTranscriptFileName(ticket);
+  const attachment = new AttachmentBuilder(Buffer.from(transcriptText, 'utf8'), { name: fileName });
+
+  try {
+    await targetUser.send({
+      content: [
+        `${EMOJIS.global} Aqui tienes la transcripcion de tu ticket en **${ticket.guildName ?? interaction.guild.name}**.`,
+        `Canal: **#${ticket.channelName ?? interaction.channel?.name ?? interaction.channelId}**`,
+        'Si necesitas volver a contactar con el staff, abre un nuevo ticket.'
+      ].join('\n'),
+      files: [attachment]
+    });
+  } catch (error) {
+    console.error('Failed to DM ticket transcript:', error);
+    await interaction.editReply(`No pude enviar MD a ${targetUser.tag}. Puede tener los mensajes directos cerrados.`);
+    return;
+  }
+
+  await storage.addTranscriptMessage({
+    guildId: interaction.guildId,
+    channelId: interaction.channelId,
+    messageId: interaction.id,
+    authorId: interaction.user.id,
+    authorName: interaction.user.username,
+    authorBot: false,
+    role: 'system',
+    content: `Transcripcion enviada por MD a ${targetUser.tag}.`,
+    createdAt: new Date().toISOString()
+  });
+
+  await interaction.editReply(`Transcripcion enviada por MD a **${targetUser.tag}**.`);
+}
+
+async function handleGlobalStatsCommand({ interaction, storage, client }) {
+  await interaction.deferReply();
+
+  const installedGuildIds = new Set(client.guilds.cache.keys());
+  const [tickets, guildConfigs] = await Promise.all([
+    storage.listTickets(),
+    storage.listGuildConfigs()
+  ]);
+  const botTickets = tickets.filter((ticket) => installedGuildIds.has(ticket.guildId));
+  const activeTickets = botTickets.filter((ticket) => ticket.status !== 'closed');
+  const panels = guildConfigs.reduce((total, guild) => total + (guild.panels?.length ?? 0), 0);
+  const memoryMb = Math.round(process.memoryUsage().rss / 1024 / 1024);
+
+  const embed = new EmbedBuilder()
+    .setColor(0xffffff)
+    .setTitle(`${EMOJIS.global} NexaDesk Global Stats`)
+    .setDescription('Estado en vivo del bot y su sistema de tickets.')
+    .addFields(
+      { name: `${EMOJIS.wifi} Ping`, value: `${Math.max(Math.round(client.ws.ping), 0)} ms`, inline: true },
+      { name: `${EMOJIS.global} Servers`, value: String(client.guilds.cache.size), inline: true },
+      { name: 'Canales activos', value: String(activeTickets.length), inline: true },
+      {
+        name: 'Tickets',
+        value: [
+          `Total: **${botTickets.length}**`,
+          `Abiertos: **${botTickets.filter((ticket) => ticket.status === 'open').length}**`,
+          `Escalados: **${botTickets.filter((ticket) => ticket.status === 'escalated').length}**`,
+          `IA desactivada: **${botTickets.filter((ticket) => isAiDisabledTicket(ticket)).length}**`,
+          `Cerrados: **${botTickets.filter((ticket) => ticket.status === 'closed').length}**`
+        ].join('\n'),
+        inline: true
+      },
+      {
+        name: 'Dashboard',
+        value: [
+          `Servidores configurados: **${guildConfigs.length}**`,
+          `Paneles publicados: **${panels}**`,
+          `Canales cacheados: **${client.channels.cache.size}**`
+        ].join('\n'),
+        inline: true
+      },
+      {
+        name: 'Runtime',
+        value: [
+          `Uptime: **${formatDuration(client.uptime ?? 0)}**`,
+          `RAM: **${memoryMb} MB**`,
+          `Node: **${process.version}**`
+        ].join('\n'),
+        inline: true
+      }
+    )
+    .setFooter({ text: 'NexaDesk AI Support' })
+    .setTimestamp(new Date());
+
+  await interaction.editReply({ embeds: [embed] });
+}
+
 function isAiDisabledTicket(ticket) {
   return ticket?.aiDisabled || ticket?.status === 'ai_disabled';
 }
@@ -295,6 +433,36 @@ function memberHasRole(member, roleId) {
     if (Array.isArray(roles)) return roles.includes(roleId);
   }
   return false;
+}
+
+function canManageTicketTranscripts(interaction, guildConfig) {
+  if (interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) return true;
+  return Boolean(guildConfig?.staffRoleId && memberHasRole(interaction.member, guildConfig.staffRoleId));
+}
+
+async function resolveTranscriptRecipient(client, ticket, messages) {
+  const userId = ticket.openedBy || messages.find((message) => message.role === 'user' && !message.authorBot)?.authorId;
+  if (!userId) return null;
+
+  try {
+    return await client.users.fetch(userId);
+  } catch {
+    return null;
+  }
+}
+
+function formatDuration(ms) {
+  const totalSeconds = Math.max(Math.floor(ms / 1000), 0);
+  const days = Math.floor(totalSeconds / 86400);
+  const hours = Math.floor((totalSeconds % 86400) / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  return [
+    days ? `${days}d` : '',
+    hours ? `${hours}h` : '',
+    minutes ? `${minutes}m` : '',
+    seconds || (!days && !hours && !minutes) ? `${seconds}s` : ''
+  ].filter(Boolean).join(' ');
 }
 
 function applyBotPresence(client) {
@@ -427,7 +595,7 @@ async function notifyStaffRole(message, guildConfig, ticket, reason) {
     const members = await guild.members.fetch();
     const staffMembers = members.filter((member) => member.roles.cache.has(guildConfig.staffRoleId) && !member.user.bot);
     const body = [
-      `NexaDesk necesita staff en **${guild.name}**.`,
+      `${EMOJIS.wifi} NexaDesk necesita staff en **${guild.name}**.`,
       `Ticket: #${ticket.channelName} (${message.channel.url})`,
       `Motivo: ${reason}`
     ].join('\n');
