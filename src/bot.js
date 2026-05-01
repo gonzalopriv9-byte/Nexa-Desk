@@ -200,13 +200,20 @@ export function createBot({ config, storage, supportAgent }) {
     if (!ticket) return;
 
     await saveTranscript(storage, message, 'user');
-    if (!config.AI_AUTO_REPLY) return;
-    if (activeResponses.has(message.channel.id)) return;
-    if (isAiDisabledTicket(ticket)) return;
+    if (isClosedTicket(ticket)) return;
 
     // Always reload the latest server context before asking the AI.
     const guildConfig = await storage.getGuildConfig(message.guild.id);
     if (!guildConfig) return;
+
+    if (isTicketCloseRequest(message.content)) {
+      await handleNaturalCloseRequest({ client, storage, message, ticket, guildConfig });
+      return;
+    }
+
+    if (!config.AI_AUTO_REPLY) return;
+    if (activeResponses.has(message.channel.id)) return;
+    if (isAiDisabledTicket(ticket)) return;
 
     activeResponses.add(message.channel.id);
     try {
@@ -217,6 +224,9 @@ export function createBot({ config, storage, supportAgent }) {
           publicAnswer: 'El usuario solicita asistencia manual de staff.'
         };
         const shouldMentionStaff = await registerTicketEscalation({ storage, message, guildConfig, ticket, reason: escalation.reason });
+        const latestTicket = await storage.getTicket(message.channel.id);
+        if (!latestTicket || isClosedTicket(latestTicket)) return;
+
         const reply = await message.reply({
           content: buildPublicReply(escalation, guildConfig, { mentionStaff: shouldMentionStaff }).slice(0, 1900),
           allowedMentions: { roles: shouldMentionStaff && guildConfig.staffRoleId ? [guildConfig.staffRoleId] : [] }
@@ -228,6 +238,9 @@ export function createBot({ config, storage, supportAgent }) {
       await message.channel.sendTyping();
       const answer = await supportAgent.answerTicketMessage({ message, ticket, guildConfig });
       if (answer) {
+        const latestTicket = await storage.getTicket(message.channel.id);
+        if (!latestTicket || isClosedTicket(latestTicket) || isAiDisabledTicket(latestTicket)) return;
+
         const escalation = parseEscalation(answer);
         const shouldMentionStaff = escalation.shouldEscalate
           ? await registerTicketEscalation({ storage, message, guildConfig, ticket, reason: escalation.reason })
@@ -368,6 +381,103 @@ async function handleSendTranscriptCommand({ interaction, storage }) {
   await interaction.editReply(`Transcripcion enviada por MD a **${targetUser.tag}**.`);
 }
 
+async function handleNaturalCloseRequest({ client, storage, message, ticket, guildConfig }) {
+  if (!canCloseTicketFromMessage(message, ticket, guildConfig)) {
+    const reply = await message.reply({
+      content: 'Solo quien abrio este ticket, el staff configurado o alguien con Manage Server puede cerrarlo.',
+      allowedMentions: { repliedUser: false }
+    });
+    await saveTranscript(storage, reply, 'assistant');
+    return;
+  }
+
+  const requestedAt = new Date().toISOString();
+  await storage.addTranscriptMessage({
+    guildId: message.guild.id,
+    channelId: message.channel.id,
+    messageId: `close-request-${message.id}`,
+    authorId: message.author.id,
+    authorName: message.author.username,
+    authorBot: false,
+    role: 'system',
+    content: `Cierre solicitado por ${message.author.username}.`,
+    createdAt: requestedAt
+  });
+
+  await message.channel.sendTyping();
+
+  const closingReply = await message.reply({
+    content: [
+      `${EMOJIS.global} Ticket cerrado.`,
+      'Estoy preparando la transcripcion y eliminare este canal en unos segundos.'
+    ].join('\n'),
+    allowedMentions: { repliedUser: false }
+  });
+  await saveTranscript(storage, closingReply, 'assistant');
+
+  const closedAt = new Date().toISOString();
+  const closedTicket = {
+    ...ticket,
+    status: 'closed',
+    updatedAt: closedAt
+  };
+  const messages = await storage.listTranscriptMessages(message.channel.id);
+  const targetUser = await resolveTranscriptRecipient(client, ticket, messages) ?? message.author;
+  let dmStatus = 'Transcripcion enviada automaticamente por MD.';
+
+  try {
+    await sendTranscriptDm({
+      targetUser,
+      ticket: closedTicket,
+      messages,
+      guildName: message.guild.name
+    });
+    dmStatus = `Transcripcion enviada automaticamente por MD a ${targetUser.tag}.`;
+  } catch (error) {
+    console.error('Failed to DM transcript for natural close:', error);
+    dmStatus = `No se pudo enviar la transcripcion por MD a ${targetUser.tag}. Puede tener los MD cerrados.`;
+  }
+
+  await storage.addTranscriptMessage({
+    guildId: message.guild.id,
+    channelId: message.channel.id,
+    messageId: `close-dm-${message.id}`,
+    authorId: client.user?.id,
+    authorName: client.user?.username ?? 'NexaDesk',
+    authorBot: true,
+    role: 'system',
+    content: dmStatus,
+    createdAt: new Date().toISOString()
+  });
+
+  await storage.updateTicket(message.channel.id, {
+    status: 'closed'
+  });
+
+  try {
+    await closingReply.edit([
+      `${EMOJIS.global} Ticket cerrado.`,
+      dmStatus,
+      'Este canal se eliminara en 8 segundos.'
+    ].join('\n'));
+  } catch {
+    // The channel may already be gone if another ticket bot deleted it first.
+  }
+
+  setTimeout(async () => {
+    try {
+      const freshChannel = await message.guild.channels.fetch(message.channel.id).catch(() => null);
+      if (freshChannel?.deletable) {
+        await freshChannel.delete(`NexaDesk ticket close requested by ${message.author.tag}`);
+      } else if (freshChannel) {
+        await freshChannel.send('No tengo permisos suficientes para eliminar este canal. El ticket ya quedo cerrado en NexaDesk.');
+      }
+    } catch (error) {
+      console.error(`Failed to delete closed ticket channel ${message.channel.id}:`, error);
+    }
+  }, 8_000);
+}
+
 async function finalizeDeletedTicket({ client, storage, channel, ticket }) {
   const closedAt = new Date().toISOString();
   const closedTicket = {
@@ -502,6 +612,10 @@ function isAiDisabledTicket(ticket) {
   return ticket?.aiDisabled || ticket?.status === 'ai_disabled';
 }
 
+function isClosedTicket(ticket) {
+  return ticket?.status === 'closed';
+}
+
 function isTicketEscalated(ticket) {
   return ticket?.status === 'escalated' || isAiDisabledTicket(ticket);
 }
@@ -520,6 +634,13 @@ function memberHasRole(member, roleId) {
 function canManageTicketTranscripts(interaction, guildConfig) {
   if (interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) return true;
   return Boolean(guildConfig?.staffRoleId && memberHasRole(interaction.member, guildConfig.staffRoleId));
+}
+
+function canCloseTicketFromMessage(message, ticket, guildConfig) {
+  if (message.member?.permissions?.has(PermissionFlagsBits.ManageGuild)) return true;
+  if (guildConfig?.staffRoleId && memberHasRole(message.member, guildConfig.staffRoleId)) return true;
+  if (ticket.openedBy) return ticket.openedBy === message.author.id;
+  return true;
 }
 
 async function resolveTranscriptRecipient(client, ticket, messages) {
@@ -619,6 +740,19 @@ function isUserRequestingStaff(content) {
   ].some((pattern) => pattern.test(content));
 }
 
+function isTicketCloseRequest(content) {
+  const normalized = normalizeText(content);
+  return [
+    /\b(?:cierra|cierralo|cierra\s+el|cierra\s+este|cerrar|cerrad)\s+(?:el\s+|este\s+)?(?:ticket|canal)\b/,
+    /\b(?:puedes|podrias|pueden|quiero|necesito|toca|dale)\s+(?:cerrar|cerrarlo|cerrar\s+el|cerrar\s+este)\b/,
+    /\b(?:no|si|vale|ok|perfecto|gracias)[,\s]+(?:cierralo|cerralo|cerrar(?:lo)?|cierra(?:lo)?)\b/,
+    /\b(?:cerralo|cierralo|cierrenlo)\b/,
+    /\b(?:close|delete|shut)\s+(?:the\s+|this\s+)?ticket\b/,
+    /\b(?:please|pls|ok|yes|thanks|thank\s+you)[,\s]+(?:close|delete)\s+(?:it|the\s+ticket|this\s+ticket)?\b/,
+    /\byou\s+can\s+(?:close|delete)\s+(?:it|the\s+ticket|this\s+ticket)?\b/
+  ].some((pattern) => pattern.test(normalized));
+}
+
 function buildPublicReply(escalation, guildConfig, { mentionStaff = false } = {}) {
   const publicAnswer = cleanStaffMentions(escalation.publicAnswer, guildConfig);
   if (!escalation.shouldEscalate) return publicAnswer;
@@ -653,6 +787,14 @@ function cleanStaffMentions(answer, guildConfig) {
 
 function escapeRegExp(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function normalizeText(value) {
+  return String(value ?? '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim();
 }
 
 async function registerTicketEscalation({ storage, message, guildConfig, ticket, reason }) {
