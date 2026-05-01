@@ -328,6 +328,7 @@ export class SupabaseStorage {
 
 export function createStorage(config, events) {
   if (config.SUPABASE_URL && config.SUPABASE_SERVICE_ROLE_KEY) {
+    console.log('NexaDesk storage backend: Supabase');
     return new SupabaseStorage({
       url: config.SUPABASE_URL,
       serviceRoleKey: config.SUPABASE_SERVICE_ROLE_KEY,
@@ -335,6 +336,7 @@ export function createStorage(config, events) {
     });
   }
 
+  console.warn('NexaDesk storage backend: local JSON. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY to persist data in Supabase.');
   return new JsonStorage(config.DATA_DIR, events);
 }
 

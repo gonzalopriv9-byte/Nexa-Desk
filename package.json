@@ -7,7 +7,8 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
-    "register": "node src/register-commands.js"
+    "register": "node src/register-commands.js",
+    "migrate:supabase": "node scripts/migrate-json-to-supabase.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.49.1",

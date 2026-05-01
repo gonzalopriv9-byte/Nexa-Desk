@@ -112,6 +112,18 @@ SUPABASE_SERVICE_ROLE_KEY=...
 
 If Supabase vars are missing, NexaDesk falls back to local JSON storage for development.
 
+The bot logs the active storage backend on startup. Production should say:
+
+```text
+NexaDesk storage backend: Supabase
+```
+
+If the Pi previously ran without Supabase vars, migrate the local JSON data after setting the Supabase env vars:
+
+```bash
+npm run migrate:supabase
+```
+
 ## Groq AI
 
 NexaDesk is configured to use Groq by default:
