@@ -180,12 +180,28 @@ export function createBot({ config, storage, supportAgent }) {
     }
   });
 
+  client.on(Events.ChannelDelete, async (channel) => {
+    try {
+      if (!channel.guild) return;
+
+      const ticket = await storage.getTicket(channel.id);
+      if (!ticket || ticket.status === 'closed') return;
+
+      await finalizeDeletedTicket({ client, storage, channel, ticket });
+    } catch (error) {
+      console.error(`Failed to finalize deleted ticket channel ${channel.id}:`, error);
+    }
+  });
+
   client.on(Events.MessageCreate, async (message) => {
     if (message.author.bot || !message.guild || !message.channel) return;
-    if (!config.AI_AUTO_REPLY) return;
 
     const ticket = await storage.getTicket(message.channel.id);
-    if (!ticket || activeResponses.has(message.channel.id)) return;
+    if (!ticket) return;
+
+    await saveTranscript(storage, message, 'user');
+    if (!config.AI_AUTO_REPLY) return;
+    if (activeResponses.has(message.channel.id)) return;
     if (isAiDisabledTicket(ticket)) return;
 
     // Always reload the latest server context before asking the AI.
@@ -194,7 +210,6 @@ export function createBot({ config, storage, supportAgent }) {
 
     activeResponses.add(message.channel.id);
     try {
-      await saveTranscript(storage, message, 'user');
       if (isUserRequestingStaff(message.content)) {
         const escalation = {
           shouldEscalate: true,
@@ -325,18 +340,12 @@ async function handleSendTranscriptCommand({ interaction, storage }) {
     return;
   }
 
-  const transcriptText = buildTranscriptText({ ticket, messages });
-  const fileName = buildTranscriptFileName(ticket);
-  const attachment = new AttachmentBuilder(Buffer.from(transcriptText, 'utf8'), { name: fileName });
-
   try {
-    await targetUser.send({
-      content: [
-        `${EMOJIS.global} Aqui tienes la transcripcion de tu ticket en **${ticket.guildName ?? interaction.guild.name}**.`,
-        `Canal: **#${ticket.channelName ?? interaction.channel?.name ?? interaction.channelId}**`,
-        'Si necesitas volver a contactar con el staff, abre un nuevo ticket.'
-      ].join('\n'),
-      files: [attachment]
+    await sendTranscriptDm({
+      targetUser,
+      ticket,
+      messages,
+      guildName: interaction.guild.name
     });
   } catch (error) {
     console.error('Failed to DM ticket transcript:', error);
@@ -357,6 +366,79 @@ async function handleSendTranscriptCommand({ interaction, storage }) {
   });
 
   await interaction.editReply(`Transcripcion enviada por MD a **${targetUser.tag}**.`);
+}
+
+async function finalizeDeletedTicket({ client, storage, channel, ticket }) {
+  const closedAt = new Date().toISOString();
+  const closedTicket = {
+    ...ticket,
+    status: 'closed',
+    updatedAt: closedAt
+  };
+
+  await storage.addTranscriptMessage({
+    guildId: ticket.guildId,
+    channelId: ticket.channelId,
+    messageId: `channel-delete-${Date.now()}`,
+    authorId: client.user?.id,
+    authorName: client.user?.username ?? 'NexaDesk',
+    authorBot: true,
+    role: 'system',
+    content: `Ticket cerrado automaticamente porque el canal #${ticket.channelName ?? channel.id} fue eliminado.`,
+    createdAt: closedAt
+  });
+
+  const messages = await storage.listTranscriptMessages(ticket.channelId);
+  const targetUser = await resolveTranscriptRecipient(client, ticket, messages);
+  let dmStatus = 'No se pudo detectar usuario para enviar la transcripcion por MD.';
+
+  if (targetUser) {
+    try {
+      await sendTranscriptDm({
+        targetUser,
+        ticket: closedTicket,
+        messages,
+        guildName: channel.guild?.name
+      });
+      dmStatus = `Transcripcion enviada automaticamente por MD a ${targetUser.tag}.`;
+    } catch (error) {
+      console.error('Failed to auto DM deleted ticket transcript:', error);
+      dmStatus = `No se pudo enviar la transcripcion por MD a ${targetUser.tag}. Puede tener los MD cerrados.`;
+    }
+  }
+
+  await storage.addTranscriptMessage({
+    guildId: ticket.guildId,
+    channelId: ticket.channelId,
+    messageId: `transcript-auto-${Date.now()}`,
+    authorId: client.user?.id,
+    authorName: client.user?.username ?? 'NexaDesk',
+    authorBot: true,
+    role: 'system',
+    content: dmStatus,
+    createdAt: new Date().toISOString()
+  });
+
+  await storage.updateTicket(ticket.channelId, {
+    status: 'closed'
+  });
+
+  console.log(`Ticket closed from deleted channel: ${ticket.channelName} (${ticket.channelId}). ${dmStatus}`);
+}
+
+async function sendTranscriptDm({ targetUser, ticket, messages, guildName }) {
+  const transcriptText = buildTranscriptText({ ticket, messages });
+  const fileName = buildTranscriptFileName(ticket);
+  const attachment = new AttachmentBuilder(Buffer.from(transcriptText, 'utf8'), { name: fileName });
+
+  await targetUser.send({
+    content: [
+      `${EMOJIS.global} Aqui tienes la transcripcion de tu ticket en **${ticket.guildName ?? guildName ?? 'el servidor'}**.`,
+      `Canal: **#${ticket.channelName ?? ticket.channelId}**`,
+      'Si necesitas volver a contactar con el staff, abre un nuevo ticket.'
+    ].join('\n'),
+    files: [attachment]
+  });
 }
 
 async function handleGlobalStatsCommand({ interaction, storage, client }) {
