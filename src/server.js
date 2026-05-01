@@ -648,7 +648,7 @@ function renderDashboard({ session, guilds, tickets, stats }) {
     .mark { display:grid; place-items:center; width:42px; height:42px; border:1px solid rgba(255,255,255,.55); background:#fff; color:#050505; border-radius:10px; font-weight:900; }
     .nav-brand { display:flex; align-items:center; gap:12px; margin-bottom:18px; }
     .nav-link { display:block; color:var(--muted); text-decoration:none; border:1px solid transparent; border-radius:10px; padding:10px 11px; margin:4px 0; transition:color .22s ease, border-color .22s ease, background .22s ease, transform .22s ease; }
-    .nav-link:hover { color:var(--text); border-color:var(--line); background:#0b1216; }
+    .nav-link:hover,.nav-link.is-active { color:var(--text); border-color:rgba(255,255,255,.44); background:#0b1216; transform:translateX(3px); }
     .nav-foot { position:absolute; left:16px; right:16px; bottom:16px; }
     .hero-panel,.surface,.stat,.active-server { border:1px solid var(--line); border-radius:14px; background:rgba(11,18,22,.86); }
     .hero-panel { padding:18px; background:linear-gradient(180deg, rgba(24,24,24,.94), rgba(5,5,5,.94)); }
@@ -662,6 +662,11 @@ function renderDashboard({ session, guilds, tickets, stats }) {
     .signal-list { display:grid; gap:10px; margin-top:16px; }
     .signal { display:flex; justify-content:space-between; gap:18px; padding:10px 0; border-bottom:1px solid var(--soft-line); color:var(--muted); }
     .signal strong { color:var(--text); }
+    .view-stage { position:relative; min-height:520px; }
+    .dashboard-view { display:none; animation:viewIn .34s cubic-bezier(.2,.8,.2,1) both; }
+    .dashboard-view.is-active { display:block; }
+    .view-heading { display:flex; align-items:end; justify-content:space-between; gap:16px; margin:0 0 14px; }
+    .view-heading p { margin:4px 0 0; }
     .surface { padding:20px; animation:rise .55s ease both; transition:border-color .28s ease, transform .28s ease, box-shadow .28s ease; }
     .surface:hover { border-color:rgba(255,255,255,.22); box-shadow:0 24px 80px rgba(0,0,0,.24); }
     .stats { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; margin-bottom:16px; }
@@ -678,6 +683,7 @@ function renderDashboard({ session, guilds, tickets, stats }) {
     .mini-grid div { border:1px solid var(--soft-line); border-radius:10px; padding:10px; background:rgba(5,8,10,.38); }
     .mini-grid strong { font-size:18px; margin:0; }
     .workspace { display:grid; grid-template-columns:310px minmax(0,1fr); gap:16px; align-items:start; }
+    .single-column { display:grid; gap:16px; }
     .section-heading { display:flex; align-items:end; justify-content:space-between; gap:16px; margin:6px 0 14px; }
     .section-heading p { margin:4px 0 0; }
     .active-server { padding:18px; margin-bottom:16px; background:linear-gradient(135deg, rgba(255,255,255,.075), rgba(255,255,255,.025)); }
@@ -772,6 +778,7 @@ function renderDashboard({ session, guilds, tickets, stats }) {
     .pulse { width:46px; height:46px; margin:0 auto 16px; border-radius:50%; border:2px solid rgba(255,255,255,.18); border-top-color:#fff; animation:spin 1s linear infinite; }
     #loadingPhrase { color:var(--text); font-weight:800; }
     @keyframes rise { from { opacity:0; transform:translateY(14px); } to { opacity:1; transform:translateY(0); } }
+    @keyframes viewIn { from { opacity:0; transform:translateY(14px) scale(.992); filter:blur(4px); } to { opacity:1; transform:translateY(0) scale(1); filter:blur(0); } }
     @keyframes bannerIn { from { opacity:0; transform:translateY(18px) scale(.985); filter:blur(10px); } to { opacity:1; transform:translateY(0) scale(1); filter:blur(0); } }
     @keyframes bannerScan { 0%, 12% { transform:translateX(0) skewX(-18deg); opacity:0; } 30% { opacity:.85; } 58%, 100% { transform:translateX(430%) skewX(-18deg); opacity:0; } }
     @keyframes bannerGlow { 0%,100% { box-shadow:0 22px 70px rgba(0,0,0,.42), 0 0 0 1px rgba(255,255,255,.03) inset; } 50% { box-shadow:0 22px 90px rgba(255,255,255,.08), 0 0 0 1px rgba(255,255,255,.09) inset; } }
@@ -791,10 +798,11 @@ function renderDashboard({ session, guilds, tickets, stats }) {
   <div class="app-shell">
   <aside class="sidebar">
     <div class="nav-brand"><img class="brand-logo" src="/assets/nexadesk-logo.svg" alt="NexaDesk"><strong>NexaDesk</strong></div>
-    <a class="nav-link" href="#overview">Resumen</a>
-    <a class="nav-link" href="#servers">Servidores</a>
-    <a class="nav-link" href="#settings">Configuracion</a>
-    <a class="nav-link" href="#tickets">Tickets</a>
+    <a class="nav-link is-active" href="#overview" data-view="overview">Resumen</a>
+    <a class="nav-link" href="#servers" data-view="servers">Servidores</a>
+    <a class="nav-link" href="#settings" data-view="settings">Configuracion</a>
+    <a class="nav-link" href="#panels" data-view="panels">Paneles</a>
+    <a class="nav-link" href="#tickets" data-view="tickets">Tickets</a>
     <div class="nav-foot">
       <form method="post" action="/logout"><button class="secondary-button" type="submit">Cerrar sesion</button></form>
     </div>
@@ -816,36 +824,6 @@ function renderDashboard({ session, guilds, tickets, stats }) {
         </div>
       </aside>
     </div>
-    <div class="stats" id="overview">
-      <div class="stat"><strong id="guildCount">${stats.totalGuilds}</strong><span>Servidores gestionables</span><small id="guildInstallMeta">${stats.installedGuilds ?? 0} con bot - ${stats.notInstalledGuilds ?? 0} por invitar</small></div>
-      <div class="stat"><strong id="ticketCount">${stats.totalTickets}</strong><span>Tickets detectados</span><small>${stats.ticketsToday} hoy - ${stats.ticketsThisWeek} esta semana</small></div>
-      <div class="stat"><strong id="openCount">${stats.openTickets}</strong><span>Tickets abiertos</span><small>${stats.closedTickets} cerrados o archivados</small></div>
-    </div>
-    <section class="command-center">
-      <article class="insight-card">
-        <p class="kicker">Salud global</p>
-        <strong id="healthScore">${healthScore}%</strong>
-        <p>Promedio de servidores instalados con categoria, staff y contexto IA configurados.</p>
-        <div class="meter" style="--value:${healthScore}%"><span></span></div>
-      </article>
-      <article class="insight-card">
-        <p class="kicker">Automatizacion</p>
-        <div class="mini-grid">
-          <div><strong id="panelCount">${stats.panels}</strong><small>Paneles publicados</small></div>
-          <div><strong id="aiReadyCount">${stats.aiReadyGuilds}</strong><small>Servidores con IA lista</small></div>
-        </div>
-      </article>
-      <article class="insight-card">
-        <p class="kicker">Actividad</p>
-        <div class="mini-grid">
-          <div><strong id="transcriptCount">${stats.transcriptMessages}</strong><small>Mensajes guardados</small></div>
-          <div><strong id="staffReadyCount">${stats.escalationReadyGuilds}</strong><small>Escalado con staff</small></div>
-        </div>
-      </article>
-    </section>
-    <div class="section-heading">
-      <div><h2>Configura tu servidor</h2><p>Un flujo claro: servidor activo, IA, staff y paneles.</p></div>
-    </div>
     <section class="active-server">
       <p class="kicker">Servidor activo</p>
       <select id="guildId" required>${guildOptions}</select>
@@ -859,12 +837,53 @@ function renderDashboard({ session, guilds, tickets, stats }) {
         <a id="installLink" href="#">Invitar bot</a>
       </div>
     </section>
-    <div class="workspace">
+    <div class="view-stage">
+      <section class="dashboard-view is-active" id="view-overview" data-view="overview">
+        <div class="view-heading">
+          <div><h2>Resumen</h2><p>Una vista rapida del estado global de NexaDesk.</p></div>
+        </div>
+        <div class="stats" id="overview">
+          <div class="stat"><strong id="guildCount">${stats.totalGuilds}</strong><span>Servidores gestionables</span><small id="guildInstallMeta">${stats.installedGuilds ?? 0} con bot - ${stats.notInstalledGuilds ?? 0} por invitar</small></div>
+          <div class="stat"><strong id="ticketCount">${stats.totalTickets}</strong><span>Tickets detectados</span><small>${stats.ticketsToday} hoy - ${stats.ticketsThisWeek} esta semana</small></div>
+          <div class="stat"><strong id="openCount">${stats.openTickets}</strong><span>Tickets abiertos</span><small>${stats.closedTickets} cerrados o archivados</small></div>
+        </div>
+        <section class="command-center">
+          <article class="insight-card">
+            <p class="kicker">Salud global</p>
+            <strong id="healthScore">${healthScore}%</strong>
+            <p>Promedio de servidores instalados con categoria, staff y contexto IA configurados.</p>
+            <div class="meter" style="--value:${healthScore}%"><span></span></div>
+          </article>
+          <article class="insight-card">
+            <p class="kicker">Automatizacion</p>
+            <div class="mini-grid">
+              <div><strong id="panelCount">${stats.panels}</strong><small>Paneles publicados</small></div>
+              <div><strong id="aiReadyCount">${stats.aiReadyGuilds}</strong><small>Servidores con IA lista</small></div>
+            </div>
+          </article>
+          <article class="insight-card">
+            <p class="kicker">Actividad</p>
+            <div class="mini-grid">
+              <div><strong id="transcriptCount">${stats.transcriptMessages}</strong><small>Mensajes guardados</small></div>
+              <div><strong id="staffReadyCount">${stats.escalationReadyGuilds}</strong><small>Escalado con staff</small></div>
+            </div>
+          </article>
+        </section>
+      </section>
+      <section class="dashboard-view" id="view-servers" data-view="servers">
+        <div class="view-heading">
+          <div><h2>Servidores</h2><p>Selecciona el servidor que quieres preparar, revisar o invitar.</p></div>
+        </div>
       <section class="surface" id="servers">
         <h2>Servidores</h2>
         <p>Selecciona uno para editarlo. Solo aparecen servidores donde tienes permisos.</p>
         <div class="guild-list" id="guildGrid">${guildList || '<p class="notice">No tienes servidores gestionables.</p>'}</div>
       </section>
+      </section>
+      <section class="dashboard-view" id="view-settings" data-view="settings">
+        <div class="view-heading">
+          <div><h2>Configuracion</h2><p>Contexto IA, staff y categoria principal del servidor activo.</p></div>
+        </div>
       <section class="control-grid" id="settings">
         <article class="control-card wide">
           <div class="card-head"><span class="step">1</span><div><h2>IA y contexto</h2><p>Define como debe responder NexaDesk dentro de este servidor.</p></div></div>
@@ -885,6 +904,13 @@ function renderDashboard({ session, guilds, tickets, stats }) {
             <button class="span-2" type="submit">Crear y activar categoria</button>
           </form>
         </article>
+      </section>
+      </section>
+      <section class="dashboard-view" id="view-panels" data-view="panels">
+        <div class="view-heading">
+          <div><h2>Paneles</h2><p>Construye paneles personalizados sin mezclarlo con el resto de la configuracion.</p></div>
+        </div>
+      <section class="control-grid" id="panels">
         <article class="control-card wide">
           <div class="card-head"><span class="step">3</span><div><h2>Panel de soporte</h2><p>Disena el embed, decide donde se abre el ticket y revisa el resultado antes de publicarlo.</p></div></div>
           <form class="panel-builder" onsubmit="return createPanel(event)">
@@ -952,7 +978,11 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
           </form>
         </article>
       </section>
-    </div>
+      </section>
+      <section class="dashboard-view" id="view-tickets" data-view="tickets">
+        <div class="view-heading">
+          <div><h2>Tickets</h2><p>Consulta actividad reciente y abre transcripciones guardadas.</p></div>
+        </div>
     <section class="surface" id="tickets">
       <div class="ticket-tools">
         <div><h2>Tickets recientes</h2><p>Abre una transcripcion para revisar la conversacion guardada por servidor.</p></div>
@@ -969,6 +999,8 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
         <div class="transcript-body" id="transcriptBody"></div>
       </aside>
     </section>
+      </section>
+    </div>
   </main>
   </div>
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
@@ -995,10 +1027,24 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
     const state = {
       tickets: ${JSON.stringify(tickets)},
       stats: ${JSON.stringify(stats)},
-      activeTranscriptChannelId: null
+      activeTranscriptChannelId: null,
+      activeView: 'overview'
     };
     const guildConfigs = ${JSON.stringify(guilds)};
     let guildMeta = {};
+    function setActiveView(view, { updateHash = true } = {}) {
+      const nextView = document.querySelector('[data-view="' + view + '"].dashboard-view') ? view : 'overview';
+      state.activeView = nextView;
+      document.querySelectorAll('.dashboard-view').forEach((section) => {
+        section.classList.toggle('is-active', section.dataset.view === nextView);
+      });
+      document.querySelectorAll('.nav-link[data-view]').forEach((link) => {
+        link.classList.toggle('is-active', link.dataset.view === nextView);
+      });
+      if (updateHash && location.hash !== '#' + nextView) {
+        history.replaceState(null, '', '#' + nextView);
+      }
+    }
     function ticketRow(ticket) {
       return '<tr><td>#' + escapeHtml(ticket.channelName) + '</td><td>' + escapeHtml(ticket.guildName) + '</td><td>' + escapeHtml(ticket.status) + '</td><td>' + escapeHtml(new Date(ticket.createdAt).toLocaleString()) + '</td><td><button class="table-action secondary-button" type="button" data-transcript-channel="' + escapeHtml(ticket.channelId) + '">Ver</button></td></tr>';
     }
@@ -1102,7 +1148,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
         const element = document.querySelector(selector);
         if (element) element.disabled = disabled;
       }
-      document.querySelectorAll('#settings button').forEach((button) => {
+      document.querySelectorAll('#settings button, #panels button').forEach((button) => {
         button.disabled = disabled;
       });
     }
@@ -1325,6 +1371,15 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
     for (const selector of ['#guildId', '#categoryGuildId', '#panelGuildId']) {
       document.querySelector(selector)?.addEventListener('change', () => syncGuildForm(selector));
     }
+    document.querySelectorAll('.nav-link[data-view]').forEach((link) => {
+      link.addEventListener('click', (event) => {
+        event.preventDefault();
+        setActiveView(link.dataset.view);
+      });
+    });
+    window.addEventListener('hashchange', () => {
+      setActiveView((location.hash || '#overview').slice(1), { updateHash: false });
+    });
     document.querySelectorAll('.guild-pill').forEach((button) => {
       button.addEventListener('click', () => {
         if (button.dataset.installed === 'false') {
@@ -1348,6 +1403,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
     }
     bindTranscriptButtons();
     updatePanelPreview();
+    setActiveView((location.hash || '#overview').slice(1), { updateHash: false });
     syncGuildForm('#guildId', { inviteIfMissing: false });
   </script>
 </body>
