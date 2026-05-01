@@ -8,7 +8,11 @@ export class SupportAgent {
   async answerTicketMessage({ message, ticket, guildConfig }) {
     const latestGuildConfig = await this.storage.getGuildConfig(message.guild.id) ?? guildConfig;
     const history = await this.#loadHistory(message.channel);
-    const system = this.#buildSystemPrompt({ ticket, guildConfig: latestGuildConfig });
+    const system = this.#buildSystemPrompt({
+      ticket,
+      guildConfig: latestGuildConfig,
+      userLanguage: detectUserLanguage(message.content)
+    });
 
     return this.aiClient.generate({
       system,
@@ -16,7 +20,7 @@ export class SupportAgent {
     });
   }
 
-  #buildSystemPrompt({ ticket, guildConfig }) {
+  #buildSystemPrompt({ ticket, guildConfig, userLanguage }) {
     const serverInfo = guildConfig.serverInfo?.trim() || 'No hay informacion adicional configurada todavia.';
     const serverPrompt = guildConfig.serverPrompt?.trim() || 'No hay prompt personalizado configurado.';
 
@@ -29,7 +33,9 @@ export class SupportAgent {
       'Si el usuario pide staff, moderador, humano, responsable o que menciones al staff, debes escalar.',
       'Cuando necesites staff humano, empieza tu respuesta exactamente con "[ESCALATE]" y explica en una frase por que.',
       'No menciones que eres un modelo local ni hables de prompts internos.',
-      'Responde en el idioma del usuario.',
+      'Responde siempre en el idioma del ultimo mensaje del usuario, aunque el servidor este configurado en otro idioma.',
+      'Si el usuario cambia de idioma durante el ticket, cambia tambien tu idioma en la siguiente respuesta.',
+      `Idioma detectado para esta respuesta: ${userLanguage}.`,
       '',
       `Servidor: ${guildConfig.guildName ?? ticket.guildId}`,
       `Contexto actualizado en: ${guildConfig.updatedAt ?? 'sin fecha registrada'}`,
@@ -73,4 +79,16 @@ function stripAssistantPrefix(content, botName = 'AI SUPPORT') {
 
 function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function detectUserLanguage(content = '') {
+  const text = content.trim();
+  if (/[\u4E00-\u9FFF]/u.test(text)) return 'chino; escribe la respuesta en chino';
+  if (/[\u3040-\u30FF]/u.test(text)) return 'japones; escribe la respuesta en japones';
+  if (/[\uAC00-\uD7AF]/u.test(text)) return 'coreano; escribe la respuesta en coreano';
+  if (/[\u0400-\u04FF]/u.test(text)) return 'ruso; escribe la respuesta en ruso';
+  if (/[¿¡ñáéíóúü]/iu.test(text)) return 'español; escribe la respuesta en español';
+  if (/\b(que|como|cuando|donde|por|para|hola|gracias|necesito|puedes|servidor)\b/iu.test(text)) return 'español; escribe la respuesta en español';
+  if (/\b(what|how|when|where|why|hello|thanks|need|can|could|server|name)\b/iu.test(text)) return 'ingles; write the answer in English';
+  return 'el mismo idioma del ultimo mensaje del usuario';
 }

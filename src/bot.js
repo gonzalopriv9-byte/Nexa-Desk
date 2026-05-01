@@ -350,25 +350,22 @@ function parseEscalation(answer) {
 
 function looksLikeEscalation(answer) {
   return [
-    /\bstaff\b/i,
-    /\bmoderador(?:es)?\b/i,
-    /\bmiembro del staff\b/i,
-    /\brequiere(?:\s+de)?\s+(?:un\s+)?(?:staff|moderador|humano)/i,
-    /\bnecesito\s+(?:la\s+)?(?:aprobacion|ayuda|intervencion)\s+de\b/i,
-    /\bse unira a este ticket\b/i,
-    /\bavisar(?:e|é)?\s+al\s+staff\b/i,
-    /\bcontactar(?:e|é)?\s+con\s+staff\b/i
+    /\bnecesito\s+(?:involucrar|avisar|contactar|derivar|escalar)\s+(?:a|al|con)\s+(?:un\s+)?(?:staff|moderador|humano|responsable)\b/i,
+    /\b(?:voy|debo|tengo)\s+(?:a\s+)?(?:avisar|contactar|involucrar|derivar|escalar)\s+(?:a|al|con)\s+(?:un\s+)?(?:staff|moderador|humano|responsable)\b/i,
+    /\b(?:requires?|needs?)\s+(?:human|staff|moderator)\s+(?:review|intervention|support|assistance)\b/i,
+    /\b(?:i\s+need|i'll|i\s+will)\s+(?:to\s+)?(?:notify|contact|escalate|involve)\s+(?:the\s+)?(?:staff|moderator|human team)\b/i
   ].some((pattern) => pattern.test(answer));
 }
 
 function isUserRequestingStaff(content) {
   return [
-    /\bstaff\b/i,
-    /\bmoderador(?:es)?\b/i,
-    /\bhumano\b/i,
     /\basistencia\s+manual\b/i,
-    /\bmenciona(?:s|r)?\b.*\b(staff|moderador(?:es)?)\b/i,
-    /\bavisa(?:s|r)?\b.*\b(staff|moderador(?:es)?)\b/i
+    /\b(?:necesito|podria|puedes|podrias|quiero\s+hablar\s+con|pasame\s+con)\b.*\b(staff|moderador(?:es)?|humano|responsable)\b/i,
+    /\b(?:menciona(?:s|r)?|avisa(?:s|r)?|llama(?:s|r)?|contacta(?:s|r)?)\b.*\b(staff|moderador(?:es)?|humano|responsable)\b/i,
+    /\b(?:staff|moderador(?:es)?|humano|responsable)\b.*\b(?:por\s+favor|porfa|urgente|ayuda|venir|venga|atienda)\b/i,
+    /\bmanual\s+(?:support|assistance|help)\b/i,
+    /\b(?:need|want|call|notify|contact|bring|get)\b.*\b(staff|moderator|human|admin)\b/i,
+    /\b(?:staff|moderator|human|admin)\b.*\b(?:please|help|needed|urgent)\b/i
   ].some((pattern) => pattern.test(content));
 }
 
