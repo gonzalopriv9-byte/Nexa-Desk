@@ -21,7 +21,7 @@ const supabase = createClient(supabaseUrl, serviceRoleKey, {
 const guilds = Object.values(await readJson('guilds.json', {}));
 const tickets = Object.values(await readJson('tickets.json', {}));
 const transcripts = await readJson('transcripts.json', {});
-const transcriptMessages = Object.values(transcripts).flat();
+const transcriptMessages = dedupeTranscriptMessages(Object.values(transcripts).flat());
 
 await upsertRows('guild_configs', guilds.map(toGuildRow), 'guild_id');
 await upsertRows('tickets', tickets.map(toTicketRow), 'channel_id');
@@ -45,9 +45,22 @@ async function upsertRows(table, rows, onConflict) {
   if (!rows.length) return;
 
   for (const chunk of chunkRows(rows, 200)) {
-    const { error } = await supabase
+    let { error } = await supabase
       .from(table)
       .upsert(chunk, { onConflict });
+    if (error && table === 'tickets' && String(error.message ?? '').includes('ai_disabled')) {
+      const compatibleChunk = chunk.map((row) => {
+        const next = { ...row };
+        delete next.ai_disabled;
+        delete next.ai_disabled_by;
+        delete next.ai_disabled_at;
+        return next;
+      });
+      const retry = await supabase
+        .from(table)
+        .upsert(compatibleChunk, { onConflict });
+      error = retry.error;
+    }
     if (error) throw new Error(`${table} migration failed: ${error.message}`);
   }
 }
@@ -55,12 +68,41 @@ async function upsertRows(table, rows, onConflict) {
 async function insertTranscriptMessages(rows) {
   if (!rows.length) return;
 
-  for (const chunk of chunkRows(rows, 200)) {
+  const existingKeys = await getExistingTranscriptKeys();
+  const pendingRows = rows.filter((row) => {
+    const key = transcriptKey(row);
+    return key && !existingKeys.has(key);
+  });
+
+  for (const chunk of chunkRows(pendingRows, 200)) {
     const { error } = await supabase
       .from('transcript_messages')
       .insert(chunk);
     if (error) throw new Error(`transcript_messages migration failed: ${error.message}`);
   }
+}
+
+async function getExistingTranscriptKeys() {
+  const keys = new Set();
+  let from = 0;
+  const pageSize = 1000;
+
+  while (true) {
+    const { data, error } = await supabase
+      .from('transcript_messages')
+      .select('channel_id,message_id')
+      .not('message_id', 'is', null)
+      .range(from, from + pageSize - 1);
+    if (error) throw new Error(`transcript_messages lookup failed: ${error.message}`);
+    for (const row of data ?? []) {
+      const key = transcriptKey(row);
+      if (key) keys.add(key);
+    }
+    if (!data || data.length < pageSize) break;
+    from += pageSize;
+  }
+
+  return keys;
 }
 
 function toGuildRow(guild) {
@@ -106,6 +148,23 @@ function toTranscriptRow(message) {
     content: message.content,
     created_at: message.createdAt ?? new Date().toISOString()
   };
+}
+
+function dedupeTranscriptMessages(messages) {
+  const seen = new Set();
+  const result = [];
+  for (const message of messages) {
+    const key = `${message.channelId ?? ''}:${message.messageId ?? ''}`;
+    if (message.messageId && seen.has(key)) continue;
+    if (message.messageId) seen.add(key);
+    result.push(message);
+  }
+  return result;
+}
+
+function transcriptKey(row) {
+  if (!row.channel_id || !row.message_id) return null;
+  return `${row.channel_id}:${row.message_id}`;
 }
 
 function chunkRows(rows, size) {
