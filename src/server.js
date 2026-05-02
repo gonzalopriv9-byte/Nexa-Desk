@@ -192,13 +192,19 @@ export function createServer({ config, storage, bot, events }) {
     }
 
     const configs = await storage.listGuildConfigs();
-    const installedGuildIds = await getInstalledGuildIds(bot, configs);
-    const guilds = mergeUserGuilds(req.session, configs, installedGuildIds, config);
+    const knownInstalledGuildIds = new Set(configs.map((item) => item.guildId).filter(Boolean));
+    const guilds = mergeUserGuilds(req.session, configs, knownInstalledGuildIds, config);
     const guild = guilds.find((item) => item.guildId === req.body.guildId) ?? guilds[0] ?? null;
-    const stats = enrichDashboardStats(
-      await storage.getDashboardStats(req.session.guilds.map((item) => item.id)),
-      guilds
-    );
+    let stats;
+    try {
+      stats = enrichDashboardStats(
+        await storage.getDashboardStats(req.session.guilds.map((item) => item.id)),
+        guilds
+      );
+    } catch (error) {
+      console.warn('Dashboard assistant stats fallback:', normalizeError(error));
+      stats = enrichDashboardStats(buildEmptyDashboardStats(), guilds);
+    }
     res.json(await buildDashboardAssistantReply({ config, message, guild, stats, activeView: req.body.activeView }));
   }));
 
@@ -456,6 +462,23 @@ function enrichDashboardStats(stats, guilds) {
   };
 }
 
+function buildEmptyDashboardStats() {
+  return {
+    totalGuilds: 0,
+    configuredGuilds: 0,
+    unconfiguredGuilds: 0,
+    totalTickets: 0,
+    openTickets: 0,
+    closedTickets: 0,
+    ticketsToday: 0,
+    ticketsThisWeek: 0,
+    panels: 0,
+    transcriptMessages: 0,
+    escalationReadyGuilds: 0,
+    aiReadyGuilds: 0
+  };
+}
+
 function buildBotInviteUrl(config, guildId) {
   const url = new URL('https://discord.com/oauth2/authorize');
   url.searchParams.set('client_id', config.DISCORD_CLIENT_ID);
@@ -500,6 +523,10 @@ async function buildDashboardAssistantReply({ config, message, guild, stats, act
   const actions = suggestDashboardActions(message, guild);
   const fallback = buildDashboardAssistantFallback({ message, guild, stats, activeView, actions });
 
+  if (actions.some((action) => action.type === 'fill')) {
+    return fallback;
+  }
+
   if (!config.GROQ_API_KEY || config.GROQ_API_KEY === 'replace_me') {
     return fallback;
   }
@@ -516,6 +543,12 @@ async function buildDashboardAssistantReply({ config, message, guild, stats, act
         'Eres el copiloto de la dashboard de NexaDesk.',
         'Responde en espanol claro, breve y accionable.',
         'Ayuda a configurar servidores Discord para tickets con IA, paneles, componentes, staff y transcripciones.',
+        'La dashboard real tiene estas secciones: Resumen, Servidores, Configuracion, Componentes, Paneles y Tickets.',
+        'En Configuracion se elige categoria, rol staff, prompt del servidor e informacion del servidor.',
+        'En Componentes se crean opciones del menu con preguntas previas y primer mensaje.',
+        'En Paneles se publica el embed, boton o menu en un canal de Discord.',
+        'En Tickets se ven tickets y transcripciones guardadas.',
+        'Si el usuario pide que tu metas algo, explica que puedes rellenar campos con botones de accion, pero el usuario debe revisar y guardar/publicar.',
         'No pidas IDs si la dashboard ya ofrece selectores de roles, canales y categorias.',
         'Si recomiendas navegar, menciona una seccion exacta: Resumen, Servidores, Configuracion, Componentes, Paneles o Tickets.',
         'No inventes datos fuera del contexto recibido.'
@@ -549,10 +582,13 @@ async function buildDashboardAssistantReply({ config, message, guild, stats, act
 function buildDashboardAssistantFallback({ message, guild, stats, activeView, actions }) {
   const lower = normalizeSearchText(message);
   const missing = guild ? getGuildMissingSteps(guild) : [];
+  const fillAction = actions.find((action) => action.type === 'fill');
   let reply = 'Te guio desde aqui. ';
 
   if (!guild) {
     reply += 'Primero inicia sesion con Discord y selecciona un servidor gestionable.';
+  } else if (fillAction) {
+    reply += `Puedo hacerlo por ti desde aqui: pulsa "${fillAction.label}" y rellenare los campos correspondientes. Despues revisa el texto y guarda o publica.`;
   } else if (lower.includes('panel') || lower.includes('menu') || lower.includes('boton')) {
     reply += guild.components?.length
       ? 'Para publicar un panel, ve a Paneles, elige canal, modo boton o menu y revisa la previsualizacion antes de publicar.'
@@ -579,9 +615,66 @@ function buildDashboardAssistantFallback({ message, guild, stats, activeView, ac
 function suggestDashboardActions(message, guild) {
   const lower = normalizeSearchText(message);
   const actions = [];
-  const add = (label, view) => {
-    if (!actions.some((action) => action.view === view)) actions.push({ label, view });
+  const add = (label, view, extra = {}) => {
+    if (!actions.some((action) => action.label === label && action.view === view)) {
+      actions.push({ label, view, ...extra });
+    }
   };
+
+  if (isFillPromptRequest(lower)) {
+    add('Rellenar prompt recomendado', 'settings', {
+      type: 'fill',
+      toast: 'He rellenado un prompt recomendado. Revisalo y pulsa Guardar contexto y escalado.',
+      fields: {
+        serverPrompt: buildRecommendedServerPrompt(guild),
+        serverInfo: buildRecommendedServerInfo(guild)
+      }
+    });
+    add('Abrir Configuracion', 'settings');
+  }
+
+  if (isFillComponentRequest(lower)) {
+    add('Rellenar componente base', 'components', {
+      type: 'fill',
+      toast: 'He preparado un componente base. Ajusta preguntas y pulsa Crear componente.',
+      fields: {
+        componentLabel: 'Soporte general',
+        componentDescription: 'Ayuda para dudas, errores o solicitudes del servidor.',
+        componentEmoji: '<a:Global:1499728413974593708>',
+        componentQuestions: 'Describe que necesitas\nAdjunta capturas o videos si hay un error visual\nQue resultado esperabas?',
+        componentWelcomeMessage: 'Hola {user}, soy NexaDesk.\nHe guardado tus respuestas para que el staff tenga contexto. Voy a ayudarte con este ticket.'
+      }
+    });
+    add('Crear Componentes', 'components');
+  }
+
+  if (isFillPanelRequest(lower)) {
+    add('Rellenar panel profesional', 'panels', {
+      type: 'fill',
+      toast: 'He rellenado un panel profesional. Revisa canal/categoria y pulsa Publicar panel.',
+      fields: {
+        panelTitle: 'Centro de soporte',
+        panelDescription: 'Abre un ticket y NexaDesk analizara tu caso con IA. Si hace falta, avisara al staff con un resumen claro.',
+        panelButtonLabel: 'Abrir ticket',
+        panelButtonEmoji: '<a:Global:1499728413974593708>',
+        panelFooterText: 'NexaDesk AI Support',
+        panelWelcomeMessage: 'Hola {user}, soy NexaDesk.\nCuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al staff con el contexto ordenado.'
+      }
+    });
+    add('Publicar Panel', 'panels');
+  }
+
+  if (wantsAutofill(lower) && !actions.some((action) => action.type === 'fill')) {
+    add('Rellenar prompt recomendado', 'settings', {
+      type: 'fill',
+      toast: 'He rellenado un prompt recomendado. Revisalo y pulsa Guardar contexto y escalado.',
+      fields: {
+        serverPrompt: buildRecommendedServerPrompt(guild),
+        serverInfo: buildRecommendedServerInfo(guild)
+      }
+    });
+    add('Abrir Configuracion', 'settings');
+  }
 
   if (lower.includes('servidor') || lower.includes('invitar') || lower.includes('instalar')) add('Ir a Servidores', 'servers');
   if (lower.includes('ia') || lower.includes('prompt') || lower.includes('contexto') || lower.includes('staff') || lower.includes('rol')) add('Abrir Configuracion', 'settings');
@@ -600,6 +693,60 @@ function suggestDashboardActions(message, guild) {
   }
 
   return actions.slice(0, 3);
+}
+
+function isFillPromptRequest(lower) {
+  return wantsAutofill(lower) &&
+    (lower.includes('prompt') || lower.includes('contexto') || lower.includes('ia'));
+}
+
+function isFillComponentRequest(lower) {
+  return wantsAutofill(lower) &&
+    (lower.includes('componente') || lower.includes('pregunta') || lower.includes('menu'));
+}
+
+function isFillPanelRequest(lower) {
+  return wantsAutofill(lower) &&
+    (lower.includes('panel') || lower.includes('embed') || lower.includes('boton'));
+}
+
+function wantsAutofill(lower) {
+  return [
+    'metelo',
+    'mete',
+    'meter',
+    'ponlo',
+    'pon',
+    'rellena',
+    'rellenalo',
+    'hazlo',
+    'crea',
+    'crealo',
+    'aplica'
+  ].some((word) => lower.includes(word));
+}
+
+function buildRecommendedServerPrompt(guild = {}) {
+  const guildName = guild?.guildName || 'este servidor';
+  return [
+    `Eres NexaDesk, el agente de soporte con IA de ${guildName}.`,
+    'Responde siempre en el idioma del ultimo mensaje del usuario.',
+    'Se claro, cercano y resolutivo. Haz una pregunta concreta si falta informacion.',
+    'No inventes reglas, sanciones, precios ni informacion que no este en el contexto del servidor.',
+    'Si el usuario pide staff humano, reporta amenazas, pagos, sanciones, datos sensibles o un caso que requiere permisos, escala al staff.',
+    'Si el problema es visual, pide capturas, fotos o videos y usa esas pruebas antes de responder.',
+    'Cuando escales, resume el caso para el staff en una frase clara y evita mencionar varias veces al rol.'
+  ].join('\n');
+}
+
+function buildRecommendedServerInfo(guild = {}) {
+  const guildName = guild?.guildName || 'Servidor';
+  return [
+    `Nombre del servidor: ${guildName}.`,
+    'Objetivo: resolver tickets con IA y escalar a staff solo cuando haga falta.',
+    'Buenas practicas: pedir contexto, revisar pruebas visuales si existen, mantener tono profesional y no cerrar tickets sin confirmacion.',
+    'Completa aqui reglas, FAQs, horarios de soporte, enlaces importantes y politicas internas.'
+  ].join('\n');
 }
 
 function getGuildMissingSteps(guild = {}) {
@@ -965,22 +1112,23 @@ function renderDashboard({ session, guilds, tickets, stats }) {
     .toast.is-visible { opacity:1; transform:translateY(0); }
     .assistant-launcher { position:fixed; right:24px; bottom:24px; z-index:32; width:auto; min-width:178px; border-radius:999px; display:flex; align-items:center; gap:10px; padding:12px 16px; box-shadow:0 22px 70px rgba(0,0,0,.55); }
     .assistant-launcher span { display:grid; place-items:center; width:28px; height:28px; border-radius:50%; color:#050505; background:#fff; box-shadow:0 0 22px rgba(255,255,255,.22); }
-    .assistant-panel { position:fixed; right:24px; bottom:88px; z-index:31; width:min(430px, calc(100% - 32px)); max-height:min(680px, calc(100vh - 112px)); display:grid; grid-template-rows:auto minmax(0,1fr) auto; border:1px solid var(--line); border-radius:18px; background:linear-gradient(180deg, rgba(18,18,18,.98), rgba(5,5,5,.98)); box-shadow:0 28px 110px rgba(0,0,0,.62); overflow:hidden; transform:translateY(18px) scale(.98); opacity:0; pointer-events:none; transition:opacity .24s ease, transform .24s cubic-bezier(.2,.8,.2,1); }
+    .assistant-panel { position:fixed; right:24px; bottom:88px; z-index:31; width:min(430px, calc(100% - 32px)); max-height:min(680px, calc(100vh - 112px)); display:grid; grid-template-rows:auto minmax(0,1fr) auto; border:1px solid rgba(255,255,255,.42); border-radius:18px; background:#f7f7f2; color:#050505; box-shadow:0 28px 110px rgba(0,0,0,.62), 0 0 0 1px rgba(0,0,0,.08) inset; overflow:hidden; transform:translateY(18px) scale(.98); opacity:0; pointer-events:none; transition:opacity .24s ease, transform .24s cubic-bezier(.2,.8,.2,1); }
     .assistant-panel.is-open { opacity:1; transform:translateY(0) scale(1); pointer-events:auto; }
-    .assistant-head { display:flex; justify-content:space-between; gap:12px; align-items:center; padding:16px; border-bottom:1px solid var(--line); background:rgba(255,255,255,.04); }
+    .assistant-head { display:flex; justify-content:space-between; gap:12px; align-items:center; padding:16px; border-bottom:1px solid rgba(0,0,0,.14); background:#ffffff; }
     .assistant-head strong,.assistant-head span { display:block; }
-    .assistant-head span { color:var(--muted); font-size:13px; margin-top:3px; }
+    .assistant-head span { color:#565656; font-size:13px; margin-top:3px; }
     .assistant-close { width:36px; height:36px; padding:0; border-radius:10px; }
     .assistant-body { display:grid; gap:10px; overflow:auto; padding:16px; }
-    .assistant-message { max-width:92%; border:1px solid var(--soft-line); border-radius:14px; padding:12px; background:rgba(255,255,255,.045); color:#e8e8e8; line-height:1.45; white-space:pre-wrap; }
-    .assistant-message.user { justify-self:end; color:#050505; background:#fff; border-color:#fff; }
-    .assistant-message.loading { color:var(--muted); }
+    .assistant-message { max-width:92%; border:1px solid rgba(0,0,0,.12); border-radius:14px; padding:12px; background:#ffffff; color:#111; line-height:1.45; white-space:pre-wrap; box-shadow:0 10px 26px rgba(0,0,0,.06); }
+    .assistant-message.user { justify-self:end; color:#fff; background:#050505; border-color:#050505; }
+    .assistant-message.loading { color:#565656; }
     .assistant-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:9px; }
-    .assistant-action { width:auto; border-radius:999px; border:1px solid rgba(255,255,255,.2); background:#0a0a0a; color:#fff; padding:7px 10px; font-size:12px; }
+    .assistant-action { width:auto; border-radius:999px; border:1px solid rgba(0,0,0,.2); background:#050505; color:#fff; padding:7px 10px; font-size:12px; }
     .assistant-quick { display:flex; gap:8px; overflow:auto; padding:0 16px 12px; }
-    .assistant-chip { width:auto; flex:0 0 auto; border:1px solid var(--line); background:#080808; color:#fff; padding:8px 10px; border-radius:999px; font-size:12px; }
-    .assistant-form { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px; padding:14px 16px 16px; border-top:1px solid var(--line); background:rgba(255,255,255,.035); }
-    .assistant-form input { margin:0; }
+    .assistant-chip { width:auto; flex:0 0 auto; border:1px solid rgba(0,0,0,.16); background:#fff; color:#050505; padding:8px 10px; border-radius:999px; font-size:12px; }
+    .assistant-form { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px; padding:14px 16px 16px; border-top:1px solid rgba(0,0,0,.14); background:#ffffff; }
+    .assistant-form input { margin:0; background:#f3f3ee; color:#050505; border-color:rgba(0,0,0,.18); }
+    .assistant-form input:focus { background:#fff; border-color:#050505; box-shadow:0 0 0 4px rgba(0,0,0,.08); }
     .assistant-form button { width:auto; min-width:88px; }
     .loading { position:fixed; inset:0; z-index:20; display:grid; place-items:center; background:rgba(5,8,10,.9); backdrop-filter:blur(12px); transition:opacity .35s ease, visibility .35s ease; }
     .loading.is-hidden { opacity:0; visibility:hidden; }
@@ -1780,15 +1928,47 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
           button.type = 'button';
           button.className = 'assistant-action';
           button.textContent = action.label;
-          button.dataset.goView = action.view;
+          button.dataset.assistantAction = JSON.stringify(action);
           actionWrap.appendChild(button);
         });
         article.appendChild(actionWrap);
       }
       body.appendChild(article);
-      bindNavigationButtons(article);
+      bindAssistantActionButtons(article);
       body.scrollTop = body.scrollHeight;
       return article;
+    }
+    function bindAssistantActionButtons(root = document) {
+      root.querySelectorAll('[data-assistant-action]').forEach((button) => {
+        button.onclick = () => {
+          try {
+            applyAssistantAction(JSON.parse(button.dataset.assistantAction));
+          } catch {
+            showToast('No pude aplicar esa accion.');
+          }
+        };
+      });
+    }
+    function applyAssistantAction(action = {}) {
+      if (action.view) goToView(action.view);
+
+      if (action.type === 'fill' && action.fields) {
+        for (const [fieldId, value] of Object.entries(action.fields)) {
+          const field = document.querySelector('#' + CSS.escape(fieldId));
+          if (!field) continue;
+          field.value = value;
+          field.dispatchEvent(new Event('input', { bubbles: true }));
+          field.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+        updatePanelPreview();
+        renderReadinessChecklist(getActiveGuild());
+        renderRecommendations(getActiveGuild());
+        showToast(action.toast || 'He rellenado los campos. Revisa y guarda los cambios.');
+        appendAssistantMessage('He rellenado los campos por ti. Revisalos y pulsa el boton principal de la seccion para guardar o publicar.', { actions: [{ label: 'Seguir en esta seccion', view: action.view || state.activeView }] });
+        return;
+      }
+
+      if (action.toast) showToast(action.toast);
     }
     async function askAssistant(prompt) {
       const question = String(prompt ?? document.querySelector('#assistantInput')?.value ?? '').trim();
@@ -1798,11 +1978,14 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       appendAssistantMessage(question, { role: 'user' });
       const loading = appendAssistantMessage('Pensando con el contexto de tu dashboard...', { role: 'assistant loading' });
       try {
-        const response = await postJson('/api/assistant', {
-          message: question,
-          guildId: document.querySelector('#guildId')?.value,
-          activeView: state.activeView
-        });
+        const response = await Promise.race([
+          postJson('/api/assistant', {
+            message: question,
+            guildId: document.querySelector('#guildId')?.value,
+            activeView: state.activeView
+          }),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('El asistente esta tardando demasiado. Uso guia local.')), 10000))
+        ]);
         if (loading) loading.remove();
         appendAssistantMessage(response.reply, { actions: response.actions || [] });
       } catch (error) {
