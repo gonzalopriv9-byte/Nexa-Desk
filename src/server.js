@@ -5,6 +5,7 @@ import cookieParser from 'cookie-parser';
 import crypto from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { GroqClient } from './ai/groq-client.js';
 import { normalizeTicketComponent } from './panel-options.js';
 import { buildTranscriptFileName, buildTranscriptText } from './transcripts.js';
 
@@ -181,6 +182,24 @@ export function createServer({ config, storage, bot, events }) {
     const guilds = mergeUserGuilds(req.session, configs, installedGuildIds, config);
     const stats = await storage.getDashboardStats(req.session.guilds.map((guild) => guild.id));
     res.json(enrichDashboardStats(stats, guilds));
+  }));
+
+  app.post('/api/assistant', asyncHandler(async (req, res) => {
+    const message = String(req.body.message ?? '').trim().slice(0, 900);
+    if (!message) {
+      res.status(400).json({ error: 'Escribe una pregunta para el asistente.' });
+      return;
+    }
+
+    const configs = await storage.listGuildConfigs();
+    const installedGuildIds = await getInstalledGuildIds(bot, configs);
+    const guilds = mergeUserGuilds(req.session, configs, installedGuildIds, config);
+    const guild = guilds.find((item) => item.guildId === req.body.guildId) ?? guilds[0] ?? null;
+    const stats = enrichDashboardStats(
+      await storage.getDashboardStats(req.session.guilds.map((item) => item.id)),
+      guilds
+    );
+    res.json(await buildDashboardAssistantReply({ config, message, guild, stats, activeView: req.body.activeView }));
   }));
 
   app.get('/api/tickets/:channelId/transcript', asyncHandler(async (req, res) => {
@@ -477,6 +496,142 @@ function getSession(req) {
   }
 }
 
+async function buildDashboardAssistantReply({ config, message, guild, stats, activeView }) {
+  const actions = suggestDashboardActions(message, guild);
+  const fallback = buildDashboardAssistantFallback({ message, guild, stats, activeView, actions });
+
+  if (!config.GROQ_API_KEY || config.GROQ_API_KEY === 'replace_me') {
+    return fallback;
+  }
+
+  try {
+    const client = new GroqClient({
+      apiKey: config.GROQ_API_KEY,
+      model: config.GROQ_MODEL,
+      visionModel: config.GROQ_VISION_MODEL
+    });
+    const reply = await Promise.race([
+      client.generate({
+      system: [
+        'Eres el copiloto de la dashboard de NexaDesk.',
+        'Responde en espanol claro, breve y accionable.',
+        'Ayuda a configurar servidores Discord para tickets con IA, paneles, componentes, staff y transcripciones.',
+        'No pidas IDs si la dashboard ya ofrece selectores de roles, canales y categorias.',
+        'Si recomiendas navegar, menciona una seccion exacta: Resumen, Servidores, Configuracion, Componentes, Paneles o Tickets.',
+        'No inventes datos fuera del contexto recibido.'
+      ].join('\n'),
+      messages: [
+        {
+          role: 'user',
+          content: [
+            `Pregunta: ${message}`,
+            `Vista actual: ${activeView || 'overview'}`,
+            `Servidor activo: ${guild ? JSON.stringify(summarizeGuildForAssistant(guild)) : 'ninguno'}`,
+            `Stats: ${JSON.stringify(stats)}`
+          ].join('\n')
+        }
+      ]
+      }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('Dashboard assistant timed out')), 8500))
+    ]);
+
+    return {
+      reply: reply || fallback.reply,
+      actions,
+      source: 'groq'
+    };
+  } catch (error) {
+    console.warn('Dashboard assistant fallback:', normalizeError(error));
+    return fallback;
+  }
+}
+
+function buildDashboardAssistantFallback({ message, guild, stats, activeView, actions }) {
+  const lower = normalizeSearchText(message);
+  const missing = guild ? getGuildMissingSteps(guild) : [];
+  let reply = 'Te guio desde aqui. ';
+
+  if (!guild) {
+    reply += 'Primero inicia sesion con Discord y selecciona un servidor gestionable.';
+  } else if (lower.includes('panel') || lower.includes('menu') || lower.includes('boton')) {
+    reply += guild.components?.length
+      ? 'Para publicar un panel, ve a Paneles, elige canal, modo boton o menu y revisa la previsualizacion antes de publicar.'
+      : 'Si quieres un menu desplegable, crea primero opciones en Componentes y despues publica el panel desde Paneles.';
+  } else if (lower.includes('transcrip') || lower.includes('ticket')) {
+    reply += 'En Tickets puedes abrir cada transcripcion guardada y descargarla en TXT. Si no aparecen tickets, abre uno desde un panel o una categoria configurada.';
+  } else if (lower.includes('staff') || lower.includes('rol') || lower.includes('escalar')) {
+    reply += 'Ve a Configuracion, selecciona el rol staff y guarda. Asi NexaDesk sabra a quien avisar cuando la IA necesite ayuda humana.';
+  } else if (lower.includes('ia') || lower.includes('prompt') || lower.includes('contexto')) {
+    reply += 'Ve a Configuracion y rellena el prompt del servidor con tono, limites, reglas y cuando pedir pruebas visuales o escalar.';
+  } else if (missing.length) {
+    reply += `El siguiente paso recomendado es ${missing[0].label.toLowerCase()}.`;
+  } else {
+    reply += `Tu configuracion pinta bien. Ahora revisaria actividad: ${stats.openTickets} tickets abiertos, ${stats.panels} paneles y ${stats.transcriptMessages} mensajes transcritos.`;
+  }
+
+  return {
+    reply,
+    actions,
+    source: 'local'
+  };
+}
+
+function suggestDashboardActions(message, guild) {
+  const lower = normalizeSearchText(message);
+  const actions = [];
+  const add = (label, view) => {
+    if (!actions.some((action) => action.view === view)) actions.push({ label, view });
+  };
+
+  if (lower.includes('servidor') || lower.includes('invitar') || lower.includes('instalar')) add('Ir a Servidores', 'servers');
+  if (lower.includes('ia') || lower.includes('prompt') || lower.includes('contexto') || lower.includes('staff') || lower.includes('rol')) add('Abrir Configuracion', 'settings');
+  if (lower.includes('componente') || lower.includes('pregunta') || lower.includes('menu')) add('Crear Componentes', 'components');
+  if (lower.includes('panel') || lower.includes('boton') || lower.includes('publicar')) add('Publicar Panel', 'panels');
+  if (lower.includes('ticket') || lower.includes('transcrip')) add('Ver Tickets', 'tickets');
+
+  if (!actions.length && guild) {
+    const missing = getGuildMissingSteps(guild);
+    if (missing[0]) add(missing[0].actionLabel, missing[0].view);
+  }
+
+  if (!actions.length) {
+    add('Ver Resumen', 'overview');
+    add('Configurar Servidor', 'settings');
+  }
+
+  return actions.slice(0, 3);
+}
+
+function getGuildMissingSteps(guild = {}) {
+  const steps = [];
+  if (!guild.installed) steps.push({ label: 'invitar NexaDesk al servidor', actionLabel: 'Invitar Bot', view: 'servers' });
+  if (!guild.ticketCategoryId) steps.push({ label: 'elegir una categoria de tickets', actionLabel: 'Configurar Categoria', view: 'settings' });
+  if (!guild.staffRoleId) steps.push({ label: 'asignar el rol de staff', actionLabel: 'Elegir Staff', view: 'settings' });
+  if (!guild.serverPrompt && !guild.serverInfo) steps.push({ label: 'anadir contexto para la IA', actionLabel: 'Escribir Contexto IA', view: 'settings' });
+  if (!(guild.components?.length)) steps.push({ label: 'crear componentes para menus', actionLabel: 'Crear Componentes', view: 'components' });
+  if (!(guild.panels?.length)) steps.push({ label: 'publicar un panel de tickets', actionLabel: 'Publicar Panel', view: 'panels' });
+  return steps;
+}
+
+function summarizeGuildForAssistant(guild = {}) {
+  return {
+    name: guild.guildName,
+    installed: Boolean(guild.installed),
+    configured: Boolean(guild.ticketCategoryId),
+    hasStaffRole: Boolean(guild.staffRoleId),
+    hasAiContext: Boolean(guild.serverPrompt || guild.serverInfo),
+    panels: guild.panels?.length ?? 0,
+    components: guild.components?.length ?? 0
+  };
+}
+
+function normalizeSearchText(value) {
+  return String(value ?? '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase();
+}
+
 function renderLogin(config) {
   const isReady = Boolean(config.DISCORD_CLIENT_SECRET);
 
@@ -722,6 +877,17 @@ function renderDashboard({ session, guilds, tickets, stats }) {
     .install-banner[hidden] { display:none; }
     .install-banner strong { display:block; }
     .install-banner a { display:inline-flex; align-items:center; justify-content:center; min-width:150px; border-radius:10px; padding:11px 12px; color:#050505; background:#fff; text-decoration:none; font-weight:900; }
+    .readiness-checklist { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; margin-top:12px; }
+    .check-item { display:flex; align-items:center; gap:9px; border:1px solid var(--soft-line); border-radius:11px; padding:10px; color:var(--muted); background:rgba(5,8,10,.38); transition:transform .22s ease, border-color .22s ease, background .22s ease; }
+    .check-item::before { content:""; width:10px; height:10px; border-radius:50%; border:1px solid rgba(255,255,255,.45); flex:0 0 auto; }
+    .check-item.is-done { color:var(--text); border-color:rgba(255,255,255,.24); background:rgba(255,255,255,.06); }
+    .check-item.is-done::before { background:#fff; box-shadow:0 0 18px rgba(255,255,255,.32); }
+    .quick-actions { display:flex; flex-wrap:wrap; gap:10px; margin:14px 0 18px; }
+    .quick-action { width:auto; border:1px solid var(--line); background:#0a0a0a; color:#fff; border-radius:999px; padding:9px 12px; font-size:13px; }
+    .recommendation-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; margin-top:12px; }
+    .recommendation { border:1px solid var(--soft-line); border-radius:13px; padding:13px; background:rgba(255,255,255,.04); transition:transform .22s ease, border-color .22s ease; }
+    .recommendation:hover { transform:translateY(-2px); border-color:rgba(255,255,255,.28); }
+    .recommendation strong { display:block; margin-bottom:6px; }
     .control-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px; }
     .control-card { border:1px solid var(--line); border-radius:14px; padding:18px; background:linear-gradient(180deg, rgba(24,24,24,.94), rgba(8,8,8,.94)); transition:transform .28s cubic-bezier(.2,.8,.2,1), border-color .28s ease, box-shadow .28s ease; }
     .control-card:hover { transform:translateY(-2px); border-color:rgba(255,255,255,.26); box-shadow:0 24px 80px rgba(0,0,0,.28); }
@@ -795,8 +961,27 @@ function renderDashboard({ session, guilds, tickets, stats }) {
     .transcript-meta { display:flex; justify-content:space-between; gap:12px; color:var(--muted); font-size:12px; margin-bottom:7px; }
     .transcript-content { white-space:pre-wrap; overflow-wrap:anywhere; line-height:1.45; }
     .live { color:var(--ok); }
-    .toast { position:fixed; right:24px; bottom:24px; z-index:30; max-width:min(420px, calc(100% - 32px)); border:1px solid var(--line); border-radius:14px; background:#101010; color:var(--text); padding:14px 16px; box-shadow:0 22px 70px rgba(0,0,0,.55); transform:translateY(18px); opacity:0; pointer-events:none; transition:opacity .25s ease, transform .25s ease; }
+    .toast { position:fixed; right:24px; bottom:88px; z-index:30; max-width:min(420px, calc(100% - 32px)); border:1px solid var(--line); border-radius:14px; background:#101010; color:var(--text); padding:14px 16px; box-shadow:0 22px 70px rgba(0,0,0,.55); transform:translateY(18px); opacity:0; pointer-events:none; transition:opacity .25s ease, transform .25s ease; }
     .toast.is-visible { opacity:1; transform:translateY(0); }
+    .assistant-launcher { position:fixed; right:24px; bottom:24px; z-index:32; width:auto; min-width:178px; border-radius:999px; display:flex; align-items:center; gap:10px; padding:12px 16px; box-shadow:0 22px 70px rgba(0,0,0,.55); }
+    .assistant-launcher span { display:grid; place-items:center; width:28px; height:28px; border-radius:50%; color:#050505; background:#fff; box-shadow:0 0 22px rgba(255,255,255,.22); }
+    .assistant-panel { position:fixed; right:24px; bottom:88px; z-index:31; width:min(430px, calc(100% - 32px)); max-height:min(680px, calc(100vh - 112px)); display:grid; grid-template-rows:auto minmax(0,1fr) auto; border:1px solid var(--line); border-radius:18px; background:linear-gradient(180deg, rgba(18,18,18,.98), rgba(5,5,5,.98)); box-shadow:0 28px 110px rgba(0,0,0,.62); overflow:hidden; transform:translateY(18px) scale(.98); opacity:0; pointer-events:none; transition:opacity .24s ease, transform .24s cubic-bezier(.2,.8,.2,1); }
+    .assistant-panel.is-open { opacity:1; transform:translateY(0) scale(1); pointer-events:auto; }
+    .assistant-head { display:flex; justify-content:space-between; gap:12px; align-items:center; padding:16px; border-bottom:1px solid var(--line); background:rgba(255,255,255,.04); }
+    .assistant-head strong,.assistant-head span { display:block; }
+    .assistant-head span { color:var(--muted); font-size:13px; margin-top:3px; }
+    .assistant-close { width:36px; height:36px; padding:0; border-radius:10px; }
+    .assistant-body { display:grid; gap:10px; overflow:auto; padding:16px; }
+    .assistant-message { max-width:92%; border:1px solid var(--soft-line); border-radius:14px; padding:12px; background:rgba(255,255,255,.045); color:#e8e8e8; line-height:1.45; white-space:pre-wrap; }
+    .assistant-message.user { justify-self:end; color:#050505; background:#fff; border-color:#fff; }
+    .assistant-message.loading { color:var(--muted); }
+    .assistant-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:9px; }
+    .assistant-action { width:auto; border-radius:999px; border:1px solid rgba(255,255,255,.2); background:#0a0a0a; color:#fff; padding:7px 10px; font-size:12px; }
+    .assistant-quick { display:flex; gap:8px; overflow:auto; padding:0 16px 12px; }
+    .assistant-chip { width:auto; flex:0 0 auto; border:1px solid var(--line); background:#080808; color:#fff; padding:8px 10px; border-radius:999px; font-size:12px; }
+    .assistant-form { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px; padding:14px 16px 16px; border-top:1px solid var(--line); background:rgba(255,255,255,.035); }
+    .assistant-form input { margin:0; }
+    .assistant-form button { width:auto; min-width:88px; }
     .loading { position:fixed; inset:0; z-index:20; display:grid; place-items:center; background:rgba(5,8,10,.9); backdrop-filter:blur(12px); transition:opacity .35s ease, visibility .35s ease; }
     .loading.is-hidden { opacity:0; visibility:hidden; }
     .loader { width:min(420px, calc(100% - 32px)); border:1px solid var(--line); background:#0b1216; border-radius:14px; padding:24px; text-align:center; }
@@ -810,7 +995,7 @@ function renderDashboard({ session, guilds, tickets, stats }) {
     @keyframes spin { to { transform:rotate(360deg); } }
     @media (prefers-reduced-motion:reduce) { .banner-frame,.banner-frame::before,.banner-frame img { animation:none; transition:none; } }
     @media (max-width:1120px) { .app-shell,.workspace,.topbar,.command-center,.panel-builder { grid-template-columns:1fr; } .sidebar { position:relative; height:auto; top:auto; } .nav-foot { position:static; margin-top:18px; } .panel-preview-wrap { position:relative; top:auto; } }
-    @media (max-width:760px) { form,.control-grid,.stats,.server-status,.mini-grid,.panel-fields,.form-section { grid-template-columns:1fr; } label,button { margin-top:12px; } .app-shell { width:min(100% - 24px, 1440px); } }
+    @media (max-width:760px) { form,.control-grid,.stats,.server-status,.mini-grid,.panel-fields,.form-section,.readiness-checklist,.recommendation-grid { grid-template-columns:1fr; } label,button { margin-top:12px; } .app-shell { width:min(100% - 24px, 1440px); } .assistant-launcher { right:12px; bottom:12px; min-width:auto; } .assistant-panel { right:12px; bottom:74px; width:calc(100% - 24px); } }
   </style>
 </head>
 <body>
@@ -862,6 +1047,7 @@ function renderDashboard({ session, guilds, tickets, stats }) {
         <div><strong id="installTitle">NexaDesk no esta instalado en este servidor.</strong><p id="installText">Al seleccionarlo puedes invitar el bot directamente con permisos recomendados.</p></div>
         <a id="installLink" href="#">Invitar bot</a>
       </div>
+      <div class="readiness-checklist" id="readinessChecklist" aria-label="Checklist del servidor activo"></div>
     </section>
     <div class="view-stage">
       <section class="dashboard-view is-active" id="view-overview" data-view="overview">
@@ -894,6 +1080,18 @@ function renderDashboard({ session, guilds, tickets, stats }) {
               <div><strong id="staffReadyCount">${stats.escalationReadyGuilds}</strong><small>Escalado con staff</small></div>
             </div>
           </article>
+        </section>
+        <div class="quick-actions" aria-label="Acciones rapidas">
+          <button class="quick-action" type="button" data-go-view="settings">Configurar IA y staff</button>
+          <button class="quick-action" type="button" data-go-view="components">Crear menu de tickets</button>
+          <button class="quick-action" type="button" data-go-view="panels">Publicar panel</button>
+          <button class="quick-action" type="button" data-go-view="tickets">Ver transcripciones</button>
+        </div>
+        <section class="surface">
+          <div class="section-heading">
+            <div><h2>Siguiente mejor accion</h2><p>NexaDesk te marca lo que falta para dejar el servidor listo.</p></div>
+          </div>
+          <div class="recommendation-grid" id="recommendations"></div>
         </section>
       </section>
       <section class="dashboard-view" id="view-servers" data-view="servers">
@@ -1068,6 +1266,26 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
   </main>
   </div>
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <section class="assistant-panel" id="assistantPanel" aria-label="Copiloto NexaDesk" aria-live="polite">
+    <div class="assistant-head">
+      <div><strong>Copiloto NexaDesk</strong><span>Te guia por secciones, configuracion y buenas practicas.</span></div>
+      <button class="assistant-close secondary-button" id="assistantClose" type="button" aria-label="Cerrar asistente">x</button>
+    </div>
+    <div class="assistant-body" id="assistantBody">
+      <article class="assistant-message">Dime que quieres preparar y te llevo directo. Puedo ayudarte con IA, staff, paneles, menus y transcripciones.</article>
+    </div>
+    <div class="assistant-quick" aria-label="Preguntas rapidas">
+      <button class="assistant-chip" type="button" data-assistant-prompt="Que me falta para dejar este servidor listo?">Que falta?</button>
+      <button class="assistant-chip" type="button" data-assistant-prompt="Como creo un panel con menu desplegable?">Panel con menu</button>
+      <button class="assistant-chip" type="button" data-assistant-prompt="Como hago que la IA escale al staff?">Escalado staff</button>
+      <button class="assistant-chip" type="button" data-assistant-prompt="Donde veo las transcripciones?">Transcripciones</button>
+    </div>
+    <form class="assistant-form" id="assistantForm">
+      <input id="assistantInput" autocomplete="off" maxlength="900" placeholder="Pregunta: como configuro tickets?">
+      <button type="submit">Enviar</button>
+    </form>
+  </section>
+  <button class="assistant-launcher" id="assistantLauncher" type="button"><span>N</span> Ayuda IA</button>
   <script>
     const loadingPhrases = [
       'Preparando a tu agente de confianza',
@@ -1208,6 +1426,72 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
     function getGuildConfig(guildId) {
       return guildConfigs.find((guild) => guild.guildId === guildId) || null;
     }
+    function getActiveGuild() {
+      return getGuildConfig(document.querySelector('#guildId')?.value);
+    }
+    function goToView(view) {
+      setActiveView(view);
+      document.querySelector('main')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+    function getGuildReadiness(guild = {}) {
+      return [
+        { key: 'installed', label: 'Bot instalado', done: Boolean(guild.installed), view: 'servers' },
+        { key: 'category', label: 'Categoria de tickets', done: Boolean(guild.ticketCategoryId), view: 'settings' },
+        { key: 'staff', label: 'Rol staff', done: Boolean(guild.staffRoleId), view: 'settings' },
+        { key: 'context', label: 'Contexto IA', done: Boolean(guild.serverPrompt || guild.serverInfo), view: 'settings' },
+        { key: 'components', label: 'Componentes', done: Boolean(guild.components?.length), view: 'components' },
+        { key: 'panels', label: 'Panel publicado', done: Boolean(guild.panels?.length), view: 'panels' }
+      ];
+    }
+    function renderReadinessChecklist(guild = getActiveGuild()) {
+      const target = document.querySelector('#readinessChecklist');
+      if (!target) return;
+      if (!guild) {
+        target.innerHTML = '<div class="check-item">Selecciona un servidor</div>';
+        return;
+      }
+      target.innerHTML = getGuildReadiness(guild).map((item) => (
+        '<button class="check-item ' + (item.done ? 'is-done' : '') + '" type="button" data-go-view="' + item.view + '">' +
+        '<span>' + escapeHtml(item.label) + '</span>' +
+        '</button>'
+      )).join('');
+      bindNavigationButtons(target);
+    }
+    function renderRecommendations(guild = getActiveGuild()) {
+      const target = document.querySelector('#recommendations');
+      if (!target) return;
+      if (!guild) {
+        target.innerHTML = '<article class="recommendation"><strong>Selecciona un servidor</strong><p>El asistente te dara una ruta concreta cuando haya un servidor activo.</p></article>';
+        return;
+      }
+
+      const missing = getGuildReadiness(guild).filter((item) => !item.done);
+      const cards = missing.length ? missing.slice(0, 2).map((item) => recommendationForStep(item, guild)) : [
+        { title: 'Listo para operar', text: 'Tu servidor tiene categoria, staff, contexto y paneles. Revisa Tickets para validar actividad y transcripciones.', view: 'tickets', action: 'Ver tickets' },
+        { title: 'Mejora el prompt', text: 'Puedes afinar el contexto IA con reglas, tono, FAQ y cuando pedir capturas o videos como prueba visual.', view: 'settings', action: 'Editar contexto' }
+      ];
+
+      target.innerHTML = cards.map((card) => (
+        '<article class="recommendation"><strong>' + escapeHtml(card.title) + '</strong><p>' + escapeHtml(card.text) + '</p><button class="quick-action" type="button" data-go-view="' + card.view + '">' + escapeHtml(card.action) + '</button></article>'
+      )).join('');
+      bindNavigationButtons(target);
+    }
+    function recommendationForStep(item, guild) {
+      const map = {
+        installed: { title: 'Invita NexaDesk', text: 'Este servidor aparece en tu cuenta, pero el bot no esta dentro. Invitalo con permisos recomendados antes de configurar.', view: 'servers', action: 'Abrir servidores' },
+        category: { title: 'Elige categoria principal', text: 'Selecciona donde se detectan o crean tickets. Sin categoria, la IA no sabe que canales debe atender.', view: 'settings', action: 'Configurar categoria' },
+        staff: { title: 'Asigna rol de staff', text: 'NexaDesk necesita saber a quien avisar cuando haya escalado humano o asistencia manual.', view: 'settings', action: 'Elegir staff' },
+        context: { title: 'Dale contexto a la IA', text: 'Anade reglas, FAQ, tono, limites y si debe pedir pruebas visuales. Esto mejora mucho las respuestas.', view: 'settings', action: 'Escribir prompt' },
+        components: { title: 'Crea opciones de menu', text: 'Los componentes separan tipos de ticket, preguntas previas y mensajes iniciales personalizados.', view: 'components', action: 'Crear componente' },
+        panels: { title: 'Publica un panel', text: 'Ya puedes publicar un panel en un canal visible para que los usuarios abran tickets desde Discord.', view: 'panels', action: 'Publicar panel' }
+      };
+      return map[item.key] || { title: guild.guildName || 'Servidor', text: 'Revisa la configuracion recomendada.', view: item.view, action: 'Abrir' };
+    }
+    function bindNavigationButtons(root = document) {
+      root.querySelectorAll('[data-go-view]').forEach((button) => {
+        button.onclick = () => goToView(button.dataset.goView);
+      });
+    }
     function setConfigurationDisabled(disabled) {
       for (const selector of ['#ticketCategoryId', '#staffRoleId', '#serverPrompt', '#serverInfo', '#categoryName', '#componentLabel', '#componentEmoji', '#componentDescription', '#componentTicketCategoryId', '#componentQuestions', '#componentWelcomeMessage', '#panelType', '#panelSelectPlaceholder', '#panelComponentIds', '#panelChannelId', '#panelTicketCategoryId', '#panelButtonLabel', '#panelButtonStyle', '#panelButtonEmoji', '#panelTitle', '#panelEmbedColor', '#panelAuthorName', '#panelAuthorIconUrl', '#panelDescription', '#panelThumbnailUrl', '#panelImageUrl', '#panelFooterText', '#panelWelcomeMessage']) {
         const element = document.querySelector(selector);
@@ -1236,6 +1520,8 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       document.querySelector('#activePanels').textContent = String(guild.panels?.length ?? 0);
       renderComponentHistory(guild);
       renderPanelHistory(guild);
+      renderReadinessChecklist(guild);
+      renderRecommendations(guild);
       document.querySelectorAll('.guild-pill').forEach((button) => button.classList.toggle('is-active', button.dataset.guildId === guild.guildId));
     }
     function renderGuildLoadError(guildId, message) {
@@ -1258,6 +1544,8 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       document.querySelector('#activePanels').textContent = String(guild.panels?.length ?? 0);
       renderComponentHistory(guild);
       renderPanelHistory(guild);
+      renderReadinessChecklist(guild);
+      renderRecommendations(guild);
       document.querySelectorAll('.guild-pill').forEach((button) => button.classList.toggle('is-active', button.dataset.guildId === guildId));
     }
     async function loadGuildMeta(guildId) {
@@ -1308,6 +1596,8 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       document.querySelector('#activePanels').textContent = String(config.panels?.length ?? 0);
       renderComponentHistory(config);
       renderPanelHistory(config);
+      renderReadinessChecklist(config);
+      renderRecommendations(config);
       updatePanelMode();
       updatePanelPreview();
       document.querySelectorAll('.guild-pill').forEach((button) => button.classList.toggle('is-active', button.dataset.guildId === guildId));
@@ -1472,6 +1762,59 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       }
       return false;
     }
+    function setAssistantOpen(open) {
+      document.querySelector('#assistantPanel')?.classList.toggle('is-open', open);
+      if (open) setTimeout(() => document.querySelector('#assistantInput')?.focus(), 80);
+    }
+    function appendAssistantMessage(content, { role = 'assistant', actions = [] } = {}) {
+      const body = document.querySelector('#assistantBody');
+      if (!body) return null;
+      const article = document.createElement('article');
+      article.className = 'assistant-message ' + role;
+      article.textContent = content;
+      if (actions.length) {
+        const actionWrap = document.createElement('div');
+        actionWrap.className = 'assistant-actions';
+        actions.forEach((action) => {
+          const button = document.createElement('button');
+          button.type = 'button';
+          button.className = 'assistant-action';
+          button.textContent = action.label;
+          button.dataset.goView = action.view;
+          actionWrap.appendChild(button);
+        });
+        article.appendChild(actionWrap);
+      }
+      body.appendChild(article);
+      bindNavigationButtons(article);
+      body.scrollTop = body.scrollHeight;
+      return article;
+    }
+    async function askAssistant(prompt) {
+      const question = String(prompt ?? document.querySelector('#assistantInput')?.value ?? '').trim();
+      if (!question) return;
+      setAssistantOpen(true);
+      document.querySelector('#assistantInput').value = '';
+      appendAssistantMessage(question, { role: 'user' });
+      const loading = appendAssistantMessage('Pensando con el contexto de tu dashboard...', { role: 'assistant loading' });
+      try {
+        const response = await postJson('/api/assistant', {
+          message: question,
+          guildId: document.querySelector('#guildId')?.value,
+          activeView: state.activeView
+        });
+        if (loading) loading.remove();
+        appendAssistantMessage(response.reply, { actions: response.actions || [] });
+      } catch (error) {
+        if (loading) loading.remove();
+        const guild = getActiveGuild();
+        const fallbackAction = guild ? getGuildReadiness(guild).find((item) => !item.done) : null;
+        appendAssistantMessage('No he podido contactar con la IA ahora mismo, pero puedo seguir guiandote desde la dashboard. Prueba con Configuracion para revisar categoria, staff y contexto.', {
+          actions: fallbackAction ? [{ label: fallbackAction.label, view: fallbackAction.view }] : [{ label: 'Abrir Configuracion', view: 'settings' }]
+        });
+        showToast(error.message);
+      }
+    }
     const source = new EventSource('/api/events');
     source.addEventListener('ready', () => {
       document.querySelector('#liveState').textContent = 'En vivo';
@@ -1514,6 +1857,16 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
         setActiveView(link.dataset.view);
       });
     });
+    bindNavigationButtons();
+    document.querySelector('#assistantLauncher')?.addEventListener('click', () => setAssistantOpen(true));
+    document.querySelector('#assistantClose')?.addEventListener('click', () => setAssistantOpen(false));
+    document.querySelector('#assistantForm')?.addEventListener('submit', (event) => {
+      event.preventDefault();
+      askAssistant();
+    });
+    document.querySelectorAll('[data-assistant-prompt]').forEach((button) => {
+      button.addEventListener('click', () => askAssistant(button.dataset.assistantPrompt));
+    });
     window.addEventListener('hashchange', () => {
       setActiveView((location.hash || '#overview').slice(1), { updateHash: false });
     });
@@ -1540,6 +1893,8 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
     }
     bindTranscriptButtons();
     updatePanelPreview();
+    renderReadinessChecklist(getActiveGuild());
+    renderRecommendations(getActiveGuild());
     setActiveView((location.hash || '#overview').slice(1), { updateHash: false });
     syncGuildForm('#guildId', { inviteIfMissing: false });
   </script>
