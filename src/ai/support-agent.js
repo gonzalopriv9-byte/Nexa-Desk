@@ -9,10 +9,12 @@ export class SupportAgent {
     const latestGuildConfig = await this.storage.getGuildConfig(message.guild.id) ?? guildConfig;
     const userLanguage = detectUserLanguage(message.content);
     const history = await this.#loadHistory(message.channel);
+    const intakeContext = extractTicketIntakeContext(history);
     const system = this.#buildSystemPrompt({
       ticket,
       guildConfig: latestGuildConfig,
-      userLanguage
+      userLanguage,
+      intakeContext
     });
 
     const guardedMessages = applyLanguageGuard(history, userLanguage, message);
@@ -37,15 +39,19 @@ export class SupportAgent {
     });
   }
 
-  #buildSystemPrompt({ ticket, guildConfig, userLanguage }) {
+  #buildSystemPrompt({ ticket, guildConfig, userLanguage, intakeContext }) {
     const serverInfo = guildConfig.serverInfo?.trim() || 'No hay informacion adicional configurada todavia.';
     const serverPrompt = guildConfig.serverPrompt?.trim() || 'No hay prompt personalizado configurado.';
+    const ticketIntake = intakeContext?.trim() || 'No hay respuestas previas de formulario para este ticket.';
 
     return [
       'Eres NexaDesk, un moderador de soporte con IA dentro de Discord.',
       'Tu trabajo es ayudar dentro de tickets de soporte de forma clara, amable y breve.',
       'No inventes politicas, precios, sanciones, garantias ni informacion privada.',
       'Si falta informacion, pide datos concretos al usuario.',
+      'Usa las respuestas previas del formulario como contexto inicial fuerte del ticket.',
+      'No vuelvas a preguntar informacion que ya aparezca en las respuestas previas; continua desde ahi.',
+      'Si el usuario dice algo como "me ayudas tu?", responde continuando el caso ya descrito, no con un saludo generico.',
       'Si el caso requiere permisos de staff, pagos, sanciones o datos sensibles, escala a un humano.',
       'Si el usuario pide staff, moderador, humano, responsable o que menciones al staff, debes escalar.',
       'Cuando necesites staff humano, empieza tu respuesta exactamente con "[ESCALATE]" y explica en una frase por que.',
@@ -58,7 +64,8 @@ export class SupportAgent {
       `Servidor: ${guildConfig.guildName ?? ticket.guildId}`,
       `Contexto actualizado en: ${guildConfig.updatedAt ?? 'sin fecha registrada'}`,
       `Prompt personalizado del servidor:\n${serverPrompt}`,
-      `Informacion del servidor:\n${serverInfo}`
+      `Informacion del servidor:\n${serverInfo}`,
+      `Respuestas previas del formulario del ticket:\n${ticketIntake}`
     ].join('\n');
   }
 
@@ -72,6 +79,30 @@ export class SupportAgent {
         content: formatHistoryMessage(item).slice(0, 1800)
       }));
   }
+}
+
+function extractTicketIntakeContext(history) {
+  const intakeMessage = [...history]
+    .reverse()
+    .find((item) => item.role === 'assistant' && /respuestas previas\s*:/iu.test(item.content));
+  if (!intakeMessage) return '';
+
+  const [, rawBlock = ''] = itemContentAfterIntakeHeader(intakeMessage.content);
+  const cleaned = rawBlock
+    .split('\n')
+    .map((line) => line
+      .replace(/\*\*/g, '')
+      .replace(/^[-\s]+/, '')
+      .trim())
+    .filter(Boolean)
+    .join('\n')
+    .slice(0, 1800);
+
+  return cleaned;
+}
+
+function itemContentAfterIntakeHeader(content) {
+  return String(content).split(/respuestas previas\s*:/iu);
 }
 
 function formatHistoryMessage(message) {
