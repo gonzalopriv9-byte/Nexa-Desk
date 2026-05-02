@@ -19,6 +19,7 @@ const EMOJIS = {
   wifi: '<a:wifi:1499732411829846116>',
   global: '<a:Global:1499728413974593708>'
 };
+const BOT_INVITE_PERMISSIONS = '268684304';
 
 export function createBot({ config, storage, supportAgent }) {
   const intents = [
@@ -53,7 +54,7 @@ export function createBot({ config, storage, supportAgent }) {
       if (interaction.isButton() && interaction.customId === 'nexadesk:create_ticket') {
         const guildConfig = await storage.getGuildConfig(interaction.guildId);
         const panel = findPanelForInteraction(guildConfig, interaction);
-        await createTicketFromConfiguredSource({ interaction, storage, guildConfig, panel, panelCreatedChannels });
+        await createTicketFromConfiguredSource({ interaction, storage, guildConfig, panel, panelCreatedChannels, config });
         return;
       }
 
@@ -71,7 +72,7 @@ export function createBot({ config, storage, supportAgent }) {
         }
 
         const panel = findPanelForInteraction(guildConfig, interaction);
-        await createTicketFromConfiguredSource({ interaction, storage, guildConfig, panel, component, panelCreatedChannels });
+        await createTicketFromConfiguredSource({ interaction, storage, guildConfig, panel, component, panelCreatedChannels, config });
         return;
       }
 
@@ -88,7 +89,7 @@ export function createBot({ config, storage, supportAgent }) {
           question,
           answer: interaction.fields.getTextInputValue(`question_${index}`) || 'Sin respuesta'
         }));
-        await createTicketFromConfiguredSource({ interaction, storage, guildConfig, component, answers, panelCreatedChannels });
+        await createTicketFromConfiguredSource({ interaction, storage, guildConfig, component, answers, panelCreatedChannels, config });
         return;
       }
 
@@ -133,7 +134,7 @@ export function createBot({ config, storage, supportAgent }) {
       }
     } catch (error) {
       console.error('Interaction failed:', error);
-      await safeInteractionReply(interaction, buildInteractionErrorMessage(error));
+      await safeInteractionReply(interaction, buildInteractionErrorMessage(error, config, interaction.guildId));
     }
   });
 
@@ -263,12 +264,14 @@ async function safeInteractionReply(interaction, content) {
   }
 }
 
-function buildInteractionErrorMessage(error) {
+function buildInteractionErrorMessage(error, config, guildId) {
   if (error?.code === 50013) {
+    const inviteUrl = buildBotInviteUrl(config, guildId);
     return [
       'Discord no me deja completar esta accion por falta de permisos.',
       'Para crear tickets privados necesito **Manage Channels** y **Manage Roles** en la categoria configurada.',
-      'Re-invita NexaDesk desde la dashboard o revisa los permisos/posicion de mi rol.'
+      `Actualiza permisos aqui: ${inviteUrl}`,
+      'Si ya lo hiciste, revisa que el rol de NexaDesk este por encima del rol de staff.'
     ].join('\n');
   }
 
@@ -393,7 +396,7 @@ async function handleSendTranscriptCommand({ interaction, storage }) {
   await interaction.editReply(`Transcripcion enviada por MD a **${targetUser.tag}**.`);
 }
 
-async function createTicketFromConfiguredSource({ interaction, storage, guildConfig, panel = null, component = null, answers = [], panelCreatedChannels }) {
+async function createTicketFromConfiguredSource({ interaction, storage, guildConfig, panel = null, component = null, answers = [], panelCreatedChannels, config }) {
   if (!interaction.inGuild()) {
     await interaction.reply({ content: 'Los tickets solo se pueden abrir dentro de un servidor.', ephemeral: true });
     return;
@@ -417,12 +420,14 @@ async function createTicketFromConfiguredSource({ interaction, storage, guildCon
 
   const missingPermissions = getMissingTicketCreationPermissions(interaction, ticketCategory);
   if (missingPermissions.length) {
+    const inviteUrl = buildBotInviteUrl(config, interaction.guildId);
     await interaction.reply({
       content: [
         'No puedo crear el canal del ticket en esa categoria porque me faltan permisos.',
         `Categoria: **${ticketCategory.name}**`,
         `Permisos necesarios: **${missingPermissions.join(', ')}**`,
-        'Solucion rapida: re-invita NexaDesk desde la dashboard o activa esos permisos en mi rol dentro de esa categoria.'
+        `Solucion rapida: actualiza permisos aqui: ${inviteUrl}`,
+        'Tambien puedes activar esos permisos manualmente en mi rol dentro de esa categoria.'
       ].join('\n'),
       ephemeral: true
     });
@@ -545,6 +550,18 @@ function buildTicketPermissionOverwrites(interaction, guildConfig) {
   }
 
   return overwrites;
+}
+
+function buildBotInviteUrl(config, guildId) {
+  const url = new URL('https://discord.com/oauth2/authorize');
+  url.searchParams.set('client_id', config.DISCORD_CLIENT_ID);
+  url.searchParams.set('permissions', BOT_INVITE_PERMISSIONS);
+  url.searchParams.set('scope', 'bot applications.commands');
+  if (guildId) {
+    url.searchParams.set('guild_id', guildId);
+    url.searchParams.set('disable_guild_select', 'true');
+  }
+  return url.toString();
 }
 
 function buildTicketComponentModal(component) {

@@ -11,7 +11,7 @@ import { buildTranscriptFileName, buildTranscriptText } from './transcripts.js';
 const DISCORD_API = 'https://discord.com/api/v10';
 const MANAGE_GUILD = 0x20n;
 const ADMINISTRATOR = 0x8n;
-const BOT_INVITE_PERMISSIONS = '268651536';
+const BOT_INVITE_PERMISSIONS = '268684304';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ASSETS_DIR = path.resolve(__dirname, '..', 'assets');
 
@@ -438,7 +438,7 @@ function enrichDashboardStats(stats, guilds) {
 }
 
 function buildBotInviteUrl(config, guildId) {
-  const url = new URL(`${DISCORD_API}/oauth2/authorize`);
+  const url = new URL('https://discord.com/oauth2/authorize');
   url.searchParams.set('client_id', config.DISCORD_CLIENT_ID);
   url.searchParams.set('permissions', BOT_INVITE_PERMISSIONS);
   url.searchParams.set('scope', 'bot applications.commands');

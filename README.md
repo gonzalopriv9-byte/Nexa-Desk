@@ -173,10 +173,10 @@ OPENAI_COMPAT_MODEL=local
 Invite NexaDesk with:
 
 ```text
-https://discord.com/oauth2/authorize?client_id=1497894098722492598&permissions=216080&scope=bot%20applications.commands
+https://discord.com/oauth2/authorize?client_id=1497894098722492598&permissions=268684304&scope=bot%20applications.commands
 ```
 
-The bot needs access to the test guild before `npm run register` can create guild slash commands.
+The invite includes Manage Channels, Manage Roles, View Channel, Send Messages, Embed Links, Attach Files, Read Message History, and Mention Everyone.
 
 Recommended launch check:
 
