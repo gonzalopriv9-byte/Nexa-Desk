@@ -11,7 +11,7 @@ import { buildTranscriptFileName, buildTranscriptText } from './transcripts.js';
 const DISCORD_API = 'https://discord.com/api/v10';
 const MANAGE_GUILD = 0x20n;
 const ADMINISTRATOR = 0x8n;
-const BOT_INVITE_PERMISSIONS = '216080';
+const BOT_INVITE_PERMISSIONS = '268651536';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ASSETS_DIR = path.resolve(__dirname, '..', 'assets');
 
@@ -1268,7 +1268,12 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
         return;
       }
       setConfigurationDisabled(false);
-      document.querySelector('#installBanner').hidden = true;
+      document.querySelector('#installBanner').hidden = false;
+      document.querySelector('#installTitle').textContent = 'Permisos de NexaDesk';
+      document.querySelector('#installText').textContent = 'Si los paneles no pueden crear canales privados, actualiza permisos con Manage Channels y Manage Roles.';
+      document.querySelector('#installLink').href = guild.inviteUrl;
+      document.querySelector('#installLink').textContent = 'Actualizar permisos';
+      document.querySelector('#installLink').target = '';
       const [roles, channels] = await Promise.all([
         getJson('/api/guilds/' + guildId + '/roles'),
         getJson('/api/guilds/' + guildId + '/channels')

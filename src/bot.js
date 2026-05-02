@@ -49,86 +49,91 @@ export function createBot({ config, storage, supportAgent }) {
   });
 
   client.on(Events.InteractionCreate, async (interaction) => {
-    if (interaction.isButton() && interaction.customId === 'nexadesk:create_ticket') {
-      const guildConfig = await storage.getGuildConfig(interaction.guildId);
-      const panel = findPanelForInteraction(guildConfig, interaction);
-      await createTicketFromConfiguredSource({ interaction, storage, guildConfig, panel, panelCreatedChannels });
-      return;
-    }
-
-    if (interaction.isStringSelectMenu() && interaction.customId === 'nexadesk:select_ticket_component') {
-      const guildConfig = await storage.getGuildConfig(interaction.guildId);
-      const component = findTicketComponent(guildConfig, interaction.values?.[0]);
-      if (!component) {
-        await interaction.reply({ content: 'Este componente ya no existe. Actualiza el panel desde la dashboard.', ephemeral: true });
+    try {
+      if (interaction.isButton() && interaction.customId === 'nexadesk:create_ticket') {
+        const guildConfig = await storage.getGuildConfig(interaction.guildId);
+        const panel = findPanelForInteraction(guildConfig, interaction);
+        await createTicketFromConfiguredSource({ interaction, storage, guildConfig, panel, panelCreatedChannels });
         return;
       }
 
-      if (component.questions.length) {
-        await interaction.showModal(buildTicketComponentModal(component));
+      if (interaction.isStringSelectMenu() && interaction.customId === 'nexadesk:select_ticket_component') {
+        const guildConfig = await storage.getGuildConfig(interaction.guildId);
+        const component = findTicketComponent(guildConfig, interaction.values?.[0]);
+        if (!component) {
+          await interaction.reply({ content: 'Este componente ya no existe. Actualiza el panel desde la dashboard.', ephemeral: true });
+          return;
+        }
+
+        if (component.questions.length) {
+          await interaction.showModal(buildTicketComponentModal(component));
+          return;
+        }
+
+        const panel = findPanelForInteraction(guildConfig, interaction);
+        await createTicketFromConfiguredSource({ interaction, storage, guildConfig, panel, component, panelCreatedChannels });
         return;
       }
 
-      const panel = findPanelForInteraction(guildConfig, interaction);
-      await createTicketFromConfiguredSource({ interaction, storage, guildConfig, panel, component, panelCreatedChannels });
-      return;
-    }
+      if (interaction.isModalSubmit() && interaction.customId.startsWith('nexadesk:ticket_component_modal:')) {
+        const componentId = interaction.customId.replace('nexadesk:ticket_component_modal:', '');
+        const guildConfig = await storage.getGuildConfig(interaction.guildId);
+        const component = findTicketComponent(guildConfig, componentId);
+        if (!component) {
+          await interaction.reply({ content: 'Este componente ya no existe. Crea otro ticket desde un panel actualizado.', ephemeral: true });
+          return;
+        }
 
-    if (interaction.isModalSubmit() && interaction.customId.startsWith('nexadesk:ticket_component_modal:')) {
-      const componentId = interaction.customId.replace('nexadesk:ticket_component_modal:', '');
-      const guildConfig = await storage.getGuildConfig(interaction.guildId);
-      const component = findTicketComponent(guildConfig, componentId);
-      if (!component) {
-        await interaction.reply({ content: 'Este componente ya no existe. Crea otro ticket desde un panel actualizado.', ephemeral: true });
+        const answers = component.questions.map((question, index) => ({
+          question,
+          answer: interaction.fields.getTextInputValue(`question_${index}`) || 'Sin respuesta'
+        }));
+        await createTicketFromConfiguredSource({ interaction, storage, guildConfig, component, answers, panelCreatedChannels });
         return;
       }
 
-      const answers = component.questions.map((question, index) => ({
-        question,
-        answer: interaction.fields.getTextInputValue(`question_${index}`) || 'Sin respuesta'
-      }));
-      await createTicketFromConfiguredSource({ interaction, storage, guildConfig, component, answers, panelCreatedChannels });
-      return;
-    }
+      if (!interaction.isChatInputCommand()) return;
 
-    if (!interaction.isChatInputCommand()) return;
+      if (interaction.commandName === 'setup') {
+        if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+          await interaction.reply({ content: 'Necesitas permiso de Manage Server para configurar NexaDesk.', ephemeral: true });
+          return;
+        }
 
-    if (interaction.commandName === 'setup') {
-      if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
-        await interaction.reply({ content: 'Necesitas permiso de Manage Server para configurar NexaDesk.', ephemeral: true });
+        const category = interaction.options.getChannel('category', true);
+        if (category.type !== ChannelType.GuildCategory) {
+          await interaction.reply({ content: 'Elige una categoria de canales valida.', ephemeral: true });
+          return;
+        }
+
+        await storage.upsertGuildConfig(interaction.guildId, {
+          guildName: interaction.guild.name,
+          ticketCategoryId: category.id,
+          ticketCategoryName: category.name
+        });
+
+        await interaction.reply({
+          content: `Listo. NexaDesk vigilara tickets nuevos en la categoria **${category.name}**.`,
+          ephemeral: true
+        });
+      }
+
+      if (interaction.commandName === 'desactivar' && interaction.options.getSubcommand() === 'ia') {
+        await handleDisableAiCommand({ interaction, storage });
         return;
       }
 
-      const category = interaction.options.getChannel('category', true);
-      if (category.type !== ChannelType.GuildCategory) {
-        await interaction.reply({ content: 'Elige una categoria de canales valida.', ephemeral: true });
+      if (interaction.commandName === 'transcripcion' && interaction.options.getSubcommand() === 'enviar') {
+        await handleSendTranscriptCommand({ interaction, storage });
         return;
       }
 
-      await storage.upsertGuildConfig(interaction.guildId, {
-        guildName: interaction.guild.name,
-        ticketCategoryId: category.id,
-        ticketCategoryName: category.name
-      });
-
-      await interaction.reply({
-        content: `Listo. NexaDesk vigilara tickets nuevos en la categoria **${category.name}**.`,
-        ephemeral: true
-      });
-    }
-
-    if (interaction.commandName === 'desactivar' && interaction.options.getSubcommand() === 'ia') {
-      await handleDisableAiCommand({ interaction, storage });
-      return;
-    }
-
-    if (interaction.commandName === 'transcripcion' && interaction.options.getSubcommand() === 'enviar') {
-      await handleSendTranscriptCommand({ interaction, storage });
-      return;
-    }
-
-    if (interaction.commandName === 'globalstats') {
-      await handleGlobalStatsCommand({ interaction, storage, client });
+      if (interaction.commandName === 'globalstats') {
+        await handleGlobalStatsCommand({ interaction, storage, client });
+      }
+    } catch (error) {
+      console.error('Interaction failed:', error);
+      await safeInteractionReply(interaction, buildInteractionErrorMessage(error));
     }
   });
 
@@ -243,6 +248,31 @@ export function createBot({ config, storage, supportAgent }) {
   });
 
   return client;
+}
+
+async function safeInteractionReply(interaction, content) {
+  try {
+    if (interaction.deferred || interaction.replied) {
+      await interaction.followUp({ content, ephemeral: true });
+      return;
+    }
+
+    await interaction.reply({ content, ephemeral: true });
+  } catch (error) {
+    console.error('Failed to report interaction error:', error);
+  }
+}
+
+function buildInteractionErrorMessage(error) {
+  if (error?.code === 50013) {
+    return [
+      'Discord no me deja completar esta accion por falta de permisos.',
+      'Para crear tickets privados necesito **Manage Channels** y **Manage Roles** en la categoria configurada.',
+      'Re-invita NexaDesk desde la dashboard o revisa los permisos/posicion de mi rol.'
+    ].join('\n');
+  }
+
+  return 'Ha fallado esta accion. Ya he dejado el error en logs para revisarlo, prueba de nuevo en unos segundos.';
 }
 
 async function handleDisableAiCommand({ interaction, storage }) {
@@ -376,34 +406,41 @@ async function createTicketFromConfiguredSource({ interaction, storage, guildCon
     return;
   }
 
+  const ticketCategory = await fetchTicketCategory(interaction, ticketCategoryId);
+  if (!ticketCategory) {
+    await interaction.reply({
+      content: 'No encuentro la categoria configurada para crear tickets. Revisa la categoria desde la dashboard y vuelve a publicar el panel.',
+      ephemeral: true
+    });
+    return;
+  }
+
+  const missingPermissions = getMissingTicketCreationPermissions(interaction, ticketCategory);
+  if (missingPermissions.length) {
+    await interaction.reply({
+      content: [
+        'No puedo crear el canal del ticket en esa categoria porque me faltan permisos.',
+        `Categoria: **${ticketCategory.name}**`,
+        `Permisos necesarios: **${missingPermissions.join(', ')}**`,
+        'Solucion rapida: re-invita NexaDesk desde la dashboard o activa esos permisos en mi rol dentro de esa categoria.'
+      ].join('\n'),
+      ephemeral: true
+    });
+    return;
+  }
+
+  const staffRoleIssue = getStaffRoleOverwriteIssue(interaction, guildConfig);
+  if (staffRoleIssue) {
+    await interaction.reply({ content: staffRoleIssue, ephemeral: true });
+    return;
+  }
+
   const channel = await interaction.guild.channels.create({
     name: buildTicketChannelName(interaction.user.username, normalizedComponent?.label),
     type: ChannelType.GuildText,
-    parent: ticketCategoryId,
+    parent: ticketCategory.id,
     reason: 'NexaDesk panel ticket creation',
-    permissionOverwrites: [
-      {
-        id: interaction.guild.roles.everyone,
-        deny: [PermissionFlagsBits.ViewChannel]
-      },
-      {
-        id: interaction.user.id,
-        allow: [
-          PermissionFlagsBits.ViewChannel,
-          PermissionFlagsBits.SendMessages,
-          PermissionFlagsBits.ReadMessageHistory
-        ]
-      },
-      {
-        id: interaction.client.user.id,
-        allow: [
-          PermissionFlagsBits.ViewChannel,
-          PermissionFlagsBits.SendMessages,
-          PermissionFlagsBits.ReadMessageHistory,
-          PermissionFlagsBits.ManageChannels
-        ]
-      }
-    ]
+    permissionOverwrites: buildTicketPermissionOverwrites(interaction, guildConfig)
   });
   panelCreatedChannels.add(channel.id);
 
@@ -426,6 +463,88 @@ async function createTicketFromConfiguredSource({ interaction, storage, guildCon
 
   await interaction.reply({ content: `Ticket creado: ${channel}`, ephemeral: true });
   setTimeout(() => panelCreatedChannels.delete(channel.id), 30_000);
+}
+
+async function fetchTicketCategory(interaction, ticketCategoryId) {
+  const cached = interaction.guild.channels.cache.get(ticketCategoryId);
+  const channel = cached ?? await interaction.guild.channels.fetch(ticketCategoryId).catch(() => null);
+  if (!channel || channel.type !== ChannelType.GuildCategory) return null;
+  return channel;
+}
+
+function getMissingTicketCreationPermissions(interaction, ticketCategory) {
+  const botMember = interaction.guild.members.me;
+  const permissions = botMember?.permissionsIn(ticketCategory);
+  if (!permissions) return ['Manage Channels', 'Manage Roles'];
+
+  const required = [
+    { label: 'Manage Channels', flag: PermissionFlagsBits.ManageChannels },
+    { label: 'Manage Roles', flag: PermissionFlagsBits.ManageRoles }
+  ];
+  return required
+    .filter((permission) => !permissions.has(permission.flag))
+    .map((permission) => permission.label);
+}
+
+function getStaffRoleOverwriteIssue(interaction, guildConfig) {
+  if (!guildConfig?.staffRoleId) return null;
+
+  const staffRole = interaction.guild.roles.cache.get(guildConfig.staffRoleId);
+  if (!staffRole) {
+    return 'El rol de staff configurado ya no existe en este servidor. Cambialo desde la dashboard antes de crear tickets privados.';
+  }
+
+  const botMember = interaction.guild.members.me;
+  if (!botMember) return 'No pude leer mi rol dentro del servidor. Reintentalo en unos segundos.';
+
+  if (botMember.roles.highest.comparePositionTo(staffRole) <= 0) {
+    return [
+      'No puedo dar acceso al rol de staff en el ticket porque mi rol esta por debajo o al mismo nivel que el rol de staff.',
+      `Rol staff: **${staffRole.name}**`,
+      'Solucion rapida: mueve el rol de NexaDesk por encima del rol de staff en Ajustes del servidor > Roles.'
+    ].join('\n');
+  }
+
+  return null;
+}
+
+function buildTicketPermissionOverwrites(interaction, guildConfig) {
+  const overwrites = [
+    {
+      id: interaction.guild.roles.everyone,
+      deny: [PermissionFlagsBits.ViewChannel]
+    },
+    {
+      id: interaction.user.id,
+      allow: [
+        PermissionFlagsBits.ViewChannel,
+        PermissionFlagsBits.SendMessages,
+        PermissionFlagsBits.ReadMessageHistory
+      ]
+    },
+    {
+      id: interaction.client.user.id,
+      allow: [
+        PermissionFlagsBits.ViewChannel,
+        PermissionFlagsBits.SendMessages,
+        PermissionFlagsBits.ReadMessageHistory,
+        PermissionFlagsBits.ManageChannels
+      ]
+    }
+  ];
+
+  if (guildConfig?.staffRoleId && interaction.guild.roles.cache.has(guildConfig.staffRoleId)) {
+    overwrites.push({
+      id: guildConfig.staffRoleId,
+      allow: [
+        PermissionFlagsBits.ViewChannel,
+        PermissionFlagsBits.SendMessages,
+        PermissionFlagsBits.ReadMessageHistory
+      ]
+    });
+  }
+
+  return overwrites;
 }
 
 function buildTicketComponentModal(component) {
