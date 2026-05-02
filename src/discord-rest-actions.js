@@ -1,5 +1,5 @@
 import { REST, Routes, ChannelType } from 'discord.js';
-import { buildPanelButton, buildPanelEmbed, normalizePanelOptions } from './panel-options.js';
+import { buildPanelActionRow, buildPanelEmbed, normalizePanelOptions } from './panel-options.js';
 
 export function createDiscordRestActions({ config, storage }) {
   const botToken = config.DISCORD_TOKEN?.trim();
@@ -30,19 +30,14 @@ export function createDiscordRestActions({ config, storage }) {
       requireBotToken(botToken);
       const guild = await rest.get(Routes.guild(guildId));
       const panel = normalizePanelOptions(panelInput);
+      const existing = await storage.getGuildConfig(guildId);
       const message = await rest.post(Routes.channelMessages(channelId), {
         body: {
           embeds: [buildPanelEmbed(panel)],
-          components: [
-            {
-              type: 1,
-              components: [buildPanelButton(panel)]
-            }
-          ]
+          components: [buildPanelActionRow(panel, existing?.components ?? [])]
         }
       });
 
-      const existing = await storage.getGuildConfig(guildId);
       return storage.upsertGuildConfig(guildId, {
         guildName: guild.name,
         panels: [

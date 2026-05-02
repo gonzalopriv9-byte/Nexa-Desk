@@ -2,16 +2,17 @@ import {
   ActionRowBuilder,
   ActivityType,
   AttachmentBuilder,
-  ButtonBuilder,
-  ButtonStyle,
   ChannelType,
   Client,
   EmbedBuilder,
   Events,
   GatewayIntentBits,
-  PermissionFlagsBits
+  ModalBuilder,
+  PermissionFlagsBits,
+  TextInputBuilder,
+  TextInputStyle
 } from 'discord.js';
-import { buildPanelEmbed, normalizePanelOptions, panelWelcomeMessage } from './panel-options.js';
+import { buildPanelActionRow, buildPanelEmbed, normalizePanelOptions, normalizeTicketComponent, panelWelcomeMessage } from './panel-options.js';
 import { buildTranscriptFileName, buildTranscriptText } from './transcripts.js';
 
 const EMOJIS = {
@@ -51,61 +52,42 @@ export function createBot({ config, storage, supportAgent }) {
     if (interaction.isButton() && interaction.customId === 'nexadesk:create_ticket') {
       const guildConfig = await storage.getGuildConfig(interaction.guildId);
       const panel = findPanelForInteraction(guildConfig, interaction);
-      const ticketCategoryId = panel?.ticketCategoryId || guildConfig?.ticketCategoryId;
-      if (!ticketCategoryId) {
-        await interaction.reply({ content: 'El sistema de tickets todavia no tiene una categoria configurada.', ephemeral: true });
+      await createTicketFromConfiguredSource({ interaction, storage, guildConfig, panel, panelCreatedChannels });
+      return;
+    }
+
+    if (interaction.isStringSelectMenu() && interaction.customId === 'nexadesk:select_ticket_component') {
+      const guildConfig = await storage.getGuildConfig(interaction.guildId);
+      const component = findTicketComponent(guildConfig, interaction.values?.[0]);
+      if (!component) {
+        await interaction.reply({ content: 'Este componente ya no existe. Actualiza el panel desde la dashboard.', ephemeral: true });
         return;
       }
 
-      const channel = await interaction.guild.channels.create({
-        name: `ticket-${interaction.user.username}`.toLowerCase().replace(/[^a-z0-9-]/g, '-').slice(0, 90),
-        type: ChannelType.GuildText,
-        parent: ticketCategoryId,
-        reason: 'NexaDesk panel ticket creation',
-        permissionOverwrites: [
-          {
-            id: interaction.guild.roles.everyone,
-            deny: [PermissionFlagsBits.ViewChannel]
-          },
-          {
-            id: interaction.user.id,
-            allow: [
-              PermissionFlagsBits.ViewChannel,
-              PermissionFlagsBits.SendMessages,
-              PermissionFlagsBits.ReadMessageHistory
-            ]
-          },
-          {
-            id: client.user.id,
-            allow: [
-              PermissionFlagsBits.ViewChannel,
-              PermissionFlagsBits.SendMessages,
-              PermissionFlagsBits.ReadMessageHistory,
-              PermissionFlagsBits.ManageChannels
-            ]
-          }
-        ]
-      });
-      panelCreatedChannels.add(channel.id);
-
-      const ticket = await storage.createTicket({
-        guildId: interaction.guild.id,
-        guildName: interaction.guild.name,
-        channelId: channel.id,
-        channelName: channel.name,
-        categoryId: ticketCategoryId,
-        openedBy: interaction.user.id
-      });
-      if (ticket.alreadyExists) {
-        await interaction.reply({ content: `Ticket creado: ${channel}`, ephemeral: true });
+      if (component.questions.length) {
+        await interaction.showModal(buildTicketComponentModal(component));
         return;
       }
 
-      const welcome = await channel.send(`${EMOJIS.global} ${panelWelcomeMessage(panel, `${interaction.user}`)}`);
-      await saveTranscript(storage, welcome, 'assistant');
+      const panel = findPanelForInteraction(guildConfig, interaction);
+      await createTicketFromConfiguredSource({ interaction, storage, guildConfig, panel, component, panelCreatedChannels });
+      return;
+    }
 
-      await interaction.reply({ content: `Ticket creado: ${channel}`, ephemeral: true });
-      setTimeout(() => panelCreatedChannels.delete(channel.id), 30_000);
+    if (interaction.isModalSubmit() && interaction.customId.startsWith('nexadesk:ticket_component_modal:')) {
+      const componentId = interaction.customId.replace('nexadesk:ticket_component_modal:', '');
+      const guildConfig = await storage.getGuildConfig(interaction.guildId);
+      const component = findTicketComponent(guildConfig, componentId);
+      if (!component) {
+        await interaction.reply({ content: 'Este componente ya no existe. Crea otro ticket desde un panel actualizado.', ephemeral: true });
+        return;
+      }
+
+      const answers = component.questions.map((question, index) => ({
+        question,
+        answer: interaction.fields.getTextInputValue(`question_${index}`) || 'Sin respuesta'
+      }));
+      await createTicketFromConfiguredSource({ interaction, storage, guildConfig, component, answers, panelCreatedChannels });
       return;
     }
 
@@ -379,6 +361,118 @@ async function handleSendTranscriptCommand({ interaction, storage }) {
   });
 
   await interaction.editReply(`Transcripcion enviada por MD a **${targetUser.tag}**.`);
+}
+
+async function createTicketFromConfiguredSource({ interaction, storage, guildConfig, panel = null, component = null, answers = [], panelCreatedChannels }) {
+  if (!interaction.inGuild()) {
+    await interaction.reply({ content: 'Los tickets solo se pueden abrir dentro de un servidor.', ephemeral: true });
+    return;
+  }
+
+  const normalizedComponent = component ? normalizeTicketComponent(component) : null;
+  const ticketCategoryId = normalizedComponent?.ticketCategoryId || panel?.ticketCategoryId || guildConfig?.ticketCategoryId;
+  if (!ticketCategoryId) {
+    await interaction.reply({ content: 'El sistema de tickets todavia no tiene una categoria configurada.', ephemeral: true });
+    return;
+  }
+
+  const channel = await interaction.guild.channels.create({
+    name: buildTicketChannelName(interaction.user.username, normalizedComponent?.label),
+    type: ChannelType.GuildText,
+    parent: ticketCategoryId,
+    reason: 'NexaDesk panel ticket creation',
+    permissionOverwrites: [
+      {
+        id: interaction.guild.roles.everyone,
+        deny: [PermissionFlagsBits.ViewChannel]
+      },
+      {
+        id: interaction.user.id,
+        allow: [
+          PermissionFlagsBits.ViewChannel,
+          PermissionFlagsBits.SendMessages,
+          PermissionFlagsBits.ReadMessageHistory
+        ]
+      },
+      {
+        id: interaction.client.user.id,
+        allow: [
+          PermissionFlagsBits.ViewChannel,
+          PermissionFlagsBits.SendMessages,
+          PermissionFlagsBits.ReadMessageHistory,
+          PermissionFlagsBits.ManageChannels
+        ]
+      }
+    ]
+  });
+  panelCreatedChannels.add(channel.id);
+
+  const ticket = await storage.createTicket({
+    guildId: interaction.guild.id,
+    guildName: interaction.guild.name,
+    channelId: channel.id,
+    channelName: channel.name,
+    categoryId: ticketCategoryId,
+    openedBy: interaction.user.id
+  });
+
+  if (ticket.alreadyExists) {
+    await interaction.reply({ content: `Ticket creado: ${channel}`, ephemeral: true });
+    return;
+  }
+
+  const welcome = await channel.send(buildTicketWelcomeMessage({ panel, component: normalizedComponent, answers, userMention: `${interaction.user}` }));
+  await saveTranscript(storage, welcome, 'assistant');
+
+  await interaction.reply({ content: `Ticket creado: ${channel}`, ephemeral: true });
+  setTimeout(() => panelCreatedChannels.delete(channel.id), 30_000);
+}
+
+function buildTicketComponentModal(component) {
+  const normalized = normalizeTicketComponent(component);
+  const modal = new ModalBuilder()
+    .setCustomId(`nexadesk:ticket_component_modal:${normalized.id}`)
+    .setTitle(normalized.label.slice(0, 45));
+
+  for (const [index, question] of normalized.questions.entries()) {
+    const input = new TextInputBuilder()
+      .setCustomId(`question_${index}`)
+      .setLabel(question.slice(0, 45))
+      .setStyle(TextInputStyle.Paragraph)
+      .setRequired(true)
+      .setMaxLength(900);
+
+    modal.addComponents(new ActionRowBuilder().addComponents(input));
+  }
+
+  return modal;
+}
+
+function buildTicketWelcomeMessage({ panel, component, answers, userMention }) {
+  const baseMessage = component
+    ? formatWelcomeTemplate(component.welcomeMessage, userMention)
+    : panelWelcomeMessage(panel, userMention);
+
+  const answerBlock = answers.length
+    ? [
+        '',
+        '**Respuestas previas:**',
+        ...answers.map((item) => `**${item.question}**\n${item.answer}`)
+      ].join('\n')
+    : '';
+
+  return `${EMOJIS.global} ${baseMessage}${answerBlock}`;
+}
+
+function formatWelcomeTemplate(template, userMention) {
+  return String(template ?? '')
+    .replaceAll('{user}', userMention)
+    .replaceAll('{bot}', 'NexaDesk');
+}
+
+function buildTicketChannelName(username, componentLabel) {
+  const prefix = componentLabel ? `ticket-${componentLabel}-${username}` : `ticket-${username}`;
+  return prefix.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').slice(0, 90);
 }
 
 async function handleNaturalCloseRequest({ client, storage, message, ticket, guildConfig }) {
@@ -711,6 +805,11 @@ function findPanelForInteraction(guildConfig, interaction) {
     ?? null;
 }
 
+function findTicketComponent(guildConfig, componentId) {
+  const component = (guildConfig?.components ?? []).find((item) => item.id === componentId);
+  return component ? normalizeTicketComponent(component) : null;
+}
+
 function parseEscalation(answer) {
   const trimmed = cleanBotAnswer(answer);
   const escalateMatch = trimmed.match(/^\[ESCALATE\]\s*/i);
@@ -878,20 +977,11 @@ export async function createTicketPanel(client, storage, { guildId, channelId, .
   }
 
   const panel = normalizePanelOptions(panelInput);
+  const existing = await storage.getGuildConfig(guildId);
   const embed = new EmbedBuilder(buildPanelEmbed(panel));
-
-  const button = new ButtonBuilder()
-    .setCustomId('nexadesk:create_ticket')
-    .setLabel(panel.buttonLabel)
-    .setStyle(panelButtonStyle(panel.buttonStyle));
-
-  const emoji = parsePanelEmoji(panel.buttonEmoji);
-  if (emoji) button.setEmoji(emoji);
-
-  const row = new ActionRowBuilder().addComponents(button);
+  const row = buildPanelActionRow(panel, existing?.components ?? []);
 
   const message = await channel.send({ embeds: [embed], components: [row] });
-  const existing = await storage.getGuildConfig(guildId);
   return storage.upsertGuildConfig(guildId, {
     guildName: guild.name,
     panels: [
@@ -905,32 +995,6 @@ export async function createTicketPanel(client, storage, { guildId, channelId, .
       }
     ]
   });
-}
-
-function panelButtonStyle(style) {
-  return {
-    primary: ButtonStyle.Primary,
-    secondary: ButtonStyle.Secondary,
-    success: ButtonStyle.Success,
-    danger: ButtonStyle.Danger
-  }[style] ?? ButtonStyle.Primary;
-}
-
-function parsePanelEmoji(value) {
-  const text = String(value ?? '').trim();
-  if (!text) return null;
-  if (/^:[\w-]+:$/.test(text)) return null;
-
-  const customEmoji = text.match(/^<(a?):([A-Za-z0-9_]+):(\d+)>$/);
-  if (customEmoji) {
-    return {
-      animated: customEmoji[1] === 'a',
-      name: customEmoji[2],
-      id: customEmoji[3]
-    };
-  }
-
-  return { name: text };
 }
 
 export async function listGuildRoles(client, { guildId }) {

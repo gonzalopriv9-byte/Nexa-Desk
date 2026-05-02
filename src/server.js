@@ -5,6 +5,7 @@ import cookieParser from 'cookie-parser';
 import crypto from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { normalizeTicketComponent } from './panel-options.js';
 import { buildTranscriptFileName, buildTranscriptText } from './transcripts.js';
 
 const DISCORD_API = 'https://discord.com/api/v10';
@@ -237,12 +238,27 @@ export function createServer({ config, storage, bot, events }) {
     }
   }));
 
+  app.post('/api/guilds/:guildId/components', requireGuildAccess, asyncHandler(async (req, res) => {
+    const guild = req.session.guilds.find((item) => item.id === req.params.guildId);
+    const existing = await storage.getGuildConfig(req.params.guildId);
+    const component = normalizeTicketComponent(req.body);
+    const updated = await storage.upsertGuildConfig(req.params.guildId, {
+      guildName: existing?.guildName || guild?.name,
+      components: [
+        ...(existing?.components ?? []),
+        component
+      ]
+    });
+    res.json(updated);
+  }));
+
   app.post('/api/guilds/:guildId/panels', requireGuildAccess, asyncHandler(async (req, res) => {
     try {
       const updated = await bot.createTicketPanel({
         guildId: req.params.guildId,
         channelId: req.body.channelId,
         channelName: req.body.channelName,
+        panelType: req.body.panelType,
         title: req.body.title || 'Soporte',
         description: req.body.description || 'Pulsa el boton para abrir un ticket.',
         buttonLabel: req.body.buttonLabel || 'Abrir ticket',
@@ -256,6 +272,8 @@ export function createServer({ config, storage, bot, events }) {
         thumbnailUrl: req.body.thumbnailUrl,
         ticketCategoryId: req.body.ticketCategoryId,
         ticketCategoryName: req.body.ticketCategoryName,
+        selectPlaceholder: req.body.selectPlaceholder,
+        componentIds: req.body.componentIds,
         welcomeMessage: req.body.welcomeMessage
       });
       res.json(updated);
@@ -665,6 +683,7 @@ function renderDashboard({ session, guilds, tickets, stats }) {
     .view-stage { position:relative; min-height:520px; }
     .dashboard-view { display:none; animation:viewIn .34s cubic-bezier(.2,.8,.2,1) both; }
     .dashboard-view.is-active { display:block; }
+    .is-hidden { display:none !important; }
     .view-heading { display:flex; align-items:end; justify-content:space-between; gap:16px; margin:0 0 14px; }
     .view-heading p { margin:4px 0 0; }
     .surface { padding:20px; animation:rise .55s ease both; transition:border-color .28s ease, transform .28s ease, box-shadow .28s ease; }
@@ -750,6 +769,12 @@ function renderDashboard({ session, guilds, tickets, stats }) {
     .panel-card:hover { transform:translateX(3px); border-color:rgba(255,255,255,.3); background:rgba(255,255,255,.07); }
     .panel-card strong,.panel-card small { display:block; }
     .panel-card small { margin-top:4px; }
+    .menu-preview { margin-top:10px; border:1px solid var(--line); border-radius:8px; background:#181818; color:#d7d7d7; padding:10px 12px; max-width:360px; }
+    .menu-preview strong { display:block; color:#fff; margin-bottom:4px; }
+    .menu-option-preview { border-top:1px solid var(--soft-line); padding:8px 0; }
+    .menu-option-preview:first-of-type { border-top:0; }
+    .component-list { display:grid; gap:10px; max-height:360px; overflow:auto; }
+    .question-preview { margin-top:8px; color:var(--muted); font-size:12px; }
     table { width:100%; border-collapse:collapse; }
     th,td { text-align:left; padding:12px; border-bottom:1px solid var(--line); }
     .table-action { width:auto; padding:8px 10px; font-size:13px; }
@@ -801,6 +826,7 @@ function renderDashboard({ session, guilds, tickets, stats }) {
     <a class="nav-link is-active" href="#overview" data-view="overview">Resumen</a>
     <a class="nav-link" href="#servers" data-view="servers">Servidores</a>
     <a class="nav-link" href="#settings" data-view="settings">Configuracion</a>
+    <a class="nav-link" href="#components" data-view="components">Componentes</a>
     <a class="nav-link" href="#panels" data-view="panels">Paneles</a>
     <a class="nav-link" href="#tickets" data-view="tickets">Tickets</a>
     <div class="nav-foot">
@@ -906,6 +932,31 @@ function renderDashboard({ session, guilds, tickets, stats }) {
         </article>
       </section>
       </section>
+      <section class="dashboard-view" id="view-components" data-view="components">
+        <div class="view-heading">
+          <div><h2>Componentes</h2><p>Crea las opciones del menu desplegable: categoria destino, preguntas previas y primer mensaje.</p></div>
+        </div>
+      <section class="control-grid" id="components">
+        <article class="control-card">
+          <div class="card-head"><span class="step">3</span><div><h2>Nueva opcion de menu</h2><p>Cada componente aparece como categoria seleccionable antes de abrir el ticket.</p></div></div>
+          <form onsubmit="return createComponent(event)">
+            <select id="componentGuildId" hidden required>${guildOptions}</select>
+            <label>Nombre visible<input id="componentLabel" value="Soporte general" maxlength="100"></label>
+            <label>Emoji<input id="componentEmoji" placeholder="Ej: &lt;a:Global:1499728413974593708&gt;"></label>
+            <label class="span-2">Descripcion corta<input id="componentDescription" value="Abre un ticket de soporte general." maxlength="100"></label>
+            <label class="span-2">Categoria destino<select id="componentTicketCategoryId"></select></label>
+            <label class="span-2">Preguntas antes de crear el ticket<textarea id="componentQuestions" placeholder="Una pregunta por linea. Maximo 5.&#10;Ej: Cual es tu nick?&#10;Describe el problema"></textarea></label>
+            <label class="span-2">Primer mensaje personalizado<textarea id="componentWelcomeMessage">Hola {user}, soy NexaDesk.
+Antes de empezar, he guardado tus respuestas para que el staff tenga contexto.</textarea></label>
+            <button class="span-2" type="submit">Crear componente</button>
+          </form>
+        </article>
+        <article class="control-card">
+          <div class="card-head"><span class="step">4</span><div><h2>Componentes activos</h2><p>Estos se pueden usar en paneles de tipo menu.</p></div></div>
+          <div class="component-list" id="componentHistory"><p class="notice">Selecciona un servidor para ver sus componentes.</p></div>
+        </article>
+      </section>
+      </section>
       <section class="dashboard-view" id="view-panels" data-view="panels">
         <div class="view-heading">
           <div><h2>Paneles</h2><p>Construye paneles personalizados sin mezclarlo con el resto de la configuracion.</p></div>
@@ -917,9 +968,21 @@ function renderDashboard({ session, guilds, tickets, stats }) {
             <div class="panel-fields">
               <select id="panelGuildId" hidden required>${guildOptions}</select>
               <div class="form-section">
+                <div class="section-label"><strong>Tipo de panel</strong><span>Boton directo o menu desplegable</span></div>
+                <label>Modo<select id="panelType">
+                  <option value="button">Boton unico</option>
+                  <option value="menu">Menu seleccionable</option>
+                </select></label>
+                <label id="panelSelectPlaceholderWrap">Texto del menu<input id="panelSelectPlaceholder" value="Elige el tipo de ticket"></label>
+              </div>
+              <div class="form-section">
                 <div class="section-label"><strong>Destino</strong><span>Canal publico y categoria privada</span></div>
                 <label>Canal donde publicar<select id="panelChannelId" required></select></label>
                 <label>Categoria donde abrir tickets<select id="panelTicketCategoryId"></select></label>
+              </div>
+              <div class="form-section" id="panelMenuComponentsSection">
+                <div class="section-label"><strong>Opciones del menu</strong><span>Selecciona componentes creados en la vista Componentes</span></div>
+                <label class="span-2">Componentes<select id="panelComponentIds" multiple size="5"></select></label>
               </div>
               <div class="form-section">
                 <div class="section-label"><strong>Boton</strong><span>Texto, color y emoji</span></div>
@@ -967,6 +1030,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
                       <div class="embed-footer" id="previewFooter">NexaDesk AI Support</div>
                     </article>
                     <button class="preview-button" id="previewButton" type="button">Abrir ticket</button>
+                    <div class="menu-preview is-hidden" id="previewMenu"><strong>Elige el tipo de ticket</strong><div id="previewMenuOptions"></div></div>
                   </div>
                 </div>
               </div>
@@ -1116,6 +1180,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       const activeGuildId = document.querySelector('#guildId')?.value;
       if (activeGuildId) {
         const activeGuild = getGuildConfig(activeGuildId);
+        renderComponentHistory(activeGuild || {});
         renderPanelHistory(activeGuild || {});
         renderGuildSelectors(activeGuildId);
       }
@@ -1144,11 +1209,11 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       return guildConfigs.find((guild) => guild.guildId === guildId) || null;
     }
     function setConfigurationDisabled(disabled) {
-      for (const selector of ['#ticketCategoryId', '#staffRoleId', '#serverPrompt', '#serverInfo', '#categoryName', '#panelChannelId', '#panelTicketCategoryId', '#panelButtonLabel', '#panelButtonStyle', '#panelButtonEmoji', '#panelTitle', '#panelEmbedColor', '#panelAuthorName', '#panelAuthorIconUrl', '#panelDescription', '#panelThumbnailUrl', '#panelImageUrl', '#panelFooterText', '#panelWelcomeMessage']) {
+      for (const selector of ['#ticketCategoryId', '#staffRoleId', '#serverPrompt', '#serverInfo', '#categoryName', '#componentLabel', '#componentEmoji', '#componentDescription', '#componentTicketCategoryId', '#componentQuestions', '#componentWelcomeMessage', '#panelType', '#panelSelectPlaceholder', '#panelComponentIds', '#panelChannelId', '#panelTicketCategoryId', '#panelButtonLabel', '#panelButtonStyle', '#panelButtonEmoji', '#panelTitle', '#panelEmbedColor', '#panelAuthorName', '#panelAuthorIconUrl', '#panelDescription', '#panelThumbnailUrl', '#panelImageUrl', '#panelFooterText', '#panelWelcomeMessage']) {
         const element = document.querySelector(selector);
         if (element) element.disabled = disabled;
       }
-      document.querySelectorAll('#settings button, #panels button').forEach((button) => {
+      document.querySelectorAll('#settings button, #components button, #panels button').forEach((button) => {
         button.disabled = disabled;
       });
     }
@@ -1162,11 +1227,14 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       document.querySelector('#installLink').target = '';
       document.querySelector('#ticketCategoryId').innerHTML = '<option>Instala NexaDesk para cargar categorias</option>';
       document.querySelector('#staffRoleId').innerHTML = '<option>Instala NexaDesk para cargar roles</option>';
+      document.querySelector('#componentTicketCategoryId').innerHTML = '<option>Instala NexaDesk para cargar categorias</option>';
       document.querySelector('#panelChannelId').innerHTML = '<option>Instala NexaDesk para cargar canales</option>';
       document.querySelector('#panelTicketCategoryId').innerHTML = '<option>Instala NexaDesk para cargar categorias</option>';
+      document.querySelector('#panelComponentIds').innerHTML = '<option>Crea componentes primero</option>';
       document.querySelector('#activeCategory').textContent = 'Bot no instalado';
       document.querySelector('#activeStaff').textContent = 'Bot no instalado';
       document.querySelector('#activePanels').textContent = String(guild.panels?.length ?? 0);
+      renderComponentHistory(guild);
       renderPanelHistory(guild);
       document.querySelectorAll('.guild-pill').forEach((button) => button.classList.toggle('is-active', button.dataset.guildId === guild.guildId));
     }
@@ -1181,11 +1249,14 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       document.querySelector('#installLink').textContent = 'Abrir Render';
       document.querySelector('#ticketCategoryId').innerHTML = '<option>No se pudieron cargar categorias</option>';
       document.querySelector('#staffRoleId').innerHTML = '<option>No se pudieron cargar roles</option>';
+      document.querySelector('#componentTicketCategoryId').innerHTML = '<option>No se pudieron cargar categorias</option>';
       document.querySelector('#panelChannelId').innerHTML = '<option>No se pudieron cargar canales</option>';
       document.querySelector('#panelTicketCategoryId').innerHTML = '<option>No se pudieron cargar categorias</option>';
+      document.querySelector('#panelComponentIds').innerHTML = '<option>No se pudieron cargar componentes</option>';
       document.querySelector('#activeCategory').textContent = 'Token requerido';
       document.querySelector('#activeStaff').textContent = 'Token requerido';
       document.querySelector('#activePanels').textContent = String(guild.panels?.length ?? 0);
+      renderComponentHistory(guild);
       renderPanelHistory(guild);
       document.querySelectorAll('.guild-pill').forEach((button) => button.classList.toggle('is-active', button.dataset.guildId === guildId));
     }
@@ -1213,8 +1284,13 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       const textChannels = meta.channels.filter((channel) => channel.type === 0);
       document.querySelector('#ticketCategoryId').innerHTML = '<option value="">Sin categoria</option>' + categories.map((channel) => '<option value="' + channel.id + '">' + escapeHtml(channel.name) + '</option>').join('');
       document.querySelector('#staffRoleId').innerHTML = '<option value="">Sin rol staff</option>' + meta.roles.map((role) => '<option value="' + role.id + '">' + escapeHtml(role.name) + '</option>').join('');
+      document.querySelector('#componentTicketCategoryId').innerHTML = '<option value="">Usar categoria principal</option>' + categories.map((channel) => '<option value="' + channel.id + '">' + escapeHtml(channel.name) + '</option>').join('');
       document.querySelector('#panelChannelId').innerHTML = textChannels.map((channel) => '<option value="' + channel.id + '">#' + escapeHtml(channel.name) + '</option>').join('');
       document.querySelector('#panelTicketCategoryId').innerHTML = '<option value="">Usar categoria principal</option>' + categories.map((channel) => '<option value="' + channel.id + '">' + escapeHtml(channel.name) + '</option>').join('');
+      document.querySelector('#panelComponentIds').innerHTML = (config.components || []).length
+        ? config.components.map((component) => '<option value="' + escapeHtml(component.id) + '">' + escapeHtml(component.label) + '</option>').join('')
+        : '<option value="">Crea componentes primero</option>';
+      document.querySelector('#componentTicketCategoryId').value = config.ticketCategoryId || '';
       document.querySelector('#panelTicketCategoryId').value = config.ticketCategoryId || '';
       document.querySelector('#ticketCategoryId').value = config.ticketCategoryId || '';
       document.querySelector('#staffRoleId').value = config.staffRoleId || '';
@@ -1225,7 +1301,9 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       const staffOption = document.querySelector('#staffRoleId')?.selectedOptions?.[0];
       document.querySelector('#activeStaff').textContent = staffOption?.value ? staffOption.textContent : 'Sin configurar';
       document.querySelector('#activePanels').textContent = String(config.panels?.length ?? 0);
+      renderComponentHistory(config);
       renderPanelHistory(config);
+      updatePanelMode();
       updatePanelPreview();
       document.querySelectorAll('.guild-pill').forEach((button) => button.classList.toggle('is-active', button.dataset.guildId === guildId));
     }
@@ -1236,7 +1314,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
     function syncGuildForm(sourceId, { inviteIfMissing = true } = {}) {
       const guildId = document.querySelector(sourceId).value;
       const guild = getGuildConfig(guildId);
-      for (const selector of ['#guildId', '#categoryGuildId', '#panelGuildId']) {
+      for (const selector of ['#guildId', '#categoryGuildId', '#componentGuildId', '#panelGuildId']) {
         const element = document.querySelector(selector);
         if (element && element.value !== guildId) element.value = guildId;
       }
@@ -1274,15 +1352,56 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       await postJson('/api/guilds/' + document.querySelector('#categoryGuildId').value + '/categories', { name: document.querySelector('#categoryName').value }).then(() => location.reload()).catch((error) => showToast(error.message));
       return false;
     }
+    async function createComponent(event) {
+      event.preventDefault();
+      const guildId = document.querySelector('#componentGuildId').value;
+      const updated = await postJson('/api/guilds/' + guildId + '/components', {
+        label: document.querySelector('#componentLabel').value,
+        description: document.querySelector('#componentDescription').value,
+        emoji: document.querySelector('#componentEmoji').value,
+        ticketCategoryId: document.querySelector('#componentTicketCategoryId').value,
+        ticketCategoryName: selectedOptionText('#componentTicketCategoryId'),
+        questions: document.querySelector('#componentQuestions').value.split(/\n/).map((item) => item.trim()).filter(Boolean).slice(0, 5),
+        welcomeMessage: document.querySelector('#componentWelcomeMessage').value
+      }).catch((error) => showToast(error.message));
+      if (updated) {
+        const index = guildConfigs.findIndex((guild) => guild.guildId === guildId);
+        if (index >= 0) guildConfigs[index] = { ...guildConfigs[index], ...updated };
+        renderGuildSelectors(guildId);
+        showToast('Componente creado. Ya puedes usarlo en un panel de menu.');
+      }
+      return false;
+    }
+    function renderComponentHistory(guild = {}) {
+      const components = guild.components || [];
+      const componentHistory = document.querySelector('#componentHistory');
+      if (!componentHistory) return;
+      componentHistory.innerHTML = components.length
+        ? components.slice().reverse().map((component) => '<article class="panel-card"><strong>' + escapeHtml((component.emoji ? component.emoji + ' ' : '') + (component.label || 'Componente sin nombre')) + '</strong><small>' + escapeHtml(component.description || 'Sin descripcion') + '</small><small>Categoria: ' + escapeHtml(component.ticketCategoryName || guild.ticketCategoryName || 'principal') + '</small><small>Preguntas: ' + escapeHtml(String((component.questions || []).length)) + '</small></article>').join('')
+        : '<p class="notice">Aun no hay componentes. Crea uno para poder publicar paneles de menu.</p>';
+    }
     function renderPanelHistory(guild = {}) {
       const panels = guild.panels || [];
       const panelHistory = document.querySelector('#panelHistory');
       if (!panelHistory) return;
       panelHistory.innerHTML = panels.length
-        ? panels.slice().reverse().map((panel) => '<article class="panel-card"><strong>' + escapeHtml(panel.title || 'Panel sin titulo') + '</strong><small>Canal: ' + escapeHtml(panel.channelName || panel.channelId || 'sin canal') + '</small><small>Categoria: ' + escapeHtml(panel.ticketCategoryName || guild.ticketCategoryName || 'principal') + '</small><small>Boton: ' + escapeHtml(panel.buttonLabel || 'Abrir ticket') + '</small></article>').join('')
+        ? panels.slice().reverse().map((panel) => '<article class="panel-card"><strong>' + escapeHtml(panel.title || 'Panel sin titulo') + '</strong><small>Tipo: ' + escapeHtml(panel.panelType === 'menu' ? 'Menu desplegable' : 'Boton') + '</small><small>Canal: ' + escapeHtml(panel.channelName || panel.channelId || 'sin canal') + '</small><small>Categoria: ' + escapeHtml(panel.ticketCategoryName || guild.ticketCategoryName || 'principal') + '</small><small>' + escapeHtml(panel.panelType === 'menu' ? ('Componentes: ' + (panel.componentIds || []).length) : ('Boton: ' + (panel.buttonLabel || 'Abrir ticket'))) + '</small></article>').join('')
         : '<p class="notice">Aun no hay paneles publicados en este servidor.</p>';
     }
+    function updatePanelMode() {
+      const panelType = document.querySelector('#panelType')?.value || 'button';
+      document.querySelector('#panelMenuComponentsSection')?.classList.toggle('is-hidden', panelType !== 'menu');
+      document.querySelector('#panelSelectPlaceholderWrap')?.classList.toggle('is-hidden', panelType !== 'menu');
+      document.querySelector('#previewButton')?.classList.toggle('is-hidden', panelType === 'menu');
+      document.querySelector('#previewMenu')?.classList.toggle('is-hidden', panelType !== 'menu');
+    }
+    function selectedPanelComponents() {
+      const guild = getGuildConfig(document.querySelector('#panelGuildId')?.value) || {};
+      const selectedIds = [...(document.querySelector('#panelComponentIds')?.selectedOptions || [])].map((option) => option.value).filter(Boolean);
+      return (guild.components || []).filter((component) => selectedIds.includes(component.id));
+    }
     function updatePanelPreview() {
+      updatePanelMode();
       const color = document.querySelector('#panelEmbedColor')?.value || '#ffffff';
       const author = document.querySelector('#panelAuthorName')?.value || '';
       const title = document.querySelector('#panelTitle')?.value || 'Centro de soporte';
@@ -1293,6 +1412,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       const buttonLabel = document.querySelector('#panelButtonLabel')?.value || 'Abrir ticket';
       const buttonStyle = document.querySelector('#panelButtonStyle')?.value || 'primary';
       const buttonEmoji = document.querySelector('#panelButtonEmoji')?.value || '';
+      const selectPlaceholder = document.querySelector('#panelSelectPlaceholder')?.value || 'Elige el tipo de ticket';
       document.querySelector('#panelPreview')?.style.setProperty('--preview-color', color);
       document.querySelector('#previewAuthor').textContent = author;
       document.querySelector('#previewTitle').textContent = title;
@@ -1305,6 +1425,15 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
         previewButton.textContent = (buttonEmoji ? buttonEmoji + ' ' : '') + buttonLabel;
         previewButton.className = 'preview-button ' + buttonStyle;
       }
+      const previewMenu = document.querySelector('#previewMenu');
+      const previewMenuOptions = document.querySelector('#previewMenuOptions');
+      if (previewMenu && previewMenuOptions) {
+        previewMenu.querySelector('strong').textContent = selectPlaceholder;
+        const components = selectedPanelComponents();
+        previewMenuOptions.innerHTML = components.length
+          ? components.map((component) => '<div class="menu-option-preview"><strong>' + escapeHtml((component.emoji ? component.emoji + ' ' : '') + component.label) + '</strong><small>' + escapeHtml(component.description || 'Sin descripcion') + '</small><div class="question-preview">' + escapeHtml(String((component.questions || []).length)) + ' preguntas previas</div></div>').join('')
+          : '<div class="menu-option-preview"><small>Selecciona componentes para previsualizar el menu.</small></div>';
+      }
     }
     async function createPanel(event) {
       event.preventDefault();
@@ -1312,8 +1441,11 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       const updated = await postJson('/api/guilds/' + guildId + '/panels', {
         channelId: document.querySelector('#panelChannelId').value,
         channelName: selectedOptionText('#panelChannelId'),
+        panelType: document.querySelector('#panelType').value,
         ticketCategoryId: document.querySelector('#panelTicketCategoryId').value,
         ticketCategoryName: selectedOptionText('#panelTicketCategoryId'),
+        selectPlaceholder: document.querySelector('#panelSelectPlaceholder').value,
+        componentIds: [...document.querySelector('#panelComponentIds').selectedOptions].map((option) => option.value).filter(Boolean),
         title: document.querySelector('#panelTitle').value,
         description: document.querySelector('#panelDescription').value,
         buttonLabel: document.querySelector('#panelButtonLabel').value,
@@ -1368,7 +1500,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       document.querySelector('#liveState').textContent = 'Reconectando';
       document.querySelector('#liveState').className = '';
     };
-    for (const selector of ['#guildId', '#categoryGuildId', '#panelGuildId']) {
+    for (const selector of ['#guildId', '#categoryGuildId', '#componentGuildId', '#panelGuildId']) {
       document.querySelector(selector)?.addEventListener('change', () => syncGuildForm(selector));
     }
     document.querySelectorAll('.nav-link[data-view]').forEach((link) => {
@@ -1397,7 +1529,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
         document.querySelector('#panelTicketCategoryId').value = document.querySelector('#ticketCategoryId').value;
       }
     });
-    for (const selector of ['#panelTitle', '#panelDescription', '#panelButtonLabel', '#panelButtonStyle', '#panelButtonEmoji', '#panelEmbedColor', '#panelAuthorName', '#panelThumbnailUrl', '#panelImageUrl', '#panelFooterText']) {
+    for (const selector of ['#panelType', '#panelSelectPlaceholder', '#panelComponentIds', '#panelTitle', '#panelDescription', '#panelButtonLabel', '#panelButtonStyle', '#panelButtonEmoji', '#panelEmbedColor', '#panelAuthorName', '#panelThumbnailUrl', '#panelImageUrl', '#panelFooterText']) {
       document.querySelector(selector)?.addEventListener('input', updatePanelPreview);
       document.querySelector(selector)?.addEventListener('change', updatePanelPreview);
     }

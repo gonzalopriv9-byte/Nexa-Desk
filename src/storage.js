@@ -349,12 +349,13 @@ function toGuildRow(guild) {
     staff_role_id: guild.staffRoleId,
     server_prompt: guild.serverPrompt,
     server_info: guild.serverInfo,
-    panels: guild.panels ?? [],
+    panels: toGuildPanelStore(guild),
     updated_at: guild.updatedAt
   };
 }
 
 function fromGuildRow(row) {
+  const panelStore = fromGuildPanelStore(row.panels);
   return {
     guildId: row.guild_id,
     guildName: row.guild_name,
@@ -363,8 +364,37 @@ function fromGuildRow(row) {
     staffRoleId: row.staff_role_id,
     serverPrompt: row.server_prompt,
     serverInfo: row.server_info,
-    panels: row.panels ?? [],
+    panels: panelStore.panels,
+    components: panelStore.components,
     updatedAt: row.updated_at
+  };
+}
+
+function toGuildPanelStore(guild) {
+  return {
+    panels: guild.panels ?? [],
+    components: guild.components ?? []
+  };
+}
+
+function fromGuildPanelStore(value) {
+  if (Array.isArray(value)) {
+    return {
+      panels: value,
+      components: []
+    };
+  }
+
+  if (value && typeof value === 'object') {
+    return {
+      panels: Array.isArray(value.panels) ? value.panels : [],
+      components: Array.isArray(value.components) ? value.components : []
+    };
+  }
+
+  return {
+    panels: [],
+    components: []
   };
 }
 
