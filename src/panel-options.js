@@ -147,7 +147,7 @@ export function buildPanelSelectRow(panel, ticketComponents = []) {
     components: [
       {
         type: 3,
-        custom_id: 'nexadesk:select_ticket_component',
+        custom_id: createPanelSelectCustomId(),
         placeholder: normalized.selectPlaceholder,
         min_values: 1,
         max_values: 1,
@@ -201,6 +201,10 @@ function normalizeStringList(value) {
 
 function createComponentId() {
   return `cmp_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function createPanelSelectCustomId() {
+  return `nexadesk:select_ticket_component:${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
 }
 
 function cleanUrl(value) {

@@ -58,20 +58,21 @@ export function createBot({ config, storage, supportAgent }) {
         return;
       }
 
-      if (interaction.isStringSelectMenu() && interaction.customId === 'nexadesk:select_ticket_component') {
+      if (interaction.isStringSelectMenu() && interaction.customId.startsWith('nexadesk:select_ticket_component')) {
         const guildConfig = await storage.getGuildConfig(interaction.guildId);
+        const panel = findPanelForInteraction(guildConfig, interaction);
         const component = findTicketComponent(guildConfig, interaction.values?.[0]);
         if (!component) {
           await interaction.reply({ content: 'Este componente ya no existe. Actualiza el panel desde la dashboard.', ephemeral: true });
           return;
         }
 
+        refreshPanelSelectMenu(interaction, guildConfig, panel);
         if (component.questions.length) {
           await interaction.showModal(buildTicketComponentModal(component));
           return;
         }
 
-        const panel = findPanelForInteraction(guildConfig, interaction);
         await createTicketFromConfiguredSource({ interaction, storage, guildConfig, panel, component, panelCreatedChannels, config });
         return;
       }
@@ -1052,6 +1053,16 @@ function findPanelForInteraction(guildConfig, interaction) {
 function findTicketComponent(guildConfig, componentId) {
   const component = (guildConfig?.components ?? []).find((item) => item.id === componentId);
   return component ? normalizeTicketComponent(component) : null;
+}
+
+function refreshPanelSelectMenu(interaction, guildConfig, panel) {
+  if (!panel || panel.panelType !== 'menu' || !interaction.message?.editable) return;
+
+  interaction.message.edit({
+    components: [buildPanelActionRow(panel, guildConfig?.components ?? [])]
+  }).catch((error) => {
+    console.error('Failed to refresh ticket select menu:', error);
+  });
 }
 
 function parseEscalation(answer) {
