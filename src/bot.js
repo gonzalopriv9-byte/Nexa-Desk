@@ -125,6 +125,27 @@ export function createBot({ config, storage, supportAgent }) {
         return;
       }
 
+      if (interaction.commandName === 'activar' && interaction.options.getSubcommand() === 'ia') {
+        await handleEnableAiCommand({ interaction, storage });
+        return;
+      }
+
+      if (interaction.commandName === 'ticket') {
+        const subcommand = interaction.options.getSubcommand();
+        if (subcommand === 'estado') {
+          await handleTicketStatusCommand({ interaction, storage });
+          return;
+        }
+        if (subcommand === 'resumen') {
+          await handleTicketSummaryCommand({ interaction, storage, supportAgent });
+          return;
+        }
+        if (subcommand === 'cerrar') {
+          await handleCloseTicketCommand({ interaction, storage, client });
+          return;
+        }
+      }
+
       if (interaction.commandName === 'transcripcion' && interaction.options.getSubcommand() === 'enviar') {
         await handleSendTranscriptCommand({ interaction, storage });
         return;
@@ -336,6 +357,184 @@ async function handleDisableAiCommand({ interaction, storage }) {
 
   await interaction.reply({
     content: 'IA desactivada en este ticket. NexaDesk dejara de escuchar y responder en este canal para que el staff lo atienda manualmente.'
+  });
+}
+
+async function handleEnableAiCommand({ interaction, storage }) {
+  if (!interaction.inGuild() || !interaction.channelId) {
+    await interaction.reply({ content: 'Este comando solo se puede usar dentro de un ticket del servidor.', ephemeral: true });
+    return;
+  }
+
+  const [ticket, guildConfig] = await Promise.all([
+    storage.getTicket(interaction.channelId),
+    storage.getGuildConfig(interaction.guildId)
+  ]);
+
+  if (!ticket) {
+    await interaction.reply({ content: 'Este canal no esta registrado como ticket de NexaDesk.', ephemeral: true });
+    return;
+  }
+
+  if (!guildConfig?.staffRoleId) {
+    await interaction.reply({ content: 'Primero configura el rol de staff desde la dashboard.', ephemeral: true });
+    return;
+  }
+
+  if (!memberHasRole(interaction.member, guildConfig.staffRoleId)) {
+    await interaction.reply({ content: 'Solo el staff configurado para este servidor puede reactivar la IA.', ephemeral: true });
+    return;
+  }
+
+  if (!isAiDisabledTicket(ticket)) {
+    await interaction.reply({ content: 'La IA ya estaba activa en este ticket.', ephemeral: true });
+    return;
+  }
+
+  const updated = await storage.updateTicket(interaction.channelId, {
+    status: 'open',
+    aiDisabled: false,
+    aiDisabledBy: null,
+    aiDisabledAt: null
+  });
+
+  if (!updated) {
+    await interaction.reply({ content: 'No pude actualizar este ticket. Intentalo de nuevo.', ephemeral: true });
+    return;
+  }
+
+  await storage.addTranscriptMessage({
+    guildId: interaction.guildId,
+    channelId: interaction.channelId,
+    messageId: interaction.id,
+    authorId: interaction.user.id,
+    authorName: interaction.user.username,
+    authorBot: false,
+    role: 'system',
+    content: `IA reactivada por ${interaction.user.username}. NexaDesk vuelve a atender este ticket.`,
+    createdAt: new Date().toISOString()
+  });
+
+  await interaction.reply({
+    content: `${EMOJIS.global} IA reactivada. NexaDesk vuelve a escuchar y responder en este ticket.`
+  });
+}
+
+async function handleTicketStatusCommand({ interaction, storage }) {
+  if (!interaction.inGuild() || !interaction.channelId) {
+    await interaction.reply({ content: 'Este comando solo se puede usar dentro de un ticket del servidor.', ephemeral: true });
+    return;
+  }
+
+  const [ticket, guildConfig, messages] = await Promise.all([
+    storage.getTicket(interaction.channelId),
+    storage.getGuildConfig(interaction.guildId),
+    storage.listTranscriptMessages(interaction.channelId)
+  ]);
+
+  if (!ticket) {
+    await interaction.reply({ content: 'Este canal no esta registrado como ticket de NexaDesk.', ephemeral: true });
+    return;
+  }
+
+  const embed = new EmbedBuilder()
+    .setColor(ticket.status === 'closed' ? 0x777777 : isAiDisabledTicket(ticket) ? 0xffcc00 : 0xffffff)
+    .setTitle(`${EMOJIS.global} Estado del ticket`)
+    .setDescription(`Vista rapida de **#${ticket.channelName ?? interaction.channel?.name ?? interaction.channelId}**.`)
+    .addFields(
+      { name: 'Estado', value: ticket.status ?? 'open', inline: true },
+      { name: 'IA', value: isAiDisabledTicket(ticket) ? 'Desactivada por staff' : 'Activa', inline: true },
+      { name: 'Staff', value: guildConfig?.staffRoleId ? `<@&${guildConfig.staffRoleId}>` : 'Sin rol configurado', inline: true },
+      { name: 'Transcripcion', value: `${messages.length} mensajes guardados`, inline: true },
+      { name: 'Creado', value: ticket.createdAt ? `<t:${Math.floor(new Date(ticket.createdAt).getTime() / 1000)}:R>` : 'Sin fecha', inline: true },
+      { name: 'Opener', value: ticket.openedBy ? `<@${ticket.openedBy}>` : 'No detectado', inline: true }
+    )
+    .setFooter({ text: 'Usa /ticket resumen para entregar contexto al staff.' })
+    .setTimestamp(new Date());
+
+  await interaction.reply({ embeds: [embed], ephemeral: true, allowedMentions: { roles: [], users: [] } });
+}
+
+async function handleTicketSummaryCommand({ interaction, storage, supportAgent }) {
+  if (!interaction.inGuild() || !interaction.channelId) {
+    await interaction.reply({ content: 'Este comando solo se puede usar dentro de un ticket del servidor.', ephemeral: true });
+    return;
+  }
+
+  await interaction.deferReply({ ephemeral: true });
+
+  const [ticket, guildConfig, messages] = await Promise.all([
+    storage.getTicket(interaction.channelId),
+    storage.getGuildConfig(interaction.guildId),
+    storage.listTranscriptMessages(interaction.channelId)
+  ]);
+
+  if (!ticket) {
+    await interaction.editReply('Este canal no esta registrado como ticket de NexaDesk.');
+    return;
+  }
+
+  if (!canManageTicketTranscripts(interaction, guildConfig)) {
+    await interaction.editReply('Solo staff o usuarios con Manage Server pueden generar resumenes del ticket.');
+    return;
+  }
+
+  const summary = await supportAgent.summarizeTicket({ ticket, guildConfig, messages });
+  const embed = new EmbedBuilder()
+    .setColor(0xffffff)
+    .setTitle(`${EMOJIS.wifi} Briefing para staff`)
+    .setDescription(summary)
+    .addFields(
+      { name: 'Ticket', value: `#${ticket.channelName ?? interaction.channel?.name ?? ticket.channelId}`, inline: true },
+      { name: 'Mensajes guardados', value: String(messages.length), inline: true },
+      { name: 'Estado', value: ticket.status ?? 'open', inline: true }
+    )
+    .setFooter({ text: 'NexaDesk Staff Handoff' })
+    .setTimestamp(new Date());
+
+  await interaction.editReply({ embeds: [embed], allowedMentions: { roles: [], users: [] } });
+}
+
+async function handleCloseTicketCommand({ interaction, storage, client }) {
+  if (!interaction.inGuild() || !interaction.channelId) {
+    await interaction.reply({ content: 'Este comando solo se puede usar dentro de un ticket del servidor.', ephemeral: true });
+    return;
+  }
+
+  const [ticket, guildConfig] = await Promise.all([
+    storage.getTicket(interaction.channelId),
+    storage.getGuildConfig(interaction.guildId)
+  ]);
+
+  if (!ticket) {
+    await interaction.reply({ content: 'Este canal no esta registrado como ticket de NexaDesk.', ephemeral: true });
+    return;
+  }
+
+  if (!canCloseTicketFromInteraction(interaction, ticket, guildConfig)) {
+    await interaction.reply({ content: 'Solo quien abrio este ticket, el staff configurado o alguien con Manage Server puede cerrarlo.', ephemeral: true });
+    return;
+  }
+
+  await interaction.reply({
+    content: [
+      `${EMOJIS.global} Ticket cerrado.`,
+      'Estoy preparando la transcripcion y eliminare este canal en unos segundos.'
+    ].join('\n')
+  });
+
+  const closingReply = await interaction.fetchReply();
+  await closeTicketWithTranscript({
+    client,
+    storage,
+    channel: interaction.channel,
+    guild: interaction.guild,
+    ticket,
+    requestedBy: interaction.user,
+    requestId: interaction.id,
+    closingReply,
+    fallbackUser: interaction.user,
+    reason: `NexaDesk slash close requested by ${interaction.user.tag}`
   });
 }
 
@@ -730,21 +929,6 @@ async function handleNaturalCloseRequest({ client, storage, message, ticket, gui
     return;
   }
 
-  const requestedAt = new Date().toISOString();
-  await storage.addTranscriptMessage({
-    guildId: message.guild.id,
-    channelId: message.channel.id,
-    messageId: `close-request-${message.id}`,
-    authorId: message.author.id,
-    authorName: message.author.username,
-    authorBot: false,
-    role: 'system',
-    content: `Cierre solicitado por ${message.author.username}.`,
-    createdAt: requestedAt
-  });
-
-  await message.channel.sendTyping();
-
   const closingReply = await message.reply({
     content: [
       `${EMOJIS.global} Ticket cerrado.`,
@@ -752,6 +936,36 @@ async function handleNaturalCloseRequest({ client, storage, message, ticket, gui
     ].join('\n'),
     allowedMentions: { repliedUser: false }
   });
+
+  await closeTicketWithTranscript({
+    client,
+    storage,
+    channel: message.channel,
+    guild: message.guild,
+    ticket,
+    requestedBy: message.author,
+    requestId: message.id,
+    closingReply,
+    fallbackUser: message.author,
+    reason: `NexaDesk natural close requested by ${message.author.tag}`
+  });
+}
+
+async function closeTicketWithTranscript({ client, storage, channel, guild, ticket, requestedBy, requestId, closingReply, fallbackUser = null, reason }) {
+  const requestedAt = new Date().toISOString();
+  await storage.addTranscriptMessage({
+    guildId: guild.id,
+    channelId: channel.id,
+    messageId: `close-request-${requestId}`,
+    authorId: requestedBy.id,
+    authorName: requestedBy.username,
+    authorBot: requestedBy.bot ?? false,
+    role: 'system',
+    content: `Cierre solicitado por ${requestedBy.username}.`,
+    createdAt: requestedAt
+  });
+
+  await channel.sendTyping().catch(() => {});
   await saveTranscript(storage, closingReply, 'assistant');
 
   const closedAt = new Date().toISOString();
@@ -760,27 +974,29 @@ async function handleNaturalCloseRequest({ client, storage, message, ticket, gui
     status: 'closed',
     updatedAt: closedAt
   };
-  const messages = await storage.listTranscriptMessages(message.channel.id);
-  const targetUser = await resolveTranscriptRecipient(client, ticket, messages) ?? message.author;
-  let dmStatus = 'Transcripcion enviada automaticamente por MD.';
+  const messages = await storage.listTranscriptMessages(channel.id);
+  const targetUser = await resolveTranscriptRecipient(client, ticket, messages) ?? fallbackUser;
+  let dmStatus = 'No se pudo detectar usuario para enviar la transcripcion por MD.';
 
-  try {
-    await sendTranscriptDm({
-      targetUser,
-      ticket: closedTicket,
-      messages,
-      guildName: message.guild.name
-    });
-    dmStatus = `Transcripcion enviada automaticamente por MD a ${targetUser.tag}.`;
-  } catch (error) {
-    console.error('Failed to DM transcript for natural close:', error);
-    dmStatus = `No se pudo enviar la transcripcion por MD a ${targetUser.tag}. Puede tener los MD cerrados.`;
+  if (targetUser) {
+    try {
+      await sendTranscriptDm({
+        targetUser,
+        ticket: closedTicket,
+        messages,
+        guildName: guild.name
+      });
+      dmStatus = `Transcripcion enviada automaticamente por MD a ${targetUser.tag}.`;
+    } catch (error) {
+      console.error('Failed to DM transcript for ticket close:', error);
+      dmStatus = `No se pudo enviar la transcripcion por MD a ${targetUser.tag}. Puede tener los MD cerrados.`;
+    }
   }
 
   await storage.addTranscriptMessage({
-    guildId: message.guild.id,
-    channelId: message.channel.id,
-    messageId: `close-dm-${message.id}`,
+    guildId: guild.id,
+    channelId: channel.id,
+    messageId: `close-dm-${requestId}`,
     authorId: client.user?.id,
     authorName: client.user?.username ?? 'NexaDesk',
     authorBot: true,
@@ -789,8 +1005,9 @@ async function handleNaturalCloseRequest({ client, storage, message, ticket, gui
     createdAt: new Date().toISOString()
   });
 
-  await storage.updateTicket(message.channel.id, {
-    status: 'closed'
+  await storage.updateTicket(channel.id, {
+    status: 'closed',
+    aiDisabled: false
   });
 
   try {
@@ -805,14 +1022,14 @@ async function handleNaturalCloseRequest({ client, storage, message, ticket, gui
 
   setTimeout(async () => {
     try {
-      const freshChannel = await message.guild.channels.fetch(message.channel.id).catch(() => null);
+      const freshChannel = await guild.channels.fetch(channel.id).catch(() => null);
       if (freshChannel?.deletable) {
-        await freshChannel.delete(`NexaDesk ticket close requested by ${message.author.tag}`);
+        await freshChannel.delete(reason);
       } else if (freshChannel) {
         await freshChannel.send('No tengo permisos suficientes para eliminar este canal. El ticket ya quedo cerrado en NexaDesk.');
       }
     } catch (error) {
-      console.error(`Failed to delete closed ticket channel ${message.channel.id}:`, error);
+      console.error(`Failed to delete closed ticket channel ${channel.id}:`, error);
     }
   }, 8_000);
 }
@@ -979,6 +1196,13 @@ function canCloseTicketFromMessage(message, ticket, guildConfig) {
   if (message.member?.permissions?.has(PermissionFlagsBits.ManageGuild)) return true;
   if (guildConfig?.staffRoleId && memberHasRole(message.member, guildConfig.staffRoleId)) return true;
   if (ticket.openedBy) return ticket.openedBy === message.author.id;
+  return true;
+}
+
+function canCloseTicketFromInteraction(interaction, ticket, guildConfig) {
+  if (interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) return true;
+  if (guildConfig?.staffRoleId && memberHasRole(interaction.member, guildConfig.staffRoleId)) return true;
+  if (ticket.openedBy) return ticket.openedBy === interaction.user.id;
   return true;
 }
 

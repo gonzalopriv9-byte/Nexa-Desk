@@ -12,8 +12,9 @@ NexaDesk is a Discord support bot that watches ticket categories, joins newly-cr
 - AI replies inside ticket channels.
 - Discord OAuth dashboard/API ready for Render.
 - Direct bot invite flow from the server selector when NexaDesk is not installed yet.
-- Staff escalation with `/desactivar ia` and saved transcripts per server.
+- Staff escalation with `/desactivar ia`, `/activar ia`, ticket status, AI summaries, and saved transcripts per server.
 - Transcript delivery by DM with `/transcripcion enviar`.
+- Professional ticket close flow with `/ticket cerrar`.
 - Automatic transcript delivery when another ticket bot closes a ticket by deleting the channel.
 - Global bot metrics with `/globalstats`.
 - Optional visual-proof analysis for images and sampled video frames when the server AI prompt asks for visual evidence.
@@ -197,10 +198,16 @@ npm run register
 ```text
 /setup category:<category>
 /desactivar ia
+/activar ia
+/ticket estado
+/ticket resumen
+/ticket cerrar
 /transcripcion enviar [usuario]
 /globalstats
 ```
 
 `/transcripcion enviar` sends the current ticket transcript by DM to the ticket opener. If the ticket was created by another bot and NexaDesk cannot detect the opener, pass `usuario`.
+
+`/ticket resumen` gives staff a concise AI handoff, `/ticket estado` shows the operational state of the current ticket, and `/ticket cerrar` closes the ticket, sends the transcript by DM, and deletes the channel after a short delay.
 
 When a ticket channel registered by NexaDesk is deleted by another ticket bot, NexaDesk marks the ticket as closed, keeps the transcript available in the dashboard, and tries to DM the transcript to the opener automatically.

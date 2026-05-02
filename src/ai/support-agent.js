@@ -42,6 +42,59 @@ export class SupportAgent {
     });
   }
 
+  async summarizeTicket({ ticket, guildConfig, messages = [] }) {
+    const transcript = messages
+      .slice(-45)
+      .map((message) => {
+        const author = message.authorName || message.role || 'Desconocido';
+        const role = message.authorBot ? 'NexaDesk' : (message.role || 'usuario');
+        return `[${role}] ${author}: ${String(message.content || '').slice(0, 900)}`;
+      })
+      .join('\n')
+      .slice(0, 12_000);
+
+    if (!transcript.trim()) {
+      return 'No hay suficientes mensajes guardados para generar un resumen del ticket.';
+    }
+
+    try {
+      const summary = await this.aiClient.generate({
+        system: [
+          'Eres NexaDesk preparando un briefing para staff humano.',
+          'Resume el ticket de Discord de forma breve, accionable y sin inventar datos.',
+          'Usa este formato exacto:',
+          'Caso: una frase.',
+          'Contexto clave: 2-4 bullets.',
+          'Estado actual: una frase.',
+          'Siguiente accion recomendada: una frase.',
+          'Pruebas/adjuntos: menciona si hay capturas, videos o archivos visibles en la transcripcion.'
+        ].join('\n'),
+        messages: [
+          {
+            role: 'user',
+            content: [
+              `Servidor: ${guildConfig?.guildName ?? ticket.guildName ?? ticket.guildId}`,
+              `Canal: #${ticket.channelName ?? ticket.channelId}`,
+              `Estado: ${ticket.status ?? 'open'}`,
+              '',
+              'Transcripcion:',
+              transcript
+            ].join('\n')
+          }
+        ]
+      });
+
+      if (!summary || /La IA esta desactivada por configuracion/i.test(summary)) {
+        return buildFallbackSummary(ticket, messages);
+      }
+
+      return summary.slice(0, 3600);
+    } catch (error) {
+      console.error('Ticket summary failed:', error);
+      return buildFallbackSummary(ticket, messages);
+    }
+  }
+
   #buildSystemPrompt({ ticket, guildConfig, userLanguage, intakeContext, visualContext }) {
     const serverInfo = guildConfig.serverInfo?.trim() || 'No hay informacion adicional configurada todavia.';
     const serverPrompt = guildConfig.serverPrompt?.trim() || 'No hay prompt personalizado configurado.';
@@ -96,6 +149,29 @@ export class SupportAgent {
       return `NexaDesk recibio pruebas visuales, pero no pudo analizarlas automaticamente: ${String(error?.message ?? error).slice(0, 300)}`;
     }
   }
+}
+
+function buildFallbackSummary(ticket, messages = []) {
+  const userMessages = messages.filter((message) => !message.authorBot && message.role !== 'system');
+  const botMessages = messages.filter((message) => message.authorBot);
+  const lastMessages = messages.slice(-6).map((message) => {
+    const author = message.authorName || message.role || 'Desconocido';
+    return `- ${author}: ${String(message.content || '').replace(/\s+/g, ' ').slice(0, 180)}`;
+  });
+
+  return [
+    `Caso: ticket #${ticket.channelName ?? ticket.channelId} pendiente de revision.`,
+    'Contexto clave:',
+    `- Mensajes de usuario guardados: ${userMessages.length}.`,
+    `- Respuestas de NexaDesk guardadas: ${botMessages.length}.`,
+    `- Estado actual: ${ticket.status ?? 'open'}.`,
+    'Estado actual: resumen IA no disponible, se muestra contexto basico.',
+    'Siguiente accion recomendada: revisar los ultimos mensajes y continuar manualmente si hace falta.',
+    'Pruebas/adjuntos: revisa la transcripcion si aparecen lineas marcadas como [Adjunto].',
+    '',
+    'Ultimos mensajes:',
+    ...(lastMessages.length ? lastMessages : ['- No hay mensajes guardados.'])
+  ].join('\n').slice(0, 3600);
 }
 
 function extractTicketIntakeContext(history) {

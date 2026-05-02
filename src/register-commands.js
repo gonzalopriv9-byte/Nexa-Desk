@@ -24,6 +24,34 @@ const commands = [
     )
     .toJSON(),
   new SlashCommandBuilder()
+    .setName('activar')
+    .setDescription('Reactiva funciones de NexaDesk en el ticket actual.')
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName('ia')
+        .setDescription('Reactiva la IA en este ticket si el staff quiere devolverlo a NexaDesk.')
+    )
+    .toJSON(),
+  new SlashCommandBuilder()
+    .setName('ticket')
+    .setDescription('Herramientas profesionales para gestionar el ticket actual.')
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName('estado')
+        .setDescription('Muestra estado, IA, staff y transcripcion del ticket actual.')
+    )
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName('resumen')
+        .setDescription('Genera un briefing del ticket para que el staff entre con contexto.')
+    )
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName('cerrar')
+        .setDescription('Cierra el ticket, envia transcripcion por MD y elimina el canal.')
+    )
+    .toJSON(),
+  new SlashCommandBuilder()
     .setName('transcripcion')
     .setDescription('Gestiona transcripciones de tickets.')
     .addSubcommand((subcommand) =>
