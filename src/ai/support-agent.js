@@ -1,8 +1,9 @@
 export class SupportAgent {
-  constructor({ aiClient, storage, maxHistoryMessages }) {
+  constructor({ aiClient, storage, maxHistoryMessages, visualAnalyzer = null }) {
     this.aiClient = aiClient;
     this.storage = storage;
     this.maxHistoryMessages = maxHistoryMessages;
+    this.visualAnalyzer = visualAnalyzer;
   }
 
   async answerTicketMessage({ message, ticket, guildConfig }) {
@@ -10,11 +11,13 @@ export class SupportAgent {
     const userLanguage = detectUserLanguage(message.content);
     const history = await this.#loadHistory(message.channel);
     const intakeContext = extractTicketIntakeContext(history);
+    const visualContext = await this.#analyzeVisualContext({ message, guildConfig: latestGuildConfig });
     const system = this.#buildSystemPrompt({
       ticket,
       guildConfig: latestGuildConfig,
       userLanguage,
-      intakeContext
+      intakeContext,
+      visualContext
     });
 
     const guardedMessages = applyLanguageGuard(history, userLanguage, message);
@@ -39,10 +42,11 @@ export class SupportAgent {
     });
   }
 
-  #buildSystemPrompt({ ticket, guildConfig, userLanguage, intakeContext }) {
+  #buildSystemPrompt({ ticket, guildConfig, userLanguage, intakeContext, visualContext }) {
     const serverInfo = guildConfig.serverInfo?.trim() || 'No hay informacion adicional configurada todavia.';
     const serverPrompt = guildConfig.serverPrompt?.trim() || 'No hay prompt personalizado configurado.';
     const ticketIntake = intakeContext?.trim() || 'No hay respuestas previas de formulario para este ticket.';
+    const visualEvidence = visualContext?.trim() || 'No hay pruebas visuales analizadas en este turno.';
 
     return [
       'Eres NexaDesk, un moderador de soporte con IA dentro de Discord.',
@@ -50,6 +54,7 @@ export class SupportAgent {
       'No inventes politicas, precios, sanciones, garantias ni informacion privada.',
       'Si falta informacion, pide datos concretos al usuario.',
       'Usa las respuestas previas del formulario como contexto inicial fuerte del ticket.',
+      'Si hay pruebas visuales analizadas, usalas como evidencia del ticket y menciona solo hechos observables.',
       'No vuelvas a preguntar informacion que ya aparezca en las respuestas previas; continua desde ahi.',
       'Si el usuario dice algo como "me ayudas tu?", responde continuando el caso ya descrito, no con un saludo generico.',
       'Si el caso requiere permisos de staff, pagos, sanciones o datos sensibles, escala a un humano.',
@@ -65,7 +70,8 @@ export class SupportAgent {
       `Contexto actualizado en: ${guildConfig.updatedAt ?? 'sin fecha registrada'}`,
       `Prompt personalizado del servidor:\n${serverPrompt}`,
       `Informacion del servidor:\n${serverInfo}`,
-      `Respuestas previas del formulario del ticket:\n${ticketIntake}`
+      `Respuestas previas del formulario del ticket:\n${ticketIntake}`,
+      `Analisis visual del ultimo mensaje:\n${visualEvidence}`
     ].join('\n');
   }
 
@@ -73,11 +79,22 @@ export class SupportAgent {
     const messages = await channel.messages.fetch({ limit: this.maxHistoryMessages });
     return [...messages.values()]
       .reverse()
-      .filter((item) => item.content?.trim())
+      .filter((item) => item.content?.trim() || item.attachments?.size)
       .map((item) => ({
         role: item.author.bot ? 'assistant' : 'user',
         content: formatHistoryMessage(item).slice(0, 1800)
       }));
+  }
+
+  async #analyzeVisualContext({ message, guildConfig }) {
+    if (!this.visualAnalyzer) return '';
+
+    try {
+      return await this.visualAnalyzer.analyzeMessageAttachments({ message, guildConfig });
+    } catch (error) {
+      console.error('Visual analysis failed:', error);
+      return `NexaDesk recibio pruebas visuales, pero no pudo analizarlas automaticamente: ${String(error?.message ?? error).slice(0, 300)}`;
+    }
   }
 }
 
@@ -107,8 +124,19 @@ function itemContentAfterIntakeHeader(content) {
 
 function formatHistoryMessage(message) {
   const content = stripAssistantPrefix(message.content, message.client.user?.username);
-  if (message.author.bot) return content;
-  return `${message.author.username}: ${content}`;
+  const attachments = formatAttachmentSummary(message);
+  const fullContent = [content, attachments].filter(Boolean).join('\n');
+  if (message.author.bot) return fullContent;
+  return `${message.author.username}: ${fullContent || '[mensaje sin texto]'}`;
+}
+
+function formatAttachmentSummary(message) {
+  const attachments = [...(message.attachments?.values?.() ?? [])];
+  if (!attachments.length) return '';
+
+  return attachments
+    .map((attachment) => `[Adjunto: ${attachment.name ?? 'archivo'} | ${attachment.contentType ?? 'tipo desconocido'} | ${attachment.url ?? attachment.proxyURL ?? 'sin url'}]`)
+    .join('\n');
 }
 
 function stripAssistantPrefix(content, botName = 'AI SUPPORT') {

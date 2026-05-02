@@ -16,6 +16,7 @@ NexaDesk is a Discord support bot that watches ticket categories, joins newly-cr
 - Transcript delivery by DM with `/transcripcion enviar`.
 - Automatic transcript delivery when another ticket bot closes a ticket by deleting the channel.
 - Global bot metrics with `/globalstats`.
+- Optional visual-proof analysis for images and sampled video frames when the server AI prompt asks for visual evidence.
 - Local JSON storage for fast development.
 - Ollama-compatible AI client prepared for a Raspberry Pi.
 
@@ -62,6 +63,8 @@ The dashboard can:
 - Open a direct Discord invite for manageable servers where the bot is not installed.
 
 For production on Render, set the same env vars in the web service settings. For the Raspberry Pi worker, keep `/home/pi/nexadesk/.env` updated separately.
+
+Visual analysis uses Groq vision models for images. Video support samples frames through `ffmpeg`; install `ffmpeg` on the worker machine if you want videos to be interpreted instead of only recorded as attachments.
 
 If the bot is running on the Raspberry Pi, set this in Render so the web service only serves the dashboard:
 
@@ -131,6 +134,10 @@ NexaDesk is configured to use Groq by default:
 ```text
 AI_PROVIDER=groq
 GROQ_MODEL=llama-3.1-8b-instant
+GROQ_VISION_MODEL=meta-llama/llama-4-scout-17b-16e-instruct
+AI_VISUAL_ANALYSIS=true
+AI_VIDEO_FRAME_COUNT=3
+AI_VIDEO_MAX_BYTES=25000000
 ```
 
 This model is a good default for support tickets because it is fast, low-cost, and has enough context for ticket history plus server information.

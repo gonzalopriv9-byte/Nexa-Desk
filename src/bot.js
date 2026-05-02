@@ -1194,7 +1194,8 @@ async function notifyStaffRole(message, guildConfig, ticket, reason) {
 }
 
 async function saveTranscript(storage, message, role) {
-  if (!message.content?.trim()) return;
+  const content = buildTranscriptMessageContent(message);
+  if (!content.trim()) return;
 
   await storage.addTranscriptMessage({
     guildId: message.guild?.id,
@@ -1204,9 +1205,19 @@ async function saveTranscript(storage, message, role) {
     authorName: message.author.username,
     authorBot: message.author.bot,
     role,
-    content: message.content,
+    content,
     createdAt: message.createdAt?.toISOString?.() ?? new Date().toISOString()
   });
+}
+
+function buildTranscriptMessageContent(message) {
+  const attachments = [...(message.attachments?.values?.() ?? [])]
+    .map((attachment) => `[Adjunto: ${attachment.name ?? 'archivo'} | ${attachment.contentType ?? 'tipo desconocido'} | ${attachment.url ?? attachment.proxyURL ?? 'sin url'}]`);
+
+  return [
+    message.content?.trim() ?? '',
+    ...attachments
+  ].filter(Boolean).join('\n');
 }
 
 export async function createTicketCategory(client, storage, { guildId, name }) {

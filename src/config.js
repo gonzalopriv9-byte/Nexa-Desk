@@ -25,12 +25,16 @@ const schema = z.object({
   AI_PROVIDER: z.enum(['groq', 'ollama', 'openai-compatible', 'disabled']).default('groq'),
   GROQ_API_KEY: z.string().optional(),
   GROQ_MODEL: z.string().default('llama-3.1-8b-instant'),
+  GROQ_VISION_MODEL: z.string().default('meta-llama/llama-4-scout-17b-16e-instruct'),
   OLLAMA_BASE_URL: z.string().url().default('http://192.168.1.52:11434'),
   OLLAMA_MODEL: z.string().default('llama3.2:3b'),
   OPENAI_COMPAT_BASE_URL: z.string().url().default('http://192.168.1.52:8080/v1'),
   OPENAI_COMPAT_MODEL: z.string().default('tinyllama'),
   OPENAI_COMPAT_API_KEY: z.string().default('local'),
   AI_MAX_HISTORY_MESSAGES: z.coerce.number().int().min(1).max(50).default(20),
+  AI_VISUAL_ANALYSIS: envBoolean.default(true),
+  AI_VIDEO_FRAME_COUNT: z.coerce.number().int().min(1).max(5).default(3),
+  AI_VIDEO_MAX_BYTES: z.coerce.number().int().min(1_000_000).max(100_000_000).default(25_000_000),
   AI_AUTO_REPLY: envBoolean.default(true)
 });
 

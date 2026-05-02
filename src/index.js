@@ -5,6 +5,7 @@ import { GroqClient } from './ai/groq-client.js';
 import { OllamaClient } from './ai/ollama-client.js';
 import { OpenAICompatibleClient } from './ai/openai-compatible-client.js';
 import { SupportAgent } from './ai/support-agent.js';
+import { VisualAnalyzer } from './ai/visual-analyzer.js';
 import { createBot, createTicketCategory, createTicketPanel, listGuildChannels, listGuildRoles, listInstalledGuildIds } from './bot.js';
 import { createServer } from './server.js';
 import { createDiscordRestActions } from './discord-rest-actions.js';
@@ -22,11 +23,13 @@ const storage = createStorage(config, events);
 await storage.init();
 
 const aiClient = createAiClient();
+const visualAnalyzer = createVisualAnalyzer();
 
 const supportAgent = new SupportAgent({
   aiClient,
   storage,
-  maxHistoryMessages: config.AI_MAX_HISTORY_MESSAGES
+  maxHistoryMessages: config.AI_MAX_HISTORY_MESSAGES,
+  visualAnalyzer
 });
 
 const bot = createBot({ config, storage, supportAgent });
@@ -62,7 +65,11 @@ if (config.RUN_BOT) {
 
 function createAiClient() {
   if (config.AI_PROVIDER === 'groq') {
-    return new GroqClient({ apiKey: config.GROQ_API_KEY, model: config.GROQ_MODEL });
+    return new GroqClient({
+      apiKey: config.GROQ_API_KEY,
+      model: config.GROQ_MODEL,
+      visionModel: config.GROQ_VISION_MODEL
+    });
   }
 
   if (config.AI_PROVIDER === 'ollama') {
@@ -78,4 +85,19 @@ function createAiClient() {
   }
 
   return { generate: async () => 'La IA esta desactivada por configuracion.' };
+}
+
+function createVisualAnalyzer() {
+  if (!config.AI_VISUAL_ANALYSIS || !config.GROQ_API_KEY) return null;
+
+  return new VisualAnalyzer({
+    visionClient: new GroqClient({
+      apiKey: config.GROQ_API_KEY,
+      model: config.GROQ_MODEL,
+      visionModel: config.GROQ_VISION_MODEL
+    }),
+    enabled: config.AI_VISUAL_ANALYSIS,
+    videoFrameCount: config.AI_VIDEO_FRAME_COUNT,
+    videoMaxBytes: config.AI_VIDEO_MAX_BYTES
+  });
 }
