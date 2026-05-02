@@ -1361,7 +1361,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
         emoji: document.querySelector('#componentEmoji').value,
         ticketCategoryId: document.querySelector('#componentTicketCategoryId').value,
         ticketCategoryName: selectedOptionText('#componentTicketCategoryId'),
-        questions: document.querySelector('#componentQuestions').value.split(/\n/).map((item) => item.trim()).filter(Boolean).slice(0, 5),
+        questions: document.querySelector('#componentQuestions').value.split(/\\n/).map((item) => item.trim()).filter(Boolean).slice(0, 5),
         welcomeMessage: document.querySelector('#componentWelcomeMessage').value
       }).catch((error) => showToast(error.message));
       if (updated) {
