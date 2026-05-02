@@ -403,50 +403,50 @@ async function createTicketFromConfiguredSource({ interaction, storage, guildCon
   }
 
   const normalizedComponent = component ? normalizeTicketComponent(component) : null;
-  const ticketCategoryId = normalizedComponent?.ticketCategoryId || panel?.ticketCategoryId || guildConfig?.ticketCategoryId;
-  if (!ticketCategoryId) {
-    await interaction.reply({ content: 'El sistema de tickets todavia no tiene una categoria configurada.', ephemeral: true });
-    return;
-  }
-
-  const ticketCategory = await fetchTicketCategory(interaction, ticketCategoryId);
-  if (!ticketCategory) {
-    await interaction.reply({
-      content: 'No encuentro la categoria configurada para crear tickets. Revisa la categoria desde la dashboard y vuelve a publicar el panel.',
-      ephemeral: true
-    });
-    return;
-  }
-
-  const missingPermissions = getMissingTicketCreationPermissions(interaction, ticketCategory);
-  if (missingPermissions.length) {
-    const inviteUrl = buildBotInviteUrl(config, interaction.guildId);
-    await interaction.reply({
-      content: [
-        'No puedo crear el canal del ticket en esa categoria porque me faltan permisos.',
-        `Categoria: **${ticketCategory.name}**`,
-        `Permisos necesarios: **${missingPermissions.join(', ')}**`,
-        `Solucion rapida: actualiza permisos aqui: ${inviteUrl}`,
-        'Tambien puedes activar esos permisos manualmente en mi rol dentro de esa categoria.'
-      ].join('\n'),
-      ephemeral: true
-    });
-    return;
-  }
-
   const staffRoleIssue = getStaffRoleOverwriteIssue(interaction, guildConfig);
   if (staffRoleIssue) {
     await interaction.reply({ content: staffRoleIssue, ephemeral: true });
     return;
   }
 
-  const channel = await interaction.guild.channels.create({
-    name: buildTicketChannelName(interaction.user.username, normalizedComponent?.label),
-    type: ChannelType.GuildText,
-    parent: ticketCategory.id,
-    reason: 'NexaDesk panel ticket creation',
-    permissionOverwrites: buildTicketPermissionOverwrites(interaction, guildConfig)
+  const ticketCategoryId = normalizedComponent?.ticketCategoryId || panel?.ticketCategoryId || guildConfig?.ticketCategoryId;
+  const categoryResolution = await resolveTicketCategoryForPanel({
+    interaction,
+    storage,
+    guildConfig,
+    ticketCategoryId,
+    config
   });
+  if (!categoryResolution) return;
+
+  let { ticketCategory, fallbackReason } = categoryResolution;
+  let channel;
+  try {
+    channel = await createTicketChannel({
+      interaction,
+      guildConfig,
+      ticketCategory,
+      label: normalizedComponent?.label
+    });
+  } catch (error) {
+    if (isMissingPermissionError(error) && !fallbackReason) {
+      const fallbackCategory = await createManagedTicketCategory({
+        interaction,
+        storage,
+        guildConfig
+      });
+      ticketCategory = fallbackCategory;
+      fallbackReason = 'la categoria configurada bloqueo la creacion del canal';
+      channel = await createTicketChannel({
+        interaction,
+        guildConfig,
+        ticketCategory,
+        label: normalizedComponent?.label
+      });
+    } else {
+      throw error;
+    }
+  }
   panelCreatedChannels.add(channel.id);
 
   const ticket = await storage.createTicket({
@@ -454,7 +454,7 @@ async function createTicketFromConfiguredSource({ interaction, storage, guildCon
     guildName: interaction.guild.name,
     channelId: channel.id,
     channelName: channel.name,
-    categoryId: ticketCategoryId,
+    categoryId: ticketCategory.id,
     openedBy: interaction.user.id
   });
 
@@ -466,8 +466,111 @@ async function createTicketFromConfiguredSource({ interaction, storage, guildCon
   const welcome = await channel.send(buildTicketWelcomeMessage({ panel, component: normalizedComponent, answers, userMention: `${interaction.user}` }));
   await saveTranscript(storage, welcome, 'assistant');
 
-  await interaction.reply({ content: `Ticket creado: ${channel}`, ephemeral: true });
+  await interaction.reply({
+    content: [
+      `Ticket creado: ${channel}`,
+      fallbackReason ? `He usado **${ticketCategory.name}** porque ${fallbackReason}.` : ''
+    ].filter(Boolean).join('\n'),
+    ephemeral: true
+  });
   setTimeout(() => panelCreatedChannels.delete(channel.id), 30_000);
+}
+
+async function resolveTicketCategoryForPanel({ interaction, storage, guildConfig, ticketCategoryId, config }) {
+  if (!ticketCategoryId) {
+    try {
+      const fallbackCategory = await createManagedTicketCategory({ interaction, storage, guildConfig });
+      return {
+        ticketCategory: fallbackCategory,
+        fallbackReason: 'no habia ninguna categoria configurada'
+      };
+    } catch (error) {
+      await replyTicketPermissionProblem({ interaction, config, error });
+      return null;
+    }
+  }
+
+  const ticketCategory = await fetchTicketCategory(interaction, ticketCategoryId);
+  const missingPermissions = ticketCategory
+    ? getMissingTicketCreationPermissions(interaction, ticketCategory)
+    : ['View Channel'];
+
+  if (!ticketCategory || missingPermissions.length) {
+    try {
+      const fallbackCategory = await createManagedTicketCategory({ interaction, storage, guildConfig });
+      return {
+        ticketCategory: fallbackCategory,
+        fallbackReason: ticketCategory
+          ? `la categoria **${ticketCategory.name}** no permite: ${missingPermissions.join(', ')}`
+          : 'la categoria configurada no es accesible para NexaDesk'
+      };
+    } catch (error) {
+      await replyTicketPermissionProblem({
+        interaction,
+        config,
+        error,
+        categoryName: ticketCategory?.name,
+        missingPermissions
+      });
+      return null;
+    }
+  }
+
+  return { ticketCategory, fallbackReason: null };
+}
+
+async function createManagedTicketCategory({ interaction, storage, guildConfig }) {
+  const existingCategory = interaction.guild.channels.cache.find((channel) =>
+    channel?.type === ChannelType.GuildCategory
+    && channel.name.toLowerCase() === 'nexadesk tickets'
+    && !getMissingTicketCreationPermissions(interaction, channel).length
+  );
+
+  const category = existingCategory ?? await interaction.guild.channels.create({
+    name: 'NexaDesk Tickets',
+    type: ChannelType.GuildCategory,
+    reason: 'NexaDesk managed ticket category'
+  });
+
+  await storage.upsertGuildConfig(interaction.guild.id, {
+    guildName: interaction.guild.name,
+    ticketCategoryId: category.id,
+    ticketCategoryName: category.name,
+    staffRoleId: guildConfig?.staffRoleId,
+    serverPrompt: guildConfig?.serverPrompt,
+    serverInfo: guildConfig?.serverInfo
+  });
+
+  return category;
+}
+
+async function createTicketChannel({ interaction, guildConfig, ticketCategory, label }) {
+  return interaction.guild.channels.create({
+    name: buildTicketChannelName(interaction.user.username, label),
+    type: ChannelType.GuildText,
+    parent: ticketCategory.id,
+    reason: 'NexaDesk panel ticket creation',
+    permissionOverwrites: buildTicketPermissionOverwrites(interaction, guildConfig)
+  });
+}
+
+async function replyTicketPermissionProblem({ interaction, config, error, categoryName = null, missingPermissions = [] }) {
+  const inviteUrl = buildBotInviteUrl(config, interaction.guildId);
+  const reason = isMissingPermissionError(error)
+    ? 'Discord sigue bloqueando la creacion de canales por permisos efectivos.'
+    : 'No he podido preparar una categoria propia para NexaDesk.';
+
+  await interaction.reply({
+    content: [
+      'No puedo crear el canal del ticket todavia.',
+      categoryName ? `Categoria: **${categoryName}**` : '',
+      missingPermissions.length ? `Permisos bloqueados en la categoria: **${missingPermissions.join(', ')}**` : '',
+      reason,
+      `Actualiza permisos aqui: ${inviteUrl}`,
+      'Si ya actualizaste permisos, revisa los overrides de la categoria o crea una categoria nueva desde la dashboard.'
+    ].filter(Boolean).join('\n'),
+    ephemeral: true
+  });
 }
 
 async function fetchTicketCategory(interaction, ticketCategoryId) {
@@ -483,6 +586,7 @@ function getMissingTicketCreationPermissions(interaction, ticketCategory) {
   if (!permissions) return ['Manage Channels', 'Manage Roles'];
 
   const required = [
+    { label: 'View Channel', flag: PermissionFlagsBits.ViewChannel },
     { label: 'Manage Channels', flag: PermissionFlagsBits.ManageChannels },
     { label: 'Manage Roles', flag: PermissionFlagsBits.ManageRoles }
   ];
@@ -562,6 +666,10 @@ function buildBotInviteUrl(config, guildId) {
     url.searchParams.set('disable_guild_select', 'true');
   }
   return url.toString();
+}
+
+function isMissingPermissionError(error) {
+  return error?.code === 50013 || /Missing Permissions/i.test(String(error?.message ?? error));
 }
 
 function buildTicketComponentModal(component) {
