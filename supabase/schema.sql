@@ -6,6 +6,10 @@ create table if not exists public.guild_configs (
   staff_role_id text,
   server_prompt text,
   server_info text,
+  plan text not null default 'free',
+  voice_support_enabled boolean not null default false,
+  voice_category_id text,
+  voice_category_name text,
   panels jsonb not null default '[]'::jsonb,
   updated_at timestamptz not null default now()
 );
@@ -17,6 +21,9 @@ create table if not exists public.tickets (
   channel_name text,
   category_id text,
   opened_by text,
+  voice_channel_id text,
+  voice_channel_name text,
+  voice_created_at timestamptz,
   status text not null default 'open',
   ai_disabled boolean not null default false,
   ai_disabled_by text,
@@ -48,7 +55,14 @@ create index if not exists transcript_messages_created_at_idx on public.transcri
 alter table public.guild_configs add column if not exists staff_role_id text;
 alter table public.guild_configs add column if not exists server_prompt text;
 alter table public.guild_configs add column if not exists server_info text;
+alter table public.guild_configs add column if not exists plan text not null default 'free';
+alter table public.guild_configs add column if not exists voice_support_enabled boolean not null default false;
+alter table public.guild_configs add column if not exists voice_category_id text;
+alter table public.guild_configs add column if not exists voice_category_name text;
 alter table public.guild_configs add column if not exists panels jsonb not null default '[]'::jsonb;
+alter table public.tickets add column if not exists voice_channel_id text;
+alter table public.tickets add column if not exists voice_channel_name text;
+alter table public.tickets add column if not exists voice_created_at timestamptz;
 alter table public.tickets add column if not exists ai_disabled boolean not null default false;
 alter table public.tickets add column if not exists ai_disabled_by text;
 alter table public.tickets add column if not exists ai_disabled_at timestamptz;

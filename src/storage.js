@@ -168,11 +168,25 @@ export class SupabaseStorage {
       updatedAt: new Date().toISOString()
     };
 
-    const { data, error } = await this.client
+    let { data, error } = await this.client
       .from('guild_configs')
       .upsert(toGuildRow(next), { onConflict: 'guild_id' })
       .select()
       .single();
+    if (error && /plan|voice_support_enabled|voice_category/i.test(String(error.message ?? ''))) {
+      const compatibleRow = toGuildRow(next);
+      delete compatibleRow.plan;
+      delete compatibleRow.voice_support_enabled;
+      delete compatibleRow.voice_category_id;
+      delete compatibleRow.voice_category_name;
+      const retry = await this.client
+        .from('guild_configs')
+        .upsert(compatibleRow, { onConflict: 'guild_id' })
+        .select()
+        .single();
+      data = retry.data;
+      error = retry.error;
+    }
     if (error) throw error;
     const saved = fromGuildRow(data);
     this.events?.publish('guild.updated', saved);
@@ -238,11 +252,14 @@ export class SupabaseStorage {
       .eq('channel_id', channelId)
       .select()
       .single();
-    if (error && String(error.message ?? '').includes('ai_disabled')) {
+    if (error && /ai_disabled|voice_channel_id|voice_channel_name|voice_created_at/i.test(String(error.message ?? ''))) {
       const compatibleRow = toTicketRow({ ...next });
       delete compatibleRow.ai_disabled;
       delete compatibleRow.ai_disabled_by;
       delete compatibleRow.ai_disabled_at;
+      delete compatibleRow.voice_channel_id;
+      delete compatibleRow.voice_channel_name;
+      delete compatibleRow.voice_created_at;
       const retry = await this.client
         .from('tickets')
         .update(compatibleRow)
@@ -349,6 +366,10 @@ function toGuildRow(guild) {
     staff_role_id: guild.staffRoleId,
     server_prompt: guild.serverPrompt,
     server_info: guild.serverInfo,
+    plan: guild.plan ?? 'free',
+    voice_support_enabled: guild.voiceSupportEnabled ?? false,
+    voice_category_id: guild.voiceCategoryId,
+    voice_category_name: guild.voiceCategoryName,
     panels: toGuildPanelStore(guild),
     updated_at: guild.updatedAt
   };
@@ -364,6 +385,10 @@ function fromGuildRow(row) {
     staffRoleId: row.staff_role_id,
     serverPrompt: row.server_prompt,
     serverInfo: row.server_info,
+    plan: row.plan ?? 'free',
+    voiceSupportEnabled: row.voice_support_enabled ?? false,
+    voiceCategoryId: row.voice_category_id,
+    voiceCategoryName: row.voice_category_name,
     panels: panelStore.panels,
     components: panelStore.components,
     updatedAt: row.updated_at
@@ -406,6 +431,9 @@ function toTicketRow(ticket) {
     channel_name: ticket.channelName,
     category_id: ticket.categoryId,
     opened_by: ticket.openedBy,
+    voice_channel_id: ticket.voiceChannelId,
+    voice_channel_name: ticket.voiceChannelName,
+    voice_created_at: ticket.voiceCreatedAt,
     status: ticket.status,
     created_at: ticket.createdAt,
     updated_at: ticket.updatedAt
@@ -424,6 +452,9 @@ function fromTicketRow(row) {
     channelName: row.channel_name,
     categoryId: row.category_id,
     openedBy: row.opened_by,
+    voiceChannelId: row.voice_channel_id,
+    voiceChannelName: row.voice_channel_name,
+    voiceCreatedAt: row.voice_created_at,
     status: row.status,
     aiDisabled: row.ai_disabled ?? row.status === 'ai_disabled',
     aiDisabledBy: row.ai_disabled_by,

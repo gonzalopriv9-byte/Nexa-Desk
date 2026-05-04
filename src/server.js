@@ -12,7 +12,7 @@ import { buildTranscriptFileName, buildTranscriptText } from './transcripts.js';
 const DISCORD_API = 'https://discord.com/api/v10';
 const MANAGE_GUILD = 0x20n;
 const ADMINISTRATOR = 0x8n;
-const BOT_INVITE_PERMISSIONS = '268684304';
+const BOT_INVITE_PERMISSIONS = '305384464';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ASSETS_DIR = path.resolve(__dirname, '..', 'assets');
 
@@ -1009,7 +1009,7 @@ function renderDashboard({ session, guilds, tickets, stats }) {
     .section-heading p { margin:4px 0 0; }
     .active-server { padding:18px; margin-bottom:16px; background:linear-gradient(135deg, rgba(255,255,255,.075), rgba(255,255,255,.025)); }
     .active-server select { margin-top:12px; }
-    .server-status { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; margin-top:12px; }
+    .server-status { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:8px; margin-top:12px; }
     .server-status div { border:1px solid var(--soft-line); border-radius:10px; padding:10px; background:rgba(5,8,10,.42); }
     .server-status strong { display:block; font-size:13px; margin-top:4px; }
     .guild-list { display:grid; gap:8px; max-height:560px; overflow:auto; padding-right:4px; }
@@ -1190,6 +1190,7 @@ function renderDashboard({ session, guilds, tickets, stats }) {
         <div><span>Categoria</span><strong id="activeCategory">Sin configurar</strong></div>
         <div><span>Staff</span><strong id="activeStaff">Sin configurar</strong></div>
         <div><span>Paneles</span><strong id="activePanels">0</strong></div>
+        <div><span>Voz Pro</span><strong id="activeVoice">Free</strong></div>
       </div>
       <div class="install-banner" id="installBanner" hidden>
         <div><strong id="installTitle">NexaDesk no esta instalado en este servidor.</strong><p id="installText">Al seleccionarlo puedes invitar el bot directamente con permisos recomendados.</p></div>
@@ -1591,6 +1592,11 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
         { key: 'panels', label: 'Panel publicado', done: Boolean(guild.panels?.length), view: 'panels' }
       ];
     }
+    function formatVoiceState(guild = {}) {
+      const plan = String(guild.plan || 'free').toUpperCase();
+      const enabled = Boolean(guild.voiceSupportEnabled || ['PRO', 'ENTERPRISE', 'PREMIUM'].includes(plan));
+      return enabled ? 'Pro activo' : plan === 'FREE' ? 'Free' : plan;
+    }
     function renderReadinessChecklist(guild = getActiveGuild()) {
       const target = document.querySelector('#readinessChecklist');
       if (!target) return;
@@ -1666,6 +1672,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       document.querySelector('#activeCategory').textContent = 'Bot no instalado';
       document.querySelector('#activeStaff').textContent = 'Bot no instalado';
       document.querySelector('#activePanels').textContent = String(guild.panels?.length ?? 0);
+      document.querySelector('#activeVoice').textContent = formatVoiceState(guild);
       renderComponentHistory(guild);
       renderPanelHistory(guild);
       renderReadinessChecklist(guild);
@@ -1690,6 +1697,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       document.querySelector('#activeCategory').textContent = 'Token requerido';
       document.querySelector('#activeStaff').textContent = 'Token requerido';
       document.querySelector('#activePanels').textContent = String(guild.panels?.length ?? 0);
+      document.querySelector('#activeVoice').textContent = formatVoiceState(guild);
       renderComponentHistory(guild);
       renderPanelHistory(guild);
       renderReadinessChecklist(guild);
@@ -1742,6 +1750,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       const staffOption = document.querySelector('#staffRoleId')?.selectedOptions?.[0];
       document.querySelector('#activeStaff').textContent = staffOption?.value ? staffOption.textContent : 'Sin configurar';
       document.querySelector('#activePanels').textContent = String(config.panels?.length ?? 0);
+      document.querySelector('#activeVoice').textContent = formatVoiceState(config);
       renderComponentHistory(config);
       renderPanelHistory(config);
       renderReadinessChecklist(config);

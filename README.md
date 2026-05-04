@@ -15,6 +15,7 @@ NexaDesk is a Discord support bot that watches ticket categories, joins newly-cr
 - Staff escalation with `/desactivar ia`, `/activar ia`, ticket status, AI summaries, and saved transcripts per server.
 - Transcript delivery by DM with `/transcripcion enviar`.
 - Professional ticket close flow with `/ticket cerrar`.
+- Pro voice support rooms with `/voz crear`, gated per server from Supabase.
 - Automatic transcript delivery when another ticket bot closes a ticket by deleting the channel.
 - Global bot metrics with `/globalstats`.
 - Optional visual-proof analysis for images and sampled video frames when the server AI prompt asks for visual evidence.
@@ -181,10 +182,10 @@ OPENAI_COMPAT_MODEL=local
 Invite NexaDesk with:
 
 ```text
-https://discord.com/oauth2/authorize?client_id=1497894098722492598&permissions=268684304&scope=bot%20applications.commands
+https://discord.com/oauth2/authorize?client_id=1497894098722492598&permissions=305384464&scope=bot%20applications.commands
 ```
 
-The invite includes Manage Channels, Manage Roles, View Channel, Send Messages, Embed Links, Attach Files, Read Message History, and Mention Everyone.
+The invite includes Manage Channels, Manage Roles, View Channel, Send Messages, Embed Links, Attach Files, Read Message History, Mention Everyone, Connect, Speak, and Use Voice Activity.
 
 Recommended launch check:
 
@@ -202,6 +203,9 @@ npm run register
 /ticket estado
 /ticket resumen
 /ticket cerrar
+/voz crear [nombre]
+/voz estado
+/voz cerrar
 /transcripcion enviar [usuario]
 /globalstats
 ```
@@ -209,5 +213,7 @@ npm run register
 `/transcripcion enviar` sends the current ticket transcript by DM to the ticket opener. If the ticket was created by another bot and NexaDesk cannot detect the opener, pass `usuario`.
 
 `/ticket resumen` gives staff a concise AI handoff, `/ticket estado` shows the operational state of the current ticket, and `/ticket cerrar` closes the ticket, sends the transcript by DM, and deletes the channel after a short delay.
+
+Voice support is a Pro feature controlled manually from Supabase. For a server, set either `plan = 'pro'` or `voice_support_enabled = true` in `guild_configs`. Optional columns `voice_category_id` and `voice_category_name` let you choose where Pro voice rooms should be created.
 
 When a ticket channel registered by NexaDesk is deleted by another ticket bot, NexaDesk marks the ticket as closed, keeps the transcript available in the dashboard, and tries to DM the transcript to the opener automatically.

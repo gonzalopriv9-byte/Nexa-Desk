@@ -52,6 +52,32 @@ const commands = [
     )
     .toJSON(),
   new SlashCommandBuilder()
+    .setName('voz')
+    .setDescription('Soporte por voz privado para servidores Pro.')
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName('crear')
+        .setDescription('Crea una sala de voz privada vinculada al ticket actual.')
+        .addStringOption((option) =>
+          option
+            .setName('nombre')
+            .setDescription('Nombre opcional para la sala de voz.')
+            .setMaxLength(60)
+            .setRequired(false)
+        )
+    )
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName('estado')
+        .setDescription('Muestra la sala de voz vinculada al ticket actual.')
+    )
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName('cerrar')
+        .setDescription('Cierra la sala de voz vinculada al ticket actual.')
+    )
+    .toJSON(),
+  new SlashCommandBuilder()
     .setName('transcripcion')
     .setDescription('Gestiona transcripciones de tickets.')
     .addSubcommand((subcommand) =>
