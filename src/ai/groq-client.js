@@ -56,4 +56,34 @@ export class GroqClient {
 
     return completion.choices[0]?.message?.content?.trim() ?? '';
   }
+
+  async transcribeAudio({ audioBuffer, fileName = 'nexadesk-voice.wav', model }) {
+    if (!this.client) {
+      throw new Error('Set GROQ_API_KEY in .env to use Groq speech-to-text.');
+    }
+
+    const transcription = await this.client.audio.transcriptions.create({
+      file: new File([audioBuffer], fileName, { type: 'audio/wav' }),
+      model: model || 'whisper-large-v3-turbo',
+      response_format: 'json',
+      temperature: 0
+    });
+
+    return transcription.text?.trim() ?? '';
+  }
+
+  async synthesizeSpeech({ text, model, voice }) {
+    if (!this.client) {
+      throw new Error('Set GROQ_API_KEY in .env to use Groq text-to-speech.');
+    }
+
+    const response = await this.client.audio.speech.create({
+      model: model || 'canopylabs/orpheus-v1-english',
+      voice: voice || 'hannah',
+      input: text,
+      response_format: 'wav'
+    });
+
+    return Buffer.from(await response.arrayBuffer());
+  }
 }

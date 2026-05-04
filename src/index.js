@@ -6,6 +6,7 @@ import { OllamaClient } from './ai/ollama-client.js';
 import { OpenAICompatibleClient } from './ai/openai-compatible-client.js';
 import { SupportAgent } from './ai/support-agent.js';
 import { VisualAnalyzer } from './ai/visual-analyzer.js';
+import { VoiceSessionManager } from './voice/voice-session-manager.js';
 import { createBot, createTicketCategory, createTicketPanel, listGuildChannels, listGuildRoles, listInstalledGuildIds } from './bot.js';
 import { createServer } from './server.js';
 import { createDiscordRestActions } from './discord-rest-actions.js';
@@ -24,6 +25,7 @@ await storage.init();
 
 const aiClient = createAiClient();
 const visualAnalyzer = createVisualAnalyzer();
+const voiceManager = createVoiceManager();
 
 const supportAgent = new SupportAgent({
   aiClient,
@@ -32,7 +34,7 @@ const supportAgent = new SupportAgent({
   visualAnalyzer
 });
 
-const bot = createBot({ config, storage, supportAgent });
+const bot = createBot({ config, storage, supportAgent, voiceManager });
 const botActions = config.RUN_BOT
   ? {
       createTicketCategory: (input) => createTicketCategory(bot, storage, input),
@@ -99,5 +101,21 @@ function createVisualAnalyzer() {
     enabled: config.AI_VISUAL_ANALYSIS,
     videoFrameCount: config.AI_VIDEO_FRAME_COUNT,
     videoMaxBytes: config.AI_VIDEO_MAX_BYTES
+  });
+}
+
+function createVoiceManager() {
+  if (!config.VOICE_STT_ENABLED || config.AI_PROVIDER !== 'groq' || !config.GROQ_API_KEY) {
+    return null;
+  }
+
+  return new VoiceSessionManager({
+    storage,
+    aiClient: new GroqClient({
+      apiKey: config.GROQ_API_KEY,
+      model: config.GROQ_MODEL,
+      visionModel: config.GROQ_VISION_MODEL
+    }),
+    config
   });
 }

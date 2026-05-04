@@ -15,7 +15,8 @@ NexaDesk is a Discord support bot that watches ticket categories, joins newly-cr
 - Staff escalation with `/desactivar ia`, `/activar ia`, ticket status, AI summaries, and saved transcripts per server.
 - Transcript delivery by DM with `/transcripcion enviar`.
 - Professional ticket close flow with `/ticket cerrar`.
-- Pro voice support rooms with `/voz crear`, gated per server from Supabase.
+- Pro voice support rooms with `/voz crear` or dashboard panels/components, gated per server from Supabase.
+- Voice tickets can use Groq STT/TTS to transcribe users, answer in voice, and save the conversation in transcripts.
 - Automatic transcript delivery when another ticket bot closes a ticket by deleting the channel.
 - Global bot metrics with `/globalstats`.
 - Optional visual-proof analysis for images and sampled video frames when the server AI prompt asks for visual evidence.
@@ -67,6 +68,8 @@ The dashboard can:
 For production on Render, set the same env vars in the web service settings. For the Raspberry Pi worker, keep `/home/pi/nexadesk/.env` updated separately.
 
 Visual analysis uses Groq vision models for images. Video support samples frames through `ffmpeg`; install `ffmpeg` on the worker machine if you want videos to be interpreted instead of only recorded as attachments.
+
+Voice support uses Groq speech-to-text and text-to-speech, plus `ffmpeg` to play generated audio in Discord voice channels. Install `ffmpeg` on the worker machine and keep only one AI voice room active per Discord server at a time.
 
 If the bot is running on the Raspberry Pi, set this in Render so the web service only serves the dashboard:
 
@@ -137,9 +140,14 @@ NexaDesk is configured to use Groq by default:
 AI_PROVIDER=groq
 GROQ_MODEL=llama-3.1-8b-instant
 GROQ_VISION_MODEL=meta-llama/llama-4-scout-17b-16e-instruct
+GROQ_STT_MODEL=whisper-large-v3-turbo
+GROQ_TTS_MODEL=canopylabs/orpheus-v1-english
+GROQ_TTS_VOICE=hannah
 AI_VISUAL_ANALYSIS=true
 AI_VIDEO_FRAME_COUNT=3
 AI_VIDEO_MAX_BYTES=25000000
+VOICE_STT_ENABLED=true
+VOICE_TTS_ENABLED=true
 ```
 
 This model is a good default for support tickets because it is fast, low-cost, and has enough context for ticket history plus server information.
@@ -182,10 +190,10 @@ OPENAI_COMPAT_MODEL=local
 Invite NexaDesk with:
 
 ```text
-https://discord.com/oauth2/authorize?client_id=1497894098722492598&permissions=305384464&scope=bot%20applications.commands
+https://discord.com/oauth2/authorize?client_id=1497894098722492598&permissions=322030608&scope=bot%20applications.commands
 ```
 
-The invite includes Manage Channels, Manage Roles, View Channel, Send Messages, Embed Links, Attach Files, Read Message History, Mention Everyone, Connect, Speak, and Use Voice Activity.
+The invite includes Manage Channels, Manage Roles, View Channel, Send Messages, Embed Links, Attach Files, Read Message History, Connect, Speak, Move Members, and Use Voice Activity.
 
 Recommended launch check:
 
@@ -214,6 +222,6 @@ npm run register
 
 `/ticket resumen` gives staff a concise AI handoff, `/ticket estado` shows the operational state of the current ticket, and `/ticket cerrar` closes the ticket, sends the transcript by DM, and deletes the channel after a short delay.
 
-Voice support is a Pro feature controlled manually from Supabase. For a server, set either `plan = 'pro'` or `voice_support_enabled = true` in `guild_configs`. Optional columns `voice_category_id` and `voice_category_name` let you choose where Pro voice rooms should be created.
+Voice support is a Pro feature controlled manually from Supabase. For a server, set either `plan = 'pro'` or `voice_support_enabled = true` in `guild_configs`. Optional columns `voice_category_id` and `voice_category_name` let you choose where Pro voice rooms should be created. In the dashboard, set a panel button or menu component to `Voz Pro + STT/TTS` to open a normal private text ticket with a linked private voice room.
 
 When a ticket channel registered by NexaDesk is deleted by another ticket bot, NexaDesk marks the ticket as closed, keeps the transcript available in the dashboard, and tries to DM the transcript to the opener automatically.

@@ -19,12 +19,13 @@ const EMOJIS = {
   wifi: '<a:wifi:1499732411829846116>',
   global: '<a:Global:1499728413974593708>'
 };
-const BOT_INVITE_PERMISSIONS = '305384464';
+const BOT_INVITE_PERMISSIONS = '322030608';
 
-export function createBot({ config, storage, supportAgent }) {
+export function createBot({ config, storage, supportAgent, voiceManager = null }) {
   const intents = [
     GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMessages
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.GuildVoiceStates
   ];
 
   if (config.DISCORD_MESSAGE_CONTENT_INTENT) {
@@ -54,7 +55,7 @@ export function createBot({ config, storage, supportAgent }) {
       if (interaction.isButton() && interaction.customId === 'nexadesk:create_ticket') {
         const guildConfig = await storage.getGuildConfig(interaction.guildId);
         const panel = findPanelForInteraction(guildConfig, interaction);
-        await createTicketFromConfiguredSource({ interaction, storage, guildConfig, panel, panelCreatedChannels, config });
+        await createTicketFromConfiguredSource({ interaction, storage, guildConfig, panel, panelCreatedChannels, config, voiceManager });
         return;
       }
 
@@ -73,7 +74,7 @@ export function createBot({ config, storage, supportAgent }) {
           return;
         }
 
-        await createTicketFromConfiguredSource({ interaction, storage, guildConfig, panel, component, panelCreatedChannels, config });
+        await createTicketFromConfiguredSource({ interaction, storage, guildConfig, panel, component, panelCreatedChannels, config, voiceManager });
         return;
       }
 
@@ -90,7 +91,7 @@ export function createBot({ config, storage, supportAgent }) {
           question,
           answer: interaction.fields.getTextInputValue(`question_${index}`) || 'Sin respuesta'
         }));
-        await createTicketFromConfiguredSource({ interaction, storage, guildConfig, component, answers, panelCreatedChannels, config });
+        await createTicketFromConfiguredSource({ interaction, storage, guildConfig, component, answers, panelCreatedChannels, config, voiceManager });
         return;
       }
 
@@ -141,7 +142,7 @@ export function createBot({ config, storage, supportAgent }) {
           return;
         }
         if (subcommand === 'cerrar') {
-          await handleCloseTicketCommand({ interaction, storage, client });
+          await handleCloseTicketCommand({ interaction, storage, client, voiceManager });
           return;
         }
       }
@@ -149,7 +150,7 @@ export function createBot({ config, storage, supportAgent }) {
       if (interaction.commandName === 'voz') {
         const subcommand = interaction.options.getSubcommand();
         if (subcommand === 'crear') {
-          await handleVoiceCreateCommand({ interaction, storage });
+          await handleVoiceCreateCommand({ interaction, storage, voiceManager });
           return;
         }
         if (subcommand === 'estado') {
@@ -157,7 +158,7 @@ export function createBot({ config, storage, supportAgent }) {
           return;
         }
         if (subcommand === 'cerrar') {
-          await handleVoiceCloseCommand({ interaction, storage });
+          await handleVoiceCloseCommand({ interaction, storage, voiceManager });
           return;
         }
       }
@@ -210,10 +211,34 @@ export function createBot({ config, storage, supportAgent }) {
     try {
       if (!channel.guild) return;
 
+      if (channel.type === ChannelType.GuildVoice) {
+        const ticket = await storage.getTicketByVoiceChannelId?.(channel.id);
+        if (!ticket) return;
+        voiceManager?.stopSession(channel.guild.id, channel.id);
+        await storage.updateTicket(ticket.channelId, {
+          voiceChannelId: null,
+          voiceChannelName: null,
+          voiceCreatedAt: null
+        });
+        await storage.addTranscriptMessage({
+          guildId: ticket.guildId,
+          channelId: ticket.channelId,
+          messageId: `voice-delete-${Date.now()}`,
+          authorId: client.user?.id,
+          authorName: client.user?.username ?? 'NexaDesk',
+          authorBot: true,
+          role: 'system',
+          content: `Sala de voz #${channel.name ?? channel.id} eliminada o cerrada.`,
+          createdAt: new Date().toISOString()
+        });
+        return;
+      }
+
       const ticket = await storage.getTicket(channel.id);
       if (!ticket || ticket.status === 'closed') return;
 
-      await finalizeDeletedTicket({ client, storage, channel, ticket });
+      if (ticket.voiceChannelId) voiceManager?.stopSession(channel.guild.id, ticket.voiceChannelId);
+      await finalizeDeletedTicket({ client, storage, channel, ticket, voiceManager });
     } catch (error) {
       console.error(`Failed to finalize deleted ticket channel ${channel.id}:`, error);
     }
@@ -511,7 +536,7 @@ async function handleTicketSummaryCommand({ interaction, storage, supportAgent }
   await interaction.editReply({ embeds: [embed], allowedMentions: { roles: [], users: [] } });
 }
 
-async function handleCloseTicketCommand({ interaction, storage, client }) {
+async function handleCloseTicketCommand({ interaction, storage, client, voiceManager = null }) {
   if (!interaction.inGuild() || !interaction.channelId) {
     await interaction.reply({ content: 'Este comando solo se puede usar dentro de un ticket del servidor.', ephemeral: true });
     return;
@@ -543,6 +568,7 @@ async function handleCloseTicketCommand({ interaction, storage, client }) {
   await closeTicketWithTranscript({
     client,
     storage,
+    voiceManager,
     channel: interaction.channel,
     guild: interaction.guild,
     ticket,
@@ -554,7 +580,7 @@ async function handleCloseTicketCommand({ interaction, storage, client }) {
   });
 }
 
-async function handleVoiceCreateCommand({ interaction, storage }) {
+async function handleVoiceCreateCommand({ interaction, storage, voiceManager = null }) {
   const context = await getVoiceCommandContext({ interaction, storage });
   if (!context) return;
   const { ticket, guildConfig } = context;
@@ -572,7 +598,42 @@ async function handleVoiceCreateCommand({ interaction, storage }) {
 
   await interaction.deferReply();
 
-  const requestedName = interaction.options.getString('nombre');
+  const result = await createVoiceRoomForTicket({
+    interaction,
+    storage,
+    voiceManager,
+    ticket,
+    guildConfig,
+    textChannel: interaction.channel,
+    requestedName: interaction.options.getString('nombre') || ticket.channelName || interaction.user.username,
+    requestId: interaction.id
+  });
+
+  if (!result.ready) {
+    await interaction.editReply([
+      'La sala de voz no se pudo activar porque faltan columnas Pro Voice en Supabase.',
+      'Ejecuta la migracion de `supabase/schema.sql` y vuelve a intentarlo.'
+    ].join('\n'));
+    return;
+  }
+
+  const embed = new EmbedBuilder()
+    .setColor(0xffffff)
+    .setTitle(`${EMOJIS.wifi} Soporte por voz Pro`)
+    .setDescription([
+      `Sala creada: ${result.channel}`,
+      'El usuario del ticket y el staff configurado pueden entrar.',
+      result.session?.started
+        ? 'STT/TTS activo: NexaDesk escuchara la sala, transcribira y respondera por voz.'
+        : `STT/TTS no activo: ${result.session?.reason ?? 'motor de voz no disponible.'}`
+    ].join('\n'))
+    .setFooter({ text: 'NexaDesk Pro Voice Rooms' })
+    .setTimestamp(new Date());
+
+  await interaction.editReply({ embeds: [embed] });
+}
+
+async function createVoiceRoomForTicket({ interaction, storage, voiceManager = null, ticket, guildConfig, textChannel, requestedName, requestId }) {
   const voiceName = buildVoiceChannelName(requestedName || ticket.channelName || interaction.user.username);
   const parentId = await resolveVoiceParentId(interaction, guildConfig, ticket);
   const channelOptions = {
@@ -585,7 +646,6 @@ async function handleVoiceCreateCommand({ interaction, storage }) {
   if (parentId) channelOptions.parent = parentId;
 
   const channel = await interaction.guild.channels.create(channelOptions);
-
   const updated = await storage.updateTicket(ticket.channelId, {
     voiceChannelId: channel.id,
     voiceChannelName: channel.name,
@@ -594,17 +654,13 @@ async function handleVoiceCreateCommand({ interaction, storage }) {
 
   if (updated?.voiceChannelId !== channel.id) {
     await channel.delete('NexaDesk voice schema is not ready').catch(() => {});
-    await interaction.editReply([
-      'La sala de voz no se pudo activar porque faltan columnas Pro Voice en Supabase.',
-      'Ejecuta la migracion de `supabase/schema.sql` y vuelve a intentarlo.'
-    ].join('\n'));
-    return;
+    return { ready: false, channel: null, session: null };
   }
 
   await storage.addTranscriptMessage({
     guildId: interaction.guildId,
     channelId: ticket.channelId,
-    messageId: `voice-create-${interaction.id}`,
+    messageId: `voice-create-${requestId}`,
     authorId: interaction.user.id,
     authorName: interaction.user.username,
     authorBot: false,
@@ -613,18 +669,21 @@ async function handleVoiceCreateCommand({ interaction, storage }) {
     createdAt: new Date().toISOString()
   });
 
-  const embed = new EmbedBuilder()
-    .setColor(0xffffff)
-    .setTitle(`${EMOJIS.wifi} Soporte por voz Pro`)
-    .setDescription([
-      `Sala creada: ${channel}`,
-      'El usuario del ticket y el staff configurado pueden entrar.',
-      'NexaDesk guardara en la transcripcion cuando se abre o cierra la sala, pero no graba audio.'
-    ].join('\n'))
-    .setFooter({ text: 'NexaDesk Pro Voice Rooms' })
-    .setTimestamp(new Date());
+  let session = { started: false, reason: 'VOICE_STT_ENABLED esta desactivado o Groq no esta configurado.' };
+  if (voiceManager) {
+    session = await voiceManager.startTicketSession({
+      guild: interaction.guild,
+      textChannel,
+      voiceChannel: channel,
+      ticket: updated,
+      guildConfig
+    }).catch((error) => {
+      console.error('Failed to start NexaDesk voice AI session:', error);
+      return { started: false, reason: 'No pude conectarme a la sala de voz.' };
+    });
+  }
 
-  await interaction.editReply({ embeds: [embed] });
+  return { ready: true, channel, ticket: updated, session };
 }
 
 async function handleVoiceStatusCommand({ interaction, storage }) {
@@ -652,7 +711,7 @@ async function handleVoiceStatusCommand({ interaction, storage }) {
   await interaction.reply({ embeds: [embed], ephemeral: true });
 }
 
-async function handleVoiceCloseCommand({ interaction, storage }) {
+async function handleVoiceCloseCommand({ interaction, storage, voiceManager = null }) {
   const context = await getVoiceCommandContext({ interaction, storage });
   if (!context) return;
   const { ticket, guildConfig } = context;
@@ -667,6 +726,7 @@ async function handleVoiceCloseCommand({ interaction, storage }) {
     : null;
 
   if (!voiceChannel) {
+    if (ticket.voiceChannelId) voiceManager?.stopSession(interaction.guildId, ticket.voiceChannelId);
     await storage.updateTicket(ticket.channelId, {
       voiceChannelId: null,
       voiceChannelName: null,
@@ -676,6 +736,7 @@ async function handleVoiceCloseCommand({ interaction, storage }) {
     return;
   }
 
+  voiceManager?.stopSession(interaction.guildId, voiceChannel.id);
   await voiceChannel.delete(`NexaDesk Pro voice closed by ${interaction.user.tag}`);
   await storage.updateTicket(ticket.channelId, {
     voiceChannelId: null,
@@ -795,20 +856,33 @@ async function handleSendTranscriptCommand({ interaction, storage }) {
   await interaction.editReply(`Transcripcion enviada por MD a **${targetUser.tag}**.`);
 }
 
-async function createTicketFromConfiguredSource({ interaction, storage, guildConfig, panel = null, component = null, answers = [], panelCreatedChannels, config }) {
+async function createTicketFromConfiguredSource({ interaction, storage, guildConfig, panel = null, component = null, answers = [], panelCreatedChannels, config, voiceManager = null }) {
   if (!interaction.inGuild()) {
     await interaction.reply({ content: 'Los tickets solo se pueden abrir dentro de un servidor.', ephemeral: true });
     return;
   }
 
+  const normalizedPanel = panel ? normalizePanelOptions(panel) : null;
   const normalizedComponent = component ? normalizeTicketComponent(component) : null;
+  const ticketMode = normalizedComponent?.ticketMode || normalizedPanel?.ticketMode || 'text';
   const staffRoleIssue = getStaffRoleOverwriteIssue(interaction, guildConfig);
   if (staffRoleIssue) {
     await interaction.reply({ content: staffRoleIssue, ephemeral: true });
     return;
   }
 
-  const ticketCategoryId = normalizedComponent?.ticketCategoryId || panel?.ticketCategoryId || guildConfig?.ticketCategoryId;
+  if (ticketMode === 'voice' && !isVoiceSupportEnabled(guildConfig)) {
+    await interaction.reply({
+      content: [
+        `${EMOJIS.wifi} Este panel abre tickets de voz, pero este servidor no tiene Pro Voice activo.`,
+        'Activa `plan = pro` o `voice_support_enabled = true` en Supabase para este servidor.'
+      ].join('\n'),
+      ephemeral: true
+    });
+    return;
+  }
+
+  const ticketCategoryId = normalizedComponent?.ticketCategoryId || normalizedPanel?.ticketCategoryId || guildConfig?.ticketCategoryId;
   const categoryResolution = await resolveTicketCategoryForPanel({
     interaction,
     storage,
@@ -862,12 +936,57 @@ async function createTicketFromConfiguredSource({ interaction, storage, guildCon
     return;
   }
 
-  const welcome = await channel.send(buildTicketWelcomeMessage({ panel, component: normalizedComponent, answers, userMention: `${interaction.user}` }));
+  const welcome = await channel.send(buildTicketWelcomeMessage({ panel: normalizedPanel, component: normalizedComponent, answers, userMention: `${interaction.user}` }));
   await saveTranscript(storage, welcome, 'assistant');
+
+  const voiceStatus = [];
+  if (ticketMode === 'voice') {
+    try {
+      const result = await createVoiceRoomForTicket({
+        interaction,
+        storage,
+        voiceManager,
+        ticket,
+        guildConfig,
+        textChannel: channel,
+        requestedName: normalizedComponent?.label || normalizedPanel?.buttonLabel || channel.name,
+        requestId: interaction.id
+      });
+      if (result.ready) {
+        const voiceNotice = await channel.send([
+          `${EMOJIS.wifi} Sala de voz vinculada: ${result.channel}`,
+          result.session?.started
+            ? 'STT/TTS activo. Habla en la sala y NexaDesk respondera por voz y dejara transcripcion aqui.'
+            : `Sala creada, pero STT/TTS no esta activo: ${result.session?.reason ?? 'motor no disponible.'}`
+        ].join('\n'));
+        await saveTranscript(storage, voiceNotice, 'assistant');
+        voiceStatus.push(`Sala de voz: ${result.channel}`);
+      } else {
+        const voiceNotice = await channel.send([
+          `${EMOJIS.wifi} No pude vincular la sala de voz porque Supabase no tiene las columnas Pro Voice aplicadas.`,
+          'Ejecuta la migracion de `supabase/schema.sql` y vuelve a publicar o crear el ticket.'
+        ].join('\n'));
+        await saveTranscript(storage, voiceNotice, 'assistant');
+        voiceStatus.push('Sala de voz pendiente: falta migracion de Supabase.');
+      }
+    } catch (error) {
+      console.error('Panel voice ticket failed:', error);
+      const inviteUrl = buildBotInviteUrl(config, interaction.guildId);
+      const voiceNotice = await channel.send([
+        `${EMOJIS.wifi} El ticket se creo, pero no pude crear la sala de voz.`,
+        isMissingPermissionError(error)
+          ? `Actualiza permisos aqui: ${inviteUrl}`
+          : 'Revisa logs y vuelve a intentarlo con `/voz crear` dentro de este ticket.'
+      ].join('\n'));
+      await saveTranscript(storage, voiceNotice, 'assistant');
+      voiceStatus.push('No pude crear la sala de voz; he dejado el aviso dentro del ticket.');
+    }
+  }
 
   await interaction.reply({
     content: [
       `Ticket creado: ${channel}`,
+      ...voiceStatus,
       fallbackReason ? `He usado **${ticketCategory.name}** porque ${fallbackReason}.` : ''
     ].filter(Boolean).join('\n'),
     ephemeral: true
@@ -1150,7 +1269,7 @@ async function handleNaturalCloseRequest({ client, storage, message, ticket, gui
   });
 }
 
-async function closeTicketWithTranscript({ client, storage, channel, guild, ticket, requestedBy, requestId, closingReply, fallbackUser = null, reason }) {
+async function closeTicketWithTranscript({ client, storage, voiceManager = null, channel, guild, ticket, requestedBy, requestId, closingReply, fallbackUser = null, reason }) {
   const requestedAt = new Date().toISOString();
   await storage.addTranscriptMessage({
     guildId: guild.id,
@@ -1208,6 +1327,7 @@ async function closeTicketWithTranscript({ client, storage, channel, guild, tick
     status: 'closed',
     aiDisabled: false
   });
+  await closeLinkedVoiceRoom({ guild, ticket, voiceManager, reason: `NexaDesk ticket closed by ${requestedBy.tag}` });
 
   try {
     await closingReply.edit([
@@ -1233,7 +1353,7 @@ async function closeTicketWithTranscript({ client, storage, channel, guild, tick
   }, 8_000);
 }
 
-async function finalizeDeletedTicket({ client, storage, channel, ticket }) {
+async function finalizeDeletedTicket({ client, storage, channel, ticket, voiceManager = null }) {
   const closedAt = new Date().toISOString();
   const closedTicket = {
     ...ticket,
@@ -1287,8 +1407,21 @@ async function finalizeDeletedTicket({ client, storage, channel, ticket }) {
   await storage.updateTicket(ticket.channelId, {
     status: 'closed'
   });
+  await closeLinkedVoiceRoom({ guild: channel.guild, ticket, voiceManager, reason: 'NexaDesk ticket text channel deleted' });
 
   console.log(`Ticket closed from deleted channel: ${ticket.channelName} (${ticket.channelId}). ${dmStatus}`);
+}
+
+async function closeLinkedVoiceRoom({ guild, ticket, voiceManager = null, reason }) {
+  if (!guild || !ticket?.voiceChannelId) return;
+  voiceManager?.stopSession(guild.id, ticket.voiceChannelId);
+
+  const voiceChannel = await guild.channels.fetch(ticket.voiceChannelId).catch(() => null);
+  if (voiceChannel?.deletable) {
+    await voiceChannel.delete(reason).catch((error) => {
+      console.error(`Failed to delete linked voice room ${ticket.voiceChannelId}:`, error);
+    });
+  }
 }
 
 async function sendTranscriptDm({ targetUser, ticket, messages, guildName }) {

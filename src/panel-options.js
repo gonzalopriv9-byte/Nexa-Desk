@@ -20,6 +20,7 @@ const DEFAULT_PANEL = {
   thumbnailUrl: '',
   ticketCategoryId: '',
   ticketCategoryName: '',
+  ticketMode: 'text',
   selectPlaceholder: 'Elige el tipo de ticket',
   componentIds: [],
   welcomeMessage: 'Hola {user}, soy NexaDesk.\nCuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al staff con el contexto ordenado.'
@@ -31,6 +32,7 @@ const DEFAULT_COMPONENT = {
   emoji: '',
   ticketCategoryId: '',
   ticketCategoryName: '',
+  ticketMode: 'text',
   questions: [],
   welcomeMessage: 'Hola {user}, soy NexaDesk.\nAntes de empezar, he guardado tus respuestas para que el staff tenga contexto.'
 };
@@ -51,6 +53,7 @@ export function normalizePanelOptions(input = {}) {
     thumbnailUrl: cleanUrl(input.thumbnailUrl),
     ticketCategoryId: cleanString(input.ticketCategoryId, DEFAULT_PANEL.ticketCategoryId, 32),
     ticketCategoryName: cleanString(input.ticketCategoryName, DEFAULT_PANEL.ticketCategoryName, 100),
+    ticketMode: normalizeTicketMode(input.ticketMode),
     selectPlaceholder: cleanString(input.selectPlaceholder, DEFAULT_PANEL.selectPlaceholder, 100),
     componentIds: normalizeStringList(input.componentIds).slice(0, 25),
     welcomeMessage: cleanString(input.welcomeMessage, DEFAULT_PANEL.welcomeMessage, 1200)
@@ -66,6 +69,7 @@ export function normalizeTicketComponent(input = {}) {
     emoji: cleanString(input.emoji, DEFAULT_COMPONENT.emoji, 100),
     ticketCategoryId: cleanString(input.ticketCategoryId, DEFAULT_COMPONENT.ticketCategoryId, 32),
     ticketCategoryName: cleanString(input.ticketCategoryName, DEFAULT_COMPONENT.ticketCategoryName, 100),
+    ticketMode: normalizeTicketMode(input.ticketMode),
     questions: normalizeStringList(input.questions).slice(0, 5).map((question) => cleanString(question, '', 45)).filter(Boolean),
     welcomeMessage: cleanString(input.welcomeMessage, DEFAULT_COMPONENT.welcomeMessage, 1200),
     createdAt: input.createdAt || new Date().toISOString()
@@ -175,6 +179,10 @@ function normalizeButtonStyle(style) {
 
 function normalizePanelType(type) {
   return String(type ?? '').toLowerCase() === 'menu' ? 'menu' : 'button';
+}
+
+function normalizeTicketMode(mode) {
+  return String(mode ?? '').toLowerCase() === 'voice' ? 'voice' : DEFAULT_PANEL.ticketMode;
 }
 
 function normalizeHexColor(color, fallback = DEFAULT_PANEL.embedColor) {

@@ -65,6 +65,11 @@ export class JsonStorage {
     return tickets[channelId] ?? null;
   }
 
+  async getTicketByVoiceChannelId(voiceChannelId) {
+    const tickets = await this.#readJson(this.ticketsFile);
+    return Object.values(tickets).find((ticket) => ticket.voiceChannelId === voiceChannelId) ?? null;
+  }
+
   async updateTicket(channelId, patch) {
     const tickets = await this.#readJson(this.ticketsFile);
     const existing = tickets[channelId];
@@ -232,6 +237,17 @@ export class SupabaseStorage {
       .select('*')
       .eq('channel_id', channelId)
       .maybeSingle();
+    if (error) throw error;
+    return data ? fromTicketRow(data) : null;
+  }
+
+  async getTicketByVoiceChannelId(voiceChannelId) {
+    const { data, error } = await this.client
+      .from('tickets')
+      .select('*')
+      .eq('voice_channel_id', voiceChannelId)
+      .maybeSingle();
+    if (error && /voice_channel_id/i.test(String(error.message ?? ''))) return null;
     if (error) throw error;
     return data ? fromTicketRow(data) : null;
   }
@@ -504,6 +520,11 @@ function buildStats({ guilds, tickets, transcriptMessages }) {
   const ticketsThisWeek = tickets.filter((ticket) => now - new Date(ticket.createdAt).getTime() <= weekMs).length;
   const escalationReadyGuilds = guilds.filter((guild) => guild.staffRoleId).length;
   const aiReadyGuilds = guilds.filter((guild) => guild.serverPrompt || guild.serverInfo).length;
+  const voiceRooms = tickets.filter((ticket) => ticket.status !== 'closed' && ticket.voiceChannelId).length;
+  const proGuilds = guilds.filter((guild) => {
+    const plan = String(guild.plan ?? 'free').toLowerCase();
+    return guild.voiceSupportEnabled || ['pro', 'premium', 'enterprise'].includes(plan);
+  }).length;
 
   return {
     totalGuilds: guilds.length,
@@ -517,6 +538,8 @@ function buildStats({ guilds, tickets, transcriptMessages }) {
     panels,
     transcriptMessages,
     escalationReadyGuilds,
-    aiReadyGuilds
+    aiReadyGuilds,
+    voiceRooms,
+    proGuilds
   };
 }
