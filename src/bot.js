@@ -22,6 +22,7 @@ const EMOJIS = {
   global: '<a:Global:1499728413974593708>'
 };
 const BOT_INVITE_PERMISSIONS = '322030608';
+const PUBLIC_DASHBOARD_URL = 'https://nexa-desk.onrender.com/';
 
 export function createBot({ config, storage, supportAgent, voiceManager = null }) {
   const intents = [
@@ -1111,7 +1112,7 @@ function buildHelpComponents({ view, config }) {
       new ButtonBuilder()
         .setStyle(ButtonStyle.Link)
         .setLabel('Dashboard')
-        .setURL(config.DASHBOARD_PUBLIC_URL),
+        .setURL(PUBLIC_DASHBOARD_URL),
       new ButtonBuilder()
         .setStyle(ButtonStyle.Link)
         .setLabel('Soporte oficial')
