@@ -2,6 +2,8 @@ import {
   ActionRowBuilder,
   ActivityType,
   AttachmentBuilder,
+  ButtonBuilder,
+  ButtonStyle,
   ChannelType,
   Client,
   EmbedBuilder,
@@ -50,12 +52,25 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
     console.log(`NexaDesk online as ${readyClient.user.tag}`);
   });
 
+  client.on(Events.GuildCreate, async (guild) => {
+    try {
+      await handleGuildJoin({ guild, storage, config });
+    } catch (error) {
+      console.error(`Failed to send NexaDesk onboarding for guild ${guild.id}:`, error);
+    }
+  });
+
   client.on(Events.InteractionCreate, async (interaction) => {
     try {
       if (interaction.isButton() && interaction.customId === 'nexadesk:create_ticket') {
         const guildConfig = await storage.getGuildConfig(interaction.guildId);
         const panel = findPanelForInteraction(guildConfig, interaction);
         await createTicketFromConfiguredSource({ interaction, storage, guildConfig, panel, panelCreatedChannels, config, voiceManager });
+        return;
+      }
+
+      if (interaction.isButton() && interaction.customId.startsWith('nexadesk:help:')) {
+        await handleHelpButton({ interaction, config });
         return;
       }
 
@@ -170,6 +185,11 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
 
       if (interaction.commandName === 'globalstats') {
         await handleGlobalStatsCommand({ interaction, storage, client });
+        return;
+      }
+
+      if (interaction.commandName === 'ayuda') {
+        await handleHelpCommand({ interaction, config });
       }
     } catch (error) {
       console.error('Interaction failed:', error);
@@ -325,6 +345,92 @@ async function safeInteractionReply(interaction, content) {
   } catch (error) {
     console.error('Failed to report interaction error:', error);
   }
+}
+
+async function handleGuildJoin({ guild, storage, config }) {
+  await storage.upsertGuildConfig(guild.id, {
+    guildName: guild.name
+  }).catch((error) => {
+    console.error(`Failed to persist joined guild ${guild.id}:`, error);
+  });
+
+  const ownerMember = await guild.fetchOwner().catch(() => null);
+  const ownerUser = ownerMember?.user;
+  if (!ownerUser) {
+    console.warn(`NexaDesk joined ${guild.name} (${guild.id}) but owner could not be fetched.`);
+    return;
+  }
+
+  const embed = buildOwnerOnboardingEmbed({ guild, config });
+  const components = buildOwnerOnboardingComponents(config);
+  await ownerUser.send({
+    content: `Gracias de verdad por confiar en **NexaDesk** para **${guild.name}**.`,
+    embeds: [embed],
+    components
+  });
+  console.log(`Sent NexaDesk onboarding DM to owner ${ownerUser.tag} for ${guild.name} (${guild.id}).`);
+}
+
+function buildOwnerOnboardingEmbed({ guild, config }) {
+  return new EmbedBuilder()
+    .setColor(0xffffff)
+    .setTitle(`${EMOJIS.global} Gracias por confiar en NexaDesk`)
+    .setDescription([
+      `Me acabo de unir a **${guild.name}**. Gracias muchisimo por darme un hueco en tu servidor.`,
+      'NexaDesk esta pensado para que no tengas que cambiar tu sistema de tickets: puede trabajar con tus paneles actuales, con paneles propios y con IA para atender, ordenar y escalar casos al staff humano cuando haga falta.'
+    ].join('\n\n'))
+    .addFields(
+      {
+        name: '1. Primer setup',
+        value: [
+          `Abre la dashboard: ${config.DASHBOARD_PUBLIC_URL}`,
+          'Elige este servidor, selecciona la categoria donde se crean tickets y configura el rol de staff.',
+          'Si usas otro bot de tickets, pon la categoria donde ese bot crea los canales.',
+          'Tambien puedes usar `/setup category:<categoria>` como configuracion rapida.'
+        ].join('\n')
+      },
+      {
+        name: '2. Que decirle a tu staff',
+        value: [
+          'Que NexaDesk respondera al usuario primero, pedira datos y escalara si detecta que hace falta una persona.',
+          'Cuando un staff entre al ticket puede usar `/desactivar ia` para que la IA deje de escuchar y responder en ese canal.',
+          'Para cerrar con transcript puede usar `/ticket cerrar`; para contexto rapido, `/ticket resumen`.'
+        ].join('\n')
+      },
+      {
+        name: '3. Como funciona NexaDesk',
+        value: [
+          'Lee el contexto del servidor guardado en la dashboard antes de responder.',
+          'Guarda configuracion, paneles, tickets y transcripciones en Supabase para que puedas consultarlo desde la dashboard.',
+          'Si activas Pro Voice, crea salas privadas vinculadas al ticket, transcribe voz y responde con TTS.'
+        ].join('\n')
+      },
+      {
+        name: '4. Datos y soporte',
+        value: [
+          'Los datos operativos del servidor se guardan para que NexaDesk recuerde configuracion, transcripciones y contexto.',
+          'Si en cualquier momento necesitas ayuda, entra al soporte oficial:',
+          'https://discord.gg/vVXbq7ePEZ'
+        ].join('\n')
+      }
+    )
+    .setFooter({ text: 'NexaDesk - AI support for every ticket' })
+    .setTimestamp(new Date());
+}
+
+function buildOwnerOnboardingComponents(config) {
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setStyle(ButtonStyle.Link)
+        .setLabel('Abrir dashboard')
+        .setURL(config.DASHBOARD_PUBLIC_URL),
+      new ButtonBuilder()
+        .setStyle(ButtonStyle.Link)
+        .setLabel('Soporte oficial')
+        .setURL('https://discord.gg/vVXbq7ePEZ')
+    )
+  ];
 }
 
 function buildInteractionErrorMessage(error, config, guildId) {
@@ -854,6 +960,164 @@ async function handleSendTranscriptCommand({ interaction, storage }) {
   });
 
   await interaction.editReply(`Transcripcion enviada por MD a **${targetUser.tag}**.`);
+}
+
+async function handleHelpCommand({ interaction, config }) {
+  await interaction.reply({
+    embeds: [buildHelpEmbed({ view: 'home', config, guild: interaction.guild })],
+    components: buildHelpComponents({ view: 'home', config }),
+    ephemeral: true
+  });
+}
+
+async function handleHelpButton({ interaction, config }) {
+  const view = interaction.customId.replace('nexadesk:help:', '') || 'home';
+  await interaction.update({
+    embeds: [buildHelpEmbed({ view, config, guild: interaction.guild })],
+    components: buildHelpComponents({ view, config })
+  });
+}
+
+function buildHelpEmbed({ view, config, guild }) {
+  const base = new EmbedBuilder()
+    .setColor(0xffffff)
+    .setFooter({ text: 'NexaDesk - ayuda interactiva' })
+    .setTimestamp(new Date());
+
+  if (view === 'create_ticket') {
+    return base
+      .setTitle(`${EMOJIS.global} Como creo un ticket?`)
+      .setDescription('Los tickets se crean desde los paneles publicados por el servidor. NexaDesk puede abrir tickets de texto, menus con preguntas previas y tickets de voz Pro si el servidor lo tiene activo.')
+      .addFields(
+        {
+          name: 'Para miembros',
+          value: [
+            'Busca el canal de soporte del servidor.',
+            'Pulsa el boton del panel o elige una opcion del menu desplegable.',
+            'Responde las preguntas previas si aparecen.',
+            'Explica el problema con detalle y adjunta capturas o videos si ayudan.'
+          ].join('\n')
+        },
+        {
+          name: 'Que hara NexaDesk',
+          value: [
+            'Leera el contexto configurado del servidor.',
+            'Te pedira datos si falta informacion.',
+            'Si detecta que hace falta una persona, avisara al rol de staff configurado con el resumen del caso.'
+          ].join('\n')
+        },
+        {
+          name: 'Atajo util',
+          value: 'Si necesitas una persona directamente, dilo claro dentro del ticket: "necesito asistencia manual".'
+        }
+      );
+  }
+
+  if (view === 'setup') {
+    return base
+      .setTitle(`${EMOJIS.wifi} Como configuro el servidor?`)
+      .setDescription(`Servidor actual: **${guild?.name ?? 'tu servidor'}**. La configuracion completa vive en la dashboard.`)
+      .addFields(
+        {
+          name: 'Setup recomendado',
+          value: [
+            `1. Abre la dashboard: ${config.DASHBOARD_PUBLIC_URL}`,
+            '2. Inicia sesion con Discord y selecciona el servidor.',
+            '3. Elige la categoria donde se abren tickets.',
+            '4. Selecciona el rol de staff.',
+            '5. Escribe el prompt/contexto del servidor para que la IA responda con criterio.',
+            '6. Crea componentes y publica paneles de boton o menu.'
+          ].join('\n')
+        },
+        {
+          name: 'Si ya usas otro bot de tickets',
+          value: 'No tienes que cambiar de sistema. Configura la categoria donde ese bot crea los canales y NexaDesk detectara los tickets nuevos.'
+        },
+        {
+          name: 'Staff',
+          value: [
+            'Mueve el rol de NexaDesk por encima del rol de staff para poder crear tickets privados.',
+            'Diles que usen `/desactivar ia` cuando entren a atender manualmente.',
+            'Diles que usen `/ticket resumen` para leer el caso rapido y `/ticket cerrar` para cerrar con transcripcion.'
+          ].join('\n')
+        }
+      );
+  }
+
+  if (view === 'data') {
+    return base
+      .setTitle('Datos, transcripciones y privacidad')
+      .setDescription('NexaDesk guarda lo necesario para que el soporte sea continuo, auditable y facil de revisar desde la dashboard.')
+      .addFields(
+        {
+          name: 'Que se guarda',
+          value: [
+            'Configuracion del servidor: categoria, rol staff, prompt, contexto, paneles y componentes.',
+            'Tickets detectados o creados desde paneles.',
+            'Transcripciones de mensajes del ticket y eventos importantes como escalados, voz o cierre.'
+          ].join('\n')
+        },
+        {
+          name: 'Donde se guarda',
+          value: 'En Supabase, para que la dashboard pueda mostrar historial, estadisticas y transcripciones por servidor.'
+        },
+        {
+          name: 'Quien puede verlo',
+          value: 'La dashboard filtra servidores usando Discord OAuth. Solo aparecen servidores donde el usuario tiene permisos de owner, Administrator o Manage Server.'
+        }
+      );
+  }
+
+  return base
+    .setTitle(`${EMOJIS.global} Centro de ayuda NexaDesk`)
+    .setDescription([
+      'Elige una categoria para ver la guia exacta.',
+      'NexaDesk funciona como moderador de soporte con IA: atiende tickets, pide informacion, escala al staff cuando hace falta y guarda transcripciones para revisarlas desde la dashboard.'
+    ].join('\n\n'))
+    .addFields(
+      {
+        name: 'Categorias disponibles',
+        value: [
+          'Como creo un ticket?',
+          'Como configuro el servidor?',
+          'Datos y transcripciones'
+        ].join('\n')
+      },
+      {
+        name: 'Soporte oficial',
+        value: 'Si necesitas ayuda humana con NexaDesk: https://discord.gg/vVXbq7ePEZ'
+      }
+    );
+}
+
+function buildHelpComponents({ view, config }) {
+  const current = String(view ?? 'home');
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId('nexadesk:help:create_ticket')
+        .setLabel('Como creo un ticket?')
+        .setStyle(current === 'create_ticket' ? ButtonStyle.Success : ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId('nexadesk:help:setup')
+        .setLabel('Configurar servidor')
+        .setStyle(current === 'setup' ? ButtonStyle.Success : ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId('nexadesk:help:data')
+        .setLabel('Datos')
+        .setStyle(current === 'data' ? ButtonStyle.Success : ButtonStyle.Secondary)
+    ),
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setStyle(ButtonStyle.Link)
+        .setLabel('Dashboard')
+        .setURL(config.DASHBOARD_PUBLIC_URL),
+      new ButtonBuilder()
+        .setStyle(ButtonStyle.Link)
+        .setLabel('Soporte oficial')
+        .setURL('https://discord.gg/vVXbq7ePEZ')
+    )
+  ];
 }
 
 async function createTicketFromConfiguredSource({ interaction, storage, guildConfig, panel = null, component = null, answers = [], panelCreatedChannels, config, voiceManager = null }) {

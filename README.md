@@ -15,6 +15,8 @@ NexaDesk is a Discord support bot that watches ticket categories, joins newly-cr
 - Staff escalation with `/desactivar ia`, `/activar ia`, ticket status, AI summaries, and saved transcripts per server.
 - Transcript delivery by DM with `/transcripcion enviar`.
 - Professional ticket close flow with `/ticket cerrar`.
+- Owner onboarding DM when NexaDesk joins a new server.
+- Interactive `/ayuda` guide with buttons for users, staff, setup and data.
 - Pro voice support rooms with `/voz crear` or dashboard panels/components, gated per server from Supabase.
 - Voice tickets can use Groq STT/TTS to transcribe users, answer in voice, and save the conversation in transcripts.
 - Automatic transcript delivery when another ticket bot closes a ticket by deleting the channel.
@@ -216,6 +218,7 @@ npm run register
 /voz cerrar
 /transcripcion enviar [usuario]
 /globalstats
+/ayuda
 ```
 
 `/transcripcion enviar` sends the current ticket transcript by DM to the ticket opener. If the ticket was created by another bot and NexaDesk cannot detect the opener, pass `usuario`.
@@ -225,3 +228,5 @@ npm run register
 Voice support is a Pro feature controlled manually from Supabase. For a server, set either `plan = 'pro'` or `voice_support_enabled = true` in `guild_configs`. Optional columns `voice_category_id` and `voice_category_name` let you choose where Pro voice rooms should be created. In the dashboard, set a panel button or menu component to `Voz Pro + STT/TTS` to open a normal private text ticket with a linked private voice room.
 
 When a ticket channel registered by NexaDesk is deleted by another ticket bot, NexaDesk marks the ticket as closed, keeps the transcript available in the dashboard, and tries to DM the transcript to the opener automatically.
+
+When NexaDesk joins a new server, it sends the owner a private onboarding message with setup steps, staff instructions, data/transcript details, dashboard link, and the official support server.

@@ -95,6 +95,10 @@ const commands = [
   new SlashCommandBuilder()
     .setName('globalstats')
     .setDescription('Muestra estadisticas globales de NexaDesk.')
+    .toJSON(),
+  new SlashCommandBuilder()
+    .setName('ayuda')
+    .setDescription('Abre la guia interactiva de NexaDesk.')
     .toJSON()
 ];
 
