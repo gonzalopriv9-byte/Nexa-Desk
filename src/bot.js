@@ -372,7 +372,7 @@ async function handleGuildJoin({ guild, storage, config }) {
   console.log(`Sent NexaDesk onboarding DM to owner ${ownerUser.tag} for ${guild.name} (${guild.id}).`);
 }
 
-function buildOwnerOnboardingEmbed({ guild, config }) {
+function buildOwnerOnboardingEmbed({ guild }) {
   return new EmbedBuilder()
     .setColor(0xffffff)
     .setTitle(`${EMOJIS.global} Gracias por confiar en NexaDesk`)
@@ -384,7 +384,7 @@ function buildOwnerOnboardingEmbed({ guild, config }) {
       {
         name: '1. Primer setup',
         value: [
-          `Abre la dashboard: ${config.DASHBOARD_PUBLIC_URL}`,
+          `Abre la dashboard: ${PUBLIC_DASHBOARD_URL}`,
           'Elige este servidor, selecciona la categoria donde se crean tickets y configura el rol de staff.',
           'Si usas otro bot de tickets, pon la categoria donde ese bot crea los canales.',
           'Tambien puedes usar `/setup category:<categoria>` como configuracion rapida.'
@@ -425,7 +425,7 @@ function buildOwnerOnboardingComponents(config) {
       new ButtonBuilder()
         .setStyle(ButtonStyle.Link)
         .setLabel('Abrir dashboard')
-        .setURL(config.DASHBOARD_PUBLIC_URL),
+        .setURL(PUBLIC_DASHBOARD_URL),
       new ButtonBuilder()
         .setStyle(ButtonStyle.Link)
         .setLabel('Soporte oficial')
