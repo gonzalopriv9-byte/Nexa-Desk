@@ -16,6 +16,7 @@ import {
 } from 'discord.js';
 import { buildPanelActionRow, buildPanelEmbed, normalizePanelOptions, normalizeTicketComponent, panelWelcomeMessage } from './panel-options.js';
 import { buildTranscriptFileName, buildTranscriptText } from './transcripts.js';
+import { createWelcomeCard } from './welcome-card.js';
 
 const EMOJIS = {
   wifi: '<a:wifi:1499732411829846116>',
@@ -23,6 +24,7 @@ const EMOJIS = {
 };
 const BOT_INVITE_PERMISSIONS = '322030608';
 const PUBLIC_DASHBOARD_URL = 'https://nexa-desk.onrender.com/';
+const PREMIUM_ADMIN_USER_ID = '1352652366330986526';
 
 export function createBot({ config, storage, supportAgent, voiceManager = null }) {
   const intents = [
@@ -186,6 +188,11 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
 
       if (interaction.commandName === 'globalstats') {
         await handleGlobalStatsCommand({ interaction, storage, client });
+        return;
+      }
+
+      if (interaction.commandName === 'activarpremium') {
+        await handleActivatePremiumCommand({ interaction, storage, client });
         return;
       }
 
@@ -364,9 +371,13 @@ async function handleGuildJoin({ guild, storage, config }) {
 
   const embed = buildOwnerOnboardingEmbed({ guild, config });
   const components = buildOwnerOnboardingComponents(config);
+  const welcomeCard = new AttachmentBuilder(createWelcomeCard({ guildName: guild.name }), {
+    name: 'nexadesk-welcome.png'
+  });
   await ownerUser.send({
     content: `Gracias de verdad por confiar en **NexaDesk** para **${guild.name}**.`,
     embeds: [embed],
+    files: [welcomeCard],
     components
   });
   console.log(`Sent NexaDesk onboarding DM to owner ${ownerUser.tag} for ${guild.name} (${guild.id}).`);
@@ -376,6 +387,7 @@ function buildOwnerOnboardingEmbed({ guild }) {
   return new EmbedBuilder()
     .setColor(0xffffff)
     .setTitle(`${EMOJIS.global} Gracias por confiar en NexaDesk`)
+    .setImage('attachment://nexadesk-welcome.png')
     .setDescription([
       `Me acabo de unir a **${guild.name}**. Gracias muchisimo por darme un hueco en tu servidor.`,
       'NexaDesk esta pensado para que no tengas que cambiar tu sistema de tickets: puede trabajar con tus paneles actuales, con paneles propios y con IA para atender, ordenar y escalar casos al staff humano cuando haga falta.'
@@ -963,6 +975,45 @@ async function handleSendTranscriptCommand({ interaction, storage }) {
   await interaction.editReply(`Transcripcion enviada por MD a **${targetUser.tag}**.`);
 }
 
+async function handleActivatePremiumCommand({ interaction, storage, client }) {
+  if (interaction.user.id !== PREMIUM_ADMIN_USER_ID) {
+    await interaction.reply({
+      content: 'Este comando solo puede usarlo el owner autorizado de NexaDesk.',
+      ephemeral: true
+    });
+    return;
+  }
+
+  const guildId = interaction.options.getString('servidor', true).trim();
+  if (!/^\d{17,20}$/.test(guildId)) {
+    await interaction.reply({ content: 'Pon un ID de servidor valido.', ephemeral: true });
+    return;
+  }
+
+  await interaction.deferReply({ ephemeral: true });
+  const targetGuild = await client.guilds.fetch(guildId).catch(() => null);
+  const existing = await storage.getGuildConfig(guildId).catch(() => null);
+  const updated = await storage.upsertGuildConfig(guildId, {
+    guildName: targetGuild?.name ?? existing?.guildName ?? `Servidor ${guildId}`,
+    plan: 'pro',
+    voiceSupportEnabled: true
+  });
+
+  const embed = new EmbedBuilder()
+    .setColor(0xffffff)
+    .setTitle(`${EMOJIS.global} Premium activado`)
+    .setDescription(`Todas las funciones premium quedan activas para **${updated.guildName ?? guildId}**.`)
+    .addFields(
+      { name: 'Servidor', value: guildId, inline: true },
+      { name: 'Plan', value: updated.plan ?? 'pro', inline: true },
+      { name: 'Voz Pro', value: updated.voiceSupportEnabled ? 'Activa' : 'Pendiente', inline: true },
+      { name: 'Incluye', value: 'Paneles Pro, tickets de voz, STT/TTS, transcripciones y futuras funciones premium del servidor.' }
+    )
+    .setTimestamp(new Date());
+
+  await interaction.editReply({ embeds: [embed] });
+}
+
 async function handleHelpCommand({ interaction, config }) {
   await interaction.reply({
     embeds: [buildHelpEmbed({ view: 'home', config, guild: interaction.guild })],
@@ -1022,7 +1073,7 @@ function buildHelpEmbed({ view, config, guild }) {
         {
           name: 'Setup recomendado',
           value: [
-            `1. Abre la dashboard: ${config.DASHBOARD_PUBLIC_URL}`,
+            `1. Abre la dashboard: ${PUBLIC_DASHBOARD_URL}`,
             '2. Inicia sesion con Discord y selecciona el servidor.',
             '3. Elige la categoria donde se abren tickets.',
             '4. Selecciona el rol de staff.',

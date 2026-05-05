@@ -97,6 +97,16 @@ const commands = [
     .setDescription('Muestra estadisticas globales de NexaDesk.')
     .toJSON(),
   new SlashCommandBuilder()
+    .setName('activarpremium')
+    .setDescription('Activa todas las funciones premium para un servidor.')
+    .addStringOption((option) =>
+      option
+        .setName('servidor')
+        .setDescription('ID del servidor donde se activara premium.')
+        .setRequired(true)
+    )
+    .toJSON(),
+  new SlashCommandBuilder()
     .setName('ayuda')
     .setDescription('Abre la guia interactiva de NexaDesk.')
     .toJSON()
