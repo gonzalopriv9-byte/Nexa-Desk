@@ -219,7 +219,10 @@ export class VoiceSessionManager {
       }).catch(() => {});
 
       if (this.config.VOICE_TTS_ENABLED) {
-        await this.#speak(session, answer.publicAnswer);
+        await this.#speak(session, answer.publicAnswer).catch((error) => {
+          console.error(`Voice TTS failed for ${session.voiceChannelId}:`, error);
+          session.textChannel.send('He respondido por texto, pero no pude reproducir la voz en la sala.').catch(() => {});
+        });
       }
     } finally {
       session.processing = false;
@@ -269,6 +272,7 @@ export class VoiceSessionManager {
     const resource = createAudioResource(pcmStream, { inputType: StreamType.Raw, inlineVolume: true });
     resource.volume?.setVolume(1.18);
     session.player.play(resource);
+    await entersState(session.player, AudioPlayerStatus.Playing, 10_000);
     await entersState(session.player, AudioPlayerStatus.Idle, 45_000).catch(() => {});
   }
 }
