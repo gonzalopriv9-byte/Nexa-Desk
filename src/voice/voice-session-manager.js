@@ -14,8 +14,11 @@ import {
 import prism from 'prism-media';
 
 const SAMPLE_RATE = 48_000;
+const STT_SAMPLE_RATE = 16_000;
 const CHANNELS = 2;
+const STT_CHANNELS = 1;
 const BYTES_PER_SAMPLE = 2;
+const MIN_VOICE_RMS = 0.0035;
 
 export class VoiceSessionManager {
   constructor({ storage, aiClient, config }) {
@@ -166,9 +169,14 @@ export class VoiceSessionManager {
 
     session.processing = true;
     try {
-      const wav = buildWavFromPcm(pcm);
+      const preparedAudio = await prepareSpeechForTranscription(pcm);
+      if (!preparedAudio) {
+        await session.textChannel.send(`No he detectado voz suficientemente clara, ${member}. Prueba a hablar un poco mas cerca del micro.`).catch(() => {});
+        return;
+      }
+
       const transcript = await this.aiClient.transcribeAudio({
-        audioBuffer: wav,
+        audioBuffer: preparedAudio.wav,
         fileName: `nexadesk-${session.ticketChannelId}-${Date.now()}.wav`,
         model: this.config.GROQ_STT_MODEL
       });
@@ -258,10 +266,59 @@ export class VoiceSessionManager {
       voice: this.config.GROQ_TTS_VOICE
     });
     const pcmStream = transcodeToDiscordPcm(audio);
-    const resource = createAudioResource(pcmStream, { inputType: StreamType.Raw });
+    const resource = createAudioResource(pcmStream, { inputType: StreamType.Raw, inlineVolume: true });
+    resource.volume?.setVolume(1.18);
     session.player.play(resource);
     await entersState(session.player, AudioPlayerStatus.Idle, 45_000).catch(() => {});
   }
+}
+
+async function prepareSpeechForTranscription(pcm) {
+  const stats = analyzePcm16(pcm);
+  if (stats.rms < MIN_VOICE_RMS && stats.peak < 0.035) {
+    return null;
+  }
+
+  try {
+    const wav = await cleanPcmWithFfmpeg(pcm);
+    if (wav.length > 44) return { wav, cleaned: true, stats };
+  } catch (error) {
+    console.error('Voice cleanup failed, falling back to raw WAV:', normalizeProcessError(error));
+  }
+
+  return { wav: buildWavFromPcm(pcm), cleaned: false, stats };
+}
+
+function cleanPcmWithFfmpeg(pcm) {
+  return runFfmpegBuffer([
+    '-hide_banner',
+    '-loglevel',
+    'error',
+    '-f',
+    's16le',
+    '-ar',
+    String(SAMPLE_RATE),
+    '-ac',
+    String(CHANNELS),
+    '-i',
+    'pipe:0',
+    '-af',
+    [
+      'highpass=f=85',
+      'lowpass=f=7600',
+      'afftdn=nf=-25',
+      'acompressor=threshold=-22dB:ratio=3.2:attack=4:release=90',
+      'dynaudnorm=f=75:g=15:m=8',
+      'silenceremove=start_periods=1:start_threshold=-52dB:start_silence=0.12:stop_periods=-1:stop_threshold=-52dB:stop_silence=0.35'
+    ].join(','),
+    '-ac',
+    String(STT_CHANNELS),
+    '-ar',
+    String(STT_SAMPLE_RATE),
+    '-f',
+    'wav',
+    'pipe:1'
+  ], pcm);
 }
 
 function buildWavFromPcm(pcm) {
@@ -293,6 +350,8 @@ function transcodeToDiscordPcm(audioBuffer) {
     'error',
     '-i',
     'pipe:0',
+    '-af',
+    'dynaudnorm=f=75:g=9,volume=1.25',
     '-f',
     's16le',
     '-ar',
@@ -306,6 +365,57 @@ function transcodeToDiscordPcm(audioBuffer) {
   });
   ffmpeg.stdin.end(audioBuffer);
   return ffmpeg.stdout;
+}
+
+function runFfmpegBuffer(args, input) {
+  return new Promise((resolve, reject) => {
+    const ffmpeg = spawn('ffmpeg', args, { stdio: ['pipe', 'pipe', 'pipe'] });
+    const stdout = [];
+    const stderr = [];
+
+    ffmpeg.stdout.on('data', (chunk) => stdout.push(chunk));
+    ffmpeg.stderr.on('data', (chunk) => stderr.push(chunk));
+    ffmpeg.once('error', reject);
+    ffmpeg.once('close', (code) => {
+      if (code === 0) {
+        resolve(Buffer.concat(stdout));
+        return;
+      }
+
+      const message = Buffer.concat(stderr).toString('utf8').trim();
+      reject(new Error(message || `ffmpeg exited with code ${code}`));
+    });
+
+    ffmpeg.stdin.once('error', (error) => {
+      if (error.code !== 'EPIPE') reject(error);
+    });
+    ffmpeg.stdin.end(input);
+  });
+}
+
+function analyzePcm16(pcm) {
+  if (!pcm.length) return { rms: 0, peak: 0 };
+
+  let sumSquares = 0;
+  let peak = 0;
+  let samples = 0;
+  for (let offset = 0; offset + 1 < pcm.length; offset += BYTES_PER_SAMPLE) {
+    const value = pcm.readInt16LE(offset) / 32768;
+    const abs = Math.abs(value);
+    peak = Math.max(peak, abs);
+    sumSquares += value * value;
+    samples += 1;
+  }
+
+  return {
+    rms: samples ? Math.sqrt(sumSquares / samples) : 0,
+    peak
+  };
+}
+
+function normalizeProcessError(error) {
+  if (error?.code === 'ENOENT') return 'ffmpeg no esta instalado';
+  return String(error?.message ?? error).replace(/\s+/g, ' ').trim() || 'error desconocido';
 }
 
 function parseVoiceEscalation(answer) {
