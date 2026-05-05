@@ -274,6 +274,10 @@ export class VoiceSessionManager {
   }
 
   async #synthesizeSpeechWithFallback(text) {
+    if (this.config.VOICE_TTS_LOCAL_FIRST) {
+      return synthesizeLocalSpeech(text, this.config);
+    }
+
     try {
       return await this.aiClient.synthesizeSpeech({
         text,
@@ -282,7 +286,7 @@ export class VoiceSessionManager {
       });
     } catch (error) {
       console.error('Groq TTS failed, trying local TTS fallback:', normalizeProcessError(error));
-      return synthesizeLocalSpeech(text);
+      return synthesizeLocalSpeech(text, this.config);
     }
   }
 }
@@ -381,7 +385,7 @@ function transcodeToDiscordPcm(audioBuffer) {
   return ffmpeg.stdout;
 }
 
-async function synthesizeLocalSpeech(text) {
+async function synthesizeLocalSpeech(text, config = {}) {
   const voice = detectLocalTtsVoice(text);
   const normalizedText = String(text ?? '')
     .replace(/\s+/g, ' ')
@@ -391,6 +395,7 @@ async function synthesizeLocalSpeech(text) {
   if (!normalizedText) return Buffer.alloc(0);
 
   const attempts = [
+    buildPiperAttempt(normalizedText, config),
     {
       command: 'espeak-ng',
       args: ['-v', voice, '-s', '165', '-p', '48', '-a', '185', '--stdout', normalizedText]
@@ -404,14 +409,44 @@ async function synthesizeLocalSpeech(text) {
   let lastError = null;
   for (const attempt of attempts) {
     try {
-      return await runProcessBuffer(attempt.command, attempt.args);
+      return await runProcessBuffer(attempt.command, attempt.args, attempt.input);
     } catch (error) {
       lastError = error;
-      if (error?.code !== 'ENOENT') break;
+      if (attempt.optional || error?.code === 'ENOENT') continue;
+      break;
     }
   }
 
   throw lastError ?? new Error('No local TTS command is available.');
+}
+
+function buildPiperAttempt(text, config) {
+  const args = [
+    '-q',
+    '--model',
+    config.PIPER_TTS_MODEL,
+    '--output_file',
+    '-',
+    '--length_scale',
+    String(config.PIPER_TTS_LENGTH_SCALE ?? 0.96),
+    '--noise_scale',
+    String(config.PIPER_TTS_NOISE_SCALE ?? 0.62),
+    '--noise_w',
+    String(config.PIPER_TTS_NOISE_W ?? 0.75),
+    '--sentence_silence',
+    '0.16'
+  ];
+
+  if (config.PIPER_TTS_CONFIG) {
+    args.splice(3, 0, '--config', config.PIPER_TTS_CONFIG);
+  }
+
+  return {
+    command: config.PIPER_TTS_BIN || 'piper',
+    args,
+    input: `${text}\n`,
+    optional: true
+  };
 }
 
 function detectLocalTtsVoice(text) {
@@ -472,7 +507,7 @@ function analyzePcm16(pcm) {
 }
 
 function normalizeProcessError(error) {
-  if (error?.code === 'ENOENT') return 'ffmpeg no esta instalado';
+  if (error?.code === 'ENOENT') return 'comando no disponible';
   return String(error?.message ?? error).replace(/\s+/g, ' ').trim() || 'error desconocido';
 }
 

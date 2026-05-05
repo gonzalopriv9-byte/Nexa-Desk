@@ -29,6 +29,12 @@ const schema = z.object({
   GROQ_STT_MODEL: z.string().default('whisper-large-v3-turbo'),
   GROQ_TTS_MODEL: z.string().default('canopylabs/orpheus-v1-english'),
   GROQ_TTS_VOICE: z.string().default('hannah'),
+  PIPER_TTS_BIN: z.string().default('/home/pi/nexadesk/vendor/piper/piper'),
+  PIPER_TTS_MODEL: z.string().default('/home/pi/nexadesk/models/piper/es_ES-davefx-medium.onnx'),
+  PIPER_TTS_CONFIG: z.string().default('/home/pi/nexadesk/models/piper/es_ES-davefx-medium.onnx.json'),
+  PIPER_TTS_LENGTH_SCALE: z.coerce.number().min(0.75).max(1.35).default(0.96),
+  PIPER_TTS_NOISE_SCALE: z.coerce.number().min(0.1).max(1.2).default(0.62),
+  PIPER_TTS_NOISE_W: z.coerce.number().min(0.1).max(1.5).default(0.75),
   OLLAMA_BASE_URL: z.string().url().default('http://192.168.1.52:11434'),
   OLLAMA_MODEL: z.string().default('llama3.2:3b'),
   OPENAI_COMPAT_BASE_URL: z.string().url().default('http://192.168.1.52:8080/v1'),
@@ -41,6 +47,7 @@ const schema = z.object({
   AI_AUTO_REPLY: envBoolean.default(true),
   VOICE_STT_ENABLED: envBoolean.default(true),
   VOICE_TTS_ENABLED: envBoolean.default(true),
+  VOICE_TTS_LOCAL_FIRST: envBoolean.default(false),
   VOICE_MAX_RECORDING_MS: z.coerce.number().int().min(2_000).max(30_000).default(12_000),
   VOICE_MIN_RECORDING_MS: z.coerce.number().int().min(250).max(5_000).default(900)
 });
