@@ -150,6 +150,8 @@ export class SupabaseStorage {
       }
     });
     this.events = events;
+    this.guildCompatibilityOverlay = new Map();
+    this.ticketCompatibilityOverlay = new Map();
   }
 
   async init() {}
@@ -161,7 +163,7 @@ export class SupabaseStorage {
       .eq('guild_id', guildId)
       .maybeSingle();
     if (error) throw error;
-    return data ? fromGuildRow(data) : null;
+    return data ? this.#mergeGuildCompatibility(fromGuildRow(data)) : null;
   }
 
   async upsertGuildConfig(guildId, patch) {
@@ -178,7 +180,8 @@ export class SupabaseStorage {
       .upsert(toGuildRow(next), { onConflict: 'guild_id' })
       .select()
       .single();
-    if (error && /plan|voice_support_enabled|voice_category/i.test(String(error.message ?? ''))) {
+    const usedCompatibleGuildSchema = error && /plan|voice_support_enabled|voice_category/i.test(String(error.message ?? ''));
+    if (usedCompatibleGuildSchema) {
       const compatibleRow = toGuildRow(next);
       delete compatibleRow.plan;
       delete compatibleRow.voice_support_enabled;
@@ -193,7 +196,8 @@ export class SupabaseStorage {
       error = retry.error;
     }
     if (error) throw error;
-    const saved = fromGuildRow(data);
+    if (usedCompatibleGuildSchema) this.#rememberGuildCompatibility(guildId, next);
+    const saved = this.#mergeGuildCompatibility(fromGuildRow(data));
     this.events?.publish('guild.updated', saved);
     return saved;
   }
@@ -204,7 +208,7 @@ export class SupabaseStorage {
       .select('*')
       .order('updated_at', { ascending: false });
     if (error) throw error;
-    return data.map(fromGuildRow);
+    return data.map((row) => this.#mergeGuildCompatibility(fromGuildRow(row)));
   }
 
   async createTicket(ticket) {
@@ -220,13 +224,25 @@ export class SupabaseStorage {
       createdAt: ticket.createdAt ?? now,
       updatedAt: now
     };
-    const { data, error } = await this.client
+    let { data, error } = await this.client
       .from('tickets')
       .upsert(toTicketRow(next), { onConflict: 'channel_id' })
       .select()
       .single();
+    const usedCompatibleTicketSchema = isTicketCompatibilityError(error);
+    if (usedCompatibleTicketSchema) {
+      const compatibleRow = toCompatibleTicketRow(next);
+      const retry = await this.client
+        .from('tickets')
+        .upsert(compatibleRow, { onConflict: 'channel_id' })
+        .select()
+        .single();
+      data = retry.data;
+      error = retry.error;
+    }
     if (error) throw error;
-    const saved = fromTicketRow(data);
+    if (usedCompatibleTicketSchema) this.#rememberTicketCompatibility(ticket.channelId, next);
+    const saved = this.#mergeTicketCompatibility(fromTicketRow(data));
     this.events?.publish('ticket.created', saved);
     return { ...saved, alreadyExists: false };
   }
@@ -238,7 +254,7 @@ export class SupabaseStorage {
       .eq('channel_id', channelId)
       .maybeSingle();
     if (error) throw error;
-    return data ? fromTicketRow(data) : null;
+    return data ? this.#mergeTicketCompatibility(fromTicketRow(data)) : null;
   }
 
   async getTicketByVoiceChannelId(voiceChannelId) {
@@ -247,9 +263,11 @@ export class SupabaseStorage {
       .select('*')
       .eq('voice_channel_id', voiceChannelId)
       .maybeSingle();
-    if (error && /voice_channel_id/i.test(String(error.message ?? ''))) return null;
+    if (error && /voice_channel_id/i.test(String(error.message ?? ''))) {
+      return this.#findTicketCompatibilityByVoiceChannelId(voiceChannelId);
+    }
     if (error) throw error;
-    return data ? fromTicketRow(data) : null;
+    return data ? this.#mergeTicketCompatibility(fromTicketRow(data)) : null;
   }
 
   async updateTicket(channelId, patch) {
@@ -268,14 +286,9 @@ export class SupabaseStorage {
       .eq('channel_id', channelId)
       .select()
       .single();
-    if (error && /ai_disabled|voice_channel_id|voice_channel_name|voice_created_at/i.test(String(error.message ?? ''))) {
-      const compatibleRow = toTicketRow({ ...next });
-      delete compatibleRow.ai_disabled;
-      delete compatibleRow.ai_disabled_by;
-      delete compatibleRow.ai_disabled_at;
-      delete compatibleRow.voice_channel_id;
-      delete compatibleRow.voice_channel_name;
-      delete compatibleRow.voice_created_at;
+    const usedCompatibleTicketSchema = isTicketCompatibilityError(error);
+    if (usedCompatibleTicketSchema) {
+      const compatibleRow = toCompatibleTicketRow(next);
       const retry = await this.client
         .from('tickets')
         .update(compatibleRow)
@@ -286,7 +299,8 @@ export class SupabaseStorage {
       error = retry.error;
     }
     if (error) throw error;
-    const saved = fromTicketRow(data);
+    if (usedCompatibleTicketSchema) this.#rememberTicketCompatibility(channelId, next);
+    const saved = this.#mergeTicketCompatibility(fromTicketRow(data));
     this.events?.publish('ticket.updated', saved);
     return saved;
   }
@@ -297,7 +311,7 @@ export class SupabaseStorage {
       .select('*')
       .order('created_at', { ascending: false });
     if (error) throw error;
-    return data.map(fromTicketRow);
+    return data.map((row) => this.#mergeTicketCompatibility(fromTicketRow(row)));
   }
 
   async addTranscriptMessage(message) {
@@ -352,10 +366,58 @@ export class SupabaseStorage {
     }
 
     return buildStats({
-      guilds: guilds.map(fromGuildRow),
-      tickets: tickets.map(fromTicketRow),
+      guilds: guilds.map((row) => this.#mergeGuildCompatibility(fromGuildRow(row))),
+      tickets: tickets.map((row) => this.#mergeTicketCompatibility(fromTicketRow(row))),
       transcriptMessages
     });
+  }
+
+  #mergeGuildCompatibility(guild) {
+    if (!guild) return guild;
+    return {
+      ...guild,
+      ...(this.guildCompatibilityOverlay.get(guild.guildId) ?? {})
+    };
+  }
+
+  #rememberGuildCompatibility(guildId, guild) {
+    const overlay = pickDefined({
+      plan: guild.plan,
+      voiceSupportEnabled: guild.voiceSupportEnabled,
+      voiceCategoryId: guild.voiceCategoryId,
+      voiceCategoryName: guild.voiceCategoryName
+    });
+    if (!Object.keys(overlay).length) return;
+    this.guildCompatibilityOverlay.set(guildId, {
+      ...(this.guildCompatibilityOverlay.get(guildId) ?? {}),
+      ...overlay
+    });
+  }
+
+  #mergeTicketCompatibility(ticket) {
+    if (!ticket) return ticket;
+    return {
+      ...ticket,
+      ...(this.ticketCompatibilityOverlay.get(ticket.channelId) ?? {})
+    };
+  }
+
+  #rememberTicketCompatibility(channelId, ticket) {
+    const overlay = pickTicketCompatibilityFields(ticket);
+    if (!Object.keys(overlay).length) return;
+    this.ticketCompatibilityOverlay.set(channelId, {
+      ...(this.ticketCompatibilityOverlay.get(channelId) ?? {}),
+      ...overlay
+    });
+  }
+
+  async #findTicketCompatibilityByVoiceChannelId(voiceChannelId) {
+    for (const [channelId, overlay] of this.ticketCompatibilityOverlay.entries()) {
+      if (overlay.voiceChannelId === voiceChannelId) {
+        return this.getTicket(channelId);
+      }
+    }
+    return null;
   }
 }
 
@@ -458,6 +520,39 @@ function toTicketRow(ticket) {
   if ('aiDisabledBy' in ticket) row.ai_disabled_by = ticket.aiDisabledBy;
   if ('aiDisabledAt' in ticket) row.ai_disabled_at = ticket.aiDisabledAt;
   return row;
+}
+
+function toCompatibleTicketRow(ticket) {
+  const row = toTicketRow(ticket);
+  delete row.ai_disabled;
+  delete row.ai_disabled_by;
+  delete row.ai_disabled_at;
+  delete row.voice_channel_id;
+  delete row.voice_channel_name;
+  delete row.voice_created_at;
+  return row;
+}
+
+function isTicketCompatibilityError(error) {
+  return Boolean(error && /ai_disabled|voice_channel_id|voice_channel_name|voice_created_at/i.test(String(error.message ?? '')));
+}
+
+function pickTicketCompatibilityFields(ticket) {
+  return pickDefined({
+    aiDisabled: ticket.aiDisabled,
+    aiDisabledBy: ticket.aiDisabledBy,
+    aiDisabledAt: ticket.aiDisabledAt,
+    voiceChannelId: ticket.voiceChannelId,
+    voiceChannelName: ticket.voiceChannelName,
+    voiceCreatedAt: ticket.voiceCreatedAt
+  });
+}
+
+function pickDefined(value) {
+  return Object.entries(value).reduce((result, [key, entry]) => {
+    if (entry !== undefined) result[key] = entry;
+    return result;
+  }, {});
 }
 
 function fromTicketRow(row) {
