@@ -235,7 +235,10 @@ export class VoiceSessionManager {
       'Eres NexaDesk, soporte por voz para tickets de Discord.',
       'Responde en el mismo idioma del ultimo mensaje del usuario.',
       'Se breve y natural para poder leerlo en voz alta.',
+      'Recibes transcripciones limpias de audio. Si hay texto del usuario, nunca digas que no puedes procesar, escuchar o entender el audio.',
+      'No incluyas prefijos como "NexaDesk:", "[Voz]", ":Global:" ni nombres de emojis.',
       'Si el caso requiere staff humano, empieza con [ESCALATE] y explica el motivo sin repetir menciones.',
+      'Si el usuario quiere reportar acoso, amenazas, abuso o incumplimientos, pide datos clave y escala al staff cuando sea necesario.',
       'No inventes datos del servidor. Usa solo el contexto proporcionado.',
       session.guildConfig.serverPrompt ? `Prompt del servidor:\n${session.guildConfig.serverPrompt}` : '',
       session.guildConfig.serverInfo ? `Informacion del servidor:\n${session.guildConfig.serverInfo}` : '',
@@ -243,13 +246,11 @@ export class VoiceSessionManager {
       `Usuario hablando: ${member.displayName}`
     ].filter(Boolean).join('\n\n');
 
-    const messages = history
-      .slice(-18)
-      .map((message) => ({
-        role: message.role === 'assistant' ? 'assistant' : 'user',
-        content: `${message.authorName || message.role}: ${message.content}`.slice(0, 2_000)
-      }));
-    messages.push({ role: 'user', content: transcript });
+    const messages = buildVoiceConversationHistory(history, transcript);
+    messages.push({
+      role: 'user',
+      content: `Ultimo mensaje transcrito de ${member.displayName}: ${sanitizeVoiceHistoryContent(transcript)}`
+    });
 
     const raw = await this.aiClient.generate({ system, messages });
     const parsed = parseVoiceEscalation(raw);
@@ -415,7 +416,7 @@ async function synthesizeLocalSpeech(text) {
 
 function detectLocalTtsVoice(text) {
   const value = String(text ?? '').toLowerCase();
-  if (/[áéíóúüñ¿¡]/i.test(value)) return 'es';
+  if (/[\u00e1\u00e9\u00ed\u00f3\u00fa\u00fc\u00f1\u00bf\u00a1]/i.test(value)) return 'es';
   const spanishHints = [' que ', ' para ', ' por ', ' usuario ', ' servidor ', ' ticket ', ' soporte ', ' gracias ', ' puedes '];
   return spanishHints.some((hint) => ` ${value} `.includes(hint)) ? 'es' : 'en-us';
 }
@@ -478,11 +479,15 @@ function normalizeProcessError(error) {
 function parseVoiceEscalation(answer) {
   const text = String(answer ?? '').trim();
   const shouldEscalate = /^\[ESCALATE\]/i.test(text) || /\[ESCALATE\]/i.test(text);
-  const publicAnswer = text
+  let publicAnswer = sanitizeVoiceAssistantAnswer(text)
     .replace(/\[ESCALATE\]/gi, '')
     .replace(/<@&?\d+>/g, '')
     .replace(/@staff/gi, 'staff')
     .trim();
+
+  if (isBadAudioProcessingAnswer(publicAnswer)) {
+    publicAnswer = 'Entiendo. Para reportar el caso, dime el usuario implicado, que ocurrio, cuando paso y si tienes pruebas o capturas.';
+  }
 
   return {
     shouldEscalate,
@@ -490,8 +495,75 @@ function parseVoiceEscalation(answer) {
   };
 }
 
+function buildVoiceConversationHistory(history, currentTranscript) {
+  const normalizedCurrent = normalizeComparableText(currentTranscript);
+  return history
+    .filter((message) => ['user', 'assistant'].includes(message.role))
+    .map((message) => ({
+      role: message.role === 'assistant' ? 'assistant' : 'user',
+      authorName: message.authorName || message.role,
+      content: sanitizeVoiceHistoryContent(message.content)
+    }))
+    .filter((message) => message.content && !isOperationalVoiceMessage(message.content))
+    .filter((message) => normalizeComparableText(message.content) !== normalizedCurrent)
+    .slice(-12)
+    .map((message) => ({
+      role: message.role,
+      content: `${message.authorName}: ${message.content}`.slice(0, 1_600)
+    }));
+}
+
+function sanitizeVoiceHistoryContent(content) {
+  return String(content ?? '')
+    .replace(/\[Voz\]/gi, '')
+    .replace(/\[ESCALATE\]/gi, '')
+    .replace(/NexaDesk\s*:\s*/gi, '')
+    .replace(/:Global:/gi, '')
+    .replace(/:wifi:/gi, '')
+    .replace(/<a?:\w+:\d+>/g, '')
+    .replace(/<@&?\d+>/g, 'staff')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function sanitizeVoiceAssistantAnswer(content) {
+  return sanitizeVoiceHistoryContent(content)
+    .replace(/^assistant\s*:\s*/i, '')
+    .replace(/^soporte\s*:\s*/i, '')
+    .trim();
+}
+
+function isOperationalVoiceMessage(content) {
+  const normalized = normalizeComparableText(content);
+  return [
+    'stt tts activo',
+    'sala de voz vinculada',
+    'he respondido por texto',
+    'no pude reproducir la voz',
+    'no pude procesar ese audio',
+    'prueba a repetirlo',
+    'no he detectado voz suficientemente clara',
+    'estoy terminando una respuesta anterior'
+  ].some((pattern) => normalized.includes(pattern));
+}
+
+function isBadAudioProcessingAnswer(content) {
+  const normalized = normalizeComparableText(content);
+  return normalized.includes('no puedo procesar el audio')
+    || normalized.includes('no pude procesar el audio')
+    || normalized.includes('repite tu mensaje de manera clara')
+    || normalized.includes('no puedo escuchar el audio');
+}
+
+function normalizeComparableText(content) {
+  return sanitizeVoiceHistoryContent(content)
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase();
+}
+
 function stripDiscordMentions(text) {
-  return String(text ?? '')
+  return sanitizeVoiceAssistantAnswer(text)
     .replace(/<@&?\d+>/g, '')
     .replace(/<#\d+>/g, 'canal')
     .replace(/@everyone|@here/gi, '')
