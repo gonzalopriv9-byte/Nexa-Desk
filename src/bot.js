@@ -2170,6 +2170,44 @@ export async function createTicketPanel(client, storage, { guildId, channelId, .
   });
 }
 
+export async function updateTicketPanel(client, storage, { guildId, messageId, ...panelInput }) {
+  const guild = await client.guilds.fetch(guildId);
+  const existing = await storage.getGuildConfig(guildId);
+  const currentPanel = existing?.panels?.find((panel) => panel.messageId === messageId);
+  if (!currentPanel) throw new Error('No encuentro ese panel en la configuracion guardada.');
+
+  const channel = await guild.channels.fetch(currentPanel.channelId);
+  if (!channel || channel.type !== ChannelType.GuildText) {
+    throw new Error('El canal original del panel ya no existe o no es de texto.');
+  }
+
+  const panel = normalizePanelOptions({
+    ...currentPanel,
+    ...panelInput,
+    channelId: currentPanel.channelId,
+    channelName: currentPanel.channelName
+  });
+  const message = await channel.messages.fetch(messageId);
+  await message.edit({
+    embeds: [new EmbedBuilder(buildPanelEmbed(panel))],
+    components: [buildPanelActionRow(panel, existing?.components ?? [])]
+  });
+
+  return storage.upsertGuildConfig(guildId, {
+    guildName: guild.name,
+    panels: (existing?.panels ?? []).map((item) => item.messageId === messageId
+      ? {
+          ...item,
+          ...panel,
+          channelId: currentPanel.channelId,
+          channelName: currentPanel.channelName,
+          messageId,
+          updatedAt: new Date().toISOString()
+        }
+      : item)
+  });
+}
+
 export async function listGuildRoles(client, { guildId }) {
   const guild = await client.guilds.fetch(guildId);
   const roles = await guild.roles.fetch();

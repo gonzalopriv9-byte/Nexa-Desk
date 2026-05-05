@@ -7,7 +7,7 @@ import { OpenAICompatibleClient } from './ai/openai-compatible-client.js';
 import { SupportAgent } from './ai/support-agent.js';
 import { VisualAnalyzer } from './ai/visual-analyzer.js';
 import { VoiceSessionManager } from './voice/voice-session-manager.js';
-import { createBot, createTicketCategory, createTicketPanel, listGuildChannels, listGuildRoles, listInstalledGuildIds } from './bot.js';
+import { createBot, createTicketCategory, createTicketPanel, listGuildChannels, listGuildRoles, listInstalledGuildIds, updateTicketPanel } from './bot.js';
 import { createServer } from './server.js';
 import { createDiscordRestActions } from './discord-rest-actions.js';
 
@@ -39,6 +39,7 @@ const botActions = config.RUN_BOT
   ? {
       createTicketCategory: (input) => createTicketCategory(bot, storage, input),
       createTicketPanel: (input) => createTicketPanel(bot, storage, input),
+      updateTicketPanel: (input) => updateTicketPanel(bot, storage, input),
       listGuildRoles: (input) => listGuildRoles(bot, input),
       listGuildChannels: (input) => listGuildChannels(bot, input),
       listInstalledGuildIds: () => listInstalledGuildIds(bot)

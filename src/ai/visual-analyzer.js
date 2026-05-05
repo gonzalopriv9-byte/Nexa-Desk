@@ -17,8 +17,9 @@ export class VisualAnalyzer {
     this.videoMaxBytes = videoMaxBytes;
   }
 
-  async analyzeMessageAttachments({ message, guildConfig }) {
-    if (!this.enabled || !this.visionClient || !shouldAnalyzeVisualProof(message, guildConfig)) return '';
+  async analyzeMessageAttachments({ message, guildConfig, force = false }) {
+    if (!this.enabled || !this.visionClient) return '';
+    if (!force && !shouldAnalyzeVisualProof(message, guildConfig)) return '';
 
     const media = collectVisualAttachments(message);
     if (!media.length) return '';
@@ -111,6 +112,8 @@ export class VisualAnalyzer {
 }
 
 export function shouldAnalyzeVisualProof(message, guildConfig) {
+  if (hasVisualAttachments(message)) return true;
+
   const configText = normalizeForVisualMatch([
     guildConfig?.serverPrompt,
     guildConfig?.serverInfo

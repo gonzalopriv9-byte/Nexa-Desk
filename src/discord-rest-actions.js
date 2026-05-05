@@ -53,6 +53,42 @@ export function createDiscordRestActions({ config, storage }) {
       });
     },
 
+    async updateTicketPanel({ guildId, messageId, ...panelInput }) {
+      requireBotToken(botToken);
+      const guild = await rest.get(Routes.guild(guildId));
+      const existing = await storage.getGuildConfig(guildId);
+      const currentPanel = existing?.panels?.find((panel) => panel.messageId === messageId);
+      if (!currentPanel) throw new Error('No encuentro ese panel en la configuracion guardada.');
+
+      const channelId = currentPanel.channelId;
+      const panel = normalizePanelOptions({
+        ...currentPanel,
+        ...panelInput,
+        channelId,
+        channelName: currentPanel.channelName
+      });
+      await rest.patch(Routes.channelMessage(channelId, messageId), {
+        body: {
+          embeds: [buildPanelEmbed(panel)],
+          components: [buildPanelActionRow(panel, existing?.components ?? [])]
+        }
+      });
+
+      return storage.upsertGuildConfig(guildId, {
+        guildName: guild.name,
+        panels: (existing?.panels ?? []).map((item) => item.messageId === messageId
+          ? {
+              ...item,
+              ...panel,
+              channelId,
+              channelName: currentPanel.channelName,
+              messageId,
+              updatedAt: new Date().toISOString()
+            }
+          : item)
+      });
+    },
+
     async listGuildRoles({ guildId }) {
       requireBotToken(botToken);
       const roles = await rest.get(Routes.guildRoles(guildId));

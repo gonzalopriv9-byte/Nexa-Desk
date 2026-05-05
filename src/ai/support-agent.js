@@ -1,3 +1,5 @@
+import { hasVisualAttachments } from './visual-analyzer.js';
+
 export class SupportAgent {
   constructor({ aiClient, storage, maxHistoryMessages, visualAnalyzer = null }) {
     this.aiClient = aiClient;
@@ -108,6 +110,8 @@ export class SupportAgent {
       'Si falta informacion, pide datos concretos al usuario.',
       'Usa las respuestas previas del formulario como contexto inicial fuerte del ticket.',
       'Si hay pruebas visuales analizadas, usalas como evidencia del ticket y menciona solo hechos observables.',
+      'Si hay pruebas visuales analizadas, NO preguntes al usuario que hay en la imagen: describe lo que ves y continua el diagnostico.',
+      'Si no puedes leer una imagen con suficiente detalle, dilo claramente y pide una captura mas nitida o el texto exacto.',
       'No vuelvas a preguntar informacion que ya aparezca en las respuestas previas; continua desde ahi.',
       'Si el usuario dice algo como "me ayudas tu?", responde continuando el caso ya descrito, no con un saludo generico.',
       'Si el caso requiere permisos de staff, pagos, sanciones o datos sensibles, escala a un humano.',
@@ -143,7 +147,31 @@ export class SupportAgent {
     if (!this.visualAnalyzer) return '';
 
     try {
-      return await this.visualAnalyzer.analyzeMessageAttachments({ message, guildConfig });
+      const currentAnalysis = await this.visualAnalyzer.analyzeMessageAttachments({ message, guildConfig });
+      if (currentAnalysis) return currentAnalysis;
+
+      if (!shouldSearchRecentVisualMessage(message)) return '';
+
+      const messages = await message.channel.messages.fetch({ limit: 8 });
+      const recentVisualMessage = [...messages.values()]
+        .filter((item) => item.id !== message.id && !item.author.bot)
+        .sort((a, b) => b.createdTimestamp - a.createdTimestamp)
+        .find((item) => hasVisualAttachments(item));
+
+      if (!recentVisualMessage) return '';
+
+      const analysis = await this.visualAnalyzer.analyzeMessageAttachments({
+        message: recentVisualMessage,
+        guildConfig,
+        force: true
+      });
+
+      return analysis
+        ? [
+            'El usuario esta haciendo referencia a una prueba visual enviada en mensajes recientes.',
+            analysis
+          ].join('\n')
+        : '';
     } catch (error) {
       console.error('Visual analysis failed:', error);
       return `NexaDesk recibio pruebas visuales, pero no pudo analizarlas automaticamente: ${String(error?.message ?? error).slice(0, 300)}`;
@@ -297,4 +325,9 @@ function looksSpanish(text) {
 
 function looksEnglish(text) {
   return /\b(hello|hi|my|name|can|help|you|server|thanks|need|question|support|ticket|what|how|where|when|why)\b/iu.test(text);
+}
+
+function shouldSearchRecentVisualMessage(message) {
+  if (hasVisualAttachments(message)) return false;
+  return /\b(no\s+ves|ves|mira|esta|esa|esta|captura|imagen|foto|pantallazo|screenshot|adjunto|dashboard|web|error|fallo)\b/iu.test(message.content ?? '');
 }

@@ -279,28 +279,18 @@ export function createServer({ config, storage, bot, events }) {
 
   app.post('/api/guilds/:guildId/panels', requireGuildAccess, asyncHandler(async (req, res) => {
     try {
-      const updated = await bot.createTicketPanel({
-        guildId: req.params.guildId,
-        channelId: req.body.channelId,
-        channelName: req.body.channelName,
-        panelType: req.body.panelType,
-        title: req.body.title || 'Soporte',
-        description: req.body.description || 'Pulsa el boton para abrir un ticket.',
-        buttonLabel: req.body.buttonLabel || 'Abrir ticket',
-        buttonStyle: req.body.buttonStyle,
-        buttonEmoji: req.body.buttonEmoji,
-        ticketMode: req.body.ticketMode,
-        embedColor: req.body.embedColor,
-        authorName: req.body.authorName,
-        authorIconUrl: req.body.authorIconUrl,
-        footerText: req.body.footerText,
-        imageUrl: req.body.imageUrl,
-        thumbnailUrl: req.body.thumbnailUrl,
-        ticketCategoryId: req.body.ticketCategoryId,
-        ticketCategoryName: req.body.ticketCategoryName,
-        selectPlaceholder: req.body.selectPlaceholder,
-        componentIds: req.body.componentIds,
-        welcomeMessage: req.body.welcomeMessage
+      const updated = await bot.createTicketPanel(buildPanelRequestPayload(req));
+      res.json(updated);
+    } catch (error) {
+      res.status(400).json({ error: error.message });
+    }
+  }));
+
+  app.put('/api/guilds/:guildId/panels/:messageId', requireGuildAccess, asyncHandler(async (req, res) => {
+    try {
+      const updated = await bot.updateTicketPanel({
+        ...buildPanelRequestPayload(req),
+        messageId: req.params.messageId
       });
       res.json(updated);
     } catch (error) {
@@ -460,6 +450,32 @@ function enrichDashboardStats(stats, guilds) {
     escalationReadyGuilds: guilds.filter((guild) => guild.staffRoleId).length,
     aiReadyGuilds: guilds.filter((guild) => guild.serverPrompt || guild.serverInfo).length,
     panels: guilds.reduce((total, guild) => total + (guild.panels?.length ?? 0), 0)
+  };
+}
+
+function buildPanelRequestPayload(req) {
+  return {
+    guildId: req.params.guildId,
+    channelId: req.body.channelId,
+    channelName: req.body.channelName,
+    panelType: req.body.panelType,
+    title: req.body.title || 'Soporte',
+    description: req.body.description || 'Pulsa el boton para abrir un ticket.',
+    buttonLabel: req.body.buttonLabel || 'Abrir ticket',
+    buttonStyle: req.body.buttonStyle,
+    buttonEmoji: req.body.buttonEmoji,
+    ticketMode: req.body.ticketMode,
+    embedColor: req.body.embedColor,
+    authorName: req.body.authorName,
+    authorIconUrl: req.body.authorIconUrl,
+    footerText: req.body.footerText,
+    imageUrl: req.body.imageUrl,
+    thumbnailUrl: req.body.thumbnailUrl,
+    ticketCategoryId: req.body.ticketCategoryId,
+    ticketCategoryName: req.body.ticketCategoryName,
+    selectPlaceholder: req.body.selectPlaceholder,
+    componentIds: req.body.componentIds,
+    welcomeMessage: req.body.welcomeMessage
   };
 }
 
@@ -1090,6 +1106,12 @@ function renderDashboard({ session, guilds, tickets, stats }) {
     .menu-option-preview { border-top:1px solid var(--soft-line); padding:8px 0; }
     .menu-option-preview:first-of-type { border-top:0; }
     .component-list { display:grid; gap:10px; max-height:360px; overflow:auto; }
+    .component-picker { display:grid; gap:8px; max-height:220px; overflow:auto; padding:10px; border:1px solid var(--line); border-radius:14px; background:rgba(255,255,255,.03); }
+    .component-choice { display:flex; gap:10px; align-items:flex-start; padding:10px; border:1px solid var(--soft-line); border-radius:12px; cursor:pointer; transition:background .18s ease, border-color .18s ease, transform .18s ease; }
+    .component-choice:hover { background:rgba(255,255,255,.05); border-color:rgba(255,255,255,.25); transform:translateY(-1px); }
+    .component-choice input { width:auto; margin-top:3px; }
+    .component-choice span { display:grid; gap:2px; }
+    .component-choice small { color:var(--muted); }
     .question-preview { margin-top:8px; color:var(--muted); font-size:12px; }
     table { width:100%; border-collapse:collapse; }
     th,td { text-align:left; padding:12px; border-bottom:1px solid var(--line); }
@@ -1323,6 +1345,7 @@ Antes de empezar, he guardado tus respuestas para que el staff tenga contexto.</
           <form class="panel-builder" onsubmit="return createPanel(event)">
             <div class="panel-fields">
               <select id="panelGuildId" hidden required>${guildOptions}</select>
+              <input id="editingPanelMessageId" type="hidden">
               <div class="form-section">
                 <div class="section-label"><strong>Tipo de panel</strong><span>Boton directo o menu desplegable</span></div>
                 <label>Modo<select id="panelType">
@@ -1341,8 +1364,13 @@ Antes de empezar, he guardado tus respuestas para que el staff tenga contexto.</
                 </select></label>
               </div>
               <div class="form-section" id="panelMenuComponentsSection">
-                <div class="section-label"><strong>Opciones del menu</strong><span>Selecciona componentes creados en la vista Componentes</span></div>
+                <div class="section-label"><strong>Opciones del menu</strong><span>Marca 2 o mas componentes para construir menus completos</span></div>
                 <label class="span-2">Componentes<select id="panelComponentIds" multiple size="5"></select></label>
+                <div class="span-2 component-picker" id="panelComponentPicker"></div>
+                <div class="span-2 quick-actions">
+                  <button class="secondary-button" type="button" onclick="selectAllPanelComponents()">Seleccionar todos</button>
+                  <button class="secondary-button" type="button" onclick="clearPanelComponents()">Limpiar seleccion</button>
+                </div>
               </div>
               <div class="form-section">
                 <div class="section-label"><strong>Boton</strong><span>Texto, color y emoji</span></div>
@@ -1371,7 +1399,8 @@ Antes de empezar, he guardado tus respuestas para que el staff tenga contexto.</
                 <textarea id="panelWelcomeMessage">Hola {user}, soy NexaDesk.
 Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al staff con el contexto ordenado.</textarea>
               </div>
-              <button class="span-2" type="submit">Publicar panel personalizado</button>
+              <button class="span-2" id="panelSubmitButton" type="submit">Publicar panel personalizado</button>
+              <button class="span-2 secondary-button is-hidden" id="panelCancelEditButton" type="button" onclick="resetPanelEditor()">Cancelar edicion</button>
             </div>
             <aside class="panel-preview-wrap">
               <div class="discord-preview">
@@ -1573,8 +1602,8 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       if (!response.ok) throw new Error(body.error || 'Request failed');
       return body;
     }
-    async function postJson(url, body) {
-      const response = await fetch(url, { method:'POST', headers:{ 'content-type':'application/json' }, body:JSON.stringify(body) });
+    async function postJson(url, body, method = 'POST') {
+      const response = await fetch(url, { method, headers:{ 'content-type':'application/json' }, body:JSON.stringify(body) });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(data.error || 'Request failed');
       return data;
@@ -1754,6 +1783,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       document.querySelector('#panelComponentIds').innerHTML = (config.components || []).length
         ? config.components.map((component) => '<option value="' + escapeHtml(component.id) + '">' + escapeHtml(component.label + (component.ticketMode === 'voice' ? ' - Voz Pro' : ' - Texto')) + '</option>').join('')
         : '<option value="">Crea componentes primero</option>';
+      renderPanelComponentPicker(config);
       document.querySelector('#componentTicketCategoryId').value = config.ticketCategoryId || '';
       document.querySelector('#panelTicketCategoryId').value = config.ticketCategoryId || '';
       document.querySelector('#ticketCategoryId').value = config.ticketCategoryId || '';
@@ -1781,6 +1811,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
     function syncGuildForm(sourceId, { inviteIfMissing = true } = {}) {
       const guildId = document.querySelector(sourceId).value;
       const guild = getGuildConfig(guildId);
+      resetPanelEditor({ keepFields: true });
       for (const selector of ['#guildId', '#categoryGuildId', '#componentGuildId', '#panelGuildId']) {
         const element = document.querySelector(selector);
         if (element && element.value !== guildId) element.value = guildId;
@@ -1853,8 +1884,60 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       const panelHistory = document.querySelector('#panelHistory');
       if (!panelHistory) return;
       panelHistory.innerHTML = panels.length
-        ? panels.slice().reverse().map((panel) => '<article class="panel-card"><strong>' + escapeHtml(panel.title || 'Panel sin titulo') + '</strong><small>Tipo: ' + escapeHtml(panel.panelType === 'menu' ? 'Menu desplegable' : 'Boton') + '</small><small>Modo boton: ' + escapeHtml(panel.ticketMode === 'voice' ? 'Voz Pro + STT/TTS' : 'Texto + IA') + '</small><small>Canal: ' + escapeHtml(panel.channelName || panel.channelId || 'sin canal') + '</small><small>Categoria: ' + escapeHtml(panel.ticketCategoryName || guild.ticketCategoryName || 'principal') + '</small><small>' + escapeHtml(panel.panelType === 'menu' ? ('Componentes: ' + (panel.componentIds || []).length) : ('Boton: ' + (panel.buttonLabel || 'Abrir ticket'))) + '</small></article>').join('')
+        ? panels.slice().reverse().map((panel) => '<article class="panel-card"><strong>' + escapeHtml(panel.title || 'Panel sin titulo') + '</strong><small>Tipo: ' + escapeHtml(panel.panelType === 'menu' ? 'Menu desplegable' : 'Boton') + '</small><small>Modo boton: ' + escapeHtml(panel.ticketMode === 'voice' ? 'Voz Pro + STT/TTS' : 'Texto + IA') + '</small><small>Canal: ' + escapeHtml(panel.channelName || panel.channelId || 'sin canal') + '</small><small>Categoria: ' + escapeHtml(panel.ticketCategoryName || guild.ticketCategoryName || 'principal') + '</small><small>' + escapeHtml(panel.panelType === 'menu' ? ('Componentes: ' + (panel.componentIds || []).length) : ('Boton: ' + (panel.buttonLabel || 'Abrir ticket'))) + '</small><button class="secondary-button table-action" type="button" data-edit-panel="' + escapeHtml(panel.messageId || '') + '">Editar panel enviado</button></article>').join('')
         : '<p class="notice">Aun no hay paneles publicados en este servidor.</p>';
+      bindPanelEditButtons(panelHistory);
+    }
+    function renderPanelComponentPicker(guild = getActiveGuild()) {
+      const picker = document.querySelector('#panelComponentPicker');
+      if (!picker) return;
+      const components = guild?.components || [];
+      const selectedIds = new Set([...(document.querySelector('#panelComponentIds')?.selectedOptions || [])].map((option) => option.value));
+      picker.innerHTML = components.length
+        ? components.map((component) => (
+          '<label class="component-choice">' +
+          '<input type="checkbox" value="' + escapeHtml(component.id) + '" ' + (selectedIds.has(component.id) ? 'checked' : '') + '>' +
+          '<span><strong>' + escapeHtml((component.emoji ? component.emoji + ' ' : '') + component.label) + '</strong><small>' + escapeHtml((component.ticketMode === 'voice' ? 'Voz Pro' : 'Texto') + ' - ' + (component.questions || []).length + ' preguntas') + '</small></span>' +
+          '</label>'
+        )).join('')
+        : '<p class="notice">Crea componentes primero para montar menus con varias opciones.</p>';
+      picker.querySelectorAll('input[type="checkbox"]').forEach((checkbox) => {
+        checkbox.addEventListener('change', () => {
+          syncPanelComponentSelectFromPicker();
+          updatePanelPreview();
+        });
+      });
+    }
+    function syncPanelComponentSelectFromPicker() {
+      const selectedIds = new Set([...document.querySelectorAll('#panelComponentPicker input[type="checkbox"]:checked')].map((input) => input.value));
+      document.querySelectorAll('#panelComponentIds option').forEach((option) => {
+        option.selected = selectedIds.has(option.value);
+      });
+    }
+    function syncPanelComponentPickerFromSelect() {
+      const selectedIds = new Set([...(document.querySelector('#panelComponentIds')?.selectedOptions || [])].map((option) => option.value));
+      document.querySelectorAll('#panelComponentPicker input[type="checkbox"]').forEach((input) => {
+        input.checked = selectedIds.has(input.value);
+      });
+    }
+    function selectAllPanelComponents() {
+      document.querySelectorAll('#panelComponentIds option').forEach((option) => {
+        option.selected = Boolean(option.value);
+      });
+      syncPanelComponentPickerFromSelect();
+      updatePanelPreview();
+    }
+    function clearPanelComponents() {
+      document.querySelectorAll('#panelComponentIds option').forEach((option) => {
+        option.selected = false;
+      });
+      syncPanelComponentPickerFromSelect();
+      updatePanelPreview();
+    }
+    function bindPanelEditButtons(root = document) {
+      root.querySelectorAll('[data-edit-panel]').forEach((button) => {
+        button.onclick = () => editPanel(button.dataset.editPanel);
+      });
     }
     function updatePanelMode() {
       const panelType = document.querySelector('#panelType')?.value || 'button';
@@ -1868,6 +1951,58 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       const guild = getGuildConfig(document.querySelector('#panelGuildId')?.value) || {};
       const selectedIds = [...(document.querySelector('#panelComponentIds')?.selectedOptions || [])].map((option) => option.value).filter(Boolean);
       return (guild.components || []).filter((component) => selectedIds.includes(component.id));
+    }
+    function editPanel(messageId) {
+      const guild = getGuildConfig(document.querySelector('#panelGuildId')?.value) || {};
+      const panel = (guild.panels || []).find((item) => item.messageId === messageId);
+      if (!panel) {
+        showToast('No encuentro ese panel en este servidor.');
+        return;
+      }
+
+      document.querySelector('#editingPanelMessageId').value = panel.messageId;
+      document.querySelector('#panelType').value = panel.panelType || 'button';
+      document.querySelector('#panelChannelId').value = panel.channelId || '';
+      document.querySelector('#panelChannelId').disabled = true;
+      document.querySelector('#panelTicketCategoryId').value = panel.ticketCategoryId || '';
+      document.querySelector('#panelTicketMode').value = panel.ticketMode || 'text';
+      document.querySelector('#panelSelectPlaceholder').value = panel.selectPlaceholder || 'Elige el tipo de ticket';
+      document.querySelector('#panelTitle').value = panel.title || 'Centro de soporte';
+      document.querySelector('#panelDescription').value = panel.description || '';
+      document.querySelector('#panelButtonLabel').value = panel.buttonLabel || 'Abrir ticket';
+      document.querySelector('#panelButtonStyle').value = panel.buttonStyle || 'primary';
+      document.querySelector('#panelButtonEmoji').value = panel.buttonEmoji || '';
+      document.querySelector('#panelEmbedColor').value = panel.embedColor || '#ffffff';
+      document.querySelector('#panelAuthorName').value = panel.authorName || '';
+      document.querySelector('#panelAuthorIconUrl').value = panel.authorIconUrl || '';
+      document.querySelector('#panelThumbnailUrl').value = panel.thumbnailUrl || '';
+      document.querySelector('#panelImageUrl').value = panel.imageUrl || '';
+      document.querySelector('#panelFooterText').value = panel.footerText || 'NexaDesk AI Support';
+      document.querySelector('#panelWelcomeMessage').value = panel.welcomeMessage || '';
+      const componentIds = new Set(panel.componentIds || []);
+      document.querySelectorAll('#panelComponentIds option').forEach((option) => {
+        option.selected = componentIds.has(option.value);
+      });
+      renderPanelComponentPicker(guild);
+      document.querySelector('#panelSubmitButton').textContent = 'Guardar cambios en panel enviado';
+      document.querySelector('#panelCancelEditButton').classList.remove('is-hidden');
+      updatePanelPreview();
+      goToView('panels');
+      showToast('Panel cargado en modo edicion. El canal original no se puede mover; se editara el mensaje ya enviado.');
+    }
+    function resetPanelEditor({ keepFields = false } = {}) {
+      const editingInput = document.querySelector('#editingPanelMessageId');
+      if (!editingInput) return;
+      editingInput.value = '';
+      document.querySelector('#panelChannelId').disabled = false;
+      document.querySelector('#panelSubmitButton').textContent = 'Publicar panel personalizado';
+      document.querySelector('#panelCancelEditButton').classList.add('is-hidden');
+      if (!keepFields) {
+        document.querySelector('#panelType').value = 'button';
+        document.querySelector('#panelTicketMode').value = 'text';
+        clearPanelComponents();
+      }
+      updatePanelPreview();
     }
     function updatePanelPreview() {
       updatePanelMode();
@@ -1907,7 +2042,14 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
     async function createPanel(event) {
       event.preventDefault();
       const guildId = document.querySelector('#panelGuildId').value;
-      const updated = await postJson('/api/guilds/' + guildId + '/panels', {
+      const editingMessageId = document.querySelector('#editingPanelMessageId').value;
+      const componentIds = [...document.querySelector('#panelComponentIds').selectedOptions].map((option) => option.value).filter(Boolean);
+      if (document.querySelector('#panelType').value === 'menu' && componentIds.length < 2) {
+        showToast('Para un panel de menu, selecciona al menos 2 componentes.');
+        return false;
+      }
+
+      const payload = {
         channelId: document.querySelector('#panelChannelId').value,
         channelName: selectedOptionText('#panelChannelId'),
         panelType: document.querySelector('#panelType').value,
@@ -1915,7 +2057,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
         ticketCategoryName: selectedOptionText('#panelTicketCategoryId'),
         ticketMode: document.querySelector('#panelTicketMode').value,
         selectPlaceholder: document.querySelector('#panelSelectPlaceholder').value,
-        componentIds: [...document.querySelector('#panelComponentIds').selectedOptions].map((option) => option.value).filter(Boolean),
+        componentIds,
         title: document.querySelector('#panelTitle').value,
         description: document.querySelector('#panelDescription').value,
         buttonLabel: document.querySelector('#panelButtonLabel').value,
@@ -1928,12 +2070,17 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
         imageUrl: document.querySelector('#panelImageUrl').value,
         thumbnailUrl: document.querySelector('#panelThumbnailUrl').value,
         welcomeMessage: document.querySelector('#panelWelcomeMessage').value
-      }).catch((error) => showToast(error.message));
+      };
+      const url = editingMessageId
+        ? '/api/guilds/' + guildId + '/panels/' + encodeURIComponent(editingMessageId)
+        : '/api/guilds/' + guildId + '/panels';
+      const updated = await postJson(url, payload, editingMessageId ? 'PUT' : 'POST').catch((error) => showToast(error.message));
       if (updated) {
         const index = guildConfigs.findIndex((guild) => guild.guildId === guildId);
         if (index >= 0) guildConfigs[index] = { ...guildConfigs[index], ...updated };
         renderGuildSelectors(guildId);
-        showToast('Panel publicado con personalizacion completa.');
+        resetPanelEditor({ keepFields: true });
+        showToast(editingMessageId ? 'Panel enviado actualizado en Discord.' : 'Panel publicado con personalizacion completa.');
       }
       return false;
     }
