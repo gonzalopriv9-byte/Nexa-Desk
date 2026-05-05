@@ -263,17 +263,26 @@ export class VoiceSessionManager {
     const safeText = stripDiscordMentions(text).slice(0, 900);
     if (!safeText) return;
 
-    const audio = await this.aiClient.synthesizeSpeech({
-      text: safeText,
-      model: this.config.GROQ_TTS_MODEL,
-      voice: this.config.GROQ_TTS_VOICE
-    });
+    const audio = await this.#synthesizeSpeechWithFallback(safeText);
     const pcmStream = transcodeToDiscordPcm(audio);
     const resource = createAudioResource(pcmStream, { inputType: StreamType.Raw, inlineVolume: true });
     resource.volume?.setVolume(1.18);
     session.player.play(resource);
     await entersState(session.player, AudioPlayerStatus.Playing, 10_000);
     await entersState(session.player, AudioPlayerStatus.Idle, 45_000).catch(() => {});
+  }
+
+  async #synthesizeSpeechWithFallback(text) {
+    try {
+      return await this.aiClient.synthesizeSpeech({
+        text,
+        model: this.config.GROQ_TTS_MODEL,
+        voice: this.config.GROQ_TTS_VOICE
+      });
+    } catch (error) {
+      console.error('Groq TTS failed, trying local TTS fallback:', normalizeProcessError(error));
+      return synthesizeLocalSpeech(text);
+    }
   }
 }
 
@@ -371,29 +380,73 @@ function transcodeToDiscordPcm(audioBuffer) {
   return ffmpeg.stdout;
 }
 
+async function synthesizeLocalSpeech(text) {
+  const voice = detectLocalTtsVoice(text);
+  const normalizedText = String(text ?? '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 650);
+
+  if (!normalizedText) return Buffer.alloc(0);
+
+  const attempts = [
+    {
+      command: 'espeak-ng',
+      args: ['-v', voice, '-s', '165', '-p', '48', '-a', '185', '--stdout', normalizedText]
+    },
+    {
+      command: 'espeak',
+      args: ['-v', voice, '-s', '165', '-p', '48', '-a', '185', '--stdout', normalizedText]
+    }
+  ];
+
+  let lastError = null;
+  for (const attempt of attempts) {
+    try {
+      return await runProcessBuffer(attempt.command, attempt.args);
+    } catch (error) {
+      lastError = error;
+      if (error?.code !== 'ENOENT') break;
+    }
+  }
+
+  throw lastError ?? new Error('No local TTS command is available.');
+}
+
+function detectLocalTtsVoice(text) {
+  const value = String(text ?? '').toLowerCase();
+  if (/[áéíóúüñ¿¡]/i.test(value)) return 'es';
+  const spanishHints = [' que ', ' para ', ' por ', ' usuario ', ' servidor ', ' ticket ', ' soporte ', ' gracias ', ' puedes '];
+  return spanishHints.some((hint) => ` ${value} `.includes(hint)) ? 'es' : 'en-us';
+}
+
 function runFfmpegBuffer(args, input) {
+  return runProcessBuffer('ffmpeg', args, input);
+}
+
+function runProcessBuffer(command, args, input = null) {
   return new Promise((resolve, reject) => {
-    const ffmpeg = spawn('ffmpeg', args, { stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn(command, args, { stdio: ['pipe', 'pipe', 'pipe'] });
     const stdout = [];
     const stderr = [];
 
-    ffmpeg.stdout.on('data', (chunk) => stdout.push(chunk));
-    ffmpeg.stderr.on('data', (chunk) => stderr.push(chunk));
-    ffmpeg.once('error', reject);
-    ffmpeg.once('close', (code) => {
+    child.stdout.on('data', (chunk) => stdout.push(chunk));
+    child.stderr.on('data', (chunk) => stderr.push(chunk));
+    child.once('error', reject);
+    child.once('close', (code) => {
       if (code === 0) {
         resolve(Buffer.concat(stdout));
         return;
       }
 
       const message = Buffer.concat(stderr).toString('utf8').trim();
-      reject(new Error(message || `ffmpeg exited with code ${code}`));
+      reject(new Error(message || `${command} exited with code ${code}`));
     });
 
-    ffmpeg.stdin.once('error', (error) => {
+    child.stdin.once('error', (error) => {
       if (error.code !== 'EPIPE') reject(error);
     });
-    ffmpeg.stdin.end(input);
+    child.stdin.end(input ?? undefined);
   });
 }
 
