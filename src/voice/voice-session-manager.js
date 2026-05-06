@@ -1,8 +1,9 @@
 import { spawn } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import WebSocket from 'ws';
 import {
   AudioPlayerStatus,
   createAudioPlayer,
@@ -22,6 +23,12 @@ const CHANNELS = 2;
 const STT_CHANNELS = 1;
 const BYTES_PER_SAMPLE = 2;
 const MIN_VOICE_RMS = 0.0035;
+const EDGE_TTS_TRUSTED_CLIENT_TOKEN = '6A5AA1D4EAFF4E9FB37E23D68491D6F4';
+const EDGE_TTS_OUTPUT_FORMAT = 'audio-24khz-48kbitrate-mono-mp3';
+const EDGE_TTS_CHROMIUM_VERSION = '143.0.3650.75';
+const EDGE_TTS_CHROMIUM_MAJOR = EDGE_TTS_CHROMIUM_VERSION.split('.', 1)[0];
+const EDGE_TTS_GEC_VERSION = `1-${EDGE_TTS_CHROMIUM_VERSION}`;
+const EDGE_TTS_USER_AGENT = `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${EDGE_TTS_CHROMIUM_MAJOR}.0.0.0 Safari/537.36 Edg/${EDGE_TTS_CHROMIUM_MAJOR}.0.0.0`;
 
 export class VoiceSessionManager {
   constructor({ storage, aiClient, config }) {
@@ -123,7 +130,7 @@ export class VoiceSessionManager {
     const opusStream = session.connection.receiver.subscribe(userId, {
       end: {
         behavior: EndBehaviorType.AfterSilence,
-        duration: 900
+        duration: this.config.VOICE_SILENCE_DURATION_MS
       }
     });
     const decoder = new prism.opus.Decoder({
@@ -264,7 +271,7 @@ export class VoiceSessionManager {
   }
 
   async #speak(session, text) {
-    const safeText = stripDiscordMentions(text).slice(0, 900);
+    const safeText = prepareVoiceSpeechText(text, this.config.VOICE_TTS_MAX_CHARS);
     if (!safeText) return;
 
     const audio = await this.#synthesizeSpeechWithFallback(safeText);
@@ -407,7 +414,8 @@ async function synthesizeLocalSpeech(text, config = {}) {
   let lastError = null;
   for (const provider of getLocalTtsProviderOrder(config)) {
     try {
-      if (provider === 'edge') return await synthesizeWithEdgeTts(normalizedText, config);
+      if (provider === 'edge-direct') return await synthesizeWithEdgeDirect(normalizedText, config);
+      if (provider === 'edge-cli') return await synthesizeWithEdgeTts(normalizedText, config);
       if (provider === 'piper') return await synthesizeWithPiper(normalizedText, config);
       if (provider === 'espeak') return await synthesizeWithEspeak(normalizedText);
     } catch (error) {
@@ -420,10 +428,89 @@ async function synthesizeLocalSpeech(text, config = {}) {
 
 function getLocalTtsProviderOrder(config) {
   const provider = config.VOICE_TTS_PROVIDER || 'auto';
-  if (provider === 'edge') return ['edge', 'piper', 'espeak'];
-  if (provider === 'piper') return ['piper', 'edge', 'espeak'];
+  if (provider === 'edge') return ['edge-direct', 'edge-cli', 'piper', 'espeak'];
+  if (provider === 'piper') return ['piper', 'edge-direct', 'edge-cli', 'espeak'];
   if (provider === 'espeak') return ['espeak'];
-  return ['edge', 'piper', 'espeak'];
+  return ['edge-direct', 'edge-cli', 'piper', 'espeak'];
+}
+
+function synthesizeWithEdgeDirect(text, config) {
+  return new Promise((resolve, reject) => {
+    const requestId = randomUUID().replace(/-/g, '');
+    const connectionId = randomUUID().replace(/-/g, '');
+    const endpoint = new URL('wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1');
+    endpoint.searchParams.set('TrustedClientToken', EDGE_TTS_TRUSTED_CLIENT_TOKEN);
+    endpoint.searchParams.set('ConnectionId', connectionId);
+    endpoint.searchParams.set('Sec-MS-GEC', generateEdgeSecMsGec());
+    endpoint.searchParams.set('Sec-MS-GEC-Version', EDGE_TTS_GEC_VERSION);
+
+    const chunks = [];
+    const ws = new WebSocket(endpoint.toString(), {
+      headers: buildEdgeWebsocketHeaders(),
+      perMessageDeflate: true
+    });
+    const timeout = setTimeout(() => {
+      try {
+        ws.close();
+      } catch {
+        // Closing a failed socket is best-effort only.
+      }
+      reject(new Error('Edge TTS direct timed out.'));
+    }, 10_000);
+
+    let settled = false;
+    const finish = (error = null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve(Buffer.concat(chunks));
+    };
+
+    ws.once('open', () => {
+      ws.send(buildEdgeSpeechConfigMessage());
+      ws.send(buildEdgeSsmlMessage({
+        text,
+        requestId,
+        voice: config.EDGE_TTS_VOICE || 'es-ES-ElviraNeural',
+        rate: config.EDGE_TTS_RATE || '+8%',
+        pitch: config.EDGE_TTS_PITCH || '+0Hz',
+        volume: config.EDGE_TTS_VOLUME || '+0%'
+      }));
+    });
+
+    ws.on('message', async (data, isBinary) => {
+      const payload = await websocketPayloadToBuffer(data).catch((error) => {
+        finish(error);
+        return null;
+      });
+      if (!payload || settled) return;
+
+      if (!isBinary) {
+        const message = payload.toString('utf8');
+        if (message.includes('Path:turn.end')) {
+          try {
+            ws.close();
+          } catch {
+            // The stream can already be closing.
+          }
+          finish();
+        }
+        return;
+      }
+
+      const audio = parseEdgeAudioFrame(payload);
+      if (audio?.length) chunks.push(audio);
+    });
+
+    ws.once('error', (error) => finish(error instanceof Error ? error : new Error('Edge TTS direct websocket failed.')));
+    ws.once('close', () => {
+      if (!settled) finish(chunks.length ? null : new Error('Edge TTS direct closed without audio.'));
+    });
+  });
 }
 
 async function synthesizeWithEdgeTts(text, config) {
@@ -447,6 +534,97 @@ async function synthesizeWithEdgeTts(text, config) {
   } finally {
     await rm(outputPath, { force: true }).catch(() => {});
   }
+}
+
+function buildEdgeSpeechConfigMessage() {
+  return [
+    `X-Timestamp:${edgeDateString()}`,
+    'Content-Type:application/json; charset=utf-8',
+    'Path:speech.config',
+    '',
+    JSON.stringify({
+      context: {
+        synthesis: {
+          audio: {
+            metadataoptions: {
+              sentenceBoundaryEnabled: 'false',
+              wordBoundaryEnabled: 'false'
+            },
+            outputFormat: EDGE_TTS_OUTPUT_FORMAT
+          }
+        }
+      }
+    })
+  ].join('\r\n');
+}
+
+function buildEdgeSsmlMessage({ text, requestId, voice, rate, pitch, volume }) {
+  return [
+    `X-RequestId:${requestId}`,
+    'Content-Type:application/ssml+xml',
+    `X-Timestamp:${edgeDateString()}Z`,
+    'Path:ssml',
+    '',
+    `<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="en-US"><voice name="${escapeXml(voice)}"><prosody rate="${escapeXml(rate)}" pitch="${escapeXml(pitch)}" volume="${escapeXml(volume)}">${escapeXml(text)}</prosody></voice></speak>`
+  ].join('\r\n');
+}
+
+function buildEdgeWebsocketHeaders() {
+  return {
+    Pragma: 'no-cache',
+    'Cache-Control': 'no-cache',
+    Origin: 'chrome-extension://jdiccldimpdaibmpdkjnbmckianbfold',
+    'User-Agent': EDGE_TTS_USER_AGENT,
+    'Accept-Encoding': 'gzip, deflate, br, zstd',
+    'Accept-Language': 'en-US,en;q=0.9',
+    Cookie: `muid=${randomUUID().replace(/-/g, '').toUpperCase()};`
+  };
+}
+
+function generateEdgeSecMsGec() {
+  const windowsEpochSeconds = 11_644_473_600;
+  const unixSeconds = Date.now() / 1000;
+  const roundedWindowsSeconds = unixSeconds + windowsEpochSeconds - ((unixSeconds + windowsEpochSeconds) % 300);
+  const ticks = Math.floor(roundedWindowsSeconds * 10_000_000);
+  return createHash('sha256')
+    .update(`${ticks}${EDGE_TTS_TRUSTED_CLIENT_TOKEN}`, 'ascii')
+    .digest('hex')
+    .toUpperCase();
+}
+
+function edgeDateString() {
+  const date = new Date();
+  const weekdays = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const pad = (value) => String(value).padStart(2, '0');
+  return `${weekdays[date.getUTCDay()]} ${months[date.getUTCMonth()]} ${pad(date.getUTCDate())} ${date.getUTCFullYear()} ${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}:${pad(date.getUTCSeconds())} GMT+0000 (Coordinated Universal Time)`;
+}
+
+async function websocketPayloadToBuffer(data) {
+  if (typeof data === 'string') return Buffer.from(data, 'utf8');
+  if (data instanceof ArrayBuffer) return Buffer.from(data);
+  if (ArrayBuffer.isView(data)) return Buffer.from(data.buffer, data.byteOffset, data.byteLength);
+  if (typeof Blob !== 'undefined' && data instanceof Blob) return Buffer.from(await data.arrayBuffer());
+  return Buffer.from(data);
+}
+
+function parseEdgeAudioFrame(frame) {
+  if (frame.length < 2) return null;
+  const headerLength = frame.readUInt16BE(0);
+  const audioStart = 2 + headerLength;
+  if (audioStart >= frame.length) return null;
+  const header = frame.subarray(2, audioStart).toString('utf8');
+  if (!header.includes('Path:audio')) return null;
+  return frame.subarray(audioStart + 2);
+}
+
+function escapeXml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
 }
 
 function synthesizeWithPiper(text, config) {
@@ -645,4 +823,22 @@ function stripDiscordMentions(text) {
     .replace(/<#\d+>/g, 'canal')
     .replace(/@everyone|@here/gi, '')
     .trim();
+}
+
+function prepareVoiceSpeechText(text, maxChars = 420) {
+  const cleaned = stripDiscordMentions(text)
+    .replace(/\s+/g, ' ')
+    .trim();
+  const limit = Math.max(120, Math.min(Number(maxChars) || 420, 900));
+  if (cleaned.length <= limit) return cleaned;
+
+  const slice = cleaned.slice(0, limit);
+  const splitAt = Math.max(
+    slice.lastIndexOf('. '),
+    slice.lastIndexOf('? '),
+    slice.lastIndexOf('! '),
+    slice.lastIndexOf('; '),
+    slice.lastIndexOf(', ')
+  );
+  return `${slice.slice(0, splitAt > 120 ? splitAt + 1 : limit).trim()} Te dejo el resto por escrito en el ticket.`;
 }
