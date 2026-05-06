@@ -1,5 +1,8 @@
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { readFile, rm } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import {
   AudioPlayerStatus,
   createAudioPlayer,
@@ -274,6 +277,10 @@ export class VoiceSessionManager {
   }
 
   async #synthesizeSpeechWithFallback(text) {
+    if (['edge', 'piper', 'espeak'].includes(this.config.VOICE_TTS_PROVIDER)) {
+      return synthesizeLocalSpeech(text, this.config);
+    }
+
     if (this.config.VOICE_TTS_LOCAL_FIRST) {
       return synthesizeLocalSpeech(text, this.config);
     }
@@ -386,7 +393,6 @@ function transcodeToDiscordPcm(audioBuffer) {
 }
 
 async function synthesizeLocalSpeech(text, config = {}) {
-  const voice = detectLocalTtsVoice(text);
   const normalizedText = String(text ?? '')
     .replace(/\s+/g, ' ')
     .trim()
@@ -394,30 +400,63 @@ async function synthesizeLocalSpeech(text, config = {}) {
 
   if (!normalizedText) return Buffer.alloc(0);
 
-  const attempts = [
-    buildPiperAttempt(normalizedText, config),
-    {
-      command: 'espeak-ng',
-      args: ['-v', voice, '-s', '165', '-p', '48', '-a', '185', '--stdout', normalizedText]
-    },
-    {
-      command: 'espeak',
-      args: ['-v', voice, '-s', '165', '-p', '48', '-a', '185', '--stdout', normalizedText]
-    }
-  ];
-
   let lastError = null;
-  for (const attempt of attempts) {
+  for (const provider of getLocalTtsProviderOrder(config)) {
     try {
-      return await runProcessBuffer(attempt.command, attempt.args, attempt.input);
+      if (provider === 'edge') return await synthesizeWithEdgeTts(normalizedText, config);
+      if (provider === 'piper') return await synthesizeWithPiper(normalizedText, config);
+      if (provider === 'espeak') return await synthesizeWithEspeak(normalizedText);
     } catch (error) {
       lastError = error;
-      if (attempt.optional || error?.code === 'ENOENT') continue;
-      break;
     }
   }
 
   throw lastError ?? new Error('No local TTS command is available.');
+}
+
+function getLocalTtsProviderOrder(config) {
+  const provider = config.VOICE_TTS_PROVIDER || 'auto';
+  if (provider === 'edge') return ['edge', 'piper', 'espeak'];
+  if (provider === 'piper') return ['piper', 'edge', 'espeak'];
+  if (provider === 'espeak') return ['espeak'];
+  return ['edge', 'piper', 'espeak'];
+}
+
+async function synthesizeWithEdgeTts(text, config) {
+  const outputPath = path.join(os.tmpdir(), `nexadesk-edge-${randomUUID()}.mp3`);
+  try {
+    await runProcessBuffer(config.EDGE_TTS_BIN || 'edge-tts', [
+      '--voice',
+      config.EDGE_TTS_VOICE || 'es-ES-ElviraNeural',
+      '--rate',
+      config.EDGE_TTS_RATE || '+8%',
+      '--pitch',
+      config.EDGE_TTS_PITCH || '+0Hz',
+      '--volume',
+      config.EDGE_TTS_VOLUME || '+0%',
+      '--text',
+      text,
+      '--write-media',
+      outputPath
+    ]);
+    return await readFile(outputPath);
+  } finally {
+    await rm(outputPath, { force: true }).catch(() => {});
+  }
+}
+
+function synthesizeWithPiper(text, config) {
+  const attempt = buildPiperAttempt(text, config);
+  return runProcessBuffer(attempt.command, attempt.args, attempt.input);
+}
+
+function synthesizeWithEspeak(text) {
+  const voice = detectLocalTtsVoice(text);
+  return runProcessBuffer('espeak-ng', ['-v', voice, '-s', '165', '-p', '48', '-a', '185', '--stdout', text])
+    .catch((error) => {
+      if (error?.code !== 'ENOENT') throw error;
+      return runProcessBuffer('espeak', ['-v', voice, '-s', '165', '-p', '48', '-a', '185', '--stdout', text]);
+    });
 }
 
 function buildPiperAttempt(text, config) {
@@ -444,8 +483,7 @@ function buildPiperAttempt(text, config) {
   return {
     command: config.PIPER_TTS_BIN || 'piper',
     args,
-    input: `${text}\n`,
-    optional: true
+    input: `${text}\n`
   };
 }
 

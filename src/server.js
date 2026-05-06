@@ -848,6 +848,19 @@ function renderLogin(config) {
     @keyframes spin { to { transform:rotate(360deg); } }
     @media (prefers-reduced-motion:reduce) { .banner-frame,.banner-frame::before,.banner-frame img { animation:none; transition:none; } }
     @media (max-width:860px) { main { grid-template-columns:1fr; align-items:start; padding-top:28px; } .feature-row { grid-template-columns:1fr; } }
+    @media (max-width:520px) {
+      main { width:100%; min-height:100dvh; padding:18px 12px 28px; gap:16px; }
+      .brand { margin-bottom:20px; }
+      .brand-logo { width:40px; height:40px; }
+      h1 { font-size:clamp(38px, 14vw, 58px); }
+      p { font-size:15px; }
+      .feature-row { margin-top:22px; }
+      .login-card { padding:16px; border-radius:14px; }
+      .brand-banner-frame { max-height:120px; }
+      .brand-banner-frame img { height:100%; object-fit:cover; }
+      .status-line { align-items:flex-start; }
+      .loader { width:calc(100% - 24px); }
+    }
   </style>
 </head>
 <body>
@@ -969,6 +982,7 @@ function renderDashboard({ session, guilds, tickets, stats }) {
   <style>
     :root { color-scheme:dark; --bg:#050505; --panel:#101010; --panel-2:#181818; --line:#343434; --soft-line:rgba(255,255,255,.1); --text:#ffffff; --muted:#a8a8a8; --paper:#ffffff; --ink:#050505; --ok:#ffffff; --danger:#ff5f57; }
     * { box-sizing:border-box; }
+    img,svg,video { max-width:100%; }
     html { scroll-behavior:smooth; }
     body { margin:0; font-family:"Segoe UI",ui-sans-serif,system-ui,sans-serif; background:radial-gradient(circle at 10% 0%, rgba(255,255,255,.12), transparent 30%), repeating-linear-gradient(90deg, rgba(255,255,255,.035) 0 1px, transparent 1px 72px), repeating-linear-gradient(0deg, rgba(255,255,255,.025) 0 1px, transparent 1px 72px), var(--bg); color:var(--text); }
     .app-shell { width:min(1440px, calc(100% - 40px)); margin:0 auto; display:grid; grid-template-columns:220px minmax(0,1fr); gap:22px; padding:22px 0 52px; }
@@ -1062,7 +1076,7 @@ function renderDashboard({ session, guilds, tickets, stats }) {
     .step { display:grid; place-items:center; width:30px; height:30px; border-radius:9px; color:#050505; background:#fff; font-weight:900; flex:0 0 auto; }
     form { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
     label { display:grid; gap:6px; font-size:14px; }
-    input,select,textarea,button { width:100%; border-radius:10px; border:1px solid var(--line); background:#080808; color:var(--text); padding:11px 12px; font:inherit; transition:border-color .22s ease, background .22s ease, transform .22s ease, box-shadow .22s ease; }
+    input,select,textarea,button { width:100%; min-width:0; border-radius:10px; border:1px solid var(--line); background:#080808; color:var(--text); padding:11px 12px; font:inherit; transition:border-color .22s ease, background .22s ease, transform .22s ease, box-shadow .22s ease; }
     input:focus,select:focus,textarea:focus { outline:0; border-color:rgba(255,255,255,.72); box-shadow:0 0 0 4px rgba(255,255,255,.08); background:#0d0d0d; }
     input[type="color"] { min-height:44px; padding:5px; cursor:pointer; }
     textarea { min-height:140px; resize:vertical; grid-column:1 / -1; }
@@ -1155,7 +1169,7 @@ function renderDashboard({ session, guilds, tickets, stats }) {
     .assistant-form input { margin:0; background:#f3f3ee; color:#050505; border-color:rgba(0,0,0,.18); }
     .assistant-form input:focus { background:#fff; border-color:#050505; box-shadow:0 0 0 4px rgba(0,0,0,.08); }
     .assistant-form button { width:auto; min-width:88px; }
-    .loading { position:fixed; inset:0; z-index:20; display:grid; place-items:center; background:rgba(5,8,10,.9); backdrop-filter:blur(12px); transition:opacity .35s ease, visibility .35s ease; }
+    .loading { position:fixed; inset:0; z-index:60; display:grid; place-items:center; background:rgba(5,8,10,.9); backdrop-filter:blur(12px); transition:opacity .35s ease, visibility .35s ease; }
     .loading.is-hidden { opacity:0; visibility:hidden; }
     .loader { width:min(420px, calc(100% - 32px)); border:1px solid var(--line); background:#0b1216; border-radius:14px; padding:24px; text-align:center; }
     .pulse { width:46px; height:46px; margin:0 auto 16px; border-radius:50%; border:2px solid rgba(255,255,255,.18); border-top-color:#fff; animation:spin 1s linear infinite; }
@@ -1168,7 +1182,57 @@ function renderDashboard({ session, guilds, tickets, stats }) {
     @keyframes spin { to { transform:rotate(360deg); } }
     @media (prefers-reduced-motion:reduce) { .banner-frame,.banner-frame::before,.banner-frame img { animation:none; transition:none; } }
     @media (max-width:1120px) { .app-shell,.workspace,.topbar,.command-center,.panel-builder { grid-template-columns:1fr; } .sidebar { position:relative; height:auto; top:auto; } .nav-foot { position:static; margin-top:18px; } .panel-preview-wrap { position:relative; top:auto; } }
-    @media (max-width:760px) { form,.control-grid,.stats,.server-status,.mini-grid,.panel-fields,.form-section,.readiness-checklist,.recommendation-grid { grid-template-columns:1fr; } label,button { margin-top:12px; } .app-shell { width:min(100% - 24px, 1440px); } .assistant-launcher { right:12px; bottom:12px; min-width:auto; } .assistant-panel { right:12px; bottom:74px; width:calc(100% - 24px); } }
+    @media (max-width:760px) {
+      body { overflow-x:hidden; background-size:auto; }
+      .app-shell { width:100%; gap:12px; padding:0 10px 96px; }
+      .sidebar { position:sticky; top:0; z-index:40; height:auto; margin:0 -10px; padding:10px; display:flex; align-items:center; gap:8px; overflow-x:auto; border-radius:0 0 18px 18px; background:rgba(5,5,5,.92); backdrop-filter:blur(16px); }
+      .nav-brand { flex:0 0 auto; margin:0 6px 0 0; }
+      .nav-brand strong { display:none; }
+      .brand-logo { width:36px; height:36px; border-radius:10px; }
+      .nav-link { flex:0 0 auto; display:inline-flex; align-items:center; margin:0; padding:9px 11px; white-space:nowrap; font-size:14px; }
+      .nav-link:hover,.nav-link.is-active { transform:none; }
+      .nav-foot { flex:0 0 auto; position:static; margin:0 0 0 auto; }
+      .nav-foot form { display:block; }
+      .nav-foot button { width:max-content; margin:0; padding:9px 11px; white-space:nowrap; font-size:13px; }
+      main { width:100%; }
+      .dashboard-banner-frame { height:86px; margin-top:10px; }
+      header,.hero-panel,.surface,.active-server,.control-card { padding:14px; border-radius:14px; }
+      h1 { font-size:clamp(31px, 12vw, 44px); }
+      h2 { font-size:18px; }
+      p { font-size:14px; }
+      .topbar,.workspace,.command-center,.panel-builder { gap:12px; margin-bottom:12px; }
+      .view-heading,.section-heading,.ticket-tools,.transcript-head { display:grid; align-items:start; gap:10px; }
+      .active-server { margin-bottom:12px; }
+      form,.control-grid,.stats,.server-status,.mini-grid,.panel-fields,.form-section,.readiness-checklist,.recommendation-grid { grid-template-columns:1fr; }
+      label,button { margin-top:0; }
+      textarea { min-height:118px; }
+      .form-section { padding:10px; }
+      .install-banner { grid-template-columns:1fr; }
+      .install-banner a { width:100%; }
+      .guild-list,.component-list,.component-picker,.panel-stack { max-height:320px; }
+      .guild-pill { padding:11px; }
+      .guild-pill:hover,.panel-card:hover { transform:none; }
+      .preview-message { grid-template-columns:34px minmax(0,1fr); gap:9px; }
+      .preview-avatar { width:34px; height:34px; }
+      .embed-preview { max-width:100%; }
+      .embed-media { grid-template-columns:1fr; }
+      table { display:block; width:100%; overflow-x:auto; white-space:nowrap; -webkit-overflow-scrolling:touch; }
+      th,td { padding:10px; }
+      .transcript-actions { flex-wrap:wrap; }
+      .toast { left:12px; right:12px; bottom:82px; max-width:none; }
+      .assistant-launcher { right:12px; bottom:12px; min-width:0; padding:11px 13px; }
+      .assistant-panel { left:8px; right:8px; bottom:72px; width:auto; max-height:calc(100dvh - 86px); border-radius:16px; }
+      .assistant-form { grid-template-columns:1fr; }
+      .assistant-form button { width:100%; }
+      .loading { min-height:100dvh; }
+    }
+    @media (max-width:420px) {
+      .server-status,.stats { gap:8px; }
+      .stat strong { font-size:24px; }
+      .assistant-launcher strong { display:none; }
+      .assistant-launcher { min-width:auto; border-radius:50%; padding:10px; }
+      .assistant-launcher span { margin:0; }
+    }
   </style>
 </head>
 <body>

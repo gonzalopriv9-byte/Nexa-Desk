@@ -47,7 +47,13 @@ const schema = z.object({
   AI_AUTO_REPLY: envBoolean.default(true),
   VOICE_STT_ENABLED: envBoolean.default(true),
   VOICE_TTS_ENABLED: envBoolean.default(true),
+  VOICE_TTS_PROVIDER: z.enum(['auto', 'groq', 'edge', 'piper', 'espeak']).default('auto'),
   VOICE_TTS_LOCAL_FIRST: envBoolean.default(false),
+  EDGE_TTS_BIN: z.string().default('/home/pi/nexadesk/vendor/edge-tts-venv/bin/edge-tts'),
+  EDGE_TTS_VOICE: z.string().default('es-ES-ElviraNeural'),
+  EDGE_TTS_RATE: z.string().default('+8%'),
+  EDGE_TTS_PITCH: z.string().default('+0Hz'),
+  EDGE_TTS_VOLUME: z.string().default('+0%'),
   VOICE_MAX_RECORDING_MS: z.coerce.number().int().min(2_000).max(30_000).default(12_000),
   VOICE_MIN_RECORDING_MS: z.coerce.number().int().min(250).max(5_000).default(900)
 });
