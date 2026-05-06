@@ -268,6 +268,10 @@ export class VoiceSessionManager {
     if (!safeText) return;
 
     const audio = await this.#synthesizeSpeechWithFallback(safeText);
+    if (!audio?.length) {
+      throw new Error('TTS did not return audio bytes.');
+    }
+    console.log(`Voice TTS ready using ${this.config.VOICE_TTS_PROVIDER || 'auto'} (${audio.length} bytes).`);
     const pcmStream = transcodeToDiscordPcm(audio);
     const resource = createAudioResource(pcmStream, { inputType: StreamType.Raw, inlineVolume: true });
     resource.volume?.setVolume(1.18);
