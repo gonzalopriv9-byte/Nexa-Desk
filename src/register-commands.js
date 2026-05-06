@@ -97,6 +97,75 @@ const commands = [
     .setDescription('Muestra estadisticas globales de NexaDesk.')
     .toJSON(),
   new SlashCommandBuilder()
+    .setName('seguridad')
+    .setDescription('Configura NexaDesk Security Guard para anti-raid y moderacion preventiva.')
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName('estado')
+        .setDescription('Muestra la configuracion de seguridad del servidor.')
+    )
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName('configurar')
+        .setDescription('Activa o ajusta el sistema de seguridad del servidor.')
+        .addStringOption((option) =>
+          option
+            .setName('nivel')
+            .setDescription('Nivel de proteccion recomendado.')
+            .addChoices(
+              { name: 'Bajo', value: 'low' },
+              { name: 'Intermedio', value: 'medium' },
+              { name: 'Alto', value: 'high' }
+            )
+            .setRequired(true)
+        )
+        .addChannelOption((option) =>
+          option
+            .setName('canal_logs')
+            .setDescription('Canal donde NexaDesk enviara alertas de seguridad.')
+            .addChannelTypes(ChannelType.GuildText)
+            .setRequired(false)
+        )
+        .addIntegerOption((option) =>
+          option
+            .setName('edad_minima_dias')
+            .setDescription('Edad minima de cuenta para anti-alts.')
+            .setMinValue(0)
+            .setMaxValue(90)
+            .setRequired(false)
+        )
+        .addBooleanOption((option) =>
+          option
+            .setName('antiflood')
+            .setDescription('Borrar spam rapido y aplicar timeout si se repite.')
+            .setRequired(false)
+        )
+        .addBooleanOption((option) =>
+          option
+            .setName('antibots')
+            .setDescription('Bloquear bots no verificados.')
+            .setRequired(false)
+        )
+        .addBooleanOption((option) =>
+          option
+            .setName('antialts')
+            .setDescription('Bloquear cuentas demasiado nuevas.')
+            .setRequired(false)
+        )
+        .addBooleanOption((option) =>
+          option
+            .setName('antinuke')
+            .setDescription('Vigilar audit logs contra acciones masivas.')
+            .setRequired(false)
+        )
+    )
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName('desactivar')
+        .setDescription('Desactiva Security Guard en este servidor.')
+    )
+    .toJSON(),
+  new SlashCommandBuilder()
     .setName('activarpremium')
     .setDescription('Activa todas las funciones premium para un servidor.')
     .addStringOption((option) =>

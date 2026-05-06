@@ -7,12 +7,13 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { GroqClient } from './ai/groq-client.js';
 import { normalizeTicketComponent } from './panel-options.js';
+import { normalizeSecurityConfig, summarizeSecurityConfig } from './security.js';
 import { buildTranscriptFileName, buildTranscriptText } from './transcripts.js';
 
 const DISCORD_API = 'https://discord.com/api/v10';
 const MANAGE_GUILD = 0x20n;
 const ADMINISTRATOR = 0x8n;
-const BOT_INVITE_PERMISSIONS = '322030608';
+const BOT_INVITE_PERMISSIONS = '1099780189334';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ASSETS_DIR = path.resolve(__dirname, '..', 'assets');
 
@@ -240,14 +241,12 @@ export function createServer({ config, storage, bot, events }) {
 
   app.post('/api/guilds/:guildId', requireGuildAccess, asyncHandler(async (req, res) => {
     const guild = req.session.guilds.find((item) => item.id === req.params.guildId);
-    const updated = await storage.upsertGuildConfig(req.params.guildId, {
-      guildName: req.body.guildName || guild?.name,
-      ticketCategoryId: req.body.ticketCategoryId,
-      ticketCategoryName: req.body.ticketCategoryName,
-      staffRoleId: req.body.staffRoleId,
-      serverPrompt: req.body.serverPrompt,
-      serverInfo: req.body.serverInfo
-    });
+    const patch = { guildName: req.body.guildName || guild?.name };
+    for (const key of ['ticketCategoryId', 'ticketCategoryName', 'staffRoleId', 'serverPrompt', 'serverInfo']) {
+      if (Object.prototype.hasOwnProperty.call(req.body, key)) patch[key] = req.body[key];
+    }
+    if (req.body.security) patch.security = normalizeSecurityConfig(req.body.security);
+    const updated = await storage.upsertGuildConfig(req.params.guildId, patch);
     res.json(updated);
   }));
 
@@ -449,6 +448,7 @@ function enrichDashboardStats(stats, guilds) {
     notInstalledGuilds: Math.max(guilds.length - installedGuilds, 0),
     escalationReadyGuilds: guilds.filter((guild) => guild.staffRoleId).length,
     aiReadyGuilds: guilds.filter((guild) => guild.serverPrompt || guild.serverInfo).length,
+    securityReadyGuilds: guilds.filter((guild) => normalizeSecurityConfig(guild.security).enabled).length,
     panels: guilds.reduce((total, guild) => total + (guild.panels?.length ?? 0), 0)
   };
 }
@@ -492,7 +492,10 @@ function buildEmptyDashboardStats() {
     panels: 0,
     transcriptMessages: 0,
     escalationReadyGuilds: 0,
-    aiReadyGuilds: 0
+    aiReadyGuilds: 0,
+    securityReadyGuilds: 0,
+    voiceRooms: 0,
+    proGuilds: 0
   };
 }
 
@@ -559,9 +562,9 @@ async function buildDashboardAssistantReply({ config, message, guild, stats, act
       system: [
         'Eres el copiloto de la dashboard de NexaDesk.',
         'Responde en espanol claro, breve y accionable.',
-        'Ayuda a configurar servidores Discord para tickets con IA, paneles, componentes, staff, voz Pro con STT/TTS y transcripciones.',
+        'Ayuda a configurar servidores Discord para tickets con IA, paneles, componentes, staff, voz Pro con STT/TTS, transcripciones y Security Guard.',
         'La dashboard real tiene estas secciones: Resumen, Servidores, Configuracion, Componentes, Paneles y Tickets.',
-        'En Configuracion se elige categoria, rol staff, prompt del servidor e informacion del servidor.',
+        'En Configuracion se elige categoria, rol staff, prompt del servidor, informacion del servidor y Security Guard.',
         'En Componentes se crean opciones del menu con preguntas previas, primer mensaje y modo Texto o Voz Pro.',
         'En Paneles se publica el embed, boton o menu en un canal de Discord; los botones tambien pueden abrir tickets de voz Pro.',
         'En Tickets se ven tickets y transcripciones guardadas.',
@@ -610,6 +613,8 @@ function buildDashboardAssistantFallback({ message, guild, stats, activeView, ac
     reply += guild.components?.length
       ? 'Para publicar un panel, ve a Paneles, elige canal, modo boton o menu y revisa la previsualizacion antes de publicar.'
       : 'Si quieres un menu desplegable, crea primero opciones en Componentes y despues publica el panel desde Paneles.';
+  } else if (lower.includes('seguridad') || lower.includes('security') || lower.includes('anti') || lower.includes('raid') || lower.includes('flood') || lower.includes('nuke')) {
+    reply += 'Ve a Configuracion y baja hasta Security Guard. Puedes activar nivel intermedio, elegir un canal de logs y guardar. Si Discord bloquea acciones, actualiza permisos desde el boton superior.';
   } else if (lower.includes('transcrip') || lower.includes('ticket')) {
     reply += 'En Tickets puedes abrir cada transcripcion guardada y descargarla en TXT. Si no aparecen tickets, abre uno desde un panel o una categoria configurada.';
   } else if (lower.includes('staff') || lower.includes('rol') || lower.includes('escalar')) {
@@ -683,6 +688,23 @@ function suggestDashboardActions(message, guild) {
     add('Publicar Panel', 'panels');
   }
 
+  if (isFillSecurityRequest(lower)) {
+    add('Rellenar Security Guard', 'settings', {
+      type: 'fill',
+      toast: 'He preparado una configuracion de seguridad recomendada. Revisa y pulsa Guardar Security Guard.',
+      fields: {
+        securityEnabled: 'true',
+        securityLevel: lower.includes('alto') || lower.includes('raid') ? 'high' : 'medium',
+        securityMinAccountAgeDays: lower.includes('alto') || lower.includes('raid') ? '7' : '3',
+        securityAntiFlood: 'true',
+        securityAntiBot: 'true',
+        securityAntiAlt: 'true',
+        securityAntiNuke: 'true'
+      }
+    });
+    add('Abrir Configuracion', 'settings');
+  }
+
   if (wantsAutofill(lower) && !actions.some((action) => action.type === 'fill')) {
     add('Rellenar prompt recomendado', 'settings', {
       type: 'fill',
@@ -696,7 +718,7 @@ function suggestDashboardActions(message, guild) {
   }
 
   if (lower.includes('servidor') || lower.includes('invitar') || lower.includes('instalar')) add('Ir a Servidores', 'servers');
-  if (lower.includes('ia') || lower.includes('prompt') || lower.includes('contexto') || lower.includes('staff') || lower.includes('rol')) add('Abrir Configuracion', 'settings');
+  if (lower.includes('ia') || lower.includes('prompt') || lower.includes('contexto') || lower.includes('staff') || lower.includes('rol') || lower.includes('seguridad') || lower.includes('security') || lower.includes('anti') || lower.includes('raid') || lower.includes('flood') || lower.includes('nuke')) add('Abrir Configuracion', 'settings');
   if (lower.includes('componente') || lower.includes('pregunta') || lower.includes('menu')) add('Crear Componentes', 'components');
   if (lower.includes('panel') || lower.includes('boton') || lower.includes('publicar')) add('Publicar Panel', 'panels');
   if (lower.includes('ticket') || lower.includes('transcrip')) add('Ver Tickets', 'tickets');
@@ -727,6 +749,11 @@ function isFillComponentRequest(lower) {
 function isFillPanelRequest(lower) {
   return wantsAutofill(lower) &&
     (lower.includes('panel') || lower.includes('embed') || lower.includes('boton'));
+}
+
+function isFillSecurityRequest(lower) {
+  return wantsAutofill(lower) &&
+    (lower.includes('seguridad') || lower.includes('security') || lower.includes('anti') || lower.includes('raid') || lower.includes('flood') || lower.includes('nuke'));
 }
 
 function wantsAutofill(lower) {
@@ -774,6 +801,7 @@ function getGuildMissingSteps(guild = {}) {
   if (!guild.ticketCategoryId) steps.push({ label: 'elegir una categoria de tickets', actionLabel: 'Configurar Categoria', view: 'settings' });
   if (!guild.staffRoleId) steps.push({ label: 'asignar el rol de staff', actionLabel: 'Elegir Staff', view: 'settings' });
   if (!guild.serverPrompt && !guild.serverInfo) steps.push({ label: 'anadir contexto para la IA', actionLabel: 'Escribir Contexto IA', view: 'settings' });
+  if (!normalizeSecurityConfig(guild.security).enabled) steps.push({ label: 'activar Security Guard', actionLabel: 'Configurar Seguridad', view: 'settings' });
   if (!(guild.components?.length)) steps.push({ label: 'crear componentes para menus', actionLabel: 'Crear Componentes', view: 'components' });
   if (!(guild.panels?.length)) steps.push({ label: 'publicar un panel de tickets', actionLabel: 'Publicar Panel', view: 'panels' });
   return steps;
@@ -786,6 +814,7 @@ function summarizeGuildForAssistant(guild = {}) {
     configured: Boolean(guild.ticketCategoryId),
     hasStaffRole: Boolean(guild.staffRoleId),
     hasAiContext: Boolean(guild.serverPrompt || guild.serverInfo),
+    security: summarizeSecurityConfig(normalizeSecurityConfig(guild.security)),
     panels: guild.panels?.length ?? 0,
     components: guild.components?.length ?? 0
   };
@@ -968,7 +997,7 @@ function renderDashboard({ session, guilds, tickets, stats }) {
 
   const readinessGuilds = stats.installedGuilds || stats.totalGuilds;
   const healthScore = readinessGuilds
-    ? Math.round(((stats.configuredGuilds + stats.escalationReadyGuilds + stats.aiReadyGuilds) / (readinessGuilds * 3)) * 100)
+    ? Math.round(((stats.configuredGuilds + stats.escalationReadyGuilds + stats.aiReadyGuilds + (stats.securityReadyGuilds || 0)) / (readinessGuilds * 4)) * 100)
     : 0;
 
   return `<!doctype html>
@@ -1042,7 +1071,7 @@ function renderDashboard({ session, guilds, tickets, stats }) {
     .section-heading p { margin:4px 0 0; }
     .active-server { padding:18px; margin-bottom:16px; background:linear-gradient(135deg, rgba(255,255,255,.075), rgba(255,255,255,.025)); }
     .active-server select { margin-top:12px; }
-    .server-status { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:8px; margin-top:12px; }
+    .server-status { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:8px; margin-top:12px; }
     .server-status div { border:1px solid var(--soft-line); border-radius:10px; padding:10px; background:rgba(5,8,10,.42); }
     .server-status strong { display:block; font-size:13px; margin-top:4px; }
     .guild-list { display:grid; gap:8px; max-height:560px; overflow:auto; padding-right:4px; }
@@ -1280,6 +1309,7 @@ function renderDashboard({ session, guilds, tickets, stats }) {
         <div><span>Staff</span><strong id="activeStaff">Sin configurar</strong></div>
         <div><span>Paneles</span><strong id="activePanels">0</strong></div>
         <div><span>Voz Pro</span><strong id="activeVoice">Free</strong></div>
+        <div><span>Seguridad</span><strong id="activeSecurity">Off</strong></div>
       </div>
       <div class="install-banner" id="installBanner" hidden>
         <div><strong id="installTitle">NexaDesk no esta instalado en este servidor.</strong><p id="installText">Al seleccionarlo puedes invitar el bot directamente con permisos recomendados.</p></div>
@@ -1301,7 +1331,7 @@ function renderDashboard({ session, guilds, tickets, stats }) {
           <article class="insight-card">
             <p class="kicker">Salud global</p>
             <strong id="healthScore">${healthScore}%</strong>
-            <p>Promedio de servidores instalados con categoria, staff y contexto IA configurados.</p>
+            <p>Promedio de servidores instalados con categoria, staff, contexto IA y seguridad configurados.</p>
             <div class="meter" style="--value:${healthScore}%"><span></span></div>
           </article>
           <article class="insight-card">
@@ -1310,6 +1340,7 @@ function renderDashboard({ session, guilds, tickets, stats }) {
               <div><strong id="panelCount">${stats.panels}</strong><small>Paneles publicados</small></div>
               <div><strong id="aiReadyCount">${stats.aiReadyGuilds}</strong><small>Servidores con IA lista</small></div>
               <div><strong id="proGuildCount">${stats.proGuilds ?? 0}</strong><small>Servidores Pro Voice</small></div>
+              <div><strong id="securityReadyCount">${stats.securityReadyGuilds ?? 0}</strong><small>Servidores protegidos</small></div>
             </div>
           </article>
           <article class="insight-card">
@@ -1323,6 +1354,7 @@ function renderDashboard({ session, guilds, tickets, stats }) {
         </section>
         <div class="quick-actions" aria-label="Acciones rapidas">
           <button class="quick-action" type="button" data-go-view="settings">Configurar IA y staff</button>
+          <button class="quick-action" type="button" data-go-view="settings">Activar seguridad</button>
           <button class="quick-action" type="button" data-go-view="components">Crear menu de tickets</button>
           <button class="quick-action" type="button" data-go-view="panels">Publicar panel</button>
           <button class="quick-action" type="button" data-go-view="tickets">Ver transcripciones</button>
@@ -1366,6 +1398,40 @@ function renderDashboard({ session, guilds, tickets, stats }) {
             <select id="categoryGuildId" hidden required>${guildOptions}</select>
             <label class="span-2">Nombre de categoria<input id="categoryName" placeholder="NexaDesk Tickets" required></label>
             <button class="span-2" type="submit">Crear y activar categoria</button>
+          </form>
+        </article>
+        <article class="control-card wide">
+          <div class="card-head"><span class="step">3</span><div><h2>Security Guard</h2><p>Activa proteccion anti-flood, anti-alts, anti-bots y anti-nuke usando audit logs.</p></div></div>
+          <form onsubmit="return saveSecurity(event)">
+            <label>Estado<select id="securityEnabled">
+              <option value="false">Desactivado</option>
+              <option value="true">Activo</option>
+            </select></label>
+            <label>Nivel<select id="securityLevel">
+              <option value="low">Bajo - suave</option>
+              <option value="medium">Intermedio - recomendado</option>
+              <option value="high">Alto - lanzamiento/raid</option>
+            </select></label>
+            <label>Canal de logs<select id="securityLogChannelId"></select></label>
+            <label>Edad minima de cuenta<input id="securityMinAccountAgeDays" type="number" min="0" max="90" value="3"></label>
+            <label>Anti-flood<select id="securityAntiFlood">
+              <option value="true">Activo</option>
+              <option value="false">Desactivado</option>
+            </select></label>
+            <label>Anti-bots<select id="securityAntiBot">
+              <option value="true">Activo</option>
+              <option value="false">Desactivado</option>
+            </select></label>
+            <label>Anti-alts<select id="securityAntiAlt">
+              <option value="true">Activo</option>
+              <option value="false">Desactivado</option>
+            </select></label>
+            <label>Anti-nuke<select id="securityAntiNuke">
+              <option value="true">Activo</option>
+              <option value="false">Desactivado</option>
+            </select></label>
+            <p class="notice span-2">Para anti-nuke completo, actualiza permisos del bot con View Audit Log, Manage Messages, Moderate Members, Kick Members y Ban Members.</p>
+            <button class="span-2" type="submit">Guardar Security Guard</button>
           </form>
         </article>
       </section>
@@ -1527,12 +1593,13 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       <button class="assistant-close secondary-button" id="assistantClose" type="button" aria-label="Cerrar asistente">x</button>
     </div>
     <div class="assistant-body" id="assistantBody">
-      <article class="assistant-message">Dime que quieres preparar y te llevo directo. Puedo ayudarte con IA, staff, paneles, menus y transcripciones.</article>
+      <article class="assistant-message">Dime que quieres preparar y te llevo directo. Puedo ayudarte con IA, staff, seguridad, paneles, menus y transcripciones.</article>
     </div>
     <div class="assistant-quick" aria-label="Preguntas rapidas">
       <button class="assistant-chip" type="button" data-assistant-prompt="Que me falta para dejar este servidor listo?">Que falta?</button>
       <button class="assistant-chip" type="button" data-assistant-prompt="Como creo un panel con menu desplegable?">Panel con menu</button>
       <button class="assistant-chip" type="button" data-assistant-prompt="Como hago que la IA escale al staff?">Escalado staff</button>
+      <button class="assistant-chip" type="button" data-assistant-prompt="Mete una configuracion de seguridad recomendada">Seguridad</button>
       <button class="assistant-chip" type="button" data-assistant-prompt="Donde veo las transcripciones?">Transcripciones</button>
     </div>
     <form class="assistant-form" id="assistantForm">
@@ -1631,7 +1698,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
     function renderStats() {
       const stats = state.stats;
       const readinessGuilds = stats.installedGuilds || stats.totalGuilds;
-      const health = readinessGuilds ? Math.round(((stats.configuredGuilds + stats.escalationReadyGuilds + stats.aiReadyGuilds) / (readinessGuilds * 3)) * 100) : 0;
+      const health = readinessGuilds ? Math.round(((stats.configuredGuilds + stats.escalationReadyGuilds + stats.aiReadyGuilds + (stats.securityReadyGuilds || 0)) / (readinessGuilds * 4)) * 100) : 0;
       document.querySelector('#guildCount').textContent = stats.totalGuilds;
       document.querySelector('#guildInstallMeta').textContent = (stats.installedGuilds || 0) + ' con bot - ' + (stats.notInstalledGuilds || 0) + ' por invitar';
       document.querySelector('#ticketCount').textContent = stats.totalTickets;
@@ -1643,6 +1710,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       document.querySelector('#transcriptCount').textContent = stats.transcriptMessages;
       document.querySelector('#staffReadyCount').textContent = stats.escalationReadyGuilds;
       document.querySelector('#proGuildCount').textContent = stats.proGuilds || 0;
+      document.querySelector('#securityReadyCount').textContent = stats.securityReadyGuilds || 0;
       document.querySelector('#voiceRoomCount').textContent = stats.voiceRooms || 0;
     }
     async function refreshStats() {
@@ -1696,6 +1764,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
         { key: 'category', label: 'Categoria de tickets', done: Boolean(guild.ticketCategoryId), view: 'settings' },
         { key: 'staff', label: 'Rol staff', done: Boolean(guild.staffRoleId), view: 'settings' },
         { key: 'context', label: 'Contexto IA', done: Boolean(guild.serverPrompt || guild.serverInfo), view: 'settings' },
+        { key: 'security', label: 'Security Guard', done: Boolean(guild.security?.enabled), view: 'settings' },
         { key: 'components', label: 'Componentes', done: Boolean(guild.components?.length), view: 'components' },
         { key: 'panels', label: 'Panel publicado', done: Boolean(guild.panels?.length), view: 'panels' }
       ];
@@ -1704,6 +1773,25 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       const plan = String(guild.plan || 'free').toUpperCase();
       const enabled = Boolean(guild.voiceSupportEnabled || ['PRO', 'ENTERPRISE', 'PREMIUM'].includes(plan));
       return enabled ? 'Pro activo' : plan === 'FREE' ? 'Free' : plan;
+    }
+    function normalizeSecurity(guild = {}) {
+      const raw = guild.security || {};
+      return {
+        enabled: Boolean(raw.enabled),
+        level: raw.level || 'medium',
+        logChannelId: raw.logChannelId || '',
+        minAccountAgeDays: Number.isFinite(Number(raw.minAccountAgeDays)) ? Number(raw.minAccountAgeDays) : 3,
+        antiFlood: raw.antiFlood !== false,
+        antiBot: raw.antiBot !== false,
+        antiAlt: raw.antiAlt !== false,
+        antiNuke: raw.antiNuke !== false
+      };
+    }
+    function formatSecurityState(guild = {}) {
+      const security = normalizeSecurity(guild);
+      if (!security.enabled) return 'Off';
+      const map = { low: 'Bajo', medium: 'Intermedio', high: 'Alto' };
+      return map[security.level] || 'Activo';
     }
     function renderReadinessChecklist(guild = getActiveGuild()) {
       const target = document.querySelector('#readinessChecklist');
@@ -1744,6 +1832,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
         category: { title: 'Elige categoria principal', text: 'Selecciona donde se detectan o crean tickets. Sin categoria, la IA no sabe que canales debe atender.', view: 'settings', action: 'Configurar categoria' },
         staff: { title: 'Asigna rol de staff', text: 'NexaDesk necesita saber a quien avisar cuando haya escalado humano o asistencia manual.', view: 'settings', action: 'Elegir staff' },
         context: { title: 'Dale contexto a la IA', text: 'Anade reglas, FAQ, tono, limites y si debe pedir pruebas visuales. Esto mejora mucho las respuestas.', view: 'settings', action: 'Escribir prompt' },
+        security: { title: 'Activa Security Guard', text: 'Protege el servidor con anti-flood, anti-bots, anti-alts y anti-nuke antes de abrirlo al publico.', view: 'settings', action: 'Configurar seguridad' },
         components: { title: 'Crea opciones de menu', text: 'Los componentes separan tipos de ticket, preguntas previas y mensajes iniciales personalizados.', view: 'components', action: 'Crear componente' },
         panels: { title: 'Publica un panel', text: 'Ya puedes publicar un panel en un canal visible para que los usuarios abran tickets desde Discord.', view: 'panels', action: 'Publicar panel' }
       };
@@ -1755,7 +1844,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       });
     }
     function setConfigurationDisabled(disabled) {
-      for (const selector of ['#ticketCategoryId', '#staffRoleId', '#serverPrompt', '#serverInfo', '#categoryName', '#componentLabel', '#componentEmoji', '#componentDescription', '#componentTicketCategoryId', '#componentTicketMode', '#componentQuestions', '#componentWelcomeMessage', '#panelType', '#panelSelectPlaceholder', '#panelComponentIds', '#panelChannelId', '#panelTicketCategoryId', '#panelTicketMode', '#panelButtonLabel', '#panelButtonStyle', '#panelButtonEmoji', '#panelTitle', '#panelEmbedColor', '#panelAuthorName', '#panelAuthorIconUrl', '#panelDescription', '#panelThumbnailUrl', '#panelImageUrl', '#panelFooterText', '#panelWelcomeMessage']) {
+      for (const selector of ['#ticketCategoryId', '#staffRoleId', '#serverPrompt', '#serverInfo', '#categoryName', '#securityEnabled', '#securityLevel', '#securityLogChannelId', '#securityMinAccountAgeDays', '#securityAntiFlood', '#securityAntiBot', '#securityAntiAlt', '#securityAntiNuke', '#componentLabel', '#componentEmoji', '#componentDescription', '#componentTicketCategoryId', '#componentTicketMode', '#componentQuestions', '#componentWelcomeMessage', '#panelType', '#panelSelectPlaceholder', '#panelComponentIds', '#panelChannelId', '#panelTicketCategoryId', '#panelTicketMode', '#panelButtonLabel', '#panelButtonStyle', '#panelButtonEmoji', '#panelTitle', '#panelEmbedColor', '#panelAuthorName', '#panelAuthorIconUrl', '#panelDescription', '#panelThumbnailUrl', '#panelImageUrl', '#panelFooterText', '#panelWelcomeMessage']) {
         const element = document.querySelector(selector);
         if (element) element.disabled = disabled;
       }
@@ -1773,6 +1862,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       document.querySelector('#installLink').target = '';
       document.querySelector('#ticketCategoryId').innerHTML = '<option>Instala NexaDesk para cargar categorias</option>';
       document.querySelector('#staffRoleId').innerHTML = '<option>Instala NexaDesk para cargar roles</option>';
+      document.querySelector('#securityLogChannelId').innerHTML = '<option>Instala NexaDesk para cargar canales</option>';
       document.querySelector('#componentTicketCategoryId').innerHTML = '<option>Instala NexaDesk para cargar categorias</option>';
       document.querySelector('#panelChannelId').innerHTML = '<option>Instala NexaDesk para cargar canales</option>';
       document.querySelector('#panelTicketCategoryId').innerHTML = '<option>Instala NexaDesk para cargar categorias</option>';
@@ -1781,6 +1871,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       document.querySelector('#activeStaff').textContent = 'Bot no instalado';
       document.querySelector('#activePanels').textContent = String(guild.panels?.length ?? 0);
       document.querySelector('#activeVoice').textContent = formatVoiceState(guild);
+      document.querySelector('#activeSecurity').textContent = formatSecurityState(guild);
       renderComponentHistory(guild);
       renderPanelHistory(guild);
       renderReadinessChecklist(guild);
@@ -1798,6 +1889,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       document.querySelector('#installLink').textContent = 'Abrir Render';
       document.querySelector('#ticketCategoryId').innerHTML = '<option>No se pudieron cargar categorias</option>';
       document.querySelector('#staffRoleId').innerHTML = '<option>No se pudieron cargar roles</option>';
+      document.querySelector('#securityLogChannelId').innerHTML = '<option>No se pudieron cargar canales</option>';
       document.querySelector('#componentTicketCategoryId').innerHTML = '<option>No se pudieron cargar categorias</option>';
       document.querySelector('#panelChannelId').innerHTML = '<option>No se pudieron cargar canales</option>';
       document.querySelector('#panelTicketCategoryId').innerHTML = '<option>No se pudieron cargar categorias</option>';
@@ -1806,6 +1898,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       document.querySelector('#activeStaff').textContent = 'Token requerido';
       document.querySelector('#activePanels').textContent = String(guild.panels?.length ?? 0);
       document.querySelector('#activeVoice').textContent = formatVoiceState(guild);
+      document.querySelector('#activeSecurity').textContent = formatSecurityState(guild);
       renderComponentHistory(guild);
       renderPanelHistory(guild);
       renderReadinessChecklist(guild);
@@ -1822,7 +1915,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       setConfigurationDisabled(false);
       document.querySelector('#installBanner').hidden = false;
       document.querySelector('#installTitle').textContent = 'Permisos de NexaDesk';
-      document.querySelector('#installText').textContent = 'Si los paneles no pueden crear canales privados, actualiza permisos con Manage Channels y Manage Roles.';
+      document.querySelector('#installText').textContent = 'Si tickets o seguridad fallan, actualiza permisos con Manage Channels, Manage Roles, View Audit Log y moderacion.';
       document.querySelector('#installLink').href = guild.inviteUrl;
       document.querySelector('#installLink').textContent = 'Actualizar permisos';
       document.querySelector('#installLink').target = '';
@@ -1844,6 +1937,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       document.querySelector('#componentTicketCategoryId').innerHTML = '<option value="">Usar categoria principal</option>' + categories.map((channel) => '<option value="' + channel.id + '">' + escapeHtml(channel.name) + '</option>').join('');
       document.querySelector('#panelChannelId').innerHTML = textChannels.map((channel) => '<option value="' + channel.id + '">#' + escapeHtml(channel.name) + '</option>').join('');
       document.querySelector('#panelTicketCategoryId').innerHTML = '<option value="">Usar categoria principal</option>' + categories.map((channel) => '<option value="' + channel.id + '">' + escapeHtml(channel.name) + '</option>').join('');
+      document.querySelector('#securityLogChannelId').innerHTML = '<option value="">Sin canal de logs</option>' + textChannels.map((channel) => '<option value="' + channel.id + '">#' + escapeHtml(channel.name) + '</option>').join('');
       document.querySelector('#panelComponentIds').innerHTML = (config.components || []).length
         ? config.components.map((component) => '<option value="' + escapeHtml(component.id) + '">' + escapeHtml(component.label + (component.ticketMode === 'voice' ? ' - Voz Pro' : ' - Texto')) + '</option>').join('')
         : '<option value="">Crea componentes primero</option>';
@@ -1855,11 +1949,21 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       document.querySelector('#ticketCategoryName').value = config.ticketCategoryName || selectedOptionText('#ticketCategoryId');
       document.querySelector('#serverPrompt').value = config.serverPrompt || '';
       document.querySelector('#serverInfo').value = config.serverInfo || '';
+      const security = normalizeSecurity(config);
+      document.querySelector('#securityEnabled').value = security.enabled ? 'true' : 'false';
+      document.querySelector('#securityLevel').value = security.level;
+      document.querySelector('#securityLogChannelId').value = security.logChannelId || '';
+      document.querySelector('#securityMinAccountAgeDays').value = security.minAccountAgeDays;
+      document.querySelector('#securityAntiFlood').value = security.antiFlood ? 'true' : 'false';
+      document.querySelector('#securityAntiBot').value = security.antiBot ? 'true' : 'false';
+      document.querySelector('#securityAntiAlt').value = security.antiAlt ? 'true' : 'false';
+      document.querySelector('#securityAntiNuke').value = security.antiNuke ? 'true' : 'false';
       document.querySelector('#activeCategory').textContent = config.ticketCategoryName || selectedOptionText('#ticketCategoryId') || 'Sin configurar';
       const staffOption = document.querySelector('#staffRoleId')?.selectedOptions?.[0];
       document.querySelector('#activeStaff').textContent = staffOption?.value ? staffOption.textContent : 'Sin configurar';
       document.querySelector('#activePanels').textContent = String(config.panels?.length ?? 0);
       document.querySelector('#activeVoice').textContent = formatVoiceState(config);
+      document.querySelector('#activeSecurity').textContent = formatSecurityState(config);
       renderComponentHistory(config);
       renderPanelHistory(config);
       renderReadinessChecklist(config);
@@ -1906,6 +2010,31 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
         if (index >= 0) guildConfigs[index] = { ...guildConfigs[index], ...updated };
         renderGuildSelectors(guildId);
         showToast('Configuracion guardada.');
+      }
+      return false;
+    }
+    async function saveSecurity(event) {
+      event.preventDefault();
+      const guildId = document.querySelector('#guildId').value;
+      const updated = await postJson('/api/guilds/' + guildId, {
+        security: {
+          enabled: document.querySelector('#securityEnabled').value === 'true',
+          level: document.querySelector('#securityLevel').value,
+          logChannelId: document.querySelector('#securityLogChannelId').value,
+          logChannelName: selectedOptionText('#securityLogChannelId'),
+          minAccountAgeDays: document.querySelector('#securityMinAccountAgeDays').value,
+          antiFlood: document.querySelector('#securityAntiFlood').value === 'true',
+          antiBot: document.querySelector('#securityAntiBot').value === 'true',
+          antiAlt: document.querySelector('#securityAntiAlt').value === 'true',
+          antiNuke: document.querySelector('#securityAntiNuke').value === 'true'
+        }
+      }).catch((error) => showToast(error.message));
+      if (updated) {
+        const index = guildConfigs.findIndex((guild) => guild.guildId === guildId);
+        if (index >= 0) guildConfigs[index] = { ...guildConfigs[index], ...updated };
+        renderGuildSelectors(guildId);
+        refreshStats().catch(() => {});
+        showToast('Security Guard guardado. Actualiza permisos si aun no lo hiciste.');
       }
       return false;
     }

@@ -15,6 +15,7 @@ import {
   TextInputStyle
 } from 'discord.js';
 import { buildPanelActionRow, buildPanelEmbed, normalizePanelOptions, normalizeTicketComponent, panelWelcomeMessage } from './panel-options.js';
+import { SecurityManager, SECURITY_LEVELS, normalizeSecurityConfig, normalizeSecurityLevel, summarizeSecurityConfig } from './security.js';
 import { buildTranscriptFileName, buildTranscriptText } from './transcripts.js';
 import { createWelcomeCard } from './welcome-card.js';
 
@@ -22,7 +23,7 @@ const EMOJIS = {
   wifi: '<a:wifi:1499732411829846116>',
   global: '<a:Global:1499728413974593708>'
 };
-const BOT_INVITE_PERMISSIONS = '322030608';
+const BOT_INVITE_PERMISSIONS = '1099780189334';
 const PUBLIC_DASHBOARD_URL = 'https://nexa-desk.onrender.com/';
 const PREMIUM_ADMIN_USER_ID = '1352652366330986526';
 
@@ -49,6 +50,7 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
 
   const activeResponses = new Set();
   const panelCreatedChannels = new Set();
+  const securityManager = new SecurityManager({ storage, client });
 
   client.once(Events.ClientReady, (readyClient) => {
     applyBotPresence(readyClient);
@@ -191,6 +193,11 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
         return;
       }
 
+      if (interaction.commandName === 'seguridad') {
+        await handleSecurityCommand({ interaction, storage });
+        return;
+      }
+
       if (interaction.commandName === 'activarpremium') {
         await handleActivatePremiumCommand({ interaction, storage, client });
         return;
@@ -207,6 +214,7 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
 
   client.on(Events.ChannelCreate, async (channel) => {
     try {
+      await securityManager.handleChannelCreate(channel);
       if (!channel.guild || channel.type !== ChannelType.GuildText) return;
 
       const guildConfig = await storage.getGuildConfig(channel.guild.id);
@@ -238,6 +246,7 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
   client.on(Events.ChannelDelete, async (channel) => {
     try {
       if (!channel.guild) return;
+      await securityManager.handleChannelDelete(channel);
 
       if (channel.type === ChannelType.GuildVoice) {
         const ticket = await storage.getTicketByVoiceChannelId?.(channel.id);
@@ -273,7 +282,15 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
   });
 
   client.on(Events.MessageCreate, async (message) => {
-    if (message.author.bot || !message.guild || !message.channel) return;
+    if (!message.guild || !message.channel) return;
+    if (!message.author.bot) {
+      const handledBySecurity = await securityManager.handleMessageCreate(message).catch((error) => {
+        console.error(`Security message guard failed in ${message.guild.id}:`, error);
+        return false;
+      });
+      if (handledBySecurity) return;
+    }
+    if (message.author.bot) return;
 
     const ticket = await storage.getTicket(message.channel.id);
     if (!ticket) return;
@@ -339,6 +356,48 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
     }
   });
 
+  client.on(Events.GuildMemberAdd, async (member) => {
+    await securityManager.handleMemberAdd(member).catch((error) => {
+      console.error(`Security member join guard failed in ${member.guild.id}:`, error);
+    });
+  });
+
+  client.on(Events.GuildMemberRemove, async (member) => {
+    await securityManager.handleMemberRemove(member).catch((error) => {
+      console.error(`Security member remove guard failed in ${member.guild.id}:`, error);
+    });
+  });
+
+  client.on(Events.GuildRoleCreate, async (role) => {
+    await securityManager.handleRoleCreate(role).catch((error) => {
+      console.error(`Security role create guard failed in ${role.guild.id}:`, error);
+    });
+  });
+
+  client.on(Events.GuildRoleDelete, async (role) => {
+    await securityManager.handleRoleDelete(role).catch((error) => {
+      console.error(`Security role delete guard failed in ${role.guild.id}:`, error);
+    });
+  });
+
+  client.on(Events.GuildRoleUpdate, async (oldRole, newRole) => {
+    await securityManager.handleRoleUpdate(oldRole, newRole).catch((error) => {
+      console.error(`Security role update guard failed in ${newRole.guild.id}:`, error);
+    });
+  });
+
+  client.on(Events.WebhooksUpdate, async (channel) => {
+    await securityManager.handleWebhooksUpdate(channel).catch((error) => {
+      console.error(`Security webhook guard failed in ${channel.guild?.id ?? 'unknown'}:`, error);
+    });
+  });
+
+  client.on(Events.GuildBanAdd, async (ban) => {
+    await securityManager.handleGuildBanAdd(ban).catch((error) => {
+      console.error(`Security ban guard failed in ${ban.guild.id}:`, error);
+    });
+  });
+
   return client;
 }
 
@@ -353,6 +412,25 @@ async function safeInteractionReply(interaction, content) {
   } catch (error) {
     console.error('Failed to report interaction error:', error);
   }
+}
+
+async function deferEphemeralInteraction(interaction) {
+  if (interaction.deferred || interaction.replied) return;
+  await interaction.deferReply({ ephemeral: true });
+}
+
+async function replyOrEditEphemeral(interaction, payload) {
+  const next = typeof payload === 'string' ? { content: payload } : { ...payload };
+  if (interaction.deferred) {
+    const { ephemeral: _ephemeral, ...editPayload } = next;
+    await interaction.editReply(editPayload);
+    return;
+  }
+  if (interaction.replied) {
+    await interaction.followUp({ ...next, ephemeral: true });
+    return;
+  }
+  await interaction.reply({ ...next, ephemeral: true });
 }
 
 async function handleGuildJoin({ guild, storage, config }) {
@@ -374,13 +452,18 @@ async function handleGuildJoin({ guild, storage, config }) {
   const welcomeCard = new AttachmentBuilder(createWelcomeCard({ guildName: guild.name }), {
     name: 'nexadesk-welcome.png'
   });
-  await ownerUser.send({
+  const sent = await ownerUser.send({
     content: `Gracias de verdad por confiar en **NexaDesk** para **${guild.name}**.`,
     embeds: [embed],
     files: [welcomeCard],
     components
+  }).then(() => true).catch((error) => {
+    console.warn(`Could not send NexaDesk onboarding DM to ${ownerUser.tag} for ${guild.name} (${guild.id}): ${error?.code ?? ''} ${error?.message ?? error}`);
+    return false;
   });
-  console.log(`Sent NexaDesk onboarding DM to owner ${ownerUser.tag} for ${guild.name} (${guild.id}).`);
+  if (sent) {
+    console.log(`Sent NexaDesk onboarding DM to owner ${ownerUser.tag} for ${guild.name} (${guild.id}).`);
+  }
 }
 
 function buildOwnerOnboardingEmbed({ guild }) {
@@ -419,7 +502,15 @@ function buildOwnerOnboardingEmbed({ guild }) {
         ].join('\n')
       },
       {
-        name: '4. Datos y soporte',
+        name: '4. Security Guard',
+        value: [
+          'Desde la dashboard puedes activar anti-flood, anti-bots, anti-alts y anti-nuke por servidor.',
+          'Tambien puedes usar `/seguridad configurar` para escoger nivel, canal de logs y edad minima de cuenta.',
+          'Para que la proteccion sea completa, re-invita NexaDesk con permisos de auditoria y moderacion.'
+        ].join('\n')
+      },
+      {
+        name: '5. Datos y soporte',
         value: [
           'Los datos operativos del servidor se guardan para que NexaDesk recuerde configuracion, transcripciones y contexto.',
           'Si en cualquier momento necesitas ayuda, entra al soporte oficial:',
@@ -451,7 +542,7 @@ function buildInteractionErrorMessage(error, config, guildId) {
     const inviteUrl = buildBotInviteUrl(config, guildId);
     return [
       'Discord no me deja completar esta accion por falta de permisos.',
-      'Para crear tickets privados necesito **Manage Channels** y **Manage Roles** en la categoria configurada.',
+      'Para tickets privados y seguridad necesito **Manage Channels**, **Manage Roles**, **Manage Messages**, **View Audit Log**, **Moderate Members**, **Kick Members** y **Ban Members**.',
       `Actualiza permisos aqui: ${inviteUrl}`,
       'Si ya lo hiciste, revisa que el rol de NexaDesk este por encima del rol de staff.'
     ].join('\n');
@@ -1014,6 +1105,104 @@ async function handleActivatePremiumCommand({ interaction, storage, client }) {
   await interaction.editReply({ embeds: [embed] });
 }
 
+async function handleSecurityCommand({ interaction, storage }) {
+  if (!interaction.inGuild()) {
+    await interaction.reply({ content: 'Este comando solo se puede usar dentro de un servidor.', ephemeral: true });
+    return;
+  }
+
+  if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+    await interaction.reply({ content: 'Necesitas permiso de Manage Server para configurar la seguridad.', ephemeral: true });
+    return;
+  }
+
+  const subcommand = interaction.options.getSubcommand();
+  const guildConfig = await storage.getGuildConfig(interaction.guildId);
+  const current = normalizeSecurityConfig(guildConfig?.security);
+
+  if (subcommand === 'estado') {
+    await interaction.reply({
+      embeds: [buildSecurityStatusEmbed({ guild: interaction.guild, security: current })],
+      ephemeral: true
+    });
+    return;
+  }
+
+  if (subcommand === 'desactivar') {
+    const updated = await storage.upsertGuildConfig(interaction.guildId, {
+      guildName: interaction.guild.name,
+      security: normalizeSecurityConfig({ ...current, enabled: false })
+    });
+    await interaction.reply({
+      embeds: [buildSecurityStatusEmbed({ guild: interaction.guild, security: updated.security })],
+      ephemeral: true
+    });
+    return;
+  }
+
+  if (subcommand === 'configurar') {
+    const level = normalizeSecurityLevel(interaction.options.getString('nivel') ?? current.level);
+    const logChannel = interaction.options.getChannel('canal_logs', false);
+    const next = normalizeSecurityConfig({
+      level,
+      enabled: true,
+      logChannelId: logChannel?.id ?? current.logChannelId,
+      logChannelName: logChannel?.name ?? current.logChannelName
+    });
+
+    for (const [optionName, key] of [
+      ['antiflood', 'antiFlood'],
+      ['antibots', 'antiBot'],
+      ['antialts', 'antiAlt'],
+      ['antinuke', 'antiNuke']
+    ]) {
+      const value = interaction.options.getBoolean(optionName);
+      if (value !== null) next[key] = value;
+    }
+
+    const minAge = interaction.options.getInteger('edad_minima_dias');
+    if (minAge !== null) next.minAccountAgeDays = minAge;
+
+    const updated = await storage.upsertGuildConfig(interaction.guildId, {
+      guildName: interaction.guild.name,
+      security: normalizeSecurityConfig(next)
+    });
+
+    await interaction.reply({
+      content: 'Security Guard actualizado. Si quieres proteccion completa, re-invita NexaDesk desde la dashboard para aplicar los permisos nuevos.',
+      embeds: [buildSecurityStatusEmbed({ guild: interaction.guild, security: updated.security })],
+      ephemeral: true
+    });
+  }
+}
+
+function buildSecurityStatusEmbed({ guild, security }) {
+  const config = normalizeSecurityConfig(security);
+  const level = SECURITY_LEVELS[config.level];
+  return new EmbedBuilder()
+    .setColor(0xffffff)
+    .setTitle(`${EMOJIS.wifi} Security Guard`)
+    .setDescription(`Estado de seguridad para **${guild?.name ?? 'este servidor'}**.`)
+    .addFields(
+      { name: 'Estado', value: config.enabled ? 'Activo' : 'Desactivado', inline: true },
+      { name: 'Nivel', value: level.label, inline: true },
+      { name: 'Resumen', value: summarizeSecurityConfig(config) },
+      {
+        name: 'Modulos',
+        value: [
+          `Anti-flood: **${config.antiFlood ? 'on' : 'off'}** (${config.floodLimit} mensajes/${config.floodWindowSeconds}s)`,
+          `Anti-bots: **${config.antiBot ? 'on' : 'off'}**`,
+          `Anti-alts: **${config.antiAlt ? 'on' : 'off'}** (${config.minAccountAgeDays} dias)`,
+          `Anti-nuke: **${config.antiNuke ? 'on' : 'off'}** (${config.nukeLimit} acciones/${config.nukeWindowSeconds}s)`
+        ].join('\n')
+      },
+      { name: 'Logs', value: config.logChannelId ? `<#${config.logChannelId}>` : 'Sin canal de logs. Se avisara al owner por MD cuando sea importante.', inline: true },
+      { name: 'Permisos recomendados', value: 'View Audit Log, Manage Messages, Moderate Members, Kick Members y Ban Members.' }
+    )
+    .setFooter({ text: 'NexaDesk Security Guard' })
+    .setTimestamp(new Date());
+}
+
 async function handleHelpCommand({ interaction, config }) {
   await interaction.reply({
     embeds: [buildHelpEmbed({ view: 'home', config, guild: interaction.guild })],
@@ -1120,6 +1309,36 @@ function buildHelpEmbed({ view, config, guild }) {
       );
   }
 
+  if (view === 'security') {
+    return base
+      .setTitle(`${EMOJIS.wifi} Seguridad del servidor`)
+      .setDescription('NexaDesk Security Guard protege el servidor sin sustituir tu sistema de tickets. Actua como capa preventiva alrededor del soporte.')
+      .addFields(
+        {
+          name: 'Que protege',
+          value: [
+            'Anti-flood: borra spam rapido y puede aplicar timeout.',
+            'Anti-bots: bloquea bots no verificados.',
+            'Anti-alts: expulsa cuentas demasiado nuevas si lo activas.',
+            'Anti-nuke: mira audit logs y reacciona ante acciones masivas en canales, roles, webhooks, kicks y bans.'
+          ].join('\n')
+        },
+        {
+          name: 'Como se configura',
+          value: [
+            `1. Dashboard: ${PUBLIC_DASHBOARD_URL}`,
+            '2. Ve a Configuracion > Security Guard.',
+            '3. Elige nivel bajo, intermedio o alto y un canal de logs.',
+            '4. Actualiza permisos desde el boton de invitacion si Discord bloquea auditoria o moderacion.'
+          ].join('\n')
+        },
+        {
+          name: 'Comando rapido',
+          value: '`/seguridad configurar nivel:intermedio canal_logs:#logs`\n`/seguridad estado`\n`/seguridad desactivar`'
+        }
+      );
+  }
+
   return base
     .setTitle(`${EMOJIS.global} Centro de ayuda NexaDesk`)
     .setDescription([
@@ -1132,6 +1351,7 @@ function buildHelpEmbed({ view, config, guild }) {
         value: [
           'Como creo un ticket?',
           'Como configuro el servidor?',
+          'Seguridad del servidor',
           'Datos y transcripciones'
         ].join('\n')
       },
@@ -1154,6 +1374,10 @@ function buildHelpComponents({ view, config }) {
         .setCustomId('nexadesk:help:setup')
         .setLabel('Configurar servidor')
         .setStyle(current === 'setup' ? ButtonStyle.Success : ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId('nexadesk:help:security')
+        .setLabel('Seguridad')
+        .setStyle(current === 'security' ? ButtonStyle.Success : ButtonStyle.Secondary),
       new ButtonBuilder()
         .setCustomId('nexadesk:help:data')
         .setLabel('Datos')
@@ -1197,6 +1421,8 @@ async function createTicketFromConfiguredSource({ interaction, storage, guildCon
     });
     return;
   }
+
+  await deferEphemeralInteraction(interaction);
 
   const ticketCategoryId = normalizedComponent?.ticketCategoryId || normalizedPanel?.ticketCategoryId || guildConfig?.ticketCategoryId;
   const categoryResolution = await resolveTicketCategoryForPanel({
@@ -1248,7 +1474,7 @@ async function createTicketFromConfiguredSource({ interaction, storage, guildCon
   });
 
   if (ticket.alreadyExists) {
-    await interaction.reply({ content: `Ticket creado: ${channel}`, ephemeral: true });
+    await replyOrEditEphemeral(interaction, { content: `Ticket creado: ${channel}` });
     return;
   }
 
@@ -1299,13 +1525,12 @@ async function createTicketFromConfiguredSource({ interaction, storage, guildCon
     }
   }
 
-  await interaction.reply({
+  await replyOrEditEphemeral(interaction, {
     content: [
       `Ticket creado: ${channel}`,
       ...voiceStatus,
       fallbackReason ? `He usado **${ticketCategory.name}** porque ${fallbackReason}.` : ''
     ].filter(Boolean).join('\n'),
-    ephemeral: true
   });
   setTimeout(() => panelCreatedChannels.delete(channel.id), 30_000);
 }
@@ -1394,7 +1619,7 @@ async function replyTicketPermissionProblem({ interaction, config, error, catego
     ? 'Discord sigue bloqueando la creacion de canales por permisos efectivos.'
     : 'No he podido preparar una categoria propia para NexaDesk.';
 
-  await interaction.reply({
+  await replyOrEditEphemeral(interaction, {
     content: [
       'No puedo crear el canal del ticket todavia.',
       categoryName ? `Categoria: **${categoryName}**` : '',
@@ -1402,8 +1627,7 @@ async function replyTicketPermissionProblem({ interaction, config, error, catego
       reason,
       `Actualiza permisos aqui: ${inviteUrl}`,
       'Si ya actualizaste permisos, revisa los overrides de la categoria o crea una categoria nueva desde la dashboard.'
-    ].filter(Boolean).join('\n'),
-    ephemeral: true
+    ].filter(Boolean).join('\n')
   });
 }
 
@@ -1768,6 +1992,7 @@ async function handleGlobalStatsCommand({ interaction, storage, client }) {
   const voiceRooms = botTickets.filter((ticket) => ticket.voiceChannelId).length;
   const panels = guildConfigs.reduce((total, guild) => total + (guild.panels?.length ?? 0), 0);
   const proGuilds = guildConfigs.filter(isVoiceSupportEnabled).length;
+  const protectedGuilds = guildConfigs.filter((guild) => normalizeSecurityConfig(guild.security).enabled).length;
   const memoryMb = Math.round(process.memoryUsage().rss / 1024 / 1024);
 
   const embed = new EmbedBuilder()
@@ -1794,6 +2019,7 @@ async function handleGlobalStatsCommand({ interaction, storage, client }) {
         value: [
           `Servidores configurados: **${guildConfigs.length}**`,
           `Servidores Pro Voice: **${proGuilds}**`,
+          `Servidores protegidos: **${protectedGuilds}**`,
           `Paneles publicados: **${panels}**`,
           `Salas de voz activas: **${voiceRooms}**`,
           `Canales cacheados: **${client.channels.cache.size}**`

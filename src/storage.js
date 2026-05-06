@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createClient } from '@supabase/supabase-js';
+import { normalizeSecurityConfig } from './security.js';
 
 export class JsonStorage {
   constructor(dataDir, events = null) {
@@ -469,6 +470,7 @@ function fromGuildRow(row) {
     voiceCategoryName: row.voice_category_name,
     panels: panelStore.panels,
     components: panelStore.components,
+    security: panelStore.security,
     updatedAt: row.updated_at
   };
 }
@@ -476,7 +478,8 @@ function fromGuildRow(row) {
 function toGuildPanelStore(guild) {
   return {
     panels: guild.panels ?? [],
-    components: guild.components ?? []
+    components: guild.components ?? [],
+    security: normalizeSecurityConfig(guild.security)
   };
 }
 
@@ -484,20 +487,23 @@ function fromGuildPanelStore(value) {
   if (Array.isArray(value)) {
     return {
       panels: value,
-      components: []
+      components: [],
+      security: normalizeSecurityConfig()
     };
   }
 
   if (value && typeof value === 'object') {
     return {
       panels: Array.isArray(value.panels) ? value.panels : [],
-      components: Array.isArray(value.components) ? value.components : []
+      components: Array.isArray(value.components) ? value.components : [],
+      security: normalizeSecurityConfig(value.security)
     };
   }
 
   return {
     panels: [],
-    components: []
+    components: [],
+    security: normalizeSecurityConfig()
   };
 }
 
@@ -615,6 +621,7 @@ function buildStats({ guilds, tickets, transcriptMessages }) {
   const ticketsThisWeek = tickets.filter((ticket) => now - new Date(ticket.createdAt).getTime() <= weekMs).length;
   const escalationReadyGuilds = guilds.filter((guild) => guild.staffRoleId).length;
   const aiReadyGuilds = guilds.filter((guild) => guild.serverPrompt || guild.serverInfo).length;
+  const securityReadyGuilds = guilds.filter((guild) => normalizeSecurityConfig(guild.security).enabled).length;
   const voiceRooms = tickets.filter((ticket) => ticket.status !== 'closed' && ticket.voiceChannelId).length;
   const proGuilds = guilds.filter((guild) => {
     const plan = String(guild.plan ?? 'free').toLowerCase();
@@ -634,6 +641,7 @@ function buildStats({ guilds, tickets, transcriptMessages }) {
     transcriptMessages,
     escalationReadyGuilds,
     aiReadyGuilds,
+    securityReadyGuilds,
     voiceRooms,
     proGuilds
   };
