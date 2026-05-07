@@ -25,6 +25,7 @@ import { buildPanelActionRow, buildPanelEmbed, normalizePanelOptions, normalizeT
 import { SecurityManager, SECURITY_LEVELS, normalizeSecurityConfig, normalizeSecurityLevel, summarizeSecurityConfig } from './security.js';
 import { buildTranscriptFileName, buildTranscriptText } from './transcripts.js';
 import { createWelcomeCard } from './welcome-card.js';
+import { XNPROTECT_BLACKLIST_CREDIT, checkXnProtectGlobalBan } from './xnprotect-blacklist.js';
 
 const EMOJIS = {
   wifi: '<a:wifi:1499732411829846116>',
@@ -57,6 +58,7 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
 
   const activeResponses = new Set();
   const panelCreatedChannels = new Set();
+  const blacklistAlertedChannels = new Set();
   const securityManager = new SecurityManager({ storage, client });
 
   client.once(Events.ClientReady, (readyClient) => {
@@ -77,7 +79,7 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
       if (interaction.isButton() && interaction.customId === 'nexadesk:create_ticket') {
         const guildConfig = await storage.getGuildConfig(interaction.guildId);
         const panel = findPanelForInteraction(guildConfig, interaction);
-        await createTicketFromConfiguredSource({ interaction, storage, guildConfig, panel, panelCreatedChannels, config, voiceManager });
+        await createTicketFromConfiguredSource({ interaction, storage, guildConfig, panel, panelCreatedChannels, blacklistAlertedChannels, config, voiceManager });
         return;
       }
 
@@ -101,7 +103,7 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
           return;
         }
 
-        await createTicketFromConfiguredSource({ interaction, storage, guildConfig, panel, component, panelCreatedChannels, config, voiceManager });
+        await createTicketFromConfiguredSource({ interaction, storage, guildConfig, panel, component, panelCreatedChannels, blacklistAlertedChannels, config, voiceManager });
         return;
       }
 
@@ -118,7 +120,7 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
           question,
           answer: interaction.fields.getTextInputValue(`question_${index}`) || 'Sin respuesta'
         }));
-        await createTicketFromConfiguredSource({ interaction, storage, guildConfig, component, answers, panelCreatedChannels, config, voiceManager });
+        await createTicketFromConfiguredSource({ interaction, storage, guildConfig, component, answers, panelCreatedChannels, blacklistAlertedChannels, config, voiceManager });
         return;
       }
 
@@ -201,16 +203,6 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
 
       if (interaction.commandName === 'seguridad') {
         await handleSecurityCommand({ interaction, storage });
-        return;
-      }
-
-      if (interaction.commandName === 'blacklist') {
-        await handleBlacklistCommand({ interaction, storage });
-        return;
-      }
-
-      if (interaction.commandName === 'adjuntar-pruebas') {
-        await handleAttachBlacklistEvidenceCommand({ interaction, storage });
         return;
       }
 
@@ -332,6 +324,23 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
     // Always reload the latest server context before asking the AI.
     if (!guildConfig) return;
 
+    if (shouldCheckTicketAuthorWithXnProtect({ message, ticket, guildConfig })) {
+      if (!ticket.openedBy) {
+        const updatedTicket = await storage.updateTicket(ticket.channelId, { openedBy: message.author.id });
+        ticket = updatedTicket ?? ticket;
+      }
+
+      const checkedTicket = await maybeAlertXnProtectBlacklist({
+        storage,
+        channel: message.channel,
+        guildConfig,
+        ticket,
+        user: message.author,
+        blacklistAlertedChannels
+      });
+      ticket = checkedTicket ?? ticket;
+    }
+
     if (isTicketCloseRequest(message.content)) {
       await handleNaturalCloseRequest({ client, storage, message, ticket, guildConfig });
       return;
@@ -420,12 +429,6 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
   });
 
   client.on(Events.GuildMemberAdd, async (member) => {
-    const bannedByBlacklist = await handleGlobalBlacklistMemberJoin({ member, storage }).catch((error) => {
-      console.error(`Global blacklist guard failed in ${member.guild.id}:`, error);
-      return false;
-    });
-    if (bannedByBlacklist) return;
-
     await securityManager.handleMemberAdd(member).catch((error) => {
       console.error(`Security member join guard failed in ${member.guild.id}:`, error);
     });
@@ -574,6 +577,7 @@ function buildOwnerOnboardingEmbed({ guild }) {
         name: '4. Security Guard',
         value: [
           'Desde la dashboard puedes activar anti-flood, anti-bots, anti-alts y anti-nuke por servidor.',
+          'Cuando alguien abre un ticket, NexaDesk consulta la blacklist global de XN Protect y avisa al staff si aparece marcado.',
           'Tambien puedes usar `/seguridad configurar` para escoger nivel, canal de logs y edad minima de cuenta.',
           'Para que la proteccion sea completa, re-invita NexaDesk con permisos de auditoria y moderacion.'
         ].join('\n')
@@ -1473,6 +1477,138 @@ function isImageEvidence(evidence) {
   return /\.(png|jpe?g|gif|webp)$/i.test(String(evidence.attachmentUrl ?? evidence.proxyUrl ?? ''));
 }
 
+function shouldCheckTicketAuthorWithXnProtect({ message, ticket, guildConfig }) {
+  if (!message?.author || message.author.bot) return false;
+  if (ticket.openedBy) return ticket.openedBy === message.author.id;
+  if (message.member?.permissions?.has(PermissionFlagsBits.ManageGuild)) return false;
+  if (guildConfig?.staffRoleId && memberHasRole(message.member, guildConfig.staffRoleId)) return false;
+  return true;
+}
+
+async function maybeAlertXnProtectBlacklist({ storage, channel, guildConfig, ticket, user, blacklistAlertedChannels }) {
+  if (!user?.id || user.bot) return ticket;
+  const alertKey = `${channel.id}:${user.id}`;
+  if (blacklistAlertedChannels?.has(alertKey)) return ticket;
+
+  const alreadyAlerted = await hasXnProtectAlertTranscript(storage, channel.id, user.id);
+  if (alreadyAlerted) {
+    blacklistAlertedChannels?.add(alertKey);
+    return ticket;
+  }
+
+  const result = await checkXnProtectGlobalBan(user.id);
+  if (!result.checked) {
+    console.warn(`XN Protect blacklist check failed for ${user.id}: ${result.error}`);
+    return ticket;
+  }
+  if (!result.blacklisted) return ticket;
+
+  blacklistAlertedChannels?.add(alertKey);
+  const alert = buildXnProtectBlacklistAlert({ user, guildConfig, result });
+  const sent = await channel.send(alert).catch((error) => {
+    console.error(`Failed to send XN Protect blacklist alert in ${channel.id}:`, error);
+    return null;
+  });
+  if (!sent) return ticket;
+
+  await saveTranscript(storage, sent, 'assistant').catch((error) => {
+    console.error(`Failed to save XN Protect blacklist alert transcript in ${channel.id}:`, error);
+  });
+  await storage.addTranscriptMessage({
+    guildId: channel.guild?.id,
+    channelId: channel.id,
+    messageId: `xnprotect-alert-${user.id}-${Date.now()}`,
+    authorId: sent.author.id,
+    authorName: sent.author.username,
+    authorBot: true,
+    role: 'system',
+    content: `XN Protect globalban alert for ${user.id}: ${result.reason || 'sin motivo'}`,
+    createdAt: new Date().toISOString()
+  }).catch((error) => {
+    console.error(`Failed to save XN Protect blacklist alert marker in ${channel.id}:`, error);
+  });
+
+  if (!isClosedTicket(ticket) && ticket.status !== 'escalated') {
+    return storage.updateTicket(ticket.channelId, { status: 'escalated' }).catch((error) => {
+      console.error(`Failed to mark XN Protect ticket ${ticket.channelId} as escalated:`, error);
+      return ticket;
+    });
+  }
+
+  return ticket;
+}
+
+async function hasXnProtectAlertTranscript(storage, channelId, userId) {
+  try {
+    const messages = await storage.listTranscriptMessages(channelId);
+    return messages.some((message) => String(message.content ?? '').includes(`XN Protect globalban alert for ${userId}`));
+  } catch {
+    return false;
+  }
+}
+
+function buildXnProtectBlacklistAlert({ user, guildConfig, result }) {
+  const staffMention = guildConfig?.staffRoleId ? `<@&${guildConfig.staffRoleId}> ` : '';
+  const proofUrl = result.proof || '';
+  const embed = new EmbedBuilder()
+    .setColor(0xffffff)
+    .setTitle(`${EMOJIS.wifi} Aviso de blacklist global`)
+    .setDescription([
+      `Usuario detectado: <@${user.id}> (\`${user.id}\`)`,
+      'NexaDesk **no ha baneado** al usuario. Solo deja este aviso para revision manual del staff.'
+    ].join('\n'))
+    .addFields(
+      { name: 'Fuente', value: XNPROTECT_BLACKLIST_CREDIT },
+      { name: 'Motivo', value: result.reason || 'XN Protect no devolvio motivo.' },
+      { name: 'Desde', value: formatXnProtectTimestamp(result.since), inline: true },
+      { name: 'Expira', value: formatXnProtectTimestamp(result.expires), inline: true },
+      { name: 'Prueba', value: proofUrl ? proofUrl : 'No hay prueba publica en la respuesta de la API.' }
+    )
+    .setFooter({ text: 'Revision manual recomendada antes de continuar el ticket.' })
+    .setTimestamp(new Date());
+
+  if (isImageUrl(proofUrl)) {
+    embed.setImage(proofUrl);
+  }
+
+  return {
+    content: `${EMOJIS.wifi} ${staffMention}Aviso para staff: este usuario aparece en la blacklist global de XN Protect. Revisad el caso antes de continuar.`,
+    embeds: [embed],
+    allowedMentions: {
+      roles: guildConfig?.staffRoleId ? [guildConfig.staffRoleId] : [],
+      users: [],
+      repliedUser: false
+    }
+  };
+}
+
+function formatXnProtectTimestamp(value) {
+  if (!value) return 'No indicado';
+  const date = parseXnProtectDate(value);
+  if (!date) return String(value);
+  return `<t:${Math.floor(date.getTime() / 1000)}:F>`;
+}
+
+function parseXnProtectDate(value) {
+  if (value instanceof Date && !Number.isNaN(value.getTime())) return value;
+  const raw = String(value).trim();
+  if (!raw) return null;
+
+  const numeric = Number(raw);
+  if (Number.isFinite(numeric)) {
+    const ms = numeric < 10_000_000_000 ? numeric * 1000 : numeric;
+    const date = new Date(ms);
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+
+  const date = new Date(raw);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function isImageUrl(value) {
+  return /^https?:\/\/.+\.(?:png|jpe?g|gif|webp)(?:[?#].*)?$/i.test(String(value ?? ''));
+}
+
 async function handleHelpCommand({ interaction, config }) {
   await interaction.reply({
     embeds: [buildHelpEmbed({ view: 'home', config, guild: interaction.guild })],
@@ -1603,6 +1739,14 @@ function buildHelpEmbed({ view, config, guild }) {
           ].join('\n')
         },
         {
+          name: 'Blacklist global XN Protect',
+          value: [
+            'Al abrirse un ticket, NexaDesk consulta si el opener tiene globalban en XN Protect.',
+            'Si aparece marcado, **no lo banea**: publica un aviso con motivo, fechas y prueba para que el staff decida manualmente.',
+            XNPROTECT_BLACKLIST_CREDIT
+          ].join('\n')
+        },
+        {
           name: 'Comando rapido',
           value: '`/seguridad configurar nivel:intermedio canal_logs:#logs`\n`/seguridad estado`\n`/seguridad desactivar`'
         }
@@ -1666,7 +1810,7 @@ function buildHelpComponents({ view, config }) {
   ];
 }
 
-async function createTicketFromConfiguredSource({ interaction, storage, guildConfig, panel = null, component = null, answers = [], panelCreatedChannels, config, voiceManager = null }) {
+async function createTicketFromConfiguredSource({ interaction, storage, guildConfig, panel = null, component = null, answers = [], panelCreatedChannels, blacklistAlertedChannels, config, voiceManager = null }) {
   if (!interaction.inGuild()) {
     await interaction.reply({ content: 'Los tickets solo se pueden abrir dentro de un servidor.', ephemeral: true });
     return;
@@ -1750,6 +1894,15 @@ async function createTicketFromConfiguredSource({ interaction, storage, guildCon
 
   const welcome = await channel.send(buildTicketWelcomeMessage({ panel: normalizedPanel, component: normalizedComponent, answers, userMention: `${interaction.user}` }));
   await saveTranscript(storage, welcome, 'assistant');
+
+  await maybeAlertXnProtectBlacklist({
+    storage,
+    channel,
+    guildConfig,
+    ticket,
+    user: interaction.user,
+    blacklistAlertedChannels
+  });
 
   const voiceStatus = [];
   if (ticketMode === 'voice') {
