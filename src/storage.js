@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createClient } from '@supabase/supabase-js';
+import { normalizeBlacklistEntry, normalizeBlacklistEvidence, normalizeBlacklistLookup } from './blacklist.js';
 import { normalizeSecurityConfig } from './security.js';
 
 export class JsonStorage {
@@ -10,6 +11,8 @@ export class JsonStorage {
     this.guildsFile = path.join(dataDir, 'guilds.json');
     this.ticketsFile = path.join(dataDir, 'tickets.json');
     this.transcriptsFile = path.join(dataDir, 'transcripts.json');
+    this.blacklistFile = path.join(dataDir, 'global-blacklist.json');
+    this.blacklistEvidenceFile = path.join(dataDir, 'global-blacklist-evidence.json');
   }
 
   async init() {
@@ -17,6 +20,8 @@ export class JsonStorage {
     await this.#ensureJson(this.guildsFile, {});
     await this.#ensureJson(this.ticketsFile, {});
     await this.#ensureJson(this.transcriptsFile, {});
+    await this.#ensureJson(this.blacklistFile, {});
+    await this.#ensureJson(this.blacklistEvidenceFile, {});
   }
 
   async getGuildConfig(guildId) {
@@ -123,6 +128,61 @@ export class JsonStorage {
       .reduce((total, [, messages]) => total + messages.length, 0);
 
     return buildStats({ guilds, tickets, transcriptMessages });
+  }
+
+  async getBlacklistEntry(value) {
+    const { userId } = normalizeBlacklistLookup(value);
+    const entries = await this.#readJson(this.blacklistFile);
+    return entries[userId] ? normalizeBlacklistEntry(entries[userId]) : null;
+  }
+
+  async listBlacklistEntries() {
+    const entries = await this.#readJson(this.blacklistFile);
+    return Object.values(entries).map(normalizeBlacklistEntry).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  }
+
+  async upsertBlacklistEntry(entry) {
+    const normalized = normalizeBlacklistEntry(entry);
+    const entries = await this.#readJson(this.blacklistFile);
+    entries[normalized.userId] = {
+      ...(entries[normalized.userId] ?? {}),
+      ...normalized,
+      updatedAt: new Date().toISOString()
+    };
+    await this.#writeJson(this.blacklistFile, entries);
+    this.events?.publish('blacklist.updated', entries[normalized.userId]);
+    return normalizeBlacklistEntry(entries[normalized.userId]);
+  }
+
+  async deactivateBlacklistEntry(value, updatedBy = null) {
+    const existing = await this.getBlacklistEntry(value);
+    if (!existing) return null;
+    return this.upsertBlacklistEntry({
+      ...existing,
+      active: false,
+      updatedBy
+    });
+  }
+
+  async addBlacklistEvidence(evidence) {
+    const normalized = normalizeBlacklistEvidence(evidence);
+    const allEvidence = await this.#readJson(this.blacklistEvidenceFile);
+    const list = allEvidence[normalized.userId] ?? [];
+    const saved = {
+      ...normalized,
+      id: normalized.id ?? `evidence-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      createdAt: new Date().toISOString()
+    };
+    allEvidence[normalized.userId] = [...list, saved];
+    await this.#writeJson(this.blacklistEvidenceFile, allEvidence);
+    this.events?.publish('blacklist.evidence.created', saved);
+    return normalizeBlacklistEvidence(saved);
+  }
+
+  async listBlacklistEvidence(value) {
+    const { userId } = normalizeBlacklistLookup(value);
+    const allEvidence = await this.#readJson(this.blacklistEvidenceFile);
+    return (allEvidence[userId] ?? []).map(normalizeBlacklistEvidence).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   }
 
   async #ensureJson(filePath, defaultValue) {
@@ -373,6 +433,82 @@ export class SupabaseStorage {
     });
   }
 
+  async getBlacklistEntry(value) {
+    const { userId, banCode } = normalizeBlacklistLookup(value);
+    const { data, error } = await this.client
+      .from('global_blacklist')
+      .select('*')
+      .or(`user_id.eq.${userId},ban_code.eq.${banCode}`)
+      .maybeSingle();
+    if (isMissingBlacklistTableError(error)) return null;
+    if (error) throw error;
+    return data ? fromBlacklistRow(data) : null;
+  }
+
+  async listBlacklistEntries() {
+    const { data, error } = await this.client
+      .from('global_blacklist')
+      .select('*')
+      .order('updated_at', { ascending: false });
+    if (isMissingBlacklistTableError(error)) return [];
+    if (error) throw error;
+    return data.map(fromBlacklistRow);
+  }
+
+  async upsertBlacklistEntry(entry) {
+    const normalized = normalizeBlacklistEntry(entry);
+    const { data, error } = await this.client
+      .from('global_blacklist')
+      .upsert(toBlacklistRow(normalized), { onConflict: 'user_id' })
+      .select()
+      .single();
+    if (isMissingBlacklistTableError(error)) {
+      throw new Error('Faltan tablas de blacklist en Supabase. Ejecuta el SQL actualizado de supabase/schema.sql.');
+    }
+    if (error) throw error;
+    const saved = fromBlacklistRow(data);
+    this.events?.publish('blacklist.updated', saved);
+    return saved;
+  }
+
+  async deactivateBlacklistEntry(value, updatedBy = null) {
+    const existing = await this.getBlacklistEntry(value);
+    if (!existing) return null;
+    return this.upsertBlacklistEntry({
+      ...existing,
+      active: false,
+      updatedBy
+    });
+  }
+
+  async addBlacklistEvidence(evidence) {
+    const normalized = normalizeBlacklistEvidence(evidence);
+    const { data, error } = await this.client
+      .from('global_blacklist_evidence')
+      .insert(toBlacklistEvidenceRow(normalized))
+      .select()
+      .single();
+    if (isMissingBlacklistTableError(error)) {
+      throw new Error('Falta global_blacklist_evidence en Supabase. Ejecuta el SQL actualizado de supabase/schema.sql.');
+    }
+    if (error) throw error;
+    const saved = fromBlacklistEvidenceRow(data);
+    this.events?.publish('blacklist.evidence.created', saved);
+    return saved;
+  }
+
+  async listBlacklistEvidence(value) {
+    const { userId, banCode } = normalizeBlacklistLookup(value);
+    const { data, error } = await this.client
+      .from('global_blacklist_evidence')
+      .select('*')
+      .or(`user_id.eq.${userId},ban_code.eq.${banCode}`)
+      .order('created_at', { ascending: true });
+    if (isMissingBlacklistTableError(error)) return [];
+    if (error) throw error;
+    return data.map(fromBlacklistEvidenceRow);
+  }
+
   #mergeGuildCompatibility(guild) {
     if (!guild) return guild;
     return {
@@ -608,6 +744,69 @@ function fromTranscriptRow(row) {
     content: row.content,
     createdAt: row.created_at
   };
+}
+
+function toBlacklistRow(entry) {
+  const normalized = normalizeBlacklistEntry(entry);
+  return {
+    user_id: normalized.userId,
+    ban_code: normalized.banCode,
+    reason: normalized.reason,
+    duration: normalized.duration,
+    expires_at: normalized.expiresAt,
+    active: normalized.active,
+    created_by: normalized.createdBy,
+    created_at: normalized.createdAt,
+    updated_at: normalized.updatedAt ?? new Date().toISOString()
+  };
+}
+
+function fromBlacklistRow(row) {
+  return normalizeBlacklistEntry({
+    userId: row.user_id,
+    banCode: row.ban_code,
+    reason: row.reason,
+    duration: row.duration,
+    expiresAt: row.expires_at,
+    active: row.active,
+    createdBy: row.created_by,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  });
+}
+
+function toBlacklistEvidenceRow(evidence) {
+  const normalized = normalizeBlacklistEvidence(evidence);
+  return {
+    user_id: normalized.userId,
+    ban_code: normalized.banCode,
+    attachment_url: normalized.attachmentUrl,
+    proxy_url: normalized.proxyUrl,
+    file_name: normalized.fileName,
+    content_type: normalized.contentType,
+    description: normalized.description,
+    created_by: normalized.createdBy,
+    created_at: normalized.createdAt
+  };
+}
+
+function fromBlacklistEvidenceRow(row) {
+  return normalizeBlacklistEvidence({
+    id: row.id,
+    userId: row.user_id,
+    banCode: row.ban_code,
+    attachmentUrl: row.attachment_url,
+    proxyUrl: row.proxy_url,
+    fileName: row.file_name,
+    contentType: row.content_type,
+    description: row.description,
+    createdBy: row.created_by,
+    createdAt: row.created_at
+  });
+}
+
+function isMissingBlacklistTableError(error) {
+  return Boolean(error && /global_blacklist|global_blacklist_evidence|relation .* does not exist|schema cache/i.test(String(error.message ?? '')));
 }
 
 function buildStats({ guilds, tickets, transcriptMessages }) {

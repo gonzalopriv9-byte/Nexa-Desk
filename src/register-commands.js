@@ -166,6 +166,85 @@ const commands = [
     )
     .toJSON(),
   new SlashCommandBuilder()
+    .setName('blacklist')
+    .setDescription('Gestiona la blacklist global de NexaDesk.')
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName('agregar')
+        .setDescription('Agrega un usuario a la blacklist global.')
+        .addStringOption((option) =>
+          option
+            .setName('usuario_id')
+            .setDescription('ID del usuario a bloquear globalmente.')
+            .setRequired(true)
+        )
+        .addStringOption((option) =>
+          option
+            .setName('motivo')
+            .setDescription('Motivo que vera el usuario en el MD de baneo.')
+            .setRequired(true)
+            .setMaxLength(1000)
+        )
+        .addStringOption((option) =>
+          option
+            .setName('duracion')
+            .setDescription('Ej: permanente, 7d, 30d, 12h.')
+            .setRequired(false)
+            .setMaxLength(80)
+        )
+    )
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName('quitar')
+        .setDescription('Desactiva una entrada de blacklist global.')
+        .addStringOption((option) =>
+          option
+            .setName('id')
+            .setDescription('ID del usuario o codigo baneo-global-[USER].')
+            .setRequired(true)
+        )
+    )
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName('ver')
+        .setDescription('Muestra una entrada de blacklist global.')
+        .addStringOption((option) =>
+          option
+            .setName('id')
+            .setDescription('ID del usuario o codigo baneo-global-[USER].')
+            .setRequired(true)
+        )
+    )
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName('listar')
+        .setDescription('Lista las entradas activas de blacklist global.')
+    )
+    .toJSON(),
+  new SlashCommandBuilder()
+    .setName('adjuntar-pruebas')
+    .setDescription('Adjunta pruebas a un baneo global de NexaDesk.')
+    .addStringOption((option) =>
+      option
+        .setName('id')
+        .setDescription('ID del usuario o codigo baneo-global-[USER].')
+        .setRequired(true)
+    )
+    .addAttachmentOption((option) =>
+      option
+        .setName('archivo')
+        .setDescription('Imagen o archivo de prueba.')
+        .setRequired(true)
+    )
+    .addStringOption((option) =>
+      option
+        .setName('descripcion')
+        .setDescription('Descripcion opcional de la prueba.')
+        .setRequired(false)
+        .setMaxLength(400)
+    )
+    .toJSON(),
+  new SlashCommandBuilder()
     .setName('activarpremium')
     .setDescription('Activa todas las funciones premium para un servidor.')
     .addStringOption((option) =>

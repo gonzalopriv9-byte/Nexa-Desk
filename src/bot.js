@@ -14,6 +14,13 @@ import {
   TextInputBuilder,
   TextInputStyle
 } from 'discord.js';
+import {
+  GLOBAL_BLACKLIST_ADMIN_USER_ID,
+  SUPPORT_SERVER_URL,
+  buildGlobalBanCode,
+  isBlacklistEntryActive,
+  parseBlacklistDuration
+} from './blacklist.js';
 import { buildPanelActionRow, buildPanelEmbed, normalizePanelOptions, normalizeTicketComponent, panelWelcomeMessage } from './panel-options.js';
 import { SecurityManager, SECURITY_LEVELS, normalizeSecurityConfig, normalizeSecurityLevel, summarizeSecurityConfig } from './security.js';
 import { buildTranscriptFileName, buildTranscriptText } from './transcripts.js';
@@ -128,7 +135,6 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
           await interaction.reply({ content: 'Elige una categoria de canales valida.', ephemeral: true });
           return;
         }
-
         await storage.upsertGuildConfig(interaction.guildId, {
           guildName: interaction.guild.name,
           ticketCategoryId: category.id,
@@ -198,6 +204,16 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
         return;
       }
 
+      if (interaction.commandName === 'blacklist') {
+        await handleBlacklistCommand({ interaction, storage });
+        return;
+      }
+
+      if (interaction.commandName === 'adjuntar-pruebas') {
+        await handleAttachBlacklistEvidenceCommand({ interaction, storage });
+        return;
+      }
+
       if (interaction.commandName === 'activarpremium') {
         await handleActivatePremiumCommand({ interaction, storage, client });
         return;
@@ -218,17 +234,11 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
       if (!channel.guild || channel.type !== ChannelType.GuildText) return;
 
       const guildConfig = await storage.getGuildConfig(channel.guild.id);
-      if (!guildConfig?.ticketCategoryId || channel.parentId !== guildConfig.ticketCategoryId) return;
+      if (!isConfiguredTicketCategory(channel, guildConfig)) return;
       if (panelCreatedChannels.has(channel.id) || await storage.getTicket(channel.id)) return;
       if (await wasCreatedByNexaDeskPanel(channel)) return;
 
-      const ticket = await storage.createTicket({
-        guildId: channel.guild.id,
-        guildName: channel.guild.name,
-        channelId: channel.id,
-        channelName: channel.name,
-        categoryId: channel.parentId
-      });
+      const ticket = await createDetectedTicketRecord({ storage, channel });
       if (ticket.alreadyExists) return;
 
       const welcome = await channel.send([
@@ -290,16 +300,36 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
       });
       if (handledBySecurity) return;
     }
-    if (message.author.bot) return;
+    let [ticket, guildConfig] = await Promise.all([
+      storage.getTicket(message.channel.id),
+      storage.getGuildConfig(message.guild.id)
+    ]);
 
-    const ticket = await storage.getTicket(message.channel.id);
+    const ticketKingSeed = !ticket && await shouldDetectTicketKingChannel(message);
+    if (ticketKingSeed && !guildConfig) {
+      guildConfig = await storage.upsertGuildConfig(message.guild.id, {
+        guildName: message.guild.name
+      });
+    }
+
+    if (!ticket && (isConfiguredTicketCategory(message.channel, guildConfig) || ticketKingSeed)) {
+      ticket = await createDetectedTicketRecord({ storage, channel: message.channel });
+      if (ticketKingSeed && !ticket.alreadyExists && message.author.bot) {
+        const welcome = await message.channel.send([
+          `${EMOJIS.global} Hola, soy **NexaDesk**.`,
+          'He detectado este ticket de Ticket King y voy a ayudarte aqui. Cuentame que necesitas y, si hace falta, avisare al staff con un resumen claro.'
+        ].join('\n'));
+        await saveTranscript(storage, welcome, 'assistant');
+      }
+    }
+
+    if (message.author.bot) return;
     if (!ticket) return;
 
     await saveTranscript(storage, message, 'user');
     if (isClosedTicket(ticket)) return;
 
     // Always reload the latest server context before asking the AI.
-    const guildConfig = await storage.getGuildConfig(message.guild.id);
     if (!guildConfig) return;
 
     if (isTicketCloseRequest(message.content)) {
@@ -313,6 +343,39 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
 
     activeResponses.add(message.channel.id);
     try {
+      const allianceFlow = await resolveAllianceTicketFlow(message);
+      if (allianceFlow.type === 'ask_template') {
+        const reply = await message.reply({
+          content: allianceFlow.publicAnswer.slice(0, 1900),
+          allowedMentions: { parse: [] }
+        });
+        await saveTranscript(storage, reply, 'assistant');
+        return;
+      }
+
+      if (allianceFlow.type === 'escalate') {
+        const shouldMentionStaff = await registerTicketEscalation({
+          storage,
+          message,
+          guildConfig,
+          ticket,
+          reason: allianceFlow.reason
+        });
+        const latestTicket = await storage.getTicket(message.channel.id);
+        if (!latestTicket || isClosedTicket(latestTicket)) return;
+
+        const reply = await message.reply({
+          content: buildPublicReply(
+            { shouldEscalate: true, reason: allianceFlow.reason, publicAnswer: allianceFlow.publicAnswer },
+            guildConfig,
+            { mentionStaff: shouldMentionStaff }
+          ).slice(0, 1900),
+          allowedMentions: { roles: shouldMentionStaff && guildConfig.staffRoleId ? [guildConfig.staffRoleId] : [] }
+        });
+        await saveTranscript(storage, reply, 'assistant');
+        return;
+      }
+
       if (isUserRequestingStaff(message.content)) {
         const escalation = {
           shouldEscalate: true,
@@ -357,6 +420,12 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
   });
 
   client.on(Events.GuildMemberAdd, async (member) => {
+    const bannedByBlacklist = await handleGlobalBlacklistMemberJoin({ member, storage }).catch((error) => {
+      console.error(`Global blacklist guard failed in ${member.guild.id}:`, error);
+      return false;
+    });
+    if (bannedByBlacklist) return;
+
     await securityManager.handleMemberAdd(member).catch((error) => {
       console.error(`Security member join guard failed in ${member.guild.id}:`, error);
     });
@@ -1203,6 +1272,207 @@ function buildSecurityStatusEmbed({ guild, security }) {
     .setTimestamp(new Date());
 }
 
+async function handleBlacklistCommand({ interaction, storage }) {
+  if (!isGlobalBlacklistAdmin(interaction.user.id)) {
+    await interaction.reply({ content: 'Este comando solo puede usarlo el owner autorizado de NexaDesk.', ephemeral: true });
+    return;
+  }
+
+  const subcommand = interaction.options.getSubcommand();
+  if (subcommand === 'agregar') {
+    const userId = interaction.options.getString('usuario_id', true).trim();
+    if (!isDiscordSnowflake(userId)) {
+      await interaction.reply({ content: 'Pon un ID de usuario valido.', ephemeral: true });
+      return;
+    }
+
+    const reason = interaction.options.getString('motivo', true).trim();
+    const durationInput = interaction.options.getString('duracion') || 'permanente';
+    const duration = parseBlacklistDuration(durationInput);
+    const entry = await storage.upsertBlacklistEntry({
+      userId,
+      banCode: buildGlobalBanCode(userId),
+      reason,
+      duration: duration.duration,
+      expiresAt: duration.expiresAt,
+      active: true,
+      createdBy: interaction.user.id
+    });
+
+    await interaction.reply({
+      embeds: [buildBlacklistEntryEmbed(entry, [])],
+      content: `Usuario agregado a blacklist global con codigo \`${entry.banCode}\`.`,
+      ephemeral: true
+    });
+    return;
+  }
+
+  if (subcommand === 'quitar') {
+    const id = interaction.options.getString('id', true).trim();
+    const updated = await storage.deactivateBlacklistEntry(id, interaction.user.id);
+    await interaction.reply({
+      content: updated
+        ? `Blacklist desactivada para \`${updated.userId}\` (${updated.banCode}).`
+        : 'No encontre esa entrada de blacklist.',
+      ephemeral: true
+    });
+    return;
+  }
+
+  if (subcommand === 'ver') {
+    const id = interaction.options.getString('id', true).trim();
+    const entry = await storage.getBlacklistEntry(id);
+    if (!entry) {
+      await interaction.reply({ content: 'No encontre esa entrada de blacklist.', ephemeral: true });
+      return;
+    }
+    const evidence = await storage.listBlacklistEvidence(entry.userId);
+    await interaction.reply({
+      embeds: [buildBlacklistEntryEmbed(entry, evidence)],
+      ephemeral: true
+    });
+    return;
+  }
+
+  if (subcommand === 'listar') {
+    const entries = await storage.listBlacklistEntries();
+    const active = entries.filter((entry) => isBlacklistEntryActive(entry));
+    await interaction.reply({
+      embeds: [
+        new EmbedBuilder()
+          .setColor(0xffffff)
+          .setTitle(`${EMOJIS.wifi} Blacklist global`)
+          .setDescription(active.length
+            ? active.slice(0, 15).map((entry) => `\`${entry.banCode}\` - <@${entry.userId}> - ${entry.reason}`).join('\n')
+            : 'No hay usuarios activos en blacklist global.')
+          .setFooter({ text: `${active.length} entradas activas` })
+          .setTimestamp(new Date())
+      ],
+      ephemeral: true,
+      allowedMentions: { parse: [] }
+    });
+  }
+}
+
+async function handleAttachBlacklistEvidenceCommand({ interaction, storage }) {
+  if (!isGlobalBlacklistAdmin(interaction.user.id)) {
+    await interaction.reply({ content: 'Este comando solo puede usarlo el owner autorizado de NexaDesk.', ephemeral: true });
+    return;
+  }
+
+  const id = interaction.options.getString('id', true).trim();
+  const file = interaction.options.getAttachment('archivo', true);
+  const description = interaction.options.getString('descripcion') ?? '';
+  const entry = await storage.getBlacklistEntry(id);
+  if (!entry) {
+    await interaction.reply({ content: 'No existe esa entrada de blacklist. Creala primero con `/blacklist agregar`.', ephemeral: true });
+    return;
+  }
+
+  const evidence = await storage.addBlacklistEvidence({
+    userId: entry.userId,
+    banCode: entry.banCode,
+    attachmentUrl: file.url,
+    proxyUrl: file.proxyURL,
+    fileName: file.name,
+    contentType: file.contentType,
+    description,
+    createdBy: interaction.user.id
+  });
+
+  await interaction.reply({
+    content: `Prueba adjuntada a \`${entry.banCode}\`: ${evidence.fileName ?? evidence.attachmentUrl}`,
+    ephemeral: true
+  });
+}
+
+async function handleGlobalBlacklistMemberJoin({ member, storage }) {
+  const entry = await storage.getBlacklistEntry(member.user.id);
+  if (!entry || !isBlacklistEntryActive(entry)) return false;
+
+  const evidence = await storage.listBlacklistEvidence(entry.userId).catch(() => []);
+  await sendGlobalBlacklistDm({ user: member.user, guild: member.guild, entry, evidence }).catch((error) => {
+    console.warn(`Could not DM global blacklist notice to ${member.user.tag}:`, error?.message ?? error);
+  });
+
+  if (member.bannable) {
+    await member.ban({
+      reason: `NexaDesk global blacklist ${entry.banCode}: ${entry.reason}`.slice(0, 500)
+    });
+    console.log(`Global blacklist banned ${member.user.tag} (${member.user.id}) in ${member.guild.name}.`);
+  } else {
+    console.warn(`Global blacklist match ${member.user.tag} in ${member.guild.name}, but member is not bannable.`);
+  }
+
+  return true;
+}
+
+async function sendGlobalBlacklistDm({ user, guild, entry, evidence = [] }) {
+  const activeEvidence = evidence.filter((item) => item.attachmentUrl || item.proxyUrl);
+  const mainEmbed = new EmbedBuilder()
+    .setColor(0xffffff)
+    .setTitle(`${EMOJIS.wifi} Baneo global NexaDesk`)
+    .setDescription(`Has sido baneado automaticamente al entrar en **${guild.name}** porque estas en la blacklist global de NexaDesk.`)
+    .addFields(
+      { name: 'Motivo', value: entry.reason || 'Sin motivo especificado' },
+      { name: 'Duracion', value: entry.duration || 'permanente', inline: true },
+      { name: 'Codigo de baneo', value: `\`${entry.banCode}\``, inline: true },
+      { name: 'Apelacion', value: `Puedes apelar en el servidor de soporte: ${SUPPORT_SERVER_URL}` },
+      { name: 'Pruebas adjuntas', value: activeEvidence.length ? `${activeEvidence.length} archivo(s) adjunto(s) abajo.` : 'No hay pruebas por imagen adjuntas aun.' }
+    )
+    .setFooter({ text: 'NexaDesk Global Safety' })
+    .setTimestamp(new Date());
+
+  const evidenceEmbeds = activeEvidence
+    .filter((item) => isImageEvidence(item))
+    .slice(0, 4)
+    .map((item, index) => new EmbedBuilder()
+      .setColor(0xffffff)
+      .setTitle(`Prueba ${index + 1}`)
+      .setDescription(item.description || item.fileName || 'Imagen adjunta como prueba.')
+      .setImage(item.proxyUrl || item.attachmentUrl));
+
+  const links = activeEvidence
+    .filter((item) => !isImageEvidence(item))
+    .slice(0, 8)
+    .map((item, index) => `${index + 1}. ${item.fileName || 'Archivo'}: ${item.attachmentUrl}`)
+    .join('\n');
+
+  await user.send({
+    content: links ? `Archivos de prueba no embebidos:\n${links}` : undefined,
+    embeds: [mainEmbed, ...evidenceEmbeds]
+  });
+}
+
+function buildBlacklistEntryEmbed(entry, evidence = []) {
+  return new EmbedBuilder()
+    .setColor(0xffffff)
+    .setTitle(`${EMOJIS.wifi} ${entry.banCode}`)
+    .setDescription(entry.active ? 'Entrada activa en blacklist global.' : 'Entrada desactivada.')
+    .addFields(
+      { name: 'Usuario', value: `<@${entry.userId}> (${entry.userId})`, inline: true },
+      { name: 'Duracion', value: entry.duration || 'permanente', inline: true },
+      { name: 'Expira', value: entry.expiresAt ? new Date(entry.expiresAt).toLocaleString() : 'No expira', inline: true },
+      { name: 'Motivo', value: entry.reason || 'Sin motivo especificado' },
+      { name: 'Pruebas', value: evidence.length ? evidence.map((item) => `- ${item.fileName || item.attachmentUrl}`).slice(0, 10).join('\n') : 'Sin pruebas adjuntas' }
+    )
+    .setFooter({ text: 'NexaDesk Global Safety' })
+    .setTimestamp(new Date(entry.updatedAt ?? Date.now()));
+}
+
+function isGlobalBlacklistAdmin(userId) {
+  return userId === GLOBAL_BLACKLIST_ADMIN_USER_ID;
+}
+
+function isDiscordSnowflake(value) {
+  return /^\d{17,20}$/.test(String(value ?? '').trim());
+}
+
+function isImageEvidence(evidence) {
+  if (String(evidence.contentType ?? '').startsWith('image/')) return true;
+  return /\.(png|jpe?g|gif|webp)$/i.test(String(evidence.attachmentUrl ?? evidence.proxyUrl ?? ''));
+}
+
 async function handleHelpCommand({ interaction, config }) {
   await interaction.reply({
     embeds: [buildHelpEmbed({ view: 'home', config, guild: interaction.guild })],
@@ -1724,6 +1994,60 @@ function buildBotInviteUrl(config, guildId) {
     url.searchParams.set('disable_guild_select', 'true');
   }
   return url.toString();
+}
+
+async function createDetectedTicketRecord({ storage, channel }) {
+  return storage.createTicket({
+    guildId: channel.guild.id,
+    guildName: channel.guild.name,
+    channelId: channel.id,
+    channelName: channel.name,
+    categoryId: channel.parentId
+  });
+}
+
+function isConfiguredTicketCategory(channel, guildConfig) {
+  return Boolean(channel && guildConfig?.ticketCategoryId && channel.parentId === guildConfig.ticketCategoryId);
+}
+
+async function shouldDetectTicketKingChannel(message) {
+  if (!isTicketKingChannel(message.channel)) return false;
+  if (isTicketKingSeedMessage(message)) return true;
+  if (message.author.bot) return false;
+  return hasRecentTicketKingMessage(message.channel);
+}
+
+function isTicketKingChannel(channel) {
+  return /^ticket-\d+$/i.test(channel?.name ?? '');
+}
+
+function isTicketKingSeedMessage(message) {
+  return isTicketKingChannel(message.channel) && isTicketKingBotUser(message.author);
+}
+
+async function hasRecentTicketKingMessage(channel) {
+  try {
+    const messages = await channel.messages.fetch({ limit: 25 });
+    return messages.some((item) => isTicketKingBotUser(item.author));
+  } catch {
+    return false;
+  }
+}
+
+function isTicketKingBotUser(user) {
+  if (!user?.bot) return false;
+  const haystack = [
+    user.username,
+    user.globalName,
+    user.tag,
+    user.displayName
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase()
+    .replace(/[-_]/g, ' ');
+
+  return /\bticket\s*king\b/.test(haystack) || haystack.includes('ticketking');
 }
 
 function isMissingPermissionError(error) {
@@ -2271,6 +2595,90 @@ function looksLikeEscalation(answer) {
     /\b(?:requires?|needs?)\s+(?:human|staff|moderator)\s+(?:review|intervention|support|assistance)\b/i,
     /\b(?:i\s+need|i'll|i\s+will)\s+(?:to\s+)?(?:notify|contact|escalate|involve)\s+(?:the\s+)?(?:staff|moderator|human team)\b/i
   ].some((pattern) => pattern.test(answer));
+}
+
+async function resolveAllianceTicketFlow(message) {
+  const recentMessages = await fetchRecentChannelMessages(message.channel, 20);
+  const allianceContext = isAllianceIntent(message.content)
+    || recentMessages.some((item) => !item.author.bot && isAllianceIntent(item.content));
+
+  if (!allianceContext) return { type: 'none' };
+
+  const templateRequested = recentMessages.some((item) => (
+    item.author.bot
+    && /\bplantilla\b/i.test(item.content ?? '')
+    && isAllianceIntent(item.content)
+  ));
+
+  if (isAllianceTemplateMessage(message.content, { templateRequested })) {
+    return {
+      type: 'escalate',
+      reason: 'El usuario ya ha enviado una plantilla de alianza para que el staff la revise.',
+      publicAnswer: 'Perfecto, ya tengo la plantilla de alianza. Aviso al staff para que la revise y te responda con la decision o los siguientes pasos.'
+    };
+  }
+
+  return {
+    type: 'ask_template',
+    publicAnswer: [
+      'Claro, para una alianza necesito primero la plantilla y despues aviso al staff.',
+      '',
+      'Pasamela con estos datos si los tienes:',
+      '- Nombre del servidor/proyecto',
+      '- Invitacion o enlace',
+      '- Miembros aproximados',
+      '- Tematica',
+      '- Que ofrece la alianza y que buscais',
+      '- Contacto responsable'
+    ].join('\n')
+  };
+}
+
+async function fetchRecentChannelMessages(channel, limit = 20) {
+  try {
+    const messages = await channel.messages.fetch({ limit });
+    return [...messages.values()].sort((a, b) => a.createdTimestamp - b.createdTimestamp);
+  } catch {
+    return [];
+  }
+}
+
+function isAllianceIntent(content) {
+  const normalized = normalizeText(content);
+  return /\balianz(?:a|as)\b/.test(normalized)
+    || /\bpartner(?:ship)?s?\b/.test(normalized)
+    || /\bcolaboracion\b/.test(normalized);
+}
+
+function isAllianceTemplateMessage(content, { templateRequested = false } = {}) {
+  const raw = String(content ?? '').trim();
+  const normalized = normalizeText(raw);
+  if (!raw || isShortAllianceAck(normalized)) return false;
+
+  const hasLink = /(?:discord\.gg|discord\.com\/invite|https?:\/\/)/i.test(raw);
+  const hasAllianceFields = [
+    /\bnombre\b/,
+    /\bservidor\b/,
+    /\bmiembros?\b/,
+    /\btematica\b/,
+    /\binvitacion\b/,
+    /\benlace\b/,
+    /\bofrec(?:e|emos|en)\b/,
+    /\bbusc(?:a|amos|an)\b/,
+    /\bcontacto\b/,
+    /\brepresentante\b/,
+    /\bowner\b/
+  ].filter((pattern) => pattern.test(normalized)).length;
+
+  if (templateRequested) {
+    return hasLink || hasAllianceFields >= 2 || raw.length >= 90;
+  }
+
+  return isAllianceIntent(raw) && (hasLink || hasAllianceFields >= 2 || raw.length >= 120);
+}
+
+function isShortAllianceAck(normalized) {
+  return /^(si|sí|vale|ok|okay|perfecto|dale|hazlo|hacelo|adelante|afirmativo|claro|porfa|por favor)[.!?\s]*$/.test(normalized);
 }
 
 function isUserRequestingStaff(content) {

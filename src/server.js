@@ -6,6 +6,7 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { GroqClient } from './ai/groq-client.js';
+import { GLOBAL_BLACKLIST_ADMIN_USER_ID, buildGlobalBanCode, isBlacklistEntryActive, parseBlacklistDuration } from './blacklist.js';
 import { normalizeTicketComponent } from './panel-options.js';
 import { normalizeSecurityConfig, summarizeSecurityConfig } from './security.js';
 import { buildTranscriptFileName, buildTranscriptText } from './transcripts.js';
@@ -185,6 +186,51 @@ export function createServer({ config, storage, bot, events }) {
     res.json(enrichDashboardStats(stats, guilds));
   }));
 
+  app.get('/api/blacklist', requireGlobalAdmin, asyncHandler(async (_req, res) => {
+    const entries = await storage.listBlacklistEntries();
+    const withEvidence = await Promise.all(entries.map(async (entry) => ({
+      ...entry,
+      evidence: await storage.listBlacklistEvidence(entry.userId)
+    })));
+    res.json(withEvidence);
+  }));
+
+  app.post('/api/blacklist', requireGlobalAdmin, asyncHandler(async (req, res) => {
+    const userId = String(req.body.userId ?? '').trim();
+    if (!/^\d{17,20}$/.test(userId)) {
+      res.status(400).json({ error: 'Pon un ID de usuario valido.' });
+      return;
+    }
+    const reason = String(req.body.reason ?? '').trim();
+    if (!reason) {
+      res.status(400).json({ error: 'Pon un motivo para la blacklist.' });
+      return;
+    }
+    const duration = parseBlacklistDuration(req.body.duration || 'permanente');
+    const entry = await storage.upsertBlacklistEntry({
+      userId,
+      banCode: buildGlobalBanCode(userId),
+      reason,
+      duration: duration.duration,
+      expiresAt: duration.expiresAt,
+      active: true,
+      createdBy: req.session.user.id
+    });
+    res.json({
+      ...entry,
+      evidence: await storage.listBlacklistEvidence(entry.userId)
+    });
+  }));
+
+  app.delete('/api/blacklist/:id', requireGlobalAdmin, asyncHandler(async (req, res) => {
+    const entry = await storage.deactivateBlacklistEntry(req.params.id, req.session.user.id);
+    if (!entry) {
+      res.status(404).json({ error: 'Blacklist entry not found' });
+      return;
+    }
+    res.json(entry);
+  }));
+
   app.post('/api/assistant', asyncHandler(async (req, res) => {
     const message = String(req.body.message ?? '').trim().slice(0, 900);
     if (!message) {
@@ -347,6 +393,14 @@ function normalizeError(error) {
   } catch {
     return 'Unknown error';
   }
+}
+
+function requireGlobalAdmin(req, res, next) {
+  if (req.session?.user?.id !== GLOBAL_BLACKLIST_ADMIN_USER_ID) {
+    res.status(403).json({ error: 'Global admin only.' });
+    return;
+  }
+  next();
 }
 
 function requireGuildAccess(req, res, next) {
