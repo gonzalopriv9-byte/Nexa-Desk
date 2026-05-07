@@ -137,14 +137,21 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
           await interaction.reply({ content: 'Elige una categoria de canales valida.', ephemeral: true });
           return;
         }
-        await storage.upsertGuildConfig(interaction.guildId, {
+
+        const staffRole = interaction.options.getRole('rol_staff');
+        const patch = {
           guildName: interaction.guild.name,
           ticketCategoryId: category.id,
           ticketCategoryName: category.name
-        });
+        };
+        if (staffRole) patch.staffRoleId = staffRole.id;
+        await storage.upsertGuildConfig(interaction.guildId, patch);
 
         await interaction.reply({
-          content: `Listo. NexaDesk vigilara tickets nuevos en la categoria **${category.name}**.`,
+          content: [
+            `Listo. NexaDesk vigilara tickets nuevos en la categoria **${category.name}**.`,
+            staffRole ? `Rol staff configurado: ${staffRole}.` : 'Rol staff sin cambiar. Puedes configurarlo luego en dashboard o con `/setup rol_staff:`.'
+          ].join('\n'),
           ephemeral: true
         });
       }
@@ -349,6 +356,7 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
     if (!config.AI_AUTO_REPLY) return;
     if (activeResponses.has(message.channel.id)) return;
     if (isAiDisabledTicket(ticket)) return;
+    if (await shouldStaySilentInTicket({ message, ticket, guildConfig, client })) return;
 
     activeResponses.add(message.channel.id);
     try {
@@ -2531,6 +2539,34 @@ function isTicketEscalated(ticket) {
   return ticket?.status === 'escalated' || isAiDisabledTicket(ticket);
 }
 
+async function shouldStaySilentInTicket({ message, ticket, guildConfig, client }) {
+  if (isMessageAddressedToNexaDesk(message, client)) return false;
+  if (message.member?.permissions?.has(PermissionFlagsBits.ManageGuild)) return true;
+  if (guildConfig?.staffRoleId && memberHasRole(message.member, guildConfig.staffRoleId)) return true;
+  if (isLikelyStaffIdentity(message.member, message.author)) return true;
+  if (isTicketEscalated(ticket)) return true;
+
+  const recentMessages = await fetchRecentChannelMessages(message.channel, 12);
+  return hasStaffHumanConversation(recentMessages, message);
+}
+
+function isMessageAddressedToNexaDesk(message, client) {
+  const botId = client?.user?.id;
+  if (botId && message.mentions?.users?.has(botId)) return true;
+  if (botId && message.mentions?.repliedUser?.id === botId) return true;
+  if (message.reference?.messageId) {
+    const referenced = message.channel.messages.cache.get(message.reference.messageId);
+    if (referenced?.author?.id === botId) return true;
+  }
+
+  const normalized = normalizeText(message.content);
+  return [
+    /\bnexa(?:desk)?\b/,
+    /\bbot\b.*\b(?:ayuda|responde|puedes|decime|dime)\b/,
+    /\b(?:ayuda|responde|puedes|decime|dime)\b.*\b(?:bot|nexa(?:desk)?)\b/
+  ].some((pattern) => pattern.test(normalized));
+}
+
 function memberHasRole(member, roleId) {
   if (!member || !roleId) return false;
   if (Array.isArray(member.roles)) return member.roles.includes(roleId);
@@ -2744,6 +2780,8 @@ function parseEscalation(answer) {
 function looksLikeEscalation(answer) {
   return [
     /\bnecesito\s+(?:involucrar|avisar|contactar|derivar|escalar)\s+(?:a|al|con)\s+(?:un\s+)?(?:staff|moderador|humano|responsable)\b/i,
+    /\bnecesito\s+que\s+(?:un\s+)?(?:staff|moderador|humano|responsable)\b.*\b(?:revise|atienda|ayude|intervenga|mire)\b/i,
+    /\b(?:requiere|necesita)\s+(?:intervencion|revision|atencion)\s+(?:humana|manual|personalizada|del\s+staff)\b/i,
     /\b(?:voy|debo|tengo)\s+(?:a\s+)?(?:avisar|contactar|involucrar|derivar|escalar)\s+(?:a|al|con)\s+(?:un\s+)?(?:staff|moderador|humano|responsable)\b/i,
     /\b(?:requires?|needs?)\s+(?:human|staff|moderator)\s+(?:review|intervention|support|assistance)\b/i,
     /\b(?:i\s+need|i'll|i\s+will)\s+(?:to\s+)?(?:notify|contact|escalate|involve)\s+(?:the\s+)?(?:staff|moderator|human team)\b/i
@@ -2752,10 +2790,15 @@ function looksLikeEscalation(answer) {
 
 async function resolveAllianceTicketFlow(message) {
   const recentMessages = await fetchRecentChannelMessages(message.channel, 20);
+  if (hasStaffHumanConversation(recentMessages, message)) {
+    return { type: 'none' };
+  }
+
   const allianceContext = isAllianceIntent(message.content)
     || recentMessages.some((item) => !item.author.bot && isAllianceIntent(item.content));
 
   if (!allianceContext) return { type: 'none' };
+  if (isAllianceChatter(message.content)) return { type: 'none' };
 
   const templateRequested = recentMessages.some((item) => (
     item.author.bot
@@ -2763,7 +2806,13 @@ async function resolveAllianceTicketFlow(message) {
     && isAllianceIntent(item.content)
   ));
 
-  if (isAllianceTemplateMessage(message.content, { templateRequested })) {
+  const alreadyEscalated = recentMessages.some((item) => (
+    item.author.bot
+    && isAllianceIntent(item.content)
+    && /\b(?:aviso|avisare|staff|revise|revision|siguientes pasos)\b/i.test(item.content ?? '')
+  ));
+
+  if (!alreadyEscalated && isAllianceTemplateMessage(message.content, { templateRequested })) {
     return {
       type: 'escalate',
       reason: 'El usuario ya ha enviado una plantilla de alianza para que el staff la revise.',
@@ -2771,20 +2820,42 @@ async function resolveAllianceTicketFlow(message) {
     };
   }
 
+  if (alreadyEscalated || templateRequested) {
+    return { type: 'none' };
+  }
+
   return {
     type: 'ask_template',
     publicAnswer: [
-      'Claro, para una alianza necesito primero la plantilla y despues aviso al staff.',
+      'Perfecto, esto seria una alianza. Para moverlo bien necesito la plantilla o estos datos basicos:',
       '',
-      'Pasamela con estos datos si los tienes:',
       '- Nombre del servidor/proyecto',
       '- Invitacion o enlace',
       '- Miembros aproximados',
       '- Tematica',
       '- Que ofrece la alianza y que buscais',
-      '- Contacto responsable'
+      '- Contacto responsable',
+      '',
+      'Cuando me la pases, aviso al staff con el contexto ordenado.'
     ].join('\n')
   };
+}
+
+function hasStaffHumanConversation(recentMessages, currentMessage) {
+  if (isMessageAddressedToNexaDesk(currentMessage, currentMessage.client)) return false;
+  const currentIndex = recentMessages.findIndex((item) => item.id === currentMessage.id);
+  const previous = currentIndex >= 0 ? recentMessages.slice(0, currentIndex) : recentMessages;
+  return previous.slice(-8).some((item) => !item.author.bot && isLikelyStaffHumanMessage(item, currentMessage));
+}
+
+function isLikelyStaffHumanMessage(item, currentMessage) {
+  if (item.author.id === currentMessage.author.id) return false;
+  return isLikelyStaffIdentity(item.member, item.author);
+}
+
+function isLikelyStaffIdentity(member, user) {
+  if (member?.permissions?.has(PermissionFlagsBits.ManageGuild)) return true;
+  return /(?:fundador|admin|staff|mod|moderador|owner|soporte)/i.test(member?.displayName ?? user?.username ?? '');
 }
 
 async function fetchRecentChannelMessages(channel, limit = 20) {
@@ -2823,27 +2894,39 @@ function isAllianceTemplateMessage(content, { templateRequested = false } = {}) 
     /\bowner\b/
   ].filter((pattern) => pattern.test(normalized)).length;
 
+  const hasMemberCount = /\b\d{2,6}\s*(?:miembros?|members?|users?|personas?)\b/i.test(normalized);
+  const hasThemeHint = /\b(?:rp|erlc|roleplay|comunidad|gaming|minecraft|roblox|discord|anime|social)\b/i.test(normalized);
+
   if (templateRequested) {
-    return hasLink || hasAllianceFields >= 2 || raw.length >= 90;
+    return hasLink || hasAllianceFields >= 2 || (hasMemberCount && hasThemeHint) || raw.length >= 55;
   }
 
-  return isAllianceIntent(raw) && (hasLink || hasAllianceFields >= 2 || raw.length >= 120);
+  return isAllianceIntent(raw) && (hasLink || hasAllianceFields >= 2 || (hasMemberCount && hasThemeHint) || raw.length >= 90);
 }
 
 function isShortAllianceAck(normalized) {
   return /^(si|sí|vale|ok|okay|perfecto|dale|hazlo|hacelo|adelante|afirmativo|claro|porfa|por favor)[.!?\s]*$/.test(normalized);
 }
 
-function isUserRequestingStaff(content) {
+function isAllianceChatter(content) {
+  const normalized = normalizeText(content);
   return [
-    /\basistencia\s+manual\b/i,
-    /\b(?:necesito|podria|puedes|podrias|quiero\s+hablar\s+con|pasame\s+con)\b.*\b(staff|moderador(?:es)?|humano|responsable)\b/i,
-    /\b(?:menciona(?:s|r)?|avisa(?:s|r)?|llama(?:s|r)?|contacta(?:s|r)?)\b.*\b(staff|moderador(?:es)?|humano|responsable)\b/i,
-    /\b(?:staff|moderador(?:es)?|humano|responsable)\b.*\b(?:por\s+favor|porfa|urgente|ayuda|venir|venga|atienda)\b/i,
-    /\bmanual\s+(?:support|assistance|help)\b/i,
-    /\b(?:need|want|call|notify|contact|bring|get)\b.*\b(staff|moderator|human|admin)\b/i,
-    /\b(?:staff|moderator|human|admin)\b.*\b(?:please|help|needed|urgent)\b/i
-  ].some((pattern) => pattern.test(content));
+    /^(bruh|x dios|jsjs|jaja+|jeje+|xd|uh|q pesado|que pesado)[.!?\s]*$/,
+    /\b(?:me la borra|lo borra|borra la plantilla)\b/
+  ].some((pattern) => pattern.test(normalized));
+}
+
+function isUserRequestingStaff(content) {
+  const normalized = normalizeText(content);
+  return [
+    /\basistencia\s+manual\b/,
+    /\b(?:necesito|podria|puedes|podrias|quiero\s+hablar\s+con|pasame\s+con)\b.*\b(staff|moderador(?:es)?|humano|responsable)\b/,
+    /\b(?:menciona(?:s|r)?|avisa(?:s|r)?|llama(?:s|r)?|contacta(?:s|r)?)\b.*\b(staff|moderador(?:es)?|humano|responsable)\b/,
+    /\b(?:staff|moderador(?:es)?|humano|responsable)\b.*\b(?:por\s+favor|porfa|urgente|ayuda|venir|venga|atienda)\b/,
+    /\bmanual\s+(?:support|assistance|help)\b/,
+    /\b(?:need|want|call|notify|contact|bring|get)\b.*\b(staff|moderator|human|admin)\b/,
+    /\b(?:staff|moderator|human|admin)\b.*\b(?:please|help|needed|urgent)\b/
+  ].some((pattern) => pattern.test(normalized));
 }
 
 function isTicketCloseRequest(content) {

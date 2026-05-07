@@ -13,6 +13,12 @@ const commands = [
         .addChannelTypes(ChannelType.GuildCategory)
         .setRequired(true)
     )
+    .addRoleOption((option) =>
+      option
+        .setName('rol_staff')
+        .setDescription('Rol que NexaDesk mencionara cuando escale un ticket.')
+        .setRequired(false)
+    )
     .toJSON(),
   new SlashCommandBuilder()
     .setName('desactivar')
