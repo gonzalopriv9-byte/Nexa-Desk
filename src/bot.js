@@ -234,6 +234,7 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
 
       const guildConfig = await storage.getGuildConfig(channel.guild.id);
       if (!isConfiguredTicketCategory(channel, guildConfig)) return;
+      if (isTicketKingChannel(channel)) return;
       if (panelCreatedChannels.has(channel.id) || await storage.getTicket(channel.id)) return;
       if (await wasCreatedByNexaDeskPanel(channel)) return;
 
@@ -304,22 +305,50 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
       storage.getGuildConfig(message.guild.id)
     ]);
 
-    const ticketKingSeed = !ticket && await shouldDetectTicketKingChannel(message);
-    if (ticketKingSeed && !guildConfig) {
+    const ticketKingDetected = (!ticket || !ticket.openedBy) && await shouldDetectTicketKingChannel(message);
+    const ticketKingOpenerId = ticketKingDetected ? await resolveTicketKingOpenerId(message) : null;
+    let ticketKingBlacklistChecked = false;
+    if (ticketKingDetected && !guildConfig) {
       guildConfig = await storage.upsertGuildConfig(message.guild.id, {
         guildName: message.guild.name
       });
     }
 
-    if (!ticket && (isConfiguredTicketCategory(message.channel, guildConfig) || ticketKingSeed)) {
-      ticket = await createDetectedTicketRecord({ storage, channel: message.channel });
-      if (ticketKingSeed && !ticket.alreadyExists && message.author.bot) {
+    if (!ticket && (isConfiguredTicketCategory(message.channel, guildConfig) || ticketKingDetected)) {
+      ticket = await createDetectedTicketRecord({ storage, channel: message.channel, openedBy: ticketKingOpenerId });
+      if (ticketKingDetected && !ticket.alreadyExists && message.author.bot) {
         const welcome = await message.channel.send([
           `${EMOJIS.global} Hola, soy **NexaDesk**.`,
           'He detectado este ticket de Ticket King y voy a ayudarte aqui. Cuentame que necesitas y, si hace falta, avisare al staff con un resumen claro.'
         ].join('\n'));
         await saveTranscript(storage, welcome, 'assistant');
+
+        ticket = await maybeAlertTicketOpenerXnProtect({
+          storage,
+          channel: message.channel,
+          guildConfig,
+          ticket,
+          openerId: ticketKingOpenerId,
+          blacklistAlertedChannels
+        });
+        ticketKingBlacklistChecked = true;
       }
+    }
+
+    if (ticketKingDetected && ticket && ticketKingOpenerId && !ticket.openedBy) {
+      const updatedTicket = await storage.updateTicket(ticket.channelId, { openedBy: ticketKingOpenerId });
+      ticket = updatedTicket ?? ticket;
+    }
+
+    if (ticketKingDetected && ticket && !ticketKingBlacklistChecked) {
+      ticket = await maybeAlertTicketOpenerXnProtect({
+        storage,
+        channel: message.channel,
+        guildConfig,
+        ticket,
+        openerId: ticketKingOpenerId,
+        blacklistAlertedChannels
+      });
     }
 
     if (message.author.bot) return;
@@ -1546,6 +1575,28 @@ async function maybeAlertXnProtectBlacklist({ storage, channel, guildConfig, tic
   return ticket;
 }
 
+async function maybeAlertTicketOpenerXnProtect({ storage, channel, guildConfig, ticket, openerId, blacklistAlertedChannels }) {
+  if (!openerId) {
+    console.warn(`Ticket ${channel.id} detected from Ticket King, but opener could not be resolved for XN Protect check.`);
+    return ticket;
+  }
+
+  const user = await channel.client.users.fetch(openerId).catch(() => ({
+    id: openerId,
+    bot: false,
+    username: `Usuario ${openerId}`
+  }));
+
+  return maybeAlertXnProtectBlacklist({
+    storage,
+    channel,
+    guildConfig,
+    ticket,
+    user,
+    blacklistAlertedChannels
+  });
+}
+
 async function hasXnProtectAlertTranscript(storage, channelId, userId) {
   try {
     const messages = await storage.listTranscriptMessages(channelId);
@@ -2157,14 +2208,16 @@ function buildBotInviteUrl(config, guildId) {
   return url.toString();
 }
 
-async function createDetectedTicketRecord({ storage, channel }) {
-  return storage.createTicket({
+async function createDetectedTicketRecord({ storage, channel, openedBy = null }) {
+  const ticket = {
     guildId: channel.guild.id,
     guildName: channel.guild.name,
     channelId: channel.id,
     channelName: channel.name,
     categoryId: channel.parentId
-  });
+  };
+  if (openedBy) ticket.openedBy = openedBy;
+  return storage.createTicket(ticket);
 }
 
 function isConfiguredTicketCategory(channel, guildConfig) {
@@ -2193,6 +2246,52 @@ async function hasRecentTicketKingMessage(channel) {
   } catch {
     return false;
   }
+}
+
+async function resolveTicketKingOpenerId(message) {
+  if (isTicketKingSeedMessage(message)) {
+    return extractTicketOpenerIdFromBotMessage(message);
+  }
+
+  try {
+    const messages = await message.channel.messages.fetch({ limit: 25 });
+    const seedMessage = [...messages.values()]
+      .sort((a, b) => a.createdTimestamp - b.createdTimestamp)
+      .find((item) => isTicketKingSeedMessage(item));
+    return seedMessage ? extractTicketOpenerIdFromBotMessage(seedMessage) : null;
+  } catch {
+    return null;
+  }
+}
+
+function extractTicketOpenerIdFromBotMessage(message) {
+  const mentionedUser = [...(message.mentions?.users?.values?.() ?? [])]
+    .find((user) => !user.bot);
+  if (mentionedUser) return mentionedUser.id;
+
+  const text = buildMessageSearchText(message);
+  const mentionMatch = text.match(/<@!?(\d{17,20})>/);
+  if (mentionMatch) return mentionMatch[1];
+
+  const createdTicketMatch = text.match(/(\d{17,20}).{0,120}(?:ha\s+creado|creo|abierto|opened|created)/i);
+  return createdTicketMatch?.[1] ?? null;
+}
+
+function buildMessageSearchText(message) {
+  const embedText = (message.embeds ?? []).flatMap((embed) => [
+    embed.title,
+    embed.description,
+    embed.footer?.text,
+    embed.author?.name,
+    ...(embed.fields ?? []).flatMap((field) => [field.name, field.value])
+  ]);
+
+  return [
+    message.content,
+    ...embedText
+  ]
+    .filter(Boolean)
+    .join('\n');
 }
 
 function isTicketKingBotUser(user) {

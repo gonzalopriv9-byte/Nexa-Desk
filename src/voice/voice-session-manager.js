@@ -3,6 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { Readable } from 'node:stream';
 import WebSocket from 'ws';
 import {
   AudioPlayerStatus,
@@ -278,10 +279,17 @@ export class VoiceSessionManager {
     if (!audio?.length) {
       throw new Error('TTS did not return audio bytes.');
     }
-    console.log(`Voice TTS ready using ${this.config.VOICE_TTS_PROVIDER || 'auto'} (${audio.length} bytes).`);
-    const pcmStream = transcodeToDiscordPcm(audio);
-    const resource = createAudioResource(pcmStream, { inputType: StreamType.Raw, inlineVolume: true });
-    resource.volume?.setVolume(1.18);
+    const pcm = await decodeTtsToDiscordPcm(audio);
+    const stats = analyzePcm16(pcm);
+    if (!pcm.length || (stats.rms < 0.0008 && stats.peak < 0.01)) {
+      throw new Error(`TTS audio decoded as silence (rms ${stats.rms.toFixed(5)}, peak ${stats.peak.toFixed(5)}).`);
+    }
+
+    console.log(`Voice TTS ready using ${this.config.VOICE_TTS_PROVIDER || 'auto'} (${audio.length} bytes, pcm ${pcm.length}, rms ${stats.rms.toFixed(4)}).`);
+    session.connection.subscribe(session.player);
+    await entersState(session.connection, VoiceConnectionStatus.Ready, 5_000);
+    const resource = createAudioResource(Readable.from([pcm]), { inputType: StreamType.Raw, inlineVolume: true });
+    resource.volume?.setVolume(1.35);
     session.player.play(resource);
     await entersState(session.player, AudioPlayerStatus.Playing, 10_000);
     await entersState(session.player, AudioPlayerStatus.Idle, 45_000).catch(() => {});
@@ -379,8 +387,8 @@ function buildWavFromPcm(pcm) {
   return Buffer.concat([header, pcm]);
 }
 
-function transcodeToDiscordPcm(audioBuffer) {
-  const ffmpeg = spawn('ffmpeg', [
+function decodeTtsToDiscordPcm(audioBuffer) {
+  return runProcessBuffer('ffmpeg', [
     '-hide_banner',
     '-loglevel',
     'error',
@@ -395,12 +403,7 @@ function transcodeToDiscordPcm(audioBuffer) {
     '-ac',
     String(CHANNELS),
     'pipe:1'
-  ], { stdio: ['pipe', 'pipe', 'ignore'] });
-  ffmpeg.once('error', (error) => {
-    console.error('ffmpeg failed while preparing voice playback:', error);
-  });
-  ffmpeg.stdin.end(audioBuffer);
-  return ffmpeg.stdout;
+  ], audioBuffer);
 }
 
 async function synthesizeLocalSpeech(text, config = {}) {
@@ -615,7 +618,7 @@ function parseEdgeAudioFrame(frame) {
   if (audioStart >= frame.length) return null;
   const header = frame.subarray(2, audioStart).toString('utf8');
   if (!header.includes('Path:audio')) return null;
-  return frame.subarray(audioStart + 2);
+  return frame.subarray(audioStart);
 }
 
 function escapeXml(value) {
