@@ -1,6 +1,8 @@
 import { config } from './config.js';
 import { createStorage } from './storage.js';
 import { AppEvents } from './events.js';
+import { AkiomaeClient } from './ai/akiomae-client.js';
+import { FallbackAiClient, createAiProvider } from './ai/fallback-ai-client.js';
 import { GroqClient } from './ai/groq-client.js';
 import { OllamaClient } from './ai/ollama-client.js';
 import { OpenAICompatibleClient } from './ai/openai-compatible-client.js';
@@ -68,11 +70,7 @@ if (config.RUN_BOT) {
 
 function createAiClient() {
   if (config.AI_PROVIDER === 'groq') {
-    return new GroqClient({
-      apiKey: config.GROQ_API_KEY,
-      model: config.GROQ_MODEL,
-      visionModel: config.GROQ_VISION_MODEL
-    });
+    return createGroqFallbackClient();
   }
 
   if (config.AI_PROVIDER === 'ollama') {
@@ -91,14 +89,10 @@ function createAiClient() {
 }
 
 function createVisualAnalyzer() {
-  if (!config.AI_VISUAL_ANALYSIS || !config.GROQ_API_KEY) return null;
+  if (!config.AI_VISUAL_ANALYSIS || !hasGroqProvider()) return null;
 
   return new VisualAnalyzer({
-    visionClient: new GroqClient({
-      apiKey: config.GROQ_API_KEY,
-      model: config.GROQ_MODEL,
-      visionModel: config.GROQ_VISION_MODEL
-    }),
+    visionClient: createGroqFallbackClient(),
     enabled: config.AI_VISUAL_ANALYSIS,
     videoFrameCount: config.AI_VIDEO_FRAME_COUNT,
     videoMaxBytes: config.AI_VIDEO_MAX_BYTES
@@ -106,17 +100,52 @@ function createVisualAnalyzer() {
 }
 
 function createVoiceManager() {
-  if (!config.VOICE_STT_ENABLED || config.AI_PROVIDER !== 'groq' || !config.GROQ_API_KEY) {
+  if (!config.VOICE_STT_ENABLED || config.AI_PROVIDER !== 'groq' || !hasGroqProvider()) {
     return null;
   }
 
   return new VoiceSessionManager({
     storage,
-    aiClient: new GroqClient({
+    aiClient: createGroqFallbackClient(),
+    config
+  });
+}
+
+function createGroqFallbackClient() {
+  const providers = [];
+  if (config.GROQ_API_KEY) {
+    providers.push(createAiProvider('groq-primary', new GroqClient({
       apiKey: config.GROQ_API_KEY,
       model: config.GROQ_MODEL,
       visionModel: config.GROQ_VISION_MODEL
-    }),
-    config
-  });
+    })));
+  }
+
+  for (const [index, apiKey] of parseFallbackKeys(config.GROQ_FALLBACK_API_KEYS).entries()) {
+    providers.push(createAiProvider(`groq-backup-${index + 1}`, new GroqClient({
+      apiKey,
+      model: config.GROQ_MODEL,
+      visionModel: config.GROQ_VISION_MODEL
+    })));
+  }
+
+  if (config.AKIOMAE_API_KEY) {
+    providers.push(createAiProvider('akiomae', new AkiomaeClient({
+      apiKey: config.AKIOMAE_API_KEY,
+      baseUrl: config.AKIOMAE_BASE_URL
+    })));
+  }
+
+  return new FallbackAiClient(providers);
+}
+
+function parseFallbackKeys(value) {
+  return String(value ?? '')
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
+function hasGroqProvider() {
+  return Boolean(config.GROQ_API_KEY || parseFallbackKeys(config.GROQ_FALLBACK_API_KEYS).length);
 }
