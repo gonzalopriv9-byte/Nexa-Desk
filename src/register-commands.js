@@ -162,6 +162,12 @@ const commands = [
         )
         .addBooleanOption((option) =>
           option
+            .setName('antilinks')
+            .setDescription('Revisar links con IA y bloquear phishing, scams o malware.')
+            .setRequired(false)
+        )
+        .addBooleanOption((option) =>
+          option
             .setName('antibots')
             .setDescription('Bloquear bots no verificados.')
             .setRequired(false)

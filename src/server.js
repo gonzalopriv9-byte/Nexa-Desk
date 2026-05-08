@@ -667,8 +667,8 @@ function buildDashboardAssistantFallback({ message, guild, stats, activeView, ac
     reply += guild.components?.length
       ? 'Para publicar un panel, ve a Paneles, elige canal, modo boton o menu y revisa la previsualizacion antes de publicar.'
       : 'Si quieres un menu desplegable, crea primero opciones en Componentes y despues publica el panel desde Paneles.';
-  } else if (lower.includes('seguridad') || lower.includes('security') || lower.includes('anti') || lower.includes('raid') || lower.includes('flood') || lower.includes('nuke')) {
-    reply += 'Ve a Configuracion y baja hasta Security Guard. Puedes activar nivel intermedio, elegir un canal de logs y guardar. Si Discord bloquea acciones, actualiza permisos desde el boton superior.';
+  } else if (lower.includes('seguridad') || lower.includes('security') || lower.includes('anti') || lower.includes('raid') || lower.includes('flood') || lower.includes('nuke') || lower.includes('phishing') || lower.includes('estafa') || lower.includes('links')) {
+    reply += 'Ve a Configuracion y baja hasta Security Guard. Puedes activar nivel intermedio, Anti-links IA, elegir un canal de logs y guardar. Si Discord bloquea acciones, actualiza permisos desde el boton superior.';
   } else if (lower.includes('transcrip') || lower.includes('ticket')) {
     reply += 'En Tickets puedes abrir cada transcripcion guardada y descargarla en TXT. Si no aparecen tickets, abre uno desde un panel o una categoria configurada.';
   } else if (lower.includes('staff') || lower.includes('rol') || lower.includes('escalar')) {
@@ -751,6 +751,7 @@ function suggestDashboardActions(message, guild) {
         securityLevel: lower.includes('alto') || lower.includes('raid') ? 'high' : 'medium',
         securityMinAccountAgeDays: lower.includes('alto') || lower.includes('raid') ? '7' : '3',
         securityAntiFlood: 'true',
+        securityAntiScamLinks: 'true',
         securityAntiBot: 'true',
         securityAntiAlt: 'true',
         securityAntiNuke: 'true'
@@ -772,7 +773,7 @@ function suggestDashboardActions(message, guild) {
   }
 
   if (lower.includes('servidor') || lower.includes('invitar') || lower.includes('instalar')) add('Ir a Servidores', 'servers');
-  if (lower.includes('ia') || lower.includes('prompt') || lower.includes('contexto') || lower.includes('staff') || lower.includes('rol') || lower.includes('seguridad') || lower.includes('security') || lower.includes('anti') || lower.includes('raid') || lower.includes('flood') || lower.includes('nuke')) add('Abrir Configuracion', 'settings');
+  if (lower.includes('ia') || lower.includes('prompt') || lower.includes('contexto') || lower.includes('staff') || lower.includes('rol') || lower.includes('seguridad') || lower.includes('security') || lower.includes('anti') || lower.includes('raid') || lower.includes('flood') || lower.includes('nuke') || lower.includes('phishing') || lower.includes('estafa') || lower.includes('links')) add('Abrir Configuracion', 'settings');
   if (lower.includes('componente') || lower.includes('pregunta') || lower.includes('menu')) add('Crear Componentes', 'components');
   if (lower.includes('panel') || lower.includes('boton') || lower.includes('publicar')) add('Publicar Panel', 'panels');
   if (lower.includes('ticket') || lower.includes('transcrip')) add('Ver Tickets', 'tickets');
@@ -1455,7 +1456,7 @@ function renderDashboard({ session, guilds, tickets, stats }) {
           </form>
         </article>
         <article class="control-card wide">
-          <div class="card-head"><span class="step">3</span><div><h2>Security Guard</h2><p>Activa proteccion anti-flood, anti-alts, anti-bots y anti-nuke usando audit logs.</p></div></div>
+          <div class="card-head"><span class="step">3</span><div><h2>Security Guard</h2><p>Activa proteccion anti-flood, anti-links IA, anti-alts, anti-bots y anti-nuke usando audit logs.</p></div></div>
           <form onsubmit="return saveSecurity(event)">
             <label>Estado<select id="securityEnabled">
               <option value="false">Desactivado</option>
@@ -1469,6 +1470,10 @@ function renderDashboard({ session, guilds, tickets, stats }) {
             <label>Canal de logs<select id="securityLogChannelId"></select></label>
             <label>Edad minima de cuenta<input id="securityMinAccountAgeDays" type="number" min="0" max="90" value="3"></label>
             <label>Anti-flood<select id="securityAntiFlood">
+              <option value="true">Activo</option>
+              <option value="false">Desactivado</option>
+            </select></label>
+            <label>Anti-links IA<select id="securityAntiScamLinks">
               <option value="true">Activo</option>
               <option value="false">Desactivado</option>
             </select></label>
@@ -1836,6 +1841,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
         logChannelId: raw.logChannelId || '',
         minAccountAgeDays: Number.isFinite(Number(raw.minAccountAgeDays)) ? Number(raw.minAccountAgeDays) : 3,
         antiFlood: raw.antiFlood !== false,
+        antiScamLinks: raw.antiScamLinks !== false,
         antiBot: raw.antiBot !== false,
         antiAlt: raw.antiAlt !== false,
         antiNuke: raw.antiNuke !== false
@@ -1886,7 +1892,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
         category: { title: 'Elige categoria principal', text: 'Selecciona donde se detectan o crean tickets. Sin categoria, la IA no sabe que canales debe atender.', view: 'settings', action: 'Configurar categoria' },
         staff: { title: 'Asigna rol de staff', text: 'NexaDesk necesita saber a quien avisar cuando haya escalado humano o asistencia manual.', view: 'settings', action: 'Elegir staff' },
         context: { title: 'Dale contexto a la IA', text: 'Anade reglas, FAQ, tono, limites y si debe pedir pruebas visuales. Esto mejora mucho las respuestas.', view: 'settings', action: 'Escribir prompt' },
-        security: { title: 'Activa Security Guard', text: 'Protege el servidor con anti-flood, anti-bots, anti-alts y anti-nuke antes de abrirlo al publico.', view: 'settings', action: 'Configurar seguridad' },
+        security: { title: 'Activa Security Guard', text: 'Protege el servidor con anti-flood, anti-links IA, anti-bots, anti-alts y anti-nuke antes de abrirlo al publico.', view: 'settings', action: 'Configurar seguridad' },
         components: { title: 'Crea opciones de menu', text: 'Los componentes separan tipos de ticket, preguntas previas y mensajes iniciales personalizados.', view: 'components', action: 'Crear componente' },
         panels: { title: 'Publica un panel', text: 'Ya puedes publicar un panel en un canal visible para que los usuarios abran tickets desde Discord.', view: 'panels', action: 'Publicar panel' }
       };
@@ -1898,7 +1904,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       });
     }
     function setConfigurationDisabled(disabled) {
-      for (const selector of ['#ticketCategoryId', '#staffRoleId', '#serverPrompt', '#serverInfo', '#categoryName', '#securityEnabled', '#securityLevel', '#securityLogChannelId', '#securityMinAccountAgeDays', '#securityAntiFlood', '#securityAntiBot', '#securityAntiAlt', '#securityAntiNuke', '#componentLabel', '#componentEmoji', '#componentDescription', '#componentTicketCategoryId', '#componentTicketMode', '#componentQuestions', '#componentWelcomeMessage', '#panelType', '#panelSelectPlaceholder', '#panelComponentIds', '#panelChannelId', '#panelTicketCategoryId', '#panelTicketMode', '#panelButtonLabel', '#panelButtonStyle', '#panelButtonEmoji', '#panelTitle', '#panelEmbedColor', '#panelAuthorName', '#panelAuthorIconUrl', '#panelDescription', '#panelThumbnailUrl', '#panelImageUrl', '#panelFooterText', '#panelWelcomeMessage']) {
+      for (const selector of ['#ticketCategoryId', '#staffRoleId', '#serverPrompt', '#serverInfo', '#categoryName', '#securityEnabled', '#securityLevel', '#securityLogChannelId', '#securityMinAccountAgeDays', '#securityAntiFlood', '#securityAntiScamLinks', '#securityAntiBot', '#securityAntiAlt', '#securityAntiNuke', '#componentLabel', '#componentEmoji', '#componentDescription', '#componentTicketCategoryId', '#componentTicketMode', '#componentQuestions', '#componentWelcomeMessage', '#panelType', '#panelSelectPlaceholder', '#panelComponentIds', '#panelChannelId', '#panelTicketCategoryId', '#panelTicketMode', '#panelButtonLabel', '#panelButtonStyle', '#panelButtonEmoji', '#panelTitle', '#panelEmbedColor', '#panelAuthorName', '#panelAuthorIconUrl', '#panelDescription', '#panelThumbnailUrl', '#panelImageUrl', '#panelFooterText', '#panelWelcomeMessage']) {
         const element = document.querySelector(selector);
         if (element) element.disabled = disabled;
       }
@@ -2009,6 +2015,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       document.querySelector('#securityLogChannelId').value = security.logChannelId || '';
       document.querySelector('#securityMinAccountAgeDays').value = security.minAccountAgeDays;
       document.querySelector('#securityAntiFlood').value = security.antiFlood ? 'true' : 'false';
+      document.querySelector('#securityAntiScamLinks').value = security.antiScamLinks ? 'true' : 'false';
       document.querySelector('#securityAntiBot').value = security.antiBot ? 'true' : 'false';
       document.querySelector('#securityAntiAlt').value = security.antiAlt ? 'true' : 'false';
       document.querySelector('#securityAntiNuke').value = security.antiNuke ? 'true' : 'false';
@@ -2078,6 +2085,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
           logChannelName: selectedOptionText('#securityLogChannelId'),
           minAccountAgeDays: document.querySelector('#securityMinAccountAgeDays').value,
           antiFlood: document.querySelector('#securityAntiFlood').value === 'true',
+          antiScamLinks: document.querySelector('#securityAntiScamLinks').value === 'true',
           antiBot: document.querySelector('#securityAntiBot').value === 'true',
           antiAlt: document.querySelector('#securityAntiAlt').value === 'true',
           antiNuke: document.querySelector('#securityAntiNuke').value === 'true'

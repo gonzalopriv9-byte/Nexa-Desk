@@ -10,6 +10,7 @@ export const SECURITY_LEVELS = {
   low: {
     label: 'Bajo',
     antiFlood: true,
+    antiScamLinks: true,
     antiBot: true,
     antiAlt: false,
     antiNuke: false,
@@ -25,6 +26,7 @@ export const SECURITY_LEVELS = {
   medium: {
     label: 'Intermedio',
     antiFlood: true,
+    antiScamLinks: true,
     antiBot: true,
     antiAlt: true,
     antiNuke: true,
@@ -40,6 +42,7 @@ export const SECURITY_LEVELS = {
   high: {
     label: 'Alto',
     antiFlood: true,
+    antiScamLinks: true,
     antiBot: true,
     antiAlt: true,
     antiNuke: true,
@@ -83,6 +86,7 @@ export function normalizeSecurityConfig(input = {}) {
     logChannelId: cleanId(source.logChannelId),
     logChannelName: source.logChannelName ? String(source.logChannelName).slice(0, 100) : null,
     antiFlood: toBoolean(source.antiFlood, defaults.antiFlood),
+    antiScamLinks: toBoolean(source.antiScamLinks ?? source.antiLinks ?? source.antiPhishing, defaults.antiScamLinks),
     antiBot: toBoolean(source.antiBot, defaults.antiBot),
     antiAlt: toBoolean(source.antiAlt, defaults.antiAlt),
     antiNuke: toBoolean(source.antiNuke, defaults.antiNuke),
@@ -107,6 +111,7 @@ export function summarizeSecurityConfig(config = {}) {
   if (!security.enabled) return 'Desactivada';
   const enabled = [
     security.antiFlood ? 'Anti-flood' : null,
+    security.antiScamLinks ? 'Anti-links IA' : null,
     security.antiBot ? 'Anti-bots' : null,
     security.antiAlt ? 'Anti-alts' : null,
     security.antiNuke ? 'Anti-nuke' : null
@@ -115,9 +120,10 @@ export function summarizeSecurityConfig(config = {}) {
 }
 
 export class SecurityManager {
-  constructor({ storage, client }) {
+  constructor({ storage, client, supportAgent = null }) {
     this.storage = storage;
     this.client = client;
+    this.supportAgent = supportAgent;
     this.messageBuckets = new Map();
     this.joinBuckets = new Map();
     this.actionBuckets = new Map();
@@ -129,7 +135,15 @@ export class SecurityManager {
 
     const guildConfig = await this.storage.getGuildConfig(message.guild.id);
     const security = normalizeSecurityConfig(guildConfig?.security);
-    if (!security.enabled || !security.antiFlood) return false;
+    if (!security.enabled) return false;
+
+    const urls = extractMessageUrls(message);
+    if (security.antiScamLinks && urls.length) {
+      const handledLinkThreat = await this.handleMessageLinks({ message, guildConfig, security, urls });
+      if (handledLinkThreat) return true;
+    }
+
+    if (!security.antiFlood) return false;
 
     const key = `${message.guild.id}:${message.author.id}`;
     const now = Date.now();
@@ -174,6 +188,62 @@ export class SecurityManager {
     return true;
   }
 
+  async handleMessageLinks({ message, guildConfig, security, urls }) {
+    const analysis = await this.reviewMessageLinks({ message, guildConfig, urls });
+    if (!shouldBlockLinkThreat(analysis)) {
+      if (analysis.verdict === 'suspicious') {
+        await this.sendSecurityLog({
+          guild: message.guild,
+          config: security,
+          title: 'Link sospechoso permitido',
+          description: 'La IA marco el link como sospechoso, pero no con suficiente confianza para aislar automaticamente.',
+          fields: buildLinkThreatFields({ message, urls, analysis }),
+          important: false
+        });
+      }
+      return false;
+    }
+
+    const deleted = await message.delete().then(() => true).catch(() => false);
+    const isolation = await this.isolateFloodActor(message, security, {
+      repeated: true,
+      flooding: true,
+      repeatWarning: true,
+      reasonOverride: 'NexaDesk Security Guard: link malicioso, phishing o estafa'
+    });
+
+    await this.sendSecurityLog({
+      guild: message.guild,
+      config: security,
+      title: 'Link malicioso bloqueado',
+      description: `${message.author} envio un link que la IA clasifico como phishing, estafa o riesgo alto. NexaDesk elimino el mensaje y aislo al autor si tenia permisos suficientes.`,
+      fields: [
+        ...buildLinkThreatFields({ message, urls, analysis }),
+        { name: 'Mensaje borrado', value: deleted ? 'Si' : 'No pude borrarlo por permisos o antiguedad', inline: true },
+        { name: 'Aislamiento', value: isolation }
+      ],
+      important: true
+    });
+
+    return true;
+  }
+
+  async reviewMessageLinks({ message, guildConfig, urls }) {
+    if (this.supportAgent?.analyzeMessageLinks) {
+      try {
+        return normalizeLinkThreatAnalysis(await this.supportAgent.analyzeMessageLinks({
+          message,
+          guildConfig,
+          urls
+        }));
+      } catch (error) {
+        console.error(`AI link threat analysis failed in ${message.guild.id}:`, error);
+      }
+    }
+
+    return heuristicLinkThreatAnalysis({ content: message.content, urls });
+  }
+
   async deleteFloodBurstMessages(message, bucket, security) {
     const windowMs = Math.max(security.floodWindowSeconds * 1000, 8000);
     const cutoff = Date.now() - windowMs;
@@ -212,10 +282,10 @@ export class SecurityManager {
     return deleted;
   }
 
-  async isolateFloodActor(message, security, { repeated, flooding, repeatWarning }) {
+  async isolateFloodActor(message, security, { repeated, flooding, repeatWarning, reasonOverride = null }) {
     const member = message.member ?? await message.guild.members.fetch(message.author.id).catch(() => null);
     const timeoutMs = security.timeoutMinutes * 60 * 1000;
-    const reason = `NexaDesk Security Guard: ${message.author.bot ? 'bot' : 'usuario'} enviando flood/spam`;
+    const reason = reasonOverride ?? `NexaDesk Security Guard: ${message.author.bot ? 'bot' : 'usuario'} enviando flood/spam`;
 
     if (!member) return 'No pude obtener el miembro para aislarlo.';
 
@@ -516,6 +586,131 @@ function normalizeContent(value = '') {
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, 300);
+}
+
+function extractUrls(content = '') {
+  const text = String(content ?? '');
+  const matches = text.match(/\b(?:https?:\/\/|www\.|discord\.gg\/|discord(?:app)?\.com\/invite\/)[^\s<>()]+/giu) ?? [];
+  return [...new Set(matches
+    .map(cleanUrl)
+    .filter(Boolean))]
+    .slice(0, 6);
+}
+
+function extractMessageUrls(message) {
+  const parts = [message.content ?? ''];
+  for (const embed of message.embeds ?? []) {
+    parts.push(embed.url, embed.title, embed.description);
+    for (const field of embed.fields ?? []) {
+      parts.push(field.name, field.value);
+    }
+  }
+  return extractUrls(parts.filter(Boolean).join('\n'));
+}
+
+function cleanUrl(rawUrl = '') {
+  const cleaned = String(rawUrl)
+    .trim()
+    .replace(/[),.;!?]+$/g, '');
+  if (!cleaned) return '';
+  if (/^https?:\/\//iu.test(cleaned)) return cleaned;
+  return `https://${cleaned}`;
+}
+
+function normalizeLinkThreatAnalysis(input) {
+  const source = input && typeof input === 'object' ? input : {};
+  const rawVerdict = String(source.verdict ?? '').toLowerCase().trim();
+  const verdict = ['safe', 'suspicious', 'malicious'].includes(rawVerdict)
+    ? rawVerdict
+    : 'suspicious';
+  const confidence = clampInt(source.confidence, verdict === 'malicious' ? 90 : 60, 0, 100);
+  const riskSignals = Array.isArray(source.riskSignals)
+    ? source.riskSignals.map((item) => String(item).slice(0, 140)).filter(Boolean).slice(0, 5)
+    : [];
+
+  return {
+    verdict,
+    confidence,
+    reason: String(source.reason ?? 'La IA no devolvio una razon clara.').slice(0, 700),
+    recommendedAction: String(source.recommendedAction ?? '').toLowerCase(),
+    riskSignals,
+    source: source.source ?? 'ai'
+  };
+}
+
+function shouldBlockLinkThreat(analysis) {
+  const verdict = String(analysis?.verdict ?? '').toLowerCase();
+  const confidence = Number(analysis?.confidence ?? 0);
+  const action = String(analysis?.recommendedAction ?? '').toLowerCase();
+  return verdict === 'malicious'
+    || action.includes('delete')
+    || action.includes('isolate')
+    || action.includes('block')
+    || (verdict === 'suspicious' && confidence >= 82);
+}
+
+function buildLinkThreatFields({ message, urls, analysis }) {
+  return [
+    { name: 'Usuario', value: `${message.author.tag} (${message.author.id})`, inline: true },
+    { name: 'Tipo', value: message.author.bot ? 'Bot' : 'Usuario', inline: true },
+    { name: 'Canal', value: `${message.channel}`, inline: true },
+    { name: 'Veredicto', value: `${analysis.verdict} (${analysis.confidence}%)`, inline: true },
+    { name: 'Accion sugerida', value: analysis.recommendedAction || 'allow/review', inline: true },
+    { name: 'Links', value: urls.map(defangUrl).join('\n').slice(0, 1000) || 'Sin URL parseable' },
+    { name: 'Motivo', value: analysis.reason || 'Sin motivo.' },
+    analysis.riskSignals?.length
+      ? { name: 'Senales', value: analysis.riskSignals.map((item) => `- ${item}`).join('\n').slice(0, 900) }
+      : null
+  ].filter(Boolean);
+}
+
+function heuristicLinkThreatAnalysis({ content, urls }) {
+  const text = `${content ?? ''}\n${urls.join('\n')}`.toLowerCase();
+  const suspiciousSignals = [
+    /\b(free|gratis|nitro|robux|steam|gift|airdrop|crypto|giveaway|premio|claim|regalo)\b/i,
+    /\b(login|verify|verification|verificar|soporte|support|password|contrasena|wallet|seed|2fa|token)\b/i,
+    /discord(?:-|_)?(?:gift|nitro|steam|airdrop|verify)|d[i1]sc[o0]rd|steamcommunit|steancommunity/i,
+    /(?:bit\.ly|tinyurl\.com|t\.co|cutt\.ly|is\.gd|rebrand\.ly|shorturl\.at|rb\.gy)\//i,
+    /https?:\/\/[^/\s]+@/i,
+    /https?:\/\/(?:\d{1,3}\.){3}\d{1,3}/i,
+    /xn--/i
+  ];
+  const hits = suspiciousSignals.filter((pattern) => pattern.test(text)).length;
+  if (hits >= 2) {
+    return {
+      verdict: 'malicious',
+      confidence: 88,
+      reason: 'Fallback heuristico: el link combina senales tipicas de phishing, regalo falso, verificacion falsa o ocultacion de destino.',
+      recommendedAction: 'delete_and_isolate',
+      riskSignals: ['Patrones de scam/phishing detectados sin respuesta IA.'],
+      source: 'heuristic'
+    };
+  }
+  if (hits === 1) {
+    return {
+      verdict: 'suspicious',
+      confidence: 68,
+      reason: 'Fallback heuristico: hay una senal de riesgo, pero no suficiente para bloqueo automatico sin IA.',
+      recommendedAction: 'review',
+      riskSignals: ['Una senal de riesgo detectada sin respuesta IA.'],
+      source: 'heuristic'
+    };
+  }
+  return {
+    verdict: 'safe',
+    confidence: 55,
+    reason: 'Fallback heuristico: no se detectaron senales obvias de scam.',
+    recommendedAction: 'allow',
+    riskSignals: [],
+    source: 'heuristic'
+  };
+}
+
+function defangUrl(url = '') {
+  return String(url)
+    .replace(/^http/iu, 'hxxp')
+    .replace(/\./g, '[.]')
+    .replace(/:/g, '[:]');
 }
 
 function toBoolean(value, fallback = false) {

@@ -61,7 +61,7 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
   const activeResponses = new Set();
   const panelCreatedChannels = new Set();
   const blacklistAlertedChannels = new Set();
-  const securityManager = new SecurityManager({ storage, client });
+  const securityManager = new SecurityManager({ storage, client, supportAgent });
 
   client.once(Events.ClientReady, (readyClient) => {
     applyBotPresence(readyClient);
@@ -712,7 +712,7 @@ function buildOwnerOnboardingEmbeds({ guild }) {
         name: 'Voz, seguridad y datos',
         value: [
           'Pro Voice permite crear salas privadas con STT/TTS usando `/voz crear` o paneles de voz.',
-          'Security Guard se configura con `/seguridad configurar` o desde la dashboard.',
+          'Security Guard se configura con `/seguridad configurar` o desde la dashboard: anti-flood, anti-links IA, anti-bots, anti-alts y anti-nuke.',
           'Configuracion, paneles, tickets y transcripciones se guardan en Supabase para que la dashboard pueda consultarlos.'
         ].join('\n')
       },
@@ -1361,6 +1361,7 @@ async function handleSecurityCommand({ interaction, storage }) {
 
     for (const [optionName, key] of [
       ['antiflood', 'antiFlood'],
+      ['antilinks', 'antiScamLinks'],
       ['antibots', 'antiBot'],
       ['antialts', 'antiAlt'],
       ['antinuke', 'antiNuke']
@@ -1400,6 +1401,7 @@ function buildSecurityStatusEmbed({ guild, security }) {
         name: 'Modulos',
         value: [
           `Anti-flood: **${config.antiFlood ? 'on' : 'off'}** (${config.floodLimit} mensajes/${config.floodWindowSeconds}s)`,
+          `Anti-links IA: **${config.antiScamLinks ? 'on' : 'off'}**`,
           `Anti-bots: **${config.antiBot ? 'on' : 'off'}**`,
           `Anti-alts: **${config.antiAlt ? 'on' : 'off'}** (${config.minAccountAgeDays} dias)`,
           `Anti-nuke: **${config.antiNuke ? 'on' : 'off'}** (${config.nukeLimit} acciones/${config.nukeWindowSeconds}s)`
@@ -1882,6 +1884,7 @@ function buildHelpEmbed({ view, config, guild }) {
           name: 'Que protege',
           value: [
             'Anti-flood: borra spam rapido y puede aplicar timeout.',
+            'Anti-links IA: revisa enlaces con IA para bloquear phishing, estafas, malware y regalos falsos.',
             'Anti-bots: bloquea bots no verificados.',
             'Anti-alts: expulsa cuentas demasiado nuevas si lo activas.',
             'Anti-nuke: mira audit logs y reacciona ante acciones masivas en canales, roles, webhooks, kicks y bans.'
@@ -1906,7 +1909,7 @@ function buildHelpEmbed({ view, config, guild }) {
         },
         {
           name: 'Comando rapido',
-          value: '`/seguridad configurar nivel:intermedio canal_logs:#logs`\n`/seguridad estado`\n`/seguridad desactivar`'
+          value: '`/seguridad configurar nivel:intermedio canal_logs:#logs antilinks:true`\n`/seguridad estado`\n`/seguridad desactivar`'
         }
       );
   }

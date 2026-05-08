@@ -150,6 +150,37 @@ export class SupportAgent {
     };
   }
 
+  async analyzeMessageLinks({ message, guildConfig, urls = [] }) {
+    const normalizedUrls = urls.map((url) => String(url).slice(0, 500)).filter(Boolean).slice(0, 6);
+    const answer = await this.aiClient.generate({
+      system: [
+        'Eres NexaDesk Security Guard analizando links en Discord.',
+        'Tu tarea es detectar phishing, estafas, malware, robo de tokens, regalos falsos, suplantacion de Discord/Steam/crypto, acortadores sospechosos y enlaces que intenten robar credenciales.',
+        'Se estricto con mensajes que prometen premios, Nitro gratis, Robux, crypto, verificacion externa, soporte falso, login urgente, airdrops o wallets.',
+        'No abras ni visites el link. Evalua por URL, dominio, ruta, contexto del mensaje y patrones de ingenieria social.',
+        'No marques como malicioso un link legitimo solo por ser desconocido. Si hay dudas moderadas usa suspicious.',
+        'Responde SOLO JSON valido, sin markdown, con este esquema exacto:',
+        '{"verdict":"safe|suspicious|malicious","confidence":0-100,"reason":"frase breve","riskSignals":["senal 1"],"recommendedAction":"allow|review|delete|delete_and_isolate"}'
+      ].join('\n'),
+      messages: [
+        {
+          role: 'user',
+          content: [
+            `Servidor: ${guildConfig?.guildName ?? message.guild?.name ?? message.guildId}`,
+            `Autor: ${message.author?.tag ?? message.author?.id} (${message.author?.bot ? 'bot' : 'usuario'})`,
+            'Mensaje completo:',
+            String(message.content ?? '').slice(0, 1800),
+            '',
+            'Links detectados:',
+            ...normalizedUrls.map((url) => `- ${url}`)
+          ].join('\n').slice(0, 5000)
+        }
+      ]
+    });
+
+    return parseLinkThreatJson(answer);
+  }
+
   #buildSystemPrompt({ ticket, guildConfig, userLanguage, intakeContext, visualContext }) {
     const serverInfo = guildConfig.serverInfo?.trim() || 'No hay informacion adicional configurada todavia.';
     const serverPrompt = guildConfig.serverPrompt?.trim() || 'No hay prompt personalizado configurado.';
@@ -256,6 +287,48 @@ function buildFallbackSummary(ticket, messages = []) {
     'Ultimos mensajes:',
     ...(lastMessages.length ? lastMessages : ['- No hay mensajes guardados.'])
   ].join('\n').slice(0, 3600);
+}
+
+function parseLinkThreatJson(answer = '') {
+  const raw = String(answer ?? '').trim();
+  const jsonText = raw.match(/\{[\s\S]*\}/)?.[0] ?? raw;
+  try {
+    const parsed = JSON.parse(jsonText);
+    const verdict = normalizeLinkVerdict(parsed.verdict);
+    return {
+      verdict,
+      confidence: clampNumber(parsed.confidence, 0, 100, verdict === 'malicious' ? 90 : 60),
+      reason: String(parsed.reason ?? 'Analisis IA sin razon especifica.').slice(0, 700),
+      riskSignals: Array.isArray(parsed.riskSignals) ? parsed.riskSignals.map((item) => String(item).slice(0, 140)).slice(0, 5) : [],
+      recommendedAction: String(parsed.recommendedAction ?? 'review').toLowerCase()
+    };
+  } catch {
+    const lower = raw.toLowerCase();
+    const verdict = lower.includes('malicious') || lower.includes('phishing') || lower.includes('delete_and_isolate')
+      ? 'malicious'
+      : lower.includes('suspicious')
+        ? 'suspicious'
+        : 'safe';
+    return {
+      verdict,
+      confidence: verdict === 'malicious' ? 85 : verdict === 'suspicious' ? 65 : 55,
+      reason: raw.slice(0, 700) || 'La IA no devolvio JSON valido.',
+      riskSignals: [],
+      recommendedAction: verdict === 'malicious' ? 'delete_and_isolate' : verdict === 'suspicious' ? 'review' : 'allow'
+    };
+  }
+}
+
+function normalizeLinkVerdict(value) {
+  const verdict = String(value ?? '').toLowerCase().trim();
+  if (['safe', 'suspicious', 'malicious'].includes(verdict)) return verdict;
+  return 'suspicious';
+}
+
+function clampNumber(value, min, max, fallback) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  return Math.min(Math.max(Math.round(number), min), max);
 }
 
 function extractTicketIntakeContext(history) {
