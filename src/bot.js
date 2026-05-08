@@ -308,13 +308,12 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
 
   client.on(Events.MessageCreate, async (message) => {
     if (!message.guild || !message.channel) return;
-    if (!message.author.bot) {
-      const handledBySecurity = await securityManager.handleMessageCreate(message).catch((error) => {
-        console.error(`Security message guard failed in ${message.guild.id}:`, error);
-        return false;
-      });
-      if (handledBySecurity) return;
-    }
+    const handledBySecurity = await securityManager.handleMessageCreate(message).catch((error) => {
+      console.error(`Security message guard failed in ${message.guild.id}:`, error);
+      return false;
+    });
+    if (handledBySecurity) return;
+
     let [ticket, guildConfig] = await Promise.all([
       storage.getTicket(message.channel.id),
       storage.getGuildConfig(message.guild.id)

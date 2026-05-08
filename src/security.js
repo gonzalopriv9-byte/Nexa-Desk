@@ -125,7 +125,7 @@ export class SecurityManager {
   }
 
   async handleMessageCreate(message) {
-    if (!message.guild || message.author?.bot || message.webhookId) return false;
+    if (!message.guild || message.webhookId || message.author?.id === this.client.user?.id) return false;
 
     const guildConfig = await this.storage.getGuildConfig(message.guild.id);
     const security = normalizeSecurityConfig(guildConfig?.security);
@@ -143,30 +143,102 @@ export class SecurityManager {
     const flooding = bucket.length >= security.floodLimit;
     if (!flooding && !repeated) return false;
 
-    await message.delete().catch(() => null);
+    const deleted = await this.deleteFloodBurstMessages(message, bucket, security);
     const warningKey = `${key}:${message.channelId}`;
     const warnedAt = this.lastFloodWarnings.get(warningKey) ?? 0;
     const repeatWarning = now - warnedAt < 120000;
     this.lastFloodWarnings.set(warningKey, now);
 
-    const timeoutMs = security.timeoutMinutes * 60 * 1000;
-    if (repeatWarning && message.member?.moderatable) {
-      await message.member.timeout(timeoutMs, 'NexaDesk Security Guard: flood/spam').catch(() => null);
-    }
+    const isolation = await this.isolateFloodActor(message, security, {
+      repeated,
+      flooding,
+      repeatWarning
+    });
 
     await this.sendSecurityLog({
       guild: message.guild,
       config: security,
       title: 'Anti-flood activado',
-      description: `${message.author} envio demasiados mensajes en poco tiempo.`,
+      description: `${message.author} envio demasiados mensajes en poco tiempo. NexaDesk limpio la rafaga y aislo al autor si tenia permisos suficientes.`,
       fields: [
         { name: 'Usuario', value: `${message.author.tag} (${message.author.id})`, inline: true },
+        { name: 'Tipo', value: message.author.bot ? 'Bot' : 'Usuario', inline: true },
         { name: 'Canal', value: `${message.channel}`, inline: true },
-        { name: 'Accion', value: repeatWarning ? `Mensaje eliminado y timeout ${security.timeoutMinutes} min` : 'Mensaje eliminado y aviso registrado' }
-      ]
+        { name: 'Mensajes detectados', value: `${bucket.length}/${security.floodLimit}`, inline: true },
+        { name: 'Borrados', value: String(deleted), inline: true },
+        { name: 'Aislamiento', value: isolation }
+      ],
+      important: true
     });
 
     return true;
+  }
+
+  async deleteFloodBurstMessages(message, bucket, security) {
+    const windowMs = Math.max(security.floodWindowSeconds * 1000, 8000);
+    const cutoff = Date.now() - windowMs;
+    const channelIds = new Set([
+      message.channelId,
+      ...bucket.map((entry) => entry.channelId).filter(Boolean)
+    ]);
+
+    let deleted = 0;
+    for (const channelId of channelIds) {
+      const channel = await message.guild.channels.fetch(channelId).catch(() => null);
+      if (!channel?.isTextBased?.()) continue;
+
+      const recent = await channel.messages.fetch({ limit: 100 }).catch(() => null);
+      if (!recent?.size) continue;
+
+      const targets = recent.filter((item) => (
+        item.author?.id === message.author.id
+        && item.createdTimestamp >= cutoff
+        && item.deletable
+      ));
+      if (!targets.size) continue;
+
+      if (channel.bulkDelete && targets.size > 1) {
+        const removed = await channel.bulkDelete(targets, true).catch(() => null);
+        if (removed?.size) {
+          deleted += removed.size;
+          continue;
+        }
+      }
+
+      const results = await Promise.allSettled([...targets.values()].map((item) => item.delete()));
+      deleted += results.filter((result) => result.status === 'fulfilled').length;
+    }
+
+    return deleted;
+  }
+
+  async isolateFloodActor(message, security, { repeated, flooding, repeatWarning }) {
+    const member = message.member ?? await message.guild.members.fetch(message.author.id).catch(() => null);
+    const timeoutMs = security.timeoutMinutes * 60 * 1000;
+    const reason = `NexaDesk Security Guard: ${message.author.bot ? 'bot' : 'usuario'} enviando flood/spam`;
+
+    if (!member) return 'No pude obtener el miembro para aislarlo.';
+
+    if (member.moderatable && message.guild.members.me?.permissions.has(PermissionFlagsBits.ModerateMembers)) {
+      const timedOut = await member.timeout(timeoutMs, reason).then(() => true).catch(() => false);
+      if (timedOut) return `Timeout aplicado ${security.timeoutMinutes} min.`;
+    }
+
+    if (message.author.bot && member.bannable && message.guild.members.me?.permissions.has(PermissionFlagsBits.BanMembers)) {
+      const banned = await member.ban({ reason }).then(() => true).catch(() => false);
+      if (banned) return 'Bot baneado preventivamente porque no se pudo aplicar timeout.';
+    }
+
+    if (message.author.bot && member.kickable && message.guild.members.me?.permissions.has(PermissionFlagsBits.KickMembers)) {
+      const kicked = await member.kick(reason).then(() => true).catch(() => false);
+      if (kicked) return 'Bot expulsado preventivamente porque no se pudo aplicar timeout.';
+    }
+
+    if (repeatWarning || repeated || flooding) {
+      return 'No pude aislarlo por jerarquia o falta de permisos. Revisa Moderate Members y la posicion del rol de NexaDesk.';
+    }
+
+    return 'Aviso registrado.';
   }
 
   async handleMemberAdd(member) {
