@@ -97,6 +97,59 @@ export class SupportAgent {
     }
   }
 
+  async verifyAllianceProof({ message, guildConfig, serverAllianceTemplate }) {
+    if (!this.visualAnalyzer) {
+      return {
+        verified: false,
+        reason: 'El analizador visual no esta disponible.'
+      };
+    }
+
+    const visualContext = await this.visualAnalyzer.analyzeMessageAttachments({
+      message,
+      guildConfig,
+      force: true
+    });
+
+    if (!visualContext?.trim()) {
+      return {
+        verified: false,
+        reason: 'No pude analizar ninguna imagen o video en ese mensaje.'
+      };
+    }
+
+    const answer = await this.aiClient.generate({
+      system: [
+        'Eres NexaDesk verificando una prueba visual para un flujo de alianzas de Discord.',
+        'Debes decidir si la captura demuestra que el usuario envio la plantilla del servidor actual en otro servidor/canal.',
+        'Se estricto: acepta solo si se ve texto suficientemente parecido a la plantilla esperada o una publicacion claramente equivalente.',
+        'No inventes. Responde exactamente con este formato:',
+        'VERIFIED: yes/no',
+        'REASON: una frase breve'
+      ].join('\n'),
+      messages: [
+        {
+          role: 'user',
+          content: [
+            'Plantilla esperada del servidor:',
+            serverAllianceTemplate,
+            '',
+            'Analisis visual disponible:',
+            visualContext,
+            '',
+            'La captura prueba que la plantilla esperada fue enviada correctamente?'
+          ].join('\n').slice(0, 9000)
+        }
+      ]
+    });
+
+    return {
+      verified: /\bverified\s*:\s*yes\b/i.test(answer),
+      reason: (answer.match(/\breason\s*:\s*(.+)/i)?.[1] ?? answer).trim().slice(0, 500),
+      visualContext
+    };
+  }
+
   #buildSystemPrompt({ ticket, guildConfig, userLanguage, intakeContext, visualContext }) {
     const serverInfo = guildConfig.serverInfo?.trim() || 'No hay informacion adicional configurada todavia.';
     const serverPrompt = guildConfig.serverPrompt?.trim() || 'No hay prompt personalizado configurado.';

@@ -34,6 +34,8 @@ const EMOJIS = {
 const BOT_INVITE_PERMISSIONS = '1099780189334';
 const PUBLIC_DASHBOARD_URL = 'https://nexa-desk.onrender.com/';
 const PREMIUM_ADMIN_USER_ID = '1352652366330986526';
+const ALLIANCE_MARKER = '[NexaDesk alliance]';
+const CRISIS_MARKER = '[NexaDesk crisis]';
 
 export function createBot({ config, storage, supportAgent, voiceManager = null }) {
   const intents = [
@@ -139,18 +141,31 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
         }
 
         const staffRole = interaction.options.getRole('rol_staff');
+        const allianceChannel = interaction.options.getChannel('canal_alianzas');
+        const allianceTemplate = interaction.options.getString('plantilla_alianza');
         const patch = {
           guildName: interaction.guild.name,
           ticketCategoryId: category.id,
           ticketCategoryName: category.name
         };
         if (staffRole) patch.staffRoleId = staffRole.id;
+        if (allianceChannel) {
+          if (allianceChannel.type !== ChannelType.GuildText) {
+            await interaction.reply({ content: 'El canal de alianzas debe ser un canal de texto.', ephemeral: true });
+            return;
+          }
+          patch.allianceChannelId = allianceChannel.id;
+          patch.allianceChannelName = allianceChannel.name;
+        }
+        if (allianceTemplate?.trim()) patch.allianceTemplate = allianceTemplate.trim();
         await storage.upsertGuildConfig(interaction.guildId, patch);
 
         await interaction.reply({
           content: [
             `Listo. NexaDesk vigilara tickets nuevos en la categoria **${category.name}**.`,
-            staffRole ? `Rol staff configurado: ${staffRole}.` : 'Rol staff sin cambiar. Puedes configurarlo luego en dashboard o con `/setup rol_staff:`.'
+            staffRole ? `Rol staff configurado: ${staffRole}.` : 'Rol staff sin cambiar. Puedes configurarlo luego en dashboard o con `/setup rol_staff:`.',
+            allianceChannel ? `Canal de alianzas configurado: ${allianceChannel}.` : 'Canal de alianzas sin cambiar.',
+            allianceTemplate?.trim() ? 'Plantilla de alianza del servidor guardada.' : 'Plantilla de alianza sin cambiar.'
           ].join('\n'),
           ephemeral: true
         });
@@ -360,6 +375,11 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
     // Always reload the latest server context before asking the AI.
     if (!guildConfig) return;
 
+    if (isCrisisRiskMessage(message.content)) {
+      await handleCrisisRiskMessage({ storage, message, guildConfig, ticket });
+      return;
+    }
+
     if (shouldCheckTicketAuthorWithXnProtect({ message, ticket, guildConfig })) {
       if (!ticket.openedBy) {
         const updatedTicket = await storage.updateTicket(ticket.channelId, { openedBy: message.author.id });
@@ -389,7 +409,16 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
 
     activeResponses.add(message.channel.id);
     try {
-      const allianceFlow = await resolveAllianceTicketFlow(message);
+      const allianceFlow = await resolveAllianceTicketFlow({ message, storage, guildConfig, ticket, supportAgent });
+      if (allianceFlow.type === 'reply') {
+        const reply = await message.reply({
+          content: allianceFlow.publicAnswer.slice(0, 1900),
+          allowedMentions: { parse: [] }
+        });
+        await saveTranscript(storage, reply, 'assistant');
+        return;
+      }
+
       if (allianceFlow.type === 'ask_template') {
         const reply = await message.reply({
           content: allianceFlow.publicAnswer.slice(0, 1900),
@@ -2868,7 +2897,7 @@ function parseEscalation(answer) {
     return { shouldEscalate: false, publicAnswer: trimmed };
   }
 
-  const reason = trimmed.replace(/^\[ESCALATE\]\s*/i, '').trim();
+  const reason = trimmed.replace(/\[ESCALATE\]\s*/gi, '').trim();
   return {
     shouldEscalate: true,
     reason: reason || 'El ticket requiere revision humana.',
@@ -2887,57 +2916,321 @@ function looksLikeEscalation(answer) {
   ].some((pattern) => pattern.test(answer));
 }
 
-async function resolveAllianceTicketFlow(message) {
+async function handleCrisisRiskMessage({ storage, message, guildConfig, ticket }) {
+  const reason = 'El usuario ha expresado riesgo inmediato de autolesion o suicidio.';
+  if (guildConfig.staffRoleId) {
+    await notifyStaffRole(message, guildConfig, ticket, reason);
+  }
+
+  await storage.updateTicket(ticket.channelId, {
+    status: 'escalated',
+    aiDisabled: true,
+    aiDisabledBy: message.client.user?.id,
+    aiDisabledAt: new Date().toISOString()
+  }).catch((error) => {
+    console.error(`Failed to mark crisis ticket ${ticket.channelId} as escalated:`, error);
+  });
+
+  await storage.addTranscriptMessage({
+    guildId: message.guild.id,
+    channelId: message.channel.id,
+    messageId: `${CRISIS_MARKER}-${message.id}`,
+    authorId: message.client.user?.id,
+    authorName: message.client.user?.username ?? 'NexaDesk',
+    authorBot: true,
+    role: 'system',
+    content: `${CRISIS_MARKER} ${reason}`,
+    createdAt: new Date().toISOString()
+  }).catch((error) => {
+    console.error(`Failed to save crisis marker for ${ticket.channelId}:`, error);
+  });
+
+  const staffMention = guildConfig.staffRoleId ? `<@&${guildConfig.staffRoleId}> ` : '';
+  const reply = await message.reply({
+    content: [
+      `${EMOJIS.wifi} ${staffMention}**Urgente para staff:** el usuario ha expresado riesgo de hacerse daño. Entrad al ticket ahora.`,
+      '',
+      `${message.author}, siento mucho que estes pasando por esto. No quiero que estes solo ahora mismo.`,
+      'Si estas en peligro inmediato, llama a emergencias ahora: **112** en Espana/UE, o el numero de emergencia de tu pais.',
+      'En Espana tambien puedes llamar al **024**, linea de atencion a la conducta suicida.',
+      'Mientras llega ayuda, alejate de ventanas, alturas u objetos con los que puedas hacerte dano y escribe o llama a alguien de confianza para que este contigo.',
+      '',
+      'He avisado al staff humano y he pausado la IA en este ticket para que te atiendan directamente.'
+    ].join('\n'),
+    allowedMentions: {
+      roles: guildConfig.staffRoleId ? [guildConfig.staffRoleId] : [],
+      users: [message.author.id],
+      repliedUser: false
+    }
+  });
+  await saveTranscript(storage, reply, 'assistant');
+}
+
+function isCrisisRiskMessage(content) {
+  const normalized = normalizeText(content);
+  return [
+    /\b(?:quiero|me\s+voy\s+a|voy\s+a|pienso|tengo\s+ganas\s+de)\s+(?:suicidarme|matarme|quitarme\s+la\s+vida)\b/,
+    /\b(?:me\s+voy\s+a|voy\s+a)\s+(?:tirar|lanzar|saltar)\s+por\s+(?:la\s+)?(?:ventana|balcon|balcon|puente|azotea)\b/,
+    /\b(?:kill\s+myself|end\s+my\s+life|jump\s+out\s+the\s+window|suicide)\b/,
+    /\bno\s+quiero\s+(?:seguir\s+)?viviendo\b/,
+    /\bme\s+quiero\s+morir\b/
+  ].some((pattern) => pattern.test(normalized));
+}
+
+async function resolveAllianceTicketFlow({ message, storage, guildConfig, ticket, supportAgent }) {
   const recentMessages = await fetchRecentChannelMessages(message.channel, 20);
   if (hasStaffHumanConversation(recentMessages, message)) {
     return { type: 'none' };
   }
 
+  const transcript = await storage.listTranscriptMessages(message.channel.id).catch(() => []);
+  const allianceState = parseAllianceState(transcript);
   const allianceContext = isAllianceIntent(message.content)
+    || allianceState.started
     || recentMessages.some((item) => !item.author.bot && isAllianceIntent(item.content));
 
   if (!allianceContext) return { type: 'none' };
   if (isAllianceChatter(message.content)) return { type: 'none' };
 
-  const templateRequested = recentMessages.some((item) => (
-    item.author.bot
-    && /\bplantilla\b/i.test(item.content ?? '')
-    && isAllianceIntent(item.content)
-  ));
-
-  const alreadyEscalated = recentMessages.some((item) => (
-    item.author.bot
-    && isAllianceIntent(item.content)
-    && /\b(?:aviso|avisare|staff|revise|revision|siguientes pasos)\b/i.test(item.content ?? '')
-  ));
-
-  if (!alreadyEscalated && isAllianceTemplateMessage(message.content, { templateRequested })) {
+  const missingAllianceConfig = [];
+  if (!guildConfig?.allianceChannelId) missingAllianceConfig.push('canal de alianzas');
+  if (!guildConfig?.allianceTemplate?.trim()) missingAllianceConfig.push('plantilla de alianza del servidor');
+  if (missingAllianceConfig.length) {
+    await markAllianceState(storage, message.channel, 'missing_config', missingAllianceConfig.join(', '));
     return {
-      type: 'escalate',
-      reason: 'El usuario ya ha enviado una plantilla de alianza para que el staff la revise.',
-      publicAnswer: 'Perfecto, ya tengo la plantilla de alianza. Aviso al staff para que la revise y te responda con la decision o los siguientes pasos.'
+      type: 'reply',
+      publicAnswer: [
+        'Puedo gestionar alianzas automaticamente, pero falta configuracion del servidor.',
+        `Falta: ${missingAllianceConfig.join(' y ')}.`,
+        'Un admin puede configurarlo con `/setup canal_alianzas:#canal plantilla_alianza:...`.'
+      ].join('\n')
     };
   }
 
-  if (alreadyEscalated || templateRequested) {
-    return { type: 'none' };
+  if (!allianceState.rulesAsked) {
+    await markAllianceState(storage, message.channel, 'rules_asked');
+    return {
+      type: 'reply',
+      publicAnswer: [
+        'Perfecto, esto seria una alianza.',
+        'Por favor, lee las normas de alianzas del servidor antes de proceder con el siguiente paso.',
+        'Cuando las hayas leido, escribe exactamente: **Ya las he leido**'
+      ].join('\n')
+    };
   }
 
-  return {
-    type: 'ask_template',
-    publicAnswer: [
-      'Perfecto, esto seria una alianza. Para moverlo bien necesito la plantilla o estos datos basicos:',
-      '',
-      '- Nombre del servidor/proyecto',
-      '- Invitacion o enlace',
-      '- Miembros aproximados',
-      '- Tematica',
-      '- Que ofrece la alianza y que buscais',
-      '- Contacto responsable',
-      '',
-      'Cuando me la pases, aviso al staff con el contexto ordenado.'
-    ].join('\n')
+  if (!allianceState.rulesRead) {
+    if (isAllianceRulesReadAck(message.content)) {
+      await markAllianceState(storage, message.channel, 'rules_read');
+      return {
+        type: 'reply',
+        publicAnswer: 'Gracias. Por favor, proporciona ahora la plantilla de alianza de tu servidor.'
+      };
+    }
+
+    return {
+      type: 'reply',
+      publicAnswer: 'Antes de continuar, lee las normas de alianzas del servidor. Cuando termines, escribe: **Ya las he leido**'
+    };
+  }
+
+  if (!allianceState.userTemplate) {
+    if (!isAllianceTemplateMessage(message.content, { templateRequested: true })) {
+      return {
+        type: 'reply',
+        publicAnswer: 'Necesito primero la plantilla de alianza de tu servidor. Puedes enviarla completa en este ticket.'
+      };
+    }
+
+    await markAllianceState(storage, message.channel, 'user_template', message.content);
+    await markAllianceState(storage, message.channel, 'server_template_sent');
+    return {
+      type: 'reply',
+      publicAnswer: [
+        'Perfecto, ya tengo tu plantilla.',
+        '',
+        '**Plantilla de alianza de este servidor:**',
+        guildConfig.allianceTemplate.trim(),
+        '',
+        'Para favorecer un buen funcionamiento del sistema de alianzas, envia una captura de como has enviado la plantilla que te hemos proporcionado.',
+        'Despues, tu plantilla sera enviada automaticamente al canal de alianzas.'
+      ].join('\n')
+    };
+  }
+
+  if (!allianceState.proofVerified) {
+    if (!message.attachments?.size) {
+      return {
+        type: 'reply',
+        publicAnswer: 'Ahora necesito una captura donde se vea que has enviado nuestra plantilla de alianza. En cuanto la verifique, envio tu plantilla automaticamente.'
+      };
+    }
+
+    const verification = await supportAgent.verifyAllianceProof({
+      message,
+      guildConfig,
+      serverAllianceTemplate: guildConfig.allianceTemplate
+    }).catch((error) => ({
+      verified: false,
+      reason: `No pude verificar la captura automaticamente: ${String(error?.message ?? error).slice(0, 250)}`
+    }));
+
+    await markAllianceState(storage, message.channel, 'proof_checked', verification.reason ?? '');
+    if (!verification.verified) {
+      return {
+        type: 'reply',
+        publicAnswer: [
+          'No puedo confirmar todavia que la plantilla se haya enviado correctamente.',
+          `Motivo: ${verification.reason || 'la captura no muestra la plantilla con suficiente claridad.'}`,
+          'Envia una captura mas clara donde se vea el mensaje publicado con nuestra plantilla.'
+        ].join('\n')
+      };
+    }
+
+    await markAllianceState(storage, message.channel, 'proof_verified', verification.reason ?? '');
+    const userTemplate = allianceState.userTemplate;
+    const publishResult = await publishAllianceTemplate({
+      message,
+      guildConfig,
+      ticket,
+      userTemplate
+    }).catch((error) => ({
+      error: String(error?.message ?? error)
+    }));
+    if (publishResult.error) {
+      return {
+        type: 'reply',
+        publicAnswer: [
+          'La captura parece correcta, pero no pude publicar tu plantilla en el canal de alianzas.',
+          `Motivo: ${publishResult.error}`,
+          'Aviso al staff para que lo revise manualmente.'
+        ].join('\n')
+      };
+    }
+    await markAllianceState(storage, message.channel, 'published', publishResult.messageId ?? '');
+
+    return {
+      type: 'reply',
+      publicAnswer: [
+        'Perfecto, la plantilla se enviara en unos momentos.',
+        `Ya la he publicado en ${publishResult.channelMention}. Gracias por seguir el proceso.`
+      ].join('\n')
+    };
+  }
+
+  if (allianceState.proofVerified && !allianceState.published) {
+    const publishResult = await publishAllianceTemplate({
+      message,
+      guildConfig,
+      ticket,
+      userTemplate: allianceState.userTemplate
+    }).catch((error) => ({
+      error: String(error?.message ?? error)
+    }));
+    if (publishResult.error) {
+      return {
+        type: 'reply',
+        publicAnswer: [
+          'La captura ya esta verificada, pero sigo sin poder publicar la plantilla en el canal de alianzas.',
+          `Motivo: ${publishResult.error}`,
+          'Revisa permisos del bot en el canal configurado o cambia el canal con `/setup canal_alianzas:#canal`.'
+        ].join('\n')
+      };
+    }
+    await markAllianceState(storage, message.channel, 'published', publishResult.messageId ?? '');
+    return {
+      type: 'reply',
+      publicAnswer: `Listo, ya publique la plantilla en ${publishResult.channelMention}.`
+    };
+  }
+
+  if (allianceState.published) {
+    return {
+      type: 'reply',
+      publicAnswer: 'La alianza ya quedo enviada al canal configurado. El staff podra revisarla desde alli.'
+    };
+  }
+
+  return { type: 'none' };
+}
+
+function parseAllianceState(messages = []) {
+  const state = {
+    started: false,
+    rulesAsked: false,
+    rulesRead: false,
+    userTemplate: '',
+    serverTemplateSent: false,
+    proofVerified: false,
+    published: false
   };
+
+  for (const item of messages) {
+    const content = String(item.content ?? '');
+    if (!content.includes(ALLIANCE_MARKER)) continue;
+    state.started = true;
+    if (content.includes('rules_asked')) state.rulesAsked = true;
+    if (content.includes('rules_read')) state.rulesRead = true;
+    if (content.includes('server_template_sent')) state.serverTemplateSent = true;
+    if (content.includes('proof_verified')) state.proofVerified = true;
+    if (content.includes('published')) state.published = true;
+    if (content.includes('user_template:')) {
+      state.userTemplate = content.split('user_template:').slice(1).join('user_template:').trim();
+    }
+  }
+
+  return state;
+}
+
+async function markAllianceState(storage, channel, action, details = '') {
+  await storage.addTranscriptMessage({
+    guildId: channel.guild?.id,
+    channelId: channel.id,
+    messageId: `alliance-${action}-${Date.now()}`,
+    authorId: channel.client.user?.id,
+    authorName: channel.client.user?.username ?? 'NexaDesk',
+    authorBot: true,
+    role: 'system',
+    content: `${ALLIANCE_MARKER} ${action}${details ? `: ${details}` : ''}`.slice(0, 3000),
+    createdAt: new Date().toISOString()
+  }).catch((error) => {
+    console.error(`Failed to save alliance marker ${action} in ${channel.id}:`, error);
+  });
+}
+
+async function publishAllianceTemplate({ message, guildConfig, ticket, userTemplate }) {
+  const channel = await message.guild.channels.fetch(guildConfig.allianceChannelId).catch(() => null);
+  if (!channel || channel.type !== ChannelType.GuildText) {
+    throw new Error('El canal de alianzas configurado no existe o no es de texto.');
+  }
+
+  const embed = new EmbedBuilder()
+    .setColor(0xffffff)
+    .setTitle(`${EMOJIS.global} Nueva solicitud de alianza verificada`)
+    .setDescription('NexaDesk verifico que el usuario envio la plantilla del servidor antes de publicar esta solicitud.')
+    .addFields(
+      { name: 'Solicitante', value: `${message.author} (${message.author.id})`, inline: true },
+      { name: 'Ticket', value: message.channel.url, inline: true },
+      { name: 'Canal', value: `#${ticket.channelName ?? message.channel.name}`, inline: true },
+      { name: 'Plantilla recibida', value: userTemplate.slice(0, 1024) || 'No pude recuperar la plantilla del usuario.' }
+    )
+    .setFooter({ text: 'NexaDesk Alliance Flow' })
+    .setTimestamp(new Date());
+
+  const sent = await channel.send({
+    content: `${EMOJIS.global} Solicitud de alianza verificada desde ${message.channel}.`,
+    embeds: [embed],
+    allowedMentions: { parse: [] }
+  });
+
+  return {
+    channelMention: `${channel}`,
+    messageId: sent.id
+  };
+}
+
+function isAllianceRulesReadAck(content) {
+  return /\bya\s+(?:las\s+)?(?:he|e)\s+leido\b/i.test(normalizeText(content));
 }
 
 function hasStaffHumanConversation(recentMessages, currentMessage) {
@@ -3067,6 +3360,7 @@ function cleanStaffMentions(answer, guildConfig) {
     cleaned = cleaned.replace(new RegExp(`<@&${escapeRegExp(guildConfig.staffRoleId)}>`, 'g'), '');
   }
   cleaned = cleaned
+    .replace(/\[ESCALATE\]/gi, '')
     .replace(/@Staff\b/gi, '')
     .replace(/\s{2,}/g, ' ')
     .trim();

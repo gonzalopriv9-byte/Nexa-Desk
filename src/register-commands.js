@@ -19,6 +19,20 @@ const commands = [
         .setDescription('Rol que NexaDesk mencionara cuando escale un ticket.')
         .setRequired(false)
     )
+    .addChannelOption((option) =>
+      option
+        .setName('canal_alianzas')
+        .setDescription('Canal donde NexaDesk enviara plantillas de alianzas verificadas.')
+        .addChannelTypes(ChannelType.GuildText)
+        .setRequired(false)
+    )
+    .addStringOption((option) =>
+      option
+        .setName('plantilla_alianza')
+        .setDescription('Plantilla de alianza de este servidor que NexaDesk enviara al usuario.')
+        .setMaxLength(1800)
+        .setRequired(false)
+    )
     .toJSON(),
   new SlashCommandBuilder()
     .setName('desactivar')

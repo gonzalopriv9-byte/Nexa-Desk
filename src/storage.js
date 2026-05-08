@@ -573,6 +573,7 @@ export function createStorage(config, events) {
 }
 
 function toGuildRow(guild) {
+  const panelStore = toGuildPanelStore(guild);
   return {
     guild_id: guild.guildId,
     guild_name: guild.guildName,
@@ -585,7 +586,7 @@ function toGuildRow(guild) {
     voice_support_enabled: guild.voiceSupportEnabled ?? false,
     voice_category_id: guild.voiceCategoryId,
     voice_category_name: guild.voiceCategoryName,
-    panels: toGuildPanelStore(guild),
+    panels: panelStore,
     updated_at: guild.updatedAt
   };
 }
@@ -604,6 +605,9 @@ function fromGuildRow(row) {
     voiceSupportEnabled: row.voice_support_enabled ?? false,
     voiceCategoryId: row.voice_category_id,
     voiceCategoryName: row.voice_category_name,
+    allianceChannelId: panelStore.alliance.channelId,
+    allianceChannelName: panelStore.alliance.channelName,
+    allianceTemplate: panelStore.alliance.template,
     panels: panelStore.panels,
     components: panelStore.components,
     security: panelStore.security,
@@ -615,7 +619,8 @@ function toGuildPanelStore(guild) {
   return {
     panels: guild.panels ?? [],
     components: guild.components ?? [],
-    security: normalizeSecurityConfig(guild.security)
+    security: normalizeSecurityConfig(guild.security),
+    alliance: normalizeAllianceConfig(guild)
   };
 }
 
@@ -624,7 +629,8 @@ function fromGuildPanelStore(value) {
     return {
       panels: value,
       components: [],
-      security: normalizeSecurityConfig()
+      security: normalizeSecurityConfig(),
+      alliance: normalizeAllianceConfig()
     };
   }
 
@@ -632,15 +638,26 @@ function fromGuildPanelStore(value) {
     return {
       panels: Array.isArray(value.panels) ? value.panels : [],
       components: Array.isArray(value.components) ? value.components : [],
-      security: normalizeSecurityConfig(value.security)
+      security: normalizeSecurityConfig(value.security),
+      alliance: normalizeAllianceConfig(value.alliance)
     };
   }
 
   return {
     panels: [],
     components: [],
-    security: normalizeSecurityConfig()
+    security: normalizeSecurityConfig(),
+    alliance: normalizeAllianceConfig()
   };
+}
+
+function normalizeAllianceConfig(value = {}) {
+  const source = value?.alliance && typeof value.alliance === 'object' ? value.alliance : value;
+  return pickDefined({
+    channelId: source?.channelId ?? source?.allianceChannelId,
+    channelName: source?.channelName ?? source?.allianceChannelName,
+    template: source?.template ?? source?.allianceTemplate
+  });
 }
 
 function toTicketRow(ticket) {
