@@ -585,14 +585,14 @@ async function handleGuildJoin({ guild, storage, config }) {
     return;
   }
 
-  const embed = buildOwnerOnboardingEmbed({ guild, config });
+  const embeds = buildOwnerOnboardingEmbeds({ guild });
   const components = buildOwnerOnboardingComponents(config);
   const welcomeCard = new AttachmentBuilder(createWelcomeCard({ guildName: guild.name }), {
     name: 'nexadesk-welcome.png'
   });
   const sent = await ownerUser.send({
     content: `Gracias de verdad por confiar en **NexaDesk** para **${guild.name}**.`,
-    embeds: [embed],
+    embeds,
     files: [welcomeCard],
     components
   }).then(() => true).catch((error) => {
@@ -604,61 +604,132 @@ async function handleGuildJoin({ guild, storage, config }) {
   }
 }
 
-function buildOwnerOnboardingEmbed({ guild }) {
-  return new EmbedBuilder()
+function buildOwnerOnboardingEmbeds({ guild }) {
+  const intro = new EmbedBuilder()
     .setColor(0xffffff)
-    .setTitle(`${EMOJIS.global} Gracias por confiar en NexaDesk`)
+    .setTitle(`${EMOJIS.global} Bienvenido a NexaDesk`)
     .setImage('attachment://nexadesk-welcome.png')
     .setDescription([
-      `Me acabo de unir a **${guild.name}**. Gracias muchisimo por darme un hueco en tu servidor.`,
-      'NexaDesk esta pensado para que no tengas que cambiar tu sistema de tickets: puede trabajar con tus paneles actuales, con paneles propios y con IA para atender, ordenar y escalar casos al staff humano cuando haga falta.'
+      `Me acabo de unir a **${guild.name}**. Gracias de corazon por confiar en NexaDesk.`,
+      '',
+      'NexaDesk esta pensado para que no tengas que cambiar tu sistema de tickets. Puede trabajar con Ticket King, otros bots de tickets o paneles propios creados desde la dashboard.',
+      '',
+      'La idea es simple: NexaDesk recibe al usuario, entiende el caso con IA, pide la informacion que falta, revisa pruebas visuales cuando haga falta, guarda transcripcion y escala al staff humano cuando toca.'
     ].join('\n\n'))
     .addFields(
       {
-        name: '1. Primer setup',
+        name: 'Que hace desde el primer dia',
         value: [
-          `Abre la dashboard: ${PUBLIC_DASHBOARD_URL}`,
-          'Elige este servidor, selecciona la categoria donde se crean tickets y configura el rol de staff.',
-          'Si usas otro bot de tickets, pon la categoria donde ese bot crea los canales.',
-          'Tambien puedes usar `/setup category:<categoria>` como configuracion rapida.'
-        ].join('\n')
-      },
-      {
-        name: '2. Que decirle a tu staff',
-        value: [
-          'Que NexaDesk respondera al usuario primero, pedira datos y escalara si detecta que hace falta una persona.',
-          'Cuando un staff entre al ticket puede usar `/desactivar ia` para que la IA deje de escuchar y responder en ese canal.',
-          'Para cerrar con transcript puede usar `/ticket cerrar`; para contexto rapido, `/ticket resumen`.'
-        ].join('\n')
-      },
-      {
-        name: '3. Como funciona NexaDesk',
-        value: [
-          'Lee el contexto del servidor guardado en la dashboard antes de responder.',
-          'Guarda configuracion, paneles, tickets y transcripciones en Supabase para que puedas consultarlo desde la dashboard.',
-          'Si activas Pro Voice, crea salas privadas vinculadas al ticket, transcribe voz y responde con TTS.'
-        ].join('\n')
-      },
-      {
-        name: '4. Security Guard',
-        value: [
-          'Desde la dashboard puedes activar anti-flood, anti-bots, anti-alts y anti-nuke por servidor.',
-          'Cuando alguien abre un ticket, NexaDesk consulta la blacklist global de XN Protect y avisa al staff si aparece marcado.',
-          'Tambien puedes usar `/seguridad configurar` para escoger nivel, canal de logs y edad minima de cuenta.',
-          'Para que la proteccion sea completa, re-invita NexaDesk con permisos de auditoria y moderacion.'
-        ].join('\n')
-      },
-      {
-        name: '5. Datos y soporte',
-        value: [
-          'Los datos operativos del servidor se guardan para que NexaDesk recuerde configuracion, transcripciones y contexto.',
-          'Si en cualquier momento necesitas ayuda, entra al soporte oficial:',
-          'https://discord.gg/vVXbq7ePEZ'
+          'Atiende tickets con IA y contexto del servidor.',
+          'Escala al rol de staff cuando detecta riesgo, reportes serios o peticiones humanas.',
+          'Guarda transcripciones y puede enviarlas por MD al cerrar.',
+          'Consulta blacklist global XN Protect en tickets y avisa al staff sin banear automaticamente.'
         ].join('\n')
       }
     )
     .setFooter({ text: 'NexaDesk - AI support for every ticket' })
     .setTimestamp(new Date());
+
+  const setup = new EmbedBuilder()
+    .setColor(0xffffff)
+    .setTitle('Setup completo paso a paso')
+    .setDescription('Sigue este orden y en pocos minutos NexaDesk quedara listo para trabajar en tu servidor.')
+    .addFields(
+      {
+        name: '1. Revisa permisos y rol del bot',
+        value: [
+          'Asegurate de que el rol de NexaDesk este por encima del rol de staff y de los roles que debe gestionar.',
+          'Permisos recomendados: Manage Channels, Manage Roles, Manage Messages, View Audit Log, Moderate Members, Kick Members y Ban Members.',
+          'Si Discord bloquea algo, vuelve a invitarlo desde la dashboard para actualizar permisos.'
+        ].join('\n')
+      },
+      {
+        name: '2. Abre la dashboard',
+        value: [
+          `Entra aqui: ${PUBLIC_DASHBOARD_URL}`,
+          'Inicia sesion con Discord, elige este servidor y revisa que aparezca como instalado.',
+          'Desde ahi puedes crear paneles, componentes, menus, prompts, staff, transcripciones, seguridad y voz.'
+        ].join('\n')
+      },
+      {
+        name: '3. Configuracion rapida por comando',
+        value: [
+          'Puedes dejar lo basico listo con:',
+          '`/setup category:<categoria tickets> rol_staff:<rol staff>`',
+          'Si tienes alianzas:',
+          '`/setup canal_alianzas:<canal> plantilla_alianza:<tu plantilla>`',
+          'NexaDesk conservara cualquier valor que no rellenes.'
+        ].join('\n')
+      },
+      {
+        name: '4. Contexto IA del servidor',
+        value: [
+          'En la dashboard, escribe el prompt del servidor: normas, tono, limites, precios, FAQs, canales importantes y cuando escalar.',
+          'Cuanto mejor sea ese contexto, menos preguntas repetidas hara NexaDesk.',
+          'Si quieres que pida capturas o pruebas visuales, indicalo claramente en el prompt.'
+        ].join('\n')
+      }
+    );
+
+  const operations = new EmbedBuilder()
+    .setColor(0xffffff)
+    .setTitle('Como trabajar despues del setup')
+    .setDescription('Esto es lo que debes contarle a tu staff y lo que NexaDesk hara automaticamente.')
+    .addFields(
+      {
+        name: 'Tickets normales y bots externos',
+        value: [
+          'Si usas otro bot de tickets, configura la categoria donde ese bot crea canales.',
+          'Para Ticket King, NexaDesk detecta canales `ticket-123` cuando Ticket King escribe el mensaje inicial.',
+          'Cuando entre staff, NexaDesk se calla salvo que lo mencionen, le respondan o escriban su nombre.'
+        ].join('\n')
+      },
+      {
+        name: 'Paneles propios',
+        value: [
+          'Desde la dashboard puedes crear paneles de boton o menus desplegables.',
+          'Cada componente puede tener preguntas previas, categoria propia, mensaje inicial personalizado y modo texto o voz.',
+          'Las respuestas previas se guardan en la transcripcion para que la IA y el staff tengan contexto.'
+        ].join('\n')
+      },
+      {
+        name: 'Comandos para staff',
+        value: [
+          '`/desactivar ia` pausa la IA cuando entra un humano.',
+          '`/activar ia` devuelve el ticket a NexaDesk.',
+          '`/ticket resumen` genera un briefing rapido.',
+          '`/ticket cerrar` cierra el ticket, envia transcripcion por MD y elimina el canal.'
+        ].join('\n')
+      },
+      {
+        name: 'Alianzas automaticas',
+        value: [
+          'Configura canal y plantilla con `/setup canal_alianzas:<canal> plantilla_alianza:<texto>`.',
+          'Cuando un usuario pide alianza, NexaDesk le pide leer normas, recibe su plantilla, entrega la tuya, solicita captura y verifica la prueba con IA visual.',
+          'Si la captura es valida, publica la plantilla del usuario en el canal de alianzas.'
+        ].join('\n')
+      },
+      {
+        name: 'Voz, seguridad y datos',
+        value: [
+          'Pro Voice permite crear salas privadas con STT/TTS usando `/voz crear` o paneles de voz.',
+          'Security Guard se configura con `/seguridad configurar` o desde la dashboard.',
+          'Configuracion, paneles, tickets y transcripciones se guardan en Supabase para que la dashboard pueda consultarlos.'
+        ].join('\n')
+      },
+      {
+        name: 'Si necesitas ayuda',
+        value: [
+          'Usa `/ayuda` dentro del servidor para abrir la guia interactiva.',
+          `Dashboard: ${PUBLIC_DASHBOARD_URL}`,
+          'Soporte oficial: https://discord.gg/vVXbq7ePEZ'
+        ].join('\n')
+      }
+    )
+    .setFooter({ text: 'Consejo: configura primero staff, categoria y prompt IA antes de abrirlo al publico.' })
+    .setTimestamp(new Date());
+
+  return [intro, setup, operations];
 }
 
 function buildOwnerOnboardingComponents(config) {
