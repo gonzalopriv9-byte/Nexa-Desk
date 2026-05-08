@@ -65,15 +65,22 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
 
   client.once(Events.ClientReady, (readyClient) => {
     applyBotPresence(readyClient);
+    const presenceInterval = setInterval(() => applyBotPresence(readyClient), 1000 * 60 * 5);
+    presenceInterval.unref?.();
     console.log(`NexaDesk online as ${readyClient.user.tag}`);
   });
 
   client.on(Events.GuildCreate, async (guild) => {
     try {
+      applyBotPresence(client);
       await handleGuildJoin({ guild, storage, config });
     } catch (error) {
       console.error(`Failed to send NexaDesk onboarding for guild ${guild.id}:`, error);
     }
+  });
+
+  client.on(Events.GuildDelete, () => {
+    applyBotPresence(client);
   });
 
   client.on(Events.InteractionCreate, async (interaction) => {
@@ -2907,21 +2914,22 @@ function formatDuration(ms) {
 
 function applyBotPresence(client) {
   try {
-    const presence = buildBotPresence();
+    const presence = buildBotPresence(client);
     client.user.setPresence(presence);
-    console.log(`NexaDesk presence set to ${presence.status}.`);
+    console.log(`NexaDesk presence set to ${presence.status}: ${presence.activities[0]?.name ?? 'sin actividad'}.`);
   } catch (error) {
     console.error('Failed to set NexaDesk presence:', error);
   }
 }
 
-function buildBotPresence() {
+function buildBotPresence(client = null) {
+  const guildCount = client?.guilds?.cache?.size ?? 0;
   return {
     status: 'online',
     afk: false,
     activities: [
       {
-        name: 'How can I help you today?',
+        name: `¿How can I help you today? | Ayudando en ${guildCount} servidores`,
         type: ActivityType.Playing
       }
     ]
