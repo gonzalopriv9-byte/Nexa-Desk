@@ -411,7 +411,7 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
     if (!config.AI_AUTO_REPLY) return;
     if (activeResponses.has(message.channel.id)) return;
     if (isAiDisabledTicket(ticket)) return;
-    if (await shouldStaySilentInTicket({ message, ticket, guildConfig, client })) return;
+    if (await shouldStaySilentInTicket({ storage, message, ticket, guildConfig, client })) return;
 
     activeResponses.add(message.channel.id);
     try {
@@ -2747,15 +2747,86 @@ function isTicketEscalated(ticket) {
   return ticket?.status === 'escalated' || isAiDisabledTicket(ticket);
 }
 
-async function shouldStaySilentInTicket({ message, ticket, guildConfig, client }) {
+async function shouldStaySilentInTicket({ storage, message, ticket, guildConfig, client }) {
+  const staffTakeover = isConfiguredStaffMember(message.member, message.author, guildConfig);
+  if (staffTakeover) {
+    await pauseAiForHumanTakeover({
+      storage,
+      message,
+      ticket,
+      reason: 'Un miembro del staff ha escrito en el ticket.',
+      actorId: message.author.id
+    });
+    return true;
+  }
+
+  const mentionedBot = getMentionedExternalBot(message, client);
+  if (mentionedBot) {
+    await pauseAiForHumanTakeover({
+      storage,
+      message,
+      ticket,
+      reason: `Se menciono a otro bot en el ticket: ${mentionedBot.tag ?? mentionedBot.username ?? mentionedBot.id}.`,
+      actorId: message.author.id
+    });
+    return true;
+  }
+
   if (isMessageAddressedToNexaDesk(message, client)) return false;
-  if (message.member?.permissions?.has(PermissionFlagsBits.ManageGuild)) return true;
-  if (guildConfig?.staffRoleId && memberHasRole(message.member, guildConfig.staffRoleId)) return true;
-  if (isLikelyStaffIdentity(message.member, message.author)) return true;
-  if (isTicketEscalated(ticket)) return true;
 
   const recentMessages = await fetchRecentChannelMessages(message.channel, 12);
-  return hasStaffHumanConversation(recentMessages, message);
+  const recentStaffMessage = findRecentStaffHumanMessage(recentMessages, message, guildConfig);
+  if (recentStaffMessage) {
+    await pauseAiForHumanTakeover({
+      storage,
+      message,
+      ticket,
+      reason: `Staff humano ya intervino recientemente: ${recentStaffMessage.author?.tag ?? recentStaffMessage.author?.username ?? recentStaffMessage.author?.id}.`,
+      actorId: recentStaffMessage.author?.id ?? message.author.id
+    });
+    return true;
+  }
+
+  return false;
+}
+
+async function pauseAiForHumanTakeover({ storage, message, ticket, reason, actorId }) {
+  if (isAiDisabledTicket(ticket) || isClosedTicket(ticket)) return;
+
+  await storage.updateTicket(ticket.channelId, {
+    status: 'ai_disabled',
+    aiDisabled: true,
+    aiDisabledBy: actorId,
+    aiDisabledAt: new Date().toISOString()
+  }).catch((error) => {
+    console.error(`Failed to pause AI for human takeover in ${ticket.channelId}:`, error);
+  });
+
+  await storage.addTranscriptMessage({
+    guildId: message.guild.id,
+    channelId: message.channel.id,
+    messageId: `human-takeover-${message.id}`,
+    authorId: message.client.user?.id,
+    authorName: message.client.user?.username ?? 'NexaDesk',
+    authorBot: true,
+    role: 'system',
+    content: `[NexaDesk human takeover] IA pausada automaticamente. ${reason}`,
+    createdAt: new Date().toISOString()
+  }).catch((error) => {
+    console.error(`Failed to save human takeover marker for ${ticket.channelId}:`, error);
+  });
+}
+
+function isConfiguredStaffMember(member, user, guildConfig) {
+  if (!member || user?.bot) return false;
+  if (member.permissions?.has(PermissionFlagsBits.ManageGuild)) return true;
+  if (guildConfig?.staffRoleId && memberHasRole(member, guildConfig.staffRoleId)) return true;
+  return false;
+}
+
+function getMentionedExternalBot(message, client) {
+  const botId = client?.user?.id;
+  return message.mentions?.users?.find?.((user) => user.bot && user.id !== botId) ?? null;
 }
 
 function isMessageAddressedToNexaDesk(message, client) {
@@ -3319,6 +3390,19 @@ function hasStaffHumanConversation(recentMessages, currentMessage) {
   const currentIndex = recentMessages.findIndex((item) => item.id === currentMessage.id);
   const previous = currentIndex >= 0 ? recentMessages.slice(0, currentIndex) : recentMessages;
   return previous.slice(-8).some((item) => !item.author.bot && isLikelyStaffHumanMessage(item, currentMessage));
+}
+
+function findRecentStaffHumanMessage(recentMessages, currentMessage, guildConfig) {
+  const currentIndex = recentMessages.findIndex((item) => item.id === currentMessage.id);
+  const previous = currentIndex >= 0 ? recentMessages.slice(0, currentIndex) : recentMessages;
+  return previous
+    .slice(-8)
+    .reverse()
+    .find((item) => (
+      !item.author.bot
+      && item.author.id !== currentMessage.author.id
+      && isConfiguredStaffMember(item.member, item.author, guildConfig)
+    )) ?? null;
 }
 
 function isLikelyStaffHumanMessage(item, currentMessage) {
