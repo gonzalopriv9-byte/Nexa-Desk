@@ -37,6 +37,7 @@ const PUBLIC_DASHBOARD_URL = 'https://nexa-desk.onrender.com/';
 const PREMIUM_ADMIN_USER_ID = '1352652366330986526';
 const ALLIANCE_MARKER = '[NexaDesk alliance]';
 const CRISIS_MARKER = '[NexaDesk crisis]';
+const STAFF_HANDOFF_MARKER = '[NexaDesk staff handoff]';
 
 export function createBot({ config, storage, supportAgent, voiceManager = null }) {
   const intents = [
@@ -409,6 +410,10 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
       return;
     }
 
+    const staffHandoff = await handleStaffHandoffMessage({ storage, message, ticket, guildConfig, client });
+    if (staffHandoff.ticket) ticket = staffHandoff.ticket;
+    if (staffHandoff.handled) return;
+
     if (!config.AI_AUTO_REPLY) return;
     if (activeResponses.has(message.channel.id)) return;
     if (isAiDisabledTicket(ticket)) return;
@@ -417,21 +422,8 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
     activeResponses.add(message.channel.id);
     try {
       const allianceFlow = await resolveAllianceTicketFlow({ message, storage, guildConfig, ticket, supportAgent });
-      if (allianceFlow.type === 'reply') {
-        const reply = await message.reply({
-          content: allianceFlow.publicAnswer.slice(0, 1900),
-          allowedMentions: { parse: [] }
-        });
-        await saveTranscript(storage, reply, 'assistant');
-        return;
-      }
-
-      if (allianceFlow.type === 'ask_template') {
-        const reply = await message.reply({
-          content: allianceFlow.publicAnswer.slice(0, 1900),
-          allowedMentions: { parse: [] }
-        });
-        await saveTranscript(storage, reply, 'assistant');
+      if (allianceFlow.type === 'reply' || allianceFlow.type === 'ask_template') {
+        await sendFlowMessages({ message, storage, flow: allianceFlow });
         return;
       }
 
@@ -2777,6 +2769,44 @@ async function handleGlobalStatsCommand({ interaction, storage, client }) {
   await interaction.editReply({ embeds: [embed] });
 }
 
+async function sendFlowMessages({ message, storage, flow }) {
+  const items = Array.isArray(flow.messages) && flow.messages.length
+    ? flow.messages
+    : [{ mode: 'reply', content: flow.publicAnswer }];
+  let sentAny = false;
+
+  for (const item of items) {
+    const chunks = splitDiscordText(item.content, item.maxLength ?? 1900);
+    for (const chunk of chunks) {
+      const payload = {
+        content: chunk,
+        allowedMentions: item.allowedMentions ?? { parse: [] }
+      };
+      const shouldReply = item.mode !== 'send' && !sentAny;
+      const sent = shouldReply ? await message.reply(payload) : await message.channel.send(payload);
+      await saveTranscript(storage, sent, 'assistant');
+      sentAny = true;
+    }
+  }
+}
+
+function splitDiscordText(content, maxLength = 1900) {
+  let remaining = String(content ?? '').trim();
+  if (!remaining) return [];
+  const chunks = [];
+
+  while (remaining.length > maxLength) {
+    let splitAt = remaining.lastIndexOf('\n', maxLength);
+    if (splitAt < Math.floor(maxLength * 0.45)) splitAt = remaining.lastIndexOf(' ', maxLength);
+    if (splitAt < Math.floor(maxLength * 0.45)) splitAt = maxLength;
+    chunks.push(remaining.slice(0, splitAt).trim());
+    remaining = remaining.slice(splitAt).trim();
+  }
+
+  if (remaining) chunks.push(remaining);
+  return chunks;
+}
+
 function isAiDisabledTicket(ticket) {
   return ticket?.aiDisabled || ticket?.status === 'ai_disabled';
 }
@@ -2802,36 +2832,184 @@ async function shouldStaySilentInTicket({ storage, message, ticket, guildConfig,
     return true;
   }
 
-  if (isTicketOpener(message, ticket)) return false;
-
-  const staffTakeover = isConfiguredStaffMember(message.member, message.author, guildConfig);
-  if (staffTakeover) {
-    await pauseAiForHumanTakeover({
-      storage,
-      message,
-      ticket,
-      reason: 'Un miembro del staff ha escrito en el ticket.',
-      actorId: message.author.id
-    });
-    return true;
+  const handoffState = await getStaffHandoffState(storage, message.channel.id);
+  if (handoffState.pending || handoffState.active || handoffState.waitingFinish) {
+    return !isMessageAddressedToNexaDesk(message, client);
   }
+
+  if (isTicketOpener(message, ticket)) return false;
 
   if (isMessageAddressedToNexaDesk(message, client)) return false;
 
   const recentMessages = await fetchRecentChannelMessages(message.channel, 12);
   const recentStaffMessage = findRecentStaffHumanMessage(recentMessages, message, guildConfig, ticket);
   if (recentStaffMessage) {
-    await pauseAiForHumanTakeover({
-      storage,
-      message,
-      ticket,
-      reason: `Staff humano ya intervino recientemente: ${recentStaffMessage.author?.tag ?? recentStaffMessage.author?.username ?? recentStaffMessage.author?.id}.`,
-      actorId: recentStaffMessage.author?.id ?? message.author.id
-    });
     return true;
   }
 
   return false;
+}
+
+async function handleStaffHandoffMessage({ storage, message, ticket, guildConfig, client }) {
+  if (!isConfiguredStaffMember(message.member, message.author, guildConfig)) return { handled: false };
+  if (isTicketOpener(message, ticket)) return { handled: false };
+
+  const handoffState = await getStaffHandoffState(storage, message.channel.id);
+  if (isStaffHandoffFinish(message.content) && (handoffState.pending || handoffState.active || handoffState.waitingFinish)) {
+    await markStaffHandoffState(storage, message, 'finished', message.author.id);
+    const updatedTicket = await storage.updateTicket(ticket.channelId, {
+      status: 'open',
+      aiDisabled: false,
+      aiDisabledBy: null,
+      aiDisabledAt: null
+    }).catch((error) => {
+      console.error(`Failed to resume AI after staff handoff in ${ticket.channelId}:`, error);
+      return null;
+    });
+    const reply = await message.reply({
+      content: `${EMOJIS.global} Perfecto <@${message.author.id}>, vuelvo a atender el ticket.`,
+      allowedMentions: { users: [message.author.id], repliedUser: false }
+    });
+    await saveTranscript(storage, reply, 'assistant');
+    return { handled: true, ticket: updatedTicket ?? ticket };
+  }
+
+  if (handoffState.pending) {
+    if (isStaffHandoffYes(message.content)) {
+      await markStaffHandoffState(storage, message, 'accepted', message.author.id);
+      const updatedTicket = await storage.updateTicket(ticket.channelId, {
+        status: 'staff_active',
+        aiDisabled: false,
+        aiDisabledBy: null,
+        aiDisabledAt: null
+      }).catch((error) => {
+        console.error(`Failed to mark staff handoff accepted in ${ticket.channelId}:`, error);
+        return null;
+      });
+      const reply = await message.reply({
+        content: [
+          `${EMOJIS.wifi} Perfecto <@${message.author.id}>, te dejo al mando de este ticket.`,
+          'Desde ahora solo respondere si me mencionan, me responden directamente o dicen **Nexa**.'
+        ].join('\n'),
+        allowedMentions: { users: [message.author.id], repliedUser: false }
+      });
+      await saveTranscript(storage, reply, 'assistant');
+      return { handled: true, ticket: updatedTicket ?? ticket };
+    }
+
+    if (isStaffHandoffNo(message.content)) {
+      await markStaffHandoffState(storage, message, 'waiting_finish', message.author.id);
+      const updatedTicket = await storage.updateTicket(ticket.channelId, {
+        status: 'staff_waiting',
+        aiDisabled: false,
+        aiDisabledBy: null,
+        aiDisabledAt: null
+      }).catch((error) => {
+        console.error(`Failed to mark staff handoff waiting in ${ticket.channelId}:`, error);
+        return null;
+      });
+      const reply = await message.reply({
+        content: `Vale <@${message.author.id}>, avisame diciendo **Nexa, he terminado** para que siga atendiendo el ticket.`,
+        allowedMentions: { users: [message.author.id], repliedUser: false }
+      });
+      await saveTranscript(storage, reply, 'assistant');
+      return { handled: true, ticket: updatedTicket ?? ticket };
+    }
+
+    return { handled: true };
+  }
+
+  if (handoffState.active || handoffState.waitingFinish) {
+    return { handled: !isMessageAddressedToNexaDesk(message, client) };
+  }
+
+  if (isMessageAddressedToNexaDesk(message, client)) return { handled: false };
+
+  await markStaffHandoffState(storage, message, 'asked', message.author.id);
+  const reply = await message.reply({
+    content: `<@${message.author.id}>, quieres encargarte tu de este ticket??? Responde **si** o **no**.`,
+    allowedMentions: { users: [message.author.id], repliedUser: false }
+  });
+  await saveTranscript(storage, reply, 'assistant');
+  return { handled: true };
+}
+
+async function getStaffHandoffState(storage, channelId) {
+  const messages = await storage.listTranscriptMessages(channelId).catch(() => []);
+  return parseStaffHandoffState(messages);
+}
+
+function parseStaffHandoffState(messages = []) {
+  const state = {
+    pending: false,
+    active: false,
+    waitingFinish: false,
+    staffId: null
+  };
+
+  for (const item of messages) {
+    const content = String(item.content ?? '');
+    if (!content.includes(STAFF_HANDOFF_MARKER)) continue;
+    const marker = content.slice(content.indexOf(STAFF_HANDOFF_MARKER) + STAFF_HANDOFF_MARKER.length).trim();
+    const match = marker.match(/^(asked|accepted|waiting_finish|finished)(?::([0-9]+))?/);
+    if (!match) continue;
+
+    const [, action, staffId = null] = match;
+    if (action === 'finished') {
+      state.pending = false;
+      state.active = false;
+      state.waitingFinish = false;
+      state.staffId = null;
+      continue;
+    }
+
+    state.pending = action === 'asked';
+    state.active = action === 'accepted';
+    state.waitingFinish = action === 'waiting_finish';
+    state.staffId = staffId;
+  }
+
+  return state;
+}
+
+async function markStaffHandoffState(storage, message, action, staffId) {
+  await storage.addTranscriptMessage({
+    guildId: message.guild.id,
+    channelId: message.channel.id,
+    messageId: `staff-handoff-${action}-${Date.now()}`,
+    authorId: message.client.user?.id,
+    authorName: message.client.user?.username ?? 'NexaDesk',
+    authorBot: true,
+    role: 'system',
+    content: `${STAFF_HANDOFF_MARKER} ${action}${staffId ? `:${staffId}` : ''}`,
+    createdAt: new Date().toISOString()
+  }).catch((error) => {
+    console.error(`Failed to save staff handoff marker ${action} in ${message.channel.id}:`, error);
+  });
+}
+
+function isStaffHandoffYes(content) {
+  const normalized = normalizeText(content);
+  return [
+    /^(?:si|sii|sip|yes|yep|ok|vale|dale|claro|afirmativo)\b/,
+    /\b(?:me\s+encargo|me\s+hago\s+cargo|lo\s+atiendo|yo\s+lo\s+atiendo|yo\s+me\s+encargo)\b/
+  ].some((pattern) => pattern.test(normalized));
+}
+
+function isStaffHandoffNo(content) {
+  const normalized = normalizeText(content);
+  return [
+    /^(?:no|nop|nah|negativo)\b/,
+    /\b(?:no\s+me\s+encargo|no\s+puedo|sigue\s+tu|atiendelo\s+tu)\b/
+  ].some((pattern) => pattern.test(normalized));
+}
+
+function isStaffHandoffFinish(content) {
+  const normalized = normalizeText(content);
+  return [
+    /\bnexa(?:desk)?\b.*\b(?:he\s+terminado|termine|ya\s+termine|terminado)\b/,
+    /\b(?:he\s+terminado|termine|ya\s+termine|terminado)\b.*\bnexa(?:desk)?\b/
+  ].some((pattern) => pattern.test(normalized));
 }
 
 function isTicketOpener(message, ticket) {
@@ -3247,15 +3425,22 @@ async function resolveAllianceTicketFlow({ message, storage, guildConfig, ticket
     await markAllianceState(storage, message.channel, 'server_template_sent');
     return {
       type: 'reply',
-      publicAnswer: [
-        'Perfecto, ya tengo tu plantilla.',
-        '',
-        '**Plantilla de alianza de este servidor:**',
-        guildConfig.allianceTemplate.trim(),
-        '',
-        'Para favorecer un buen funcionamiento del sistema de alianzas, envia una captura de como has enviado la plantilla que te hemos proporcionado.',
-        'Despues, tu plantilla sera enviada automaticamente al canal de alianzas.'
-      ].join('\n')
+      messages: [
+        {
+          mode: 'reply',
+          content: [
+            'Perfecto, ya tengo tu plantilla.',
+            'Te paso la plantilla del servidor en el siguiente mensaje para que puedas copiarla limpia.',
+            '',
+            'Para favorecer un buen funcionamiento del sistema de alianzas, envia una captura de como has enviado la plantilla que te hemos proporcionado.',
+            'Despues, tu plantilla sera enviada automaticamente al canal de alianzas.'
+          ].join('\n')
+        },
+        {
+          mode: 'send',
+          content: guildConfig.allianceTemplate.trim()
+        }
+      ]
     };
   }
 
