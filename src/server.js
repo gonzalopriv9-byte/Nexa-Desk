@@ -692,7 +692,20 @@ function setDocsSecurityHeaders(res) {
   res.setHeader('expires', '0');
   res.setHeader('x-robots-tag', 'noindex, nofollow, noarchive, nosnippet, noimageindex');
   res.setHeader('referrer-policy', 'no-referrer');
-  res.setHeader('permissions-policy', 'camera=(), microphone=(), geolocation=(), payment=(), usb=(), clipboard-read=(), clipboard-write=(self)');
+  res.setHeader('x-frame-options', 'DENY');
+  res.setHeader('cross-origin-opener-policy', 'same-origin');
+  res.setHeader('cross-origin-resource-policy', 'same-origin');
+  res.setHeader('permissions-policy', 'camera=(), microphone=(), geolocation=(), payment=(), usb=(), clipboard-read=(), clipboard-write=(self), display-capture=()');
+  res.setHeader('content-security-policy', [
+    "default-src 'self'",
+    "img-src 'self' data:",
+    "style-src 'unsafe-inline' 'self'",
+    "script-src 'unsafe-inline' 'self'",
+    "base-uri 'none'",
+    "form-action 'self'",
+    "frame-ancestors 'none'",
+    "object-src 'none'"
+  ].join('; '));
 }
 
 function getRequestIp(req) {
@@ -1092,6 +1105,13 @@ function renderDocsVault({ config, session }) {
           <strong>Regla de oro</strong>
           <span>No pegues tokens reales, service role keys ni secretos TOTP en Discord, tickets, GitHub, capturas o documentos publicos. Esta zona muestra estado y procedimientos, no credenciales completas.</span>
         </section>
+        <section class="privacy-console" aria-live="polite">
+          <div>
+            <strong>Modo anti-captura activo</strong>
+            <span>El contenido se oculta por defecto. Manten pulsado para verlo y se tapara automaticamente al soltar, cambiar de ventana o usar atajos sensibles.</span>
+          </div>
+          <button type="button" id="revealDocsButton">Mantener pulsado para ver docs</button>
+        </section>
         <nav class="docs-index">
           ${docs.map((doc, index) => `<a href="#doc-${index + 1}">${escapeHtml(doc.title)}</a>`).join('')}
         </nav>
@@ -1323,7 +1343,7 @@ function secretState(value) {
 }
 
 function renderDocsShell({ title, body, script = '' }) {
-  const watermarkWords = Array.from({ length: 40 }, (_, index) => `<span>NEXADESK CONFIDENTIAL ${String(index + 1).padStart(2, '0')}</span>`).join('');
+  const watermarkWords = Array.from({ length: 96 }, (_, index) => `<span>NEXADESK CONFIDENTIAL ${String(index + 1).padStart(2, '0')}</span>`).join('');
   return `<!doctype html>
 <html lang="es">
 <head>
@@ -1336,11 +1356,11 @@ function renderDocsShell({ title, body, script = '' }) {
     :root { color-scheme:dark; --bg:#050505; --panel:#111; --panel2:#191919; --line:#303030; --text:#fff; --muted:#a8a8a8; --danger:#ff5f57; }
     * { box-sizing:border-box; }
     html { scroll-behavior:smooth; }
-    body { margin:0; min-height:100vh; font-family:"Segoe UI",ui-sans-serif,system-ui,sans-serif; background:radial-gradient(circle at 15% 0%, rgba(255,255,255,.12), transparent 30%), repeating-linear-gradient(90deg, rgba(255,255,255,.035) 0 1px, transparent 1px 74px), repeating-linear-gradient(0deg, rgba(255,255,255,.025) 0 1px, transparent 1px 74px), var(--bg); color:var(--text); user-select:none; -webkit-user-select:none; }
+    body { margin:0; min-height:100vh; font-family:"Segoe UI",ui-sans-serif,system-ui,sans-serif; background:radial-gradient(circle at 15% 0%, rgba(255,255,255,.12), transparent 30%), repeating-linear-gradient(90deg, rgba(255,255,255,.035) 0 1px, transparent 1px 74px), repeating-linear-gradient(0deg, rgba(255,255,255,.025) 0 1px, transparent 1px 74px), var(--bg); color:var(--text); user-select:none; -webkit-user-select:none; -webkit-touch-callout:none; }
     body::before { content:""; position:fixed; inset:0; z-index:0; pointer-events:none; background:url('/assets/nexadesk-logo.svg') center / min(420px, 55vw) no-repeat; opacity:.105; filter:grayscale(1); }
     a { color:#fff; }
-    code,pre { user-select:text; -webkit-user-select:text; }
-    .watermark-field { position:fixed; inset:-18vh -18vw; z-index:1; pointer-events:none; display:grid; grid-template-columns:repeat(5, minmax(220px,1fr)); gap:56px; transform:rotate(-24deg); opacity:.055; font-weight:900; letter-spacing:.15em; color:#fff; text-transform:uppercase; }
+    code,pre { user-select:none; -webkit-user-select:none; }
+    .watermark-field { position:fixed; inset:-24vh -24vw; z-index:18; pointer-events:none; display:grid; grid-template-columns:repeat(6, minmax(180px,1fr)); gap:34px; transform:rotate(-24deg); opacity:.16; font-weight:950; letter-spacing:.17em; color:#fff; text-transform:uppercase; mix-blend-mode:screen; animation:watermarkDrift 18s linear infinite alternate; }
     .watermark-field span { white-space:nowrap; }
     .gate,.vault { position:relative; z-index:2; width:min(1180px, calc(100% - 36px)); margin:0 auto; }
     .gate { min-height:100vh; display:grid; place-content:center; max-width:560px; text-align:left; }
@@ -1349,7 +1369,7 @@ function renderDocsShell({ title, body, script = '' }) {
     h1 { margin:12px 0; font-size:clamp(38px, 7vw, 72px); line-height:.94; }
     h2 { margin:0; font-size:24px; }
     p,li,td,th,span,label { color:var(--muted); line-height:1.55; }
-    .totp-form,.notice,.error,.vault-hero,.vault-warning,.docs-index,.doc-card { border:1px solid var(--line); border-radius:18px; background:linear-gradient(145deg, rgba(255,255,255,.08), rgba(255,255,255,.025)); box-shadow:0 24px 90px rgba(0,0,0,.28); }
+    .totp-form,.notice,.error,.vault-hero,.vault-warning,.privacy-console,.docs-index,.doc-card { border:1px solid var(--line); border-radius:18px; background:linear-gradient(145deg, rgba(255,255,255,.08), rgba(255,255,255,.025)); box-shadow:0 24px 90px rgba(0,0,0,.28); }
     .totp-form { display:grid; gap:12px; padding:16px; margin-top:18px; }
     label { display:grid; gap:8px; font-weight:800; color:#fff; }
     input,button { border-radius:13px; border:1px solid var(--line); padding:13px 14px; background:#080808; color:#fff; font:inherit; }
@@ -1365,12 +1385,28 @@ function renderDocsShell({ title, body, script = '' }) {
     .vault-hero aside strong,.vault-hero aside a { color:#fff; }
     .vault-warning { padding:16px 18px; margin-bottom:16px; border-style:dashed; }
     .vault-warning strong { display:block; color:#fff; }
+    .privacy-console { position:sticky; top:12px; z-index:45; display:grid; grid-template-columns:minmax(0,1fr) auto; gap:14px; align-items:center; padding:14px 16px; margin-bottom:16px; border-color:rgba(255,255,255,.28); background:linear-gradient(135deg, rgba(255,255,255,.16), rgba(255,255,255,.04)); backdrop-filter:blur(18px); }
+    .privacy-console strong { display:block; color:#fff; }
+    .privacy-console span { display:block; font-size:13px; }
+    .privacy-console button { white-space:nowrap; box-shadow:0 0 34px rgba(255,255,255,.14); }
+    body.docs-vault.secure-locked .docs-index,
+    body.docs-vault.secure-locked .docs-grid,
+    body.docs-vault.secure-locked .vault-hero,
+    body.docs-vault.secure-locked .vault-warning { filter:blur(20px) brightness(.36); opacity:.34; pointer-events:none; transform:scale(.992); }
+    body.docs-vault.secure-locked .docs-index *,
+    body.docs-vault.secure-locked .docs-grid *,
+    body.docs-vault.secure-locked .vault-hero *,
+    body.docs-vault.secure-locked .vault-warning * { color:transparent !important; text-shadow:0 0 20px rgba(255,255,255,.62); }
+    body.docs-vault.secure-revealed .docs-index,
+    body.docs-vault.secure-revealed .docs-grid,
+    body.docs-vault.secure-revealed .vault-hero,
+    body.docs-vault.secure-revealed .vault-warning { filter:none; opacity:1; pointer-events:auto; transform:none; transition:filter .16s ease, opacity .16s ease, transform .16s ease; }
     .docs-index { display:flex; flex-wrap:wrap; gap:9px; padding:12px; margin-bottom:16px; }
     .docs-index a { text-decoration:none; border:1px solid rgba(255,255,255,.16); border-radius:999px; padding:8px 10px; color:#fff; background:rgba(0,0,0,.25); }
     .docs-grid { display:grid; gap:16px; }
     .doc-card { position:relative; overflow:hidden; padding:22px; }
     .doc-card::before { content:""; position:absolute; inset:0; pointer-events:none; background:url('/assets/nexadesk-logo.svg') center / 280px no-repeat; opacity:.08; filter:grayscale(1); }
-    .doc-card::after { content:attr(data-watermark); position:absolute; left:8%; top:42%; transform:rotate(-18deg); font-size:clamp(42px, 8vw, 96px); font-weight:950; letter-spacing:.12em; color:rgba(255,255,255,.045); white-space:nowrap; pointer-events:none; }
+    .doc-card::after { content:attr(data-watermark); position:absolute; left:8%; top:42%; transform:rotate(-18deg); font-size:clamp(42px, 8vw, 96px); font-weight:950; letter-spacing:.12em; color:rgba(255,255,255,.12); white-space:nowrap; pointer-events:none; }
     .doc-head,.doc-body { position:relative; z-index:1; }
     .doc-head { display:grid; grid-template-columns:56px minmax(0,1fr); gap:16px; align-items:start; border-bottom:1px solid rgba(255,255,255,.1); padding-bottom:16px; margin-bottom:16px; }
     .doc-head > span { width:48px; height:48px; border-radius:14px; display:grid; place-items:center; background:#fff; color:#050505; font-weight:950; }
@@ -1381,17 +1417,25 @@ function renderDocsShell({ title, body, script = '' }) {
     th,td { text-align:left; padding:12px; border-bottom:1px solid rgba(255,255,255,.1); vertical-align:top; }
     th { color:#fff; background:rgba(255,255,255,.06); }
     pre { margin:0; white-space:pre-wrap; border:1px solid rgba(255,255,255,.12); border-radius:14px; padding:14px; background:#050505; color:#fff; }
-    .privacy-shield { position:fixed; inset:0; z-index:50; display:none; place-items:center; background:rgba(0,0,0,.94); color:#fff; text-align:center; padding:24px; }
+    .privacy-shield { position:fixed; inset:0; z-index:9999; display:none; place-items:center; background:rgba(0,0,0,.985); color:#fff; text-align:center; padding:24px; }
     .privacy-shield.is-active { display:grid; }
-    @media print { html,body { display:none !important; } }
+    .privacy-shield h2 { font-size:clamp(34px, 8vw, 92px); line-height:.9; margin:0 0 12px; }
+    .privacy-shield p { max-width:620px; margin:0 auto; }
+    @keyframes watermarkDrift { from { transform:rotate(-24deg) translate3d(-20px,-12px,0); } to { transform:rotate(-24deg) translate3d(26px,18px,0); } }
+    @media print {
+      html,body { width:100vw; height:100vh; overflow:hidden; background:#000 !important; }
+      body * { display:none !important; }
+      body::after { content:"NEXADESK DOCS - IMPRESION BLOQUEADA"; display:grid !important; place-items:center; position:fixed; inset:0; color:#fff; font-size:42px; font-weight:950; letter-spacing:.08em; text-align:center; }
+    }
     @media (max-width:760px) {
       .gate,.vault { width:min(100% - 22px, 1180px); }
       .vault { padding-top:14px; }
       .vault-hero { grid-template-columns:1fr; padding:16px; }
+      .privacy-console { grid-template-columns:1fr; position:relative; top:auto; }
       .doc-card { padding:16px; }
       .doc-head { grid-template-columns:1fr; }
       h1 { font-size:42px; }
-      .watermark-field { grid-template-columns:repeat(3, minmax(180px,1fr)); gap:42px; }
+      .watermark-field { grid-template-columns:repeat(4, minmax(150px,1fr)); gap:30px; opacity:.2; }
     }
   </style>
 </head>
@@ -1406,19 +1450,60 @@ function renderDocsShell({ title, body, script = '' }) {
 
 function renderDocsProtectionScript() {
   return `<script>
+    const isVault = Boolean(document.querySelector('#docsVault'));
     const shield = document.querySelector('#privacyShield');
+    const revealButton = document.querySelector('#revealDocsButton');
+    let revealHold = false;
+    let lockTimer = null;
+    const setLocked = (locked, reason = '') => {
+      if (!isVault) return;
+      document.body.classList.toggle('docs-vault', true);
+      document.body.classList.toggle('secure-locked', locked);
+      document.body.classList.toggle('secure-revealed', !locked);
+      if (locked && reason && shield) shield.querySelector('p').textContent = reason;
+    };
+    const lockNow = (reason = 'Contenido oculto por seguridad.') => {
+      revealHold = false;
+      clearTimeout(lockTimer);
+      setLocked(true, reason);
+    };
+    const revealNow = () => {
+      if (!isVault) return;
+      clearTimeout(lockTimer);
+      revealHold = true;
+      setLocked(false);
+      lockTimer = setTimeout(() => {
+        if (!revealHold) lockNow('Sesion visual bloqueada.');
+      }, 250);
+    };
     const flashShield = (message = 'Accion bloqueada por seguridad.') => {
       if (!shield) return;
       shield.querySelector('p').textContent = message;
+      lockNow(message);
       shield.classList.add('is-active');
-      setTimeout(() => shield.classList.remove('is-active'), 1200);
+      setTimeout(() => shield.classList.remove('is-active'), 1500);
     };
+    if (isVault) {
+      document.body.classList.add('docs-vault', 'secure-locked');
+      revealButton?.addEventListener('pointerdown', (event) => {
+        event.preventDefault();
+        revealNow();
+      });
+      revealButton?.addEventListener('touchstart', (event) => {
+        event.preventDefault();
+        revealNow();
+      }, { passive:false });
+      ['pointerup','pointercancel','pointerleave','mouseup','mouseleave','touchend','touchcancel'].forEach((eventName) => {
+        window.addEventListener(eventName, () => lockNow('Contenido oculto al soltar el control.'), { passive:true });
+      });
+    }
     document.addEventListener('contextmenu', (event) => event.preventDefault());
     document.addEventListener('dragstart', (event) => event.preventDefault());
     document.addEventListener('copy', (event) => { event.preventDefault(); flashShield('Copia bloqueada en docs.'); });
     document.addEventListener('cut', (event) => { event.preventDefault(); flashShield('Corte bloqueado en docs.'); });
+    document.addEventListener('paste', (event) => { if (isVault) event.preventDefault(); });
     document.addEventListener('selectstart', (event) => {
-      if (!event.target.closest('code,pre,input')) event.preventDefault();
+      if (!event.target.closest('input')) event.preventDefault();
     });
     document.addEventListener('keyup', (event) => {
       if (event.key === 'PrintScreen') {
@@ -1428,20 +1513,43 @@ function renderDocsProtectionScript() {
     });
     document.addEventListener('keydown', (event) => {
       const key = String(event.key || '').toLowerCase();
+      if (isVault && key === ' ' && event.target === document.body) {
+        event.preventDefault();
+        revealNow();
+        return;
+      }
       const blocked = event.key === 'PrintScreen'
         || event.key === 'F12'
-        || ((event.ctrlKey || event.metaKey) && ['p','s','u','c','x','a'].includes(key))
-        || ((event.ctrlKey || event.metaKey) && event.shiftKey && ['i','j','c'].includes(key));
+        || event.metaKey
+        || ((event.ctrlKey || event.metaKey) && ['p','s','u','c','x','a','f'].includes(key))
+        || ((event.ctrlKey || event.metaKey) && event.shiftKey && ['i','j','c','s','3','4','5'].includes(key));
       if (blocked) {
         event.preventDefault();
         flashShield('Accion bloqueada en documentos internos.');
       }
     });
-    document.addEventListener('visibilitychange', () => {
-      shield?.classList.toggle('is-active', document.hidden);
+    document.addEventListener('keyup', (event) => {
+      if (isVault && String(event.key || '').toLowerCase() === ' ') lockNow('Contenido oculto al soltar el control.');
     });
-    window.addEventListener('blur', () => shield?.classList.add('is-active'));
-    window.addEventListener('focus', () => setTimeout(() => shield?.classList.remove('is-active'), 250));
+    window.addEventListener('beforeprint', () => flashShield('Impresion bloqueada en documentos internos.'));
+    window.addEventListener('pagehide', () => lockNow('Contenido oculto al salir de la pagina.'));
+    window.addEventListener('freeze', () => lockNow('Contenido oculto por congelacion de pestana.'));
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) {
+        lockNow('Contenido oculto al cambiar de pestana.');
+        shield?.classList.add('is-active');
+      }
+    });
+    window.addEventListener('blur', () => {
+      lockNow('Contenido oculto al perder foco.');
+      shield?.classList.add('is-active');
+    });
+    window.addEventListener('focus', () => setTimeout(() => shield?.classList.remove('is-active'), 350));
+    setInterval(() => {
+      if (!isVault) return;
+      const devtoolsLikelyOpen = (window.outerWidth - window.innerWidth > 160) || (window.outerHeight - window.innerHeight > 180);
+      if (devtoolsLikelyOpen) flashShield('Vista bloqueada: consola o panel externo detectado.');
+    }, 900);
   </script>`;
 }
 
