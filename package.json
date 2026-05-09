@@ -8,7 +8,8 @@
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
     "register": "node src/register-commands.js",
-    "migrate:supabase": "node scripts/migrate-json-to-supabase.js"
+    "migrate:supabase": "node scripts/migrate-json-to-supabase.js",
+    "docs:totp-secret": "node scripts/generate-docs-totp-secret.js"
   },
   "dependencies": {
     "@discordjs/voice": "^0.19.2",

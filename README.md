@@ -81,6 +81,24 @@ RUN_BOT=false
 
 Render still needs `DISCORD_TOKEN` even with `RUN_BOT=false`, because the dashboard uses the bot token to read roles/channels and create categories or panels. If Discord resets the token, update it both on the Pi and in Render.
 
+## Private docs vault
+
+Open the private internal docs manually at:
+
+```text
+https://your-render-service.onrender.com/docs
+```
+
+It is intentionally not linked from the dashboard. The route requires a Google Authenticator compatible TOTP secret.
+
+Generate a secret:
+
+```bash
+npm run docs:totp-secret
+```
+
+Set the printed `DOCS_TOTP_SECRET` in Render and in the Raspberry Pi `.env`, then add the printed `otpauth_uri` manually to Google Authenticator. Docs uses no-cache headers, noindex, a short signed session, anti-copy/print guards, and persistent watermarks. Browser code cannot fully prevent operating-system screenshots, so treat the watermark and TOTP as defense-in-depth, not magic DRM.
+
 ## Discord OAuth
 
 Add this redirect URL in the Discord Developer Portal:

@@ -7,6 +7,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { GroqClient } from './ai/groq-client.js';
 import { GLOBAL_BLACKLIST_ADMIN_USER_ID, buildGlobalBanCode, isBlacklistEntryActive, parseBlacklistDuration } from './blacklist.js';
+import { normalizeTotpSecret, verifyTotpCode } from './docs-auth.js';
 import { normalizeTicketComponent } from './panel-options.js';
 import { isPremiumEntitled, normalizePremiumConfig, summarizePremiumConfig } from './premium.js';
 import { normalizeSecurityConfig, summarizeSecurityConfig } from './security.js';
@@ -18,6 +19,7 @@ const ADMINISTRATOR = 0x8n;
 const BOT_INVITE_PERMISSIONS = '1099780189334';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ASSETS_DIR = path.resolve(__dirname, '..', 'assets');
+const docsAuthAttempts = new Map();
 
 export function createServer({ config, storage, bot, events }) {
   const app = express();
@@ -38,6 +40,10 @@ export function createServer({ config, storage, bot, events }) {
 
   app.get('/health', (_req, res) => {
     res.json({ ok: true, service: 'nexadesk' });
+  });
+
+  app.get('/robots.txt', (_req, res) => {
+    res.type('text/plain').send('User-agent: *\nDisallow: /docs\nDisallow: /api\n');
   });
 
   app.get('/login', (req, res) => {
@@ -119,6 +125,72 @@ export function createServer({ config, storage, bot, events }) {
   app.post('/logout', (_req, res) => {
     res.clearCookie('nexadesk_session');
     res.redirect('/login');
+  });
+
+  app.get('/docs/logout', (req, res) => {
+    setDocsSecurityHeaders(res);
+    res.clearCookie('nexadesk_docs');
+    res.redirect('/docs');
+  });
+
+  app.get('/docs', (req, res) => {
+    setDocsSecurityHeaders(res);
+    if (!normalizeTotpSecret(config.DOCS_TOTP_SECRET)) {
+      res.status(503).type('html').send(renderDocsDisabled(config));
+      return;
+    }
+
+    const docsSession = getDocsSession(req);
+    if (!docsSession) {
+      res.type('html').send(renderDocsGate({ config }));
+      return;
+    }
+
+    res.type('html').send(renderDocsVault({ config, session: docsSession }));
+  });
+
+  app.post('/docs', (req, res) => {
+    setDocsSecurityHeaders(res);
+    const ip = getRequestIp(req);
+    if (isDocsRateLimited(ip)) {
+      res.status(429).type('html').send(renderDocsGate({
+        config,
+        error: 'Demasiados intentos. Espera un minuto antes de probar otro codigo.'
+      }));
+      return;
+    }
+
+    const secret = normalizeTotpSecret(config.DOCS_TOTP_SECRET);
+    if (!secret) {
+      res.status(503).type('html').send(renderDocsDisabled(config));
+      return;
+    }
+
+    if (!verifyTotpCode({ code: req.body.code, secret })) {
+      recordDocsFailure(ip);
+      res.status(401).type('html').send(renderDocsGate({
+        config,
+        error: 'Codigo dinamico incorrecto o caducado.'
+      }));
+      return;
+    }
+
+    clearDocsFailures(ip);
+    const now = Date.now();
+    const maxAge = config.DOCS_SESSION_MINUTES * 60 * 1000;
+    res.cookie('nexadesk_docs', signSession(config, {
+      scope: 'docs',
+      nonce: crypto.randomBytes(12).toString('hex'),
+      iat: now,
+      exp: now + maxAge
+    }), {
+      httpOnly: true,
+      sameSite: 'strict',
+      secure: process.env.NODE_ENV === 'production',
+      signed: true,
+      maxAge
+    });
+    res.redirect('/docs');
   });
 
   app.use((req, res, next) => {
@@ -583,7 +655,18 @@ function signSession(config, session) {
 }
 
 function getSession(req) {
-  const value = req.signedCookies?.nexadesk_session;
+  return getSignedCookiePayload(req, 'nexadesk_session');
+}
+
+function getDocsSession(req) {
+  const session = getSignedCookiePayload(req, 'nexadesk_docs');
+  if (!session || session.scope !== 'docs') return null;
+  if (!session.exp || Date.now() > session.exp) return null;
+  return session;
+}
+
+function getSignedCookiePayload(req, cookieName) {
+  const value = req.signedCookies?.[cookieName];
   if (!value) return null;
 
   const [payload, signature] = value.split('.');
@@ -601,6 +684,45 @@ function getSession(req) {
   } catch {
     return null;
   }
+}
+
+function setDocsSecurityHeaders(res) {
+  res.setHeader('cache-control', 'no-store, no-cache, must-revalidate, private');
+  res.setHeader('pragma', 'no-cache');
+  res.setHeader('expires', '0');
+  res.setHeader('x-robots-tag', 'noindex, nofollow, noarchive, nosnippet, noimageindex');
+  res.setHeader('referrer-policy', 'no-referrer');
+  res.setHeader('permissions-policy', 'camera=(), microphone=(), geolocation=(), payment=(), usb=(), clipboard-read=(), clipboard-write=(self)');
+}
+
+function getRequestIp(req) {
+  return String(req.headers['x-forwarded-for'] ?? req.socket.remoteAddress ?? 'unknown')
+    .split(',')[0]
+    .trim();
+}
+
+function isDocsRateLimited(ip) {
+  const entry = docsAuthAttempts.get(ip);
+  if (!entry) return false;
+  if (Date.now() > entry.resetAt) {
+    docsAuthAttempts.delete(ip);
+    return false;
+  }
+  return entry.count >= 6;
+}
+
+function recordDocsFailure(ip) {
+  const now = Date.now();
+  const entry = docsAuthAttempts.get(ip);
+  if (!entry || now > entry.resetAt) {
+    docsAuthAttempts.set(ip, { count: 1, resetAt: now + 60_000 });
+    return;
+  }
+  entry.count += 1;
+}
+
+function clearDocsFailures(ip) {
+  docsAuthAttempts.delete(ip);
 }
 
 async function buildDashboardAssistantReply({ config, message, guild, stats, activeView }) {
@@ -897,6 +1019,430 @@ function normalizeSearchText(value) {
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
     .toLowerCase();
+}
+
+function renderDocsDisabled(config) {
+  return renderDocsShell({
+    title: 'NexaDesk Docs bloqueado',
+    body: `
+      <main class="gate">
+        <img src="/assets/nexadesk-logo.svg" alt="NexaDesk" class="gate-logo">
+        <p class="kicker">NexaDesk internal vault</p>
+        <h1>Docs aun no esta configurado.</h1>
+        <p>Define <code>DOCS_TOTP_SECRET</code> en Render y en la Pi para activar el acceso con Google Authenticator.</p>
+        <div class="notice">
+          <strong>Setup recomendado</strong>
+          <span>Genera un secreto base32 privado, guardalo como variable de entorno y anadelo manualmente a Google Authenticator con issuer <code>${escapeHtml(config.DOCS_TOTP_ISSUER)}</code>.</span>
+        </div>
+      </main>
+    `
+  });
+}
+
+function renderDocsGate({ config, error = '' }) {
+  return renderDocsShell({
+    title: 'NexaDesk Docs',
+    body: `
+      <main class="gate">
+        <img src="/assets/nexadesk-logo.svg" alt="NexaDesk" class="gate-logo">
+        <p class="kicker">Acceso interno</p>
+        <h1>Introduce el codigo Dinamico</h1>
+        <p>Codigo de 6 digitos generado por Google Authenticator. No hay enlace en la dashboard y la sesion caduca en ${escapeHtml(String(config.DOCS_SESSION_MINUTES))} minutos.</p>
+        ${error ? `<div class="error">${escapeHtml(error)}</div>` : ''}
+        <form method="post" action="/docs" class="totp-form" autocomplete="off">
+          <label>
+            Codigo dinamico
+            <input name="code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" minlength="6" autocomplete="one-time-code" autofocus required>
+          </label>
+          <button type="submit">Entrar a docs</button>
+        </form>
+        <div class="notice">
+          <strong>Proteccion activa</strong>
+          <span>Docs usa TOTP, sesion separada, noindex, no-cache, marca de agua, bloqueo de impresion y defensas anti-copia. Ninguna web puede bloquear al 100% una captura del sistema operativo.</span>
+        </div>
+      </main>
+    `,
+    script: renderDocsProtectionScript()
+  });
+}
+
+function renderDocsVault({ config, session }) {
+  const docs = buildDocsSections(config);
+  const issuedAt = session.iat ? new Date(session.iat).toLocaleString('es-ES') : 'sesion actual';
+  const expiresAt = session.exp ? new Date(session.exp).toLocaleString('es-ES') : 'pronto';
+
+  return renderDocsShell({
+    title: 'NexaDesk Internal Docs',
+    body: `
+      <main class="vault" id="docsVault">
+        <section class="vault-hero">
+          <div>
+            <p class="kicker">NexaDesk confidential</p>
+            <h1>Documentacion sensible del bot</h1>
+            <p>Arquitectura, secretos, despliegue, seguridad, IA, voz, Supabase y playbooks operativos. Valores criticos redacted por seguridad.</p>
+          </div>
+          <aside>
+            <strong>Sesion protegida</strong>
+            <span>Inicio: ${escapeHtml(issuedAt)}</span>
+            <span>Caduca: ${escapeHtml(expiresAt)}</span>
+            <a href="/docs/logout">Cerrar docs</a>
+          </aside>
+        </section>
+        <section class="vault-warning">
+          <strong>Regla de oro</strong>
+          <span>No pegues tokens reales, service role keys ni secretos TOTP en Discord, tickets, GitHub, capturas o documentos publicos. Esta zona muestra estado y procedimientos, no credenciales completas.</span>
+        </section>
+        <nav class="docs-index">
+          ${docs.map((doc, index) => `<a href="#doc-${index + 1}">${escapeHtml(doc.title)}</a>`).join('')}
+        </nav>
+        <section class="docs-grid">
+          ${docs.map((doc, index) => renderDocsCard(doc, index)).join('')}
+        </section>
+      </main>
+    `,
+    script: renderDocsProtectionScript()
+  });
+}
+
+function renderDocsCard(doc, index) {
+  const watermark = `NEXADESK CONFIDENTIAL - DOC ${index + 1}`;
+  return `
+    <article class="doc-card" id="doc-${index + 1}" data-watermark="${escapeHtml(watermark)}">
+      <div class="doc-head">
+        <span>${escapeHtml(String(index + 1).padStart(2, '0'))}</span>
+        <div>
+          <p class="kicker">${escapeHtml(doc.classification || 'Internal')}</p>
+          <h2>${escapeHtml(doc.title)}</h2>
+          <p>${escapeHtml(doc.summary)}</p>
+        </div>
+      </div>
+      <div class="doc-body">
+        ${doc.blocks.map(renderDocsBlock).join('')}
+      </div>
+    </article>
+  `;
+}
+
+function renderDocsBlock(block) {
+  if (block.type === 'table') {
+    return `
+      <div class="table-wrap">
+        <table>
+          <thead><tr>${block.headers.map((header) => `<th>${escapeHtml(header)}</th>`).join('')}</tr></thead>
+          <tbody>${block.rows.map((row) => `<tr>${row.map((cell) => `<td>${escapeHtml(cell)}</td>`).join('')}</tr>`).join('')}</tbody>
+        </table>
+      </div>
+    `;
+  }
+
+  if (block.type === 'code') {
+    return `<pre><code>${escapeHtml(block.value)}</code></pre>`;
+  }
+
+  if (block.type === 'list') {
+    return `<ul>${block.items.map((item) => `<li>${escapeHtml(item)}</li>`).join('')}</ul>`;
+  }
+
+  return `<p>${escapeHtml(block.value)}</p>`;
+}
+
+function buildDocsSections(config) {
+  const secretRows = [
+    ['DISCORD_TOKEN', secretState(config.DISCORD_TOKEN), 'Bot login y REST de dashboard. Rotar si Discord avisa de conexiones o leak.'],
+    ['DISCORD_CLIENT_SECRET', secretState(config.DISCORD_CLIENT_SECRET), 'OAuth Discord para login de dashboard.'],
+    ['SESSION_SECRET', secretState(config.SESSION_SECRET), 'Firma sesiones dashboard y docs. Debe ser largo y privado.'],
+    ['DOCS_TOTP_SECRET', secretState(config.DOCS_TOTP_SECRET), 'Secreto base32 para Google Authenticator. No subir a GitHub.'],
+    ['SUPABASE_SERVICE_ROLE_KEY', secretState(config.SUPABASE_SERVICE_ROLE_KEY), 'Acceso total a Supabase desde backend. Nunca exponer al cliente.'],
+    ['GROQ_API_KEY', secretState(config.GROQ_API_KEY), 'Cuenta IA primaria.'],
+    ['GROQ_FALLBACK_API_KEYS', secretState(config.GROQ_FALLBACK_API_KEYS), 'Cuentas IA backup separadas por coma.'],
+    ['AKIOMAE_API_KEY', secretState(config.AKIOMAE_API_KEY), 'Fallback externo cuando Groq agote limites.']
+  ];
+
+  return [
+    {
+      title: 'Mapa maestro',
+      classification: 'Owner only',
+      summary: 'Vision global de como esta dividido NexaDesk y que piezas no deben filtrarse.',
+      blocks: [
+        { type: 'list', items: [
+          'Render sirve la dashboard publica con RUN_BOT=false y usa OAuth Discord para usuarios normales.',
+          'La Raspberry Pi mantiene vivo el worker del bot con RUN_BOT=true y systemd.',
+          'Supabase guarda configuracion, paneles, componentes, tickets, transcripciones y blacklist interna.',
+          'Groq procesa soporte IA, vision, STT y parte de TTS; Akiomae queda como fallback final.',
+          '/docs es una zona oculta: no aparece en la UI, requiere TOTP y no debe contener secretos en claro.'
+        ] }
+      ]
+    },
+    {
+      title: 'Secretos y variables criticas',
+      classification: 'Credential map',
+      summary: 'Estado de secretos sin revelar valores. Si algo aparece como Falta, esa funcion puede romperse.',
+      blocks: [
+        { type: 'table', headers: ['Variable', 'Estado', 'Uso'], rows: secretRows },
+        { type: 'list', items: [
+          `DISCORD_CLIENT_ID publico actual: ${config.DISCORD_CLIENT_ID}`,
+          `Dashboard publica configurada: ${config.DASHBOARD_PUBLIC_URL}`,
+          `TOTP issuer/account: ${config.DOCS_TOTP_ISSUER} / ${config.DOCS_TOTP_ACCOUNT}`,
+          'Nunca guardar contrasenas, tokens o service_role keys dentro de README, capturas, commits ni tickets.'
+        ] }
+      ]
+    },
+    {
+      title: 'Despliegue y runtime',
+      classification: 'Infrastructure',
+      summary: 'Donde corre cada parte y como recuperarla si se cae.',
+      blocks: [
+        { type: 'table', headers: ['Pieza', 'Ubicacion', 'Notas'], rows: [
+          ['Dashboard web', 'Render Web Service', 'RUN_BOT=false; necesita token para roles/canales/paneles via REST.'],
+          ['Bot worker', 'Raspberry Pi pi@192.168.1.52 /home/pi/nexadesk', 'Servicio systemd nexadesk; health local en puerto 3010. Password no documentada aqui.'],
+          ['Repositorio', 'github.com/gonzalopriv9-byte/Nexa-Desk', 'main despliega Render si auto-deploy esta activo.'],
+          ['Dominio dashboard', 'https://nexa-desk.onrender.com/', 'OAuth redirect debe apuntar a /auth/discord/callback.']
+        ] },
+        { type: 'code', value: 'systemctl status nexadesk\njournalctl -u nexadesk -n 80 --no-pager\ncurl -fsS http://127.0.0.1:3010/health' }
+      ]
+    },
+    {
+      title: 'Discord, permisos y comandos',
+      classification: 'Bot operations',
+      summary: 'Permisos, intents, comandos y puntos sensibles del bot en Discord.',
+      blocks: [
+        { type: 'list', items: [
+          'Privileged intents recomendados: MESSAGE CONTENT INTENT y SERVER MEMBERS INTENT.',
+          'Permisos de invitacion: Manage Channels, Manage Roles, View Audit Log, Manage Messages, Moderate Members, Kick, Ban, voz y lectura de historial.',
+          'El bot registra slash commands globales con npm run register.',
+          'Comandos clave: /setup, /ayuda, /desactivar ia, /activar ia, /ticket cerrar, /ticket resumen, /voz crear, /globalstats, /activarpremium.',
+          'Si entra staff al ticket, NexaDesk deja de responder salvo mencion, reply o llamada directa.'
+        ] }
+      ]
+    },
+    {
+      title: 'Supabase y datos guardados',
+      classification: 'Data model',
+      summary: 'Tablas, contenido guardado y decisiones de privacidad.',
+      blocks: [
+        { type: 'table', headers: ['Tabla', 'Contenido', 'Riesgo'], rows: [
+          ['guild_configs', 'Categoria, staff, prompt, info, paneles, componentes, premium, security, alianzas.', 'Alto: contiene contexto interno del servidor.'],
+          ['tickets', 'Canal, servidor, opener, voz, estado, timestamps.', 'Medio: metadatos de soporte.'],
+          ['transcript_messages', 'Mensajes de tickets, voz y eventos importantes.', 'Alto: puede contener datos de usuarios.'],
+          ['global_blacklist', 'Baneos internos y codigos.', 'Alto: moderacion sensible.'],
+          ['global_blacklist_evidence', 'URLs de pruebas y adjuntos.', 'Alto: evidencias privadas.']
+        ] },
+        { type: 'list', items: [
+          'Produccion debe mostrar "NexaDesk storage backend: Supabase" al arrancar.',
+          'El service_role solo vive en backend. Nunca se manda al navegador.',
+          'La dashboard filtra servidores por OAuth: owner, Administrator o Manage Server.'
+        ] }
+      ]
+    },
+    {
+      title: 'IA, vision y voz',
+      classification: 'AI pipeline',
+      summary: 'Modelos, fallbacks y flujo de audio/vision.',
+      blocks: [
+        { type: 'table', headers: ['Area', 'Config actual', 'Notas'], rows: [
+          ['Texto IA', config.GROQ_MODEL, 'Modelo rapido para tickets y dashboard assistant.'],
+          ['Vision', config.GROQ_VISION_MODEL, 'Imagenes y frames de video si AI_VISUAL_ANALYSIS=true.'],
+          ['STT', config.GROQ_STT_MODEL, 'Transcribe voz en tickets Pro Voice.'],
+          ['TTS', `${config.VOICE_TTS_PROVIDER} / ${config.EDGE_TTS_VOICE}`, 'Edge/Piper/Groq segun entorno y disponibilidad.'],
+          ['Limites voz', `${config.VOICE_MIN_RECORDING_MS}-${config.VOICE_MAX_RECORDING_MS} ms`, 'Evita clips demasiado cortos y audios eternos.']
+        ] },
+        { type: 'list', items: [
+          'Groq primary se usa primero; GROQ_FALLBACK_API_KEYS rota cuentas si hay limites.',
+          'Akiomae queda como ultimo fallback si Groq se agota.',
+          'La IA debe responder en el idioma del ultimo mensaje del usuario.',
+          'Si el prompt pide pruebas visuales, la IA interpreta imagenes/videos antes de preguntar que ve.'
+        ] }
+      ]
+    },
+    {
+      title: 'Dashboard, paneles y Premium',
+      classification: 'Product strategy',
+      summary: 'Funciones vendibles y flujo administrativo.',
+      blocks: [
+        { type: 'list', items: [
+          'Dashboard: Resumen, Servidores, Configuracion, Componentes, Paneles, Premium y Tickets.',
+          'Paneles soportan boton unico o menu desplegable con 2+ componentes.',
+          'Componentes guardan preguntas previas, categoria destino, primer mensaje y modo texto/voz.',
+          'Premium incluye Voz Pro, IA prioritaria, transcripciones inteligentes, Security Plus, branding propio e informes semanales.',
+          'Premium se activa con /activarpremium servidor:<ID> por el owner autorizado o manualmente en Supabase.'
+        ] }
+      ]
+    },
+    {
+      title: 'Seguridad y abuso',
+      classification: 'Trust and safety',
+      summary: 'Capas anti-raid, anti-scam, blacklist y crisis.',
+      blocks: [
+        { type: 'list', items: [
+          'Security Guard detecta flood, links sospechosos, alts, bots no deseados y patrones anti-nuke.',
+          'Los links se analizan con IA cuando aparecen en mensajes; puede recomendar review, borrado o aislamiento.',
+          'XN Protect se consulta al abrir tickets y deja aviso al staff sin banear automaticamente.',
+          'En crisis/autolesion, NexaDesk debe escalar al staff inmediatamente y responder con contencion breve.',
+          'En alianzas, el bot pide leer normas, recibe plantilla, entrega plantilla del servidor, verifica captura y publica en canal configurado.'
+        ] }
+      ]
+    },
+    {
+      title: 'Playbooks de emergencia',
+      classification: 'Incident response',
+      summary: 'Que hacer cuando algo se rompe o hay riesgo.',
+      blocks: [
+        { type: 'table', headers: ['Incidente', 'Accion inmediata', 'Despues'], rows: [
+          ['Token Discord reseteado', 'Actualizar DISCORD_TOKEN en Pi y Render; reiniciar nexadesk.', 'Revisar logs de reconnect y evitar loops.'],
+          ['Bot offline', 'systemctl restart nexadesk; revisar journalctl.', 'Verificar intents, token y conectividad.'],
+          ['Render dashboard falla', 'Revisar env vars y logs de Render.', 'Confirmar RUN_BOT=false y token valido.'],
+          ['Supabase missing column/table', 'Ejecutar supabase/schema.sql actualizado.', 'Verificar tablas y RLS si aplica.'],
+          ['Groq sin creditos', 'Confirmar GROQ_FALLBACK_API_KEYS y AKIOMAE_API_KEY.', 'Reducir modelo o limits si hay costes.'],
+          ['Leak de secreto', 'Rotar secreto inmediatamente.', 'Actualizar Pi, Render y revocar claves antiguas.']
+        ] }
+      ]
+    },
+    {
+      title: 'Checklist privado de lanzamiento',
+      classification: 'Launch',
+      summary: 'Antes de vender o anunciar NexaDesk.',
+      blocks: [
+        { type: 'list', items: [
+          'Render actualizado desde main y /health operativo.',
+          'Pi activa con NexaDesk online y presencia actualizada.',
+          'Supabase schema aplicado y transcripciones guardando.',
+          'OAuth Discord con redirect correcto.',
+          'DOCS_TOTP_SECRET configurado y probado desde Google Authenticator.',
+          'No hay tokens ni service_role keys en commits, screenshots ni mensajes publicos.',
+          'Probar un ticket normal, uno Ticket King, uno con imagen, uno de voz y uno de cierre con transcripcion.'
+        ] }
+      ]
+    }
+  ];
+}
+
+function secretState(value) {
+  const raw = String(value ?? '').trim();
+  if (!raw || ['replace_me', 'change_me', 'local', 'dummy-secret', 'dummy.token.value'].includes(raw)) return 'Falta';
+  return 'Configurado - valor oculto';
+}
+
+function renderDocsShell({ title, body, script = '' }) {
+  const watermarkWords = Array.from({ length: 40 }, (_, index) => `<span>NEXADESK CONFIDENTIAL ${String(index + 1).padStart(2, '0')}</span>`).join('');
+  return `<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex,nofollow,noarchive,nosnippet,noimageindex">
+  <title>${escapeHtml(title)}</title>
+  <link rel="icon" type="image/svg+xml" href="/assets/nexadesk-logo.svg">
+  <style>
+    :root { color-scheme:dark; --bg:#050505; --panel:#111; --panel2:#191919; --line:#303030; --text:#fff; --muted:#a8a8a8; --danger:#ff5f57; }
+    * { box-sizing:border-box; }
+    html { scroll-behavior:smooth; }
+    body { margin:0; min-height:100vh; font-family:"Segoe UI",ui-sans-serif,system-ui,sans-serif; background:radial-gradient(circle at 15% 0%, rgba(255,255,255,.12), transparent 30%), repeating-linear-gradient(90deg, rgba(255,255,255,.035) 0 1px, transparent 1px 74px), repeating-linear-gradient(0deg, rgba(255,255,255,.025) 0 1px, transparent 1px 74px), var(--bg); color:var(--text); user-select:none; -webkit-user-select:none; }
+    body::before { content:""; position:fixed; inset:0; z-index:0; pointer-events:none; background:url('/assets/nexadesk-logo.svg') center / min(420px, 55vw) no-repeat; opacity:.105; filter:grayscale(1); }
+    a { color:#fff; }
+    code,pre { user-select:text; -webkit-user-select:text; }
+    .watermark-field { position:fixed; inset:-18vh -18vw; z-index:1; pointer-events:none; display:grid; grid-template-columns:repeat(5, minmax(220px,1fr)); gap:56px; transform:rotate(-24deg); opacity:.055; font-weight:900; letter-spacing:.15em; color:#fff; text-transform:uppercase; }
+    .watermark-field span { white-space:nowrap; }
+    .gate,.vault { position:relative; z-index:2; width:min(1180px, calc(100% - 36px)); margin:0 auto; }
+    .gate { min-height:100vh; display:grid; place-content:center; max-width:560px; text-align:left; }
+    .gate-logo { width:72px; height:72px; border:1px solid rgba(255,255,255,.38); border-radius:18px; padding:12px; background:#050505; box-shadow:0 0 70px rgba(255,255,255,.1); }
+    .kicker { color:#fff; font-size:12px; letter-spacing:.12em; text-transform:uppercase; margin:0 0 8px; }
+    h1 { margin:12px 0; font-size:clamp(38px, 7vw, 72px); line-height:.94; }
+    h2 { margin:0; font-size:24px; }
+    p,li,td,th,span,label { color:var(--muted); line-height:1.55; }
+    .totp-form,.notice,.error,.vault-hero,.vault-warning,.docs-index,.doc-card { border:1px solid var(--line); border-radius:18px; background:linear-gradient(145deg, rgba(255,255,255,.08), rgba(255,255,255,.025)); box-shadow:0 24px 90px rgba(0,0,0,.28); }
+    .totp-form { display:grid; gap:12px; padding:16px; margin-top:18px; }
+    label { display:grid; gap:8px; font-weight:800; color:#fff; }
+    input,button { border-radius:13px; border:1px solid var(--line); padding:13px 14px; background:#080808; color:#fff; font:inherit; }
+    input { text-align:center; letter-spacing:.42em; font-size:28px; font-weight:900; }
+    button { background:#fff; color:#050505; border:0; font-weight:900; cursor:pointer; }
+    .notice,.error { margin-top:14px; padding:15px; }
+    .notice strong,.notice span,.error { display:block; }
+    .notice strong { color:#fff; }
+    .error { color:#fff; border-color:rgba(255,95,87,.58); background:rgba(255,95,87,.12); }
+    .vault { padding:34px 0 80px; }
+    .vault-hero { display:grid; grid-template-columns:minmax(0,1fr) 280px; gap:18px; padding:24px; margin-bottom:16px; }
+    .vault-hero aside { border:1px solid rgba(255,255,255,.12); border-radius:16px; padding:16px; background:rgba(0,0,0,.28); display:grid; gap:7px; }
+    .vault-hero aside strong,.vault-hero aside a { color:#fff; }
+    .vault-warning { padding:16px 18px; margin-bottom:16px; border-style:dashed; }
+    .vault-warning strong { display:block; color:#fff; }
+    .docs-index { display:flex; flex-wrap:wrap; gap:9px; padding:12px; margin-bottom:16px; }
+    .docs-index a { text-decoration:none; border:1px solid rgba(255,255,255,.16); border-radius:999px; padding:8px 10px; color:#fff; background:rgba(0,0,0,.25); }
+    .docs-grid { display:grid; gap:16px; }
+    .doc-card { position:relative; overflow:hidden; padding:22px; }
+    .doc-card::before { content:""; position:absolute; inset:0; pointer-events:none; background:url('/assets/nexadesk-logo.svg') center / 280px no-repeat; opacity:.08; filter:grayscale(1); }
+    .doc-card::after { content:attr(data-watermark); position:absolute; left:8%; top:42%; transform:rotate(-18deg); font-size:clamp(42px, 8vw, 96px); font-weight:950; letter-spacing:.12em; color:rgba(255,255,255,.045); white-space:nowrap; pointer-events:none; }
+    .doc-head,.doc-body { position:relative; z-index:1; }
+    .doc-head { display:grid; grid-template-columns:56px minmax(0,1fr); gap:16px; align-items:start; border-bottom:1px solid rgba(255,255,255,.1); padding-bottom:16px; margin-bottom:16px; }
+    .doc-head > span { width:48px; height:48px; border-radius:14px; display:grid; place-items:center; background:#fff; color:#050505; font-weight:950; }
+    .doc-body { display:grid; gap:13px; }
+    ul { margin:0; padding-left:20px; }
+    .table-wrap { overflow:auto; border:1px solid rgba(255,255,255,.12); border-radius:14px; }
+    table { width:100%; border-collapse:collapse; min-width:680px; background:rgba(0,0,0,.22); }
+    th,td { text-align:left; padding:12px; border-bottom:1px solid rgba(255,255,255,.1); vertical-align:top; }
+    th { color:#fff; background:rgba(255,255,255,.06); }
+    pre { margin:0; white-space:pre-wrap; border:1px solid rgba(255,255,255,.12); border-radius:14px; padding:14px; background:#050505; color:#fff; }
+    .privacy-shield { position:fixed; inset:0; z-index:50; display:none; place-items:center; background:rgba(0,0,0,.94); color:#fff; text-align:center; padding:24px; }
+    .privacy-shield.is-active { display:grid; }
+    @media print { html,body { display:none !important; } }
+    @media (max-width:760px) {
+      .gate,.vault { width:min(100% - 22px, 1180px); }
+      .vault { padding-top:14px; }
+      .vault-hero { grid-template-columns:1fr; padding:16px; }
+      .doc-card { padding:16px; }
+      .doc-head { grid-template-columns:1fr; }
+      h1 { font-size:42px; }
+      .watermark-field { grid-template-columns:repeat(3, minmax(180px,1fr)); gap:42px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="watermark-field" aria-hidden="true">${watermarkWords}</div>
+  <div class="privacy-shield" id="privacyShield"><div><h2>Contenido oculto</h2><p>Vuelve a la pestana para restaurar la vista segura.</p></div></div>
+  ${body}
+  ${script}
+</body>
+</html>`;
+}
+
+function renderDocsProtectionScript() {
+  return `<script>
+    const shield = document.querySelector('#privacyShield');
+    const flashShield = (message = 'Accion bloqueada por seguridad.') => {
+      if (!shield) return;
+      shield.querySelector('p').textContent = message;
+      shield.classList.add('is-active');
+      setTimeout(() => shield.classList.remove('is-active'), 1200);
+    };
+    document.addEventListener('contextmenu', (event) => event.preventDefault());
+    document.addEventListener('dragstart', (event) => event.preventDefault());
+    document.addEventListener('copy', (event) => { event.preventDefault(); flashShield('Copia bloqueada en docs.'); });
+    document.addEventListener('cut', (event) => { event.preventDefault(); flashShield('Corte bloqueado en docs.'); });
+    document.addEventListener('selectstart', (event) => {
+      if (!event.target.closest('code,pre,input')) event.preventDefault();
+    });
+    document.addEventListener('keyup', (event) => {
+      if (event.key === 'PrintScreen') {
+        navigator.clipboard?.writeText('Captura bloqueada por NexaDesk Docs.').catch(() => {});
+        flashShield('Intento de captura detectado.');
+      }
+    });
+    document.addEventListener('keydown', (event) => {
+      const key = String(event.key || '').toLowerCase();
+      const blocked = event.key === 'PrintScreen'
+        || event.key === 'F12'
+        || ((event.ctrlKey || event.metaKey) && ['p','s','u','c','x','a'].includes(key))
+        || ((event.ctrlKey || event.metaKey) && event.shiftKey && ['i','j','c'].includes(key));
+      if (blocked) {
+        event.preventDefault();
+        flashShield('Accion bloqueada en documentos internos.');
+      }
+    });
+    document.addEventListener('visibilitychange', () => {
+      shield?.classList.toggle('is-active', document.hidden);
+    });
+    window.addEventListener('blur', () => shield?.classList.add('is-active'));
+    window.addEventListener('focus', () => setTimeout(() => shield?.classList.remove('is-active'), 250));
+  </script>`;
 }
 
 function renderLogin(config) {
