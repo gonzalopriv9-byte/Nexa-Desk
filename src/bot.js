@@ -22,6 +22,7 @@ import {
   parseBlacklistDuration
 } from './blacklist.js';
 import { buildPanelActionRow, buildPanelEmbed, normalizePanelOptions, normalizeTicketComponent, panelWelcomeMessage } from './panel-options.js';
+import { isPremiumEntitled, normalizePremiumConfig } from './premium.js';
 import { SecurityManager, SECURITY_LEVELS, normalizeSecurityConfig, normalizeSecurityLevel, summarizeSecurityConfig } from './security.js';
 import { buildTranscriptFileName, buildTranscriptText } from './transcripts.js';
 import { createWelcomeCard } from './welcome-card.js';
@@ -654,7 +655,7 @@ function buildOwnerOnboardingEmbeds({ guild }) {
         value: [
           `Entra aqui: ${PUBLIC_DASHBOARD_URL}`,
           'Inicia sesion con Discord, elige este servidor y revisa que aparezca como instalado.',
-          'Desde ahi puedes crear paneles, componentes, menus, prompts, staff, transcripciones, seguridad y voz.'
+          'Desde ahi puedes crear paneles, componentes, menus, prompts, staff, transcripciones, seguridad, voz y modulos Premium.'
         ].join('\n')
       },
       {
@@ -719,6 +720,7 @@ function buildOwnerOnboardingEmbeds({ guild }) {
         name: 'Voz, seguridad y datos',
         value: [
           'Pro Voice permite crear salas privadas con STT/TTS usando `/voz crear` o paneles de voz.',
+          'Premium tambien prepara IA prioritaria, transcripciones inteligentes, Security Plus, branding propio e informes semanales.',
           'Security Guard se configura con `/seguridad configurar` o desde la dashboard: anti-flood, anti-links IA, anti-bots, anti-alts y anti-nuke.',
           'Configuracion, paneles, tickets y transcripciones se guardan en Supabase para que la dashboard pueda consultarlos.'
         ].join('\n')
@@ -1303,7 +1305,15 @@ async function handleActivatePremiumCommand({ interaction, storage, client }) {
   const updated = await storage.upsertGuildConfig(guildId, {
     guildName: targetGuild?.name ?? existing?.guildName ?? `Servidor ${guildId}`,
     plan: 'pro',
-    voiceSupportEnabled: true
+    voiceSupportEnabled: true,
+    premium: normalizePremiumConfig({
+      voiceSupport: true,
+      priorityAi: true,
+      smartTranscripts: true,
+      securityPlus: true,
+      customBranding: true,
+      weeklyInsights: true
+    }, { plan: 'pro', voiceSupportEnabled: true })
   });
 
   const embed = new EmbedBuilder()
@@ -1314,7 +1324,7 @@ async function handleActivatePremiumCommand({ interaction, storage, client }) {
       { name: 'Servidor', value: guildId, inline: true },
       { name: 'Plan', value: updated.plan ?? 'pro', inline: true },
       { name: 'Voz Pro', value: updated.voiceSupportEnabled ? 'Activa' : 'Pendiente', inline: true },
-      { name: 'Incluye', value: 'Paneles Pro, tickets de voz, STT/TTS, transcripciones y futuras funciones premium del servidor.' }
+      { name: 'Incluye', value: 'Voz Pro, IA prioritaria, transcripciones inteligentes, Security Plus, branding propio e informes semanales.' }
     )
     .setTimestamp(new Date());
 
@@ -1840,7 +1850,8 @@ function buildHelpEmbed({ view, config, guild }) {
             '3. Elige la categoria donde se abren tickets.',
             '4. Selecciona el rol de staff.',
             '5. Escribe el prompt/contexto del servidor para que la IA responda con criterio.',
-            '6. Crea componentes y publica paneles de boton o menu.'
+            '6. Crea componentes y publica paneles de boton o menu.',
+            '7. Si el servidor tiene Pro, entra en Premium y activa los modulos que quieras ofrecer.'
           ].join('\n')
         },
         {
@@ -1878,6 +1889,32 @@ function buildHelpEmbed({ view, config, guild }) {
         {
           name: 'Quien puede verlo',
           value: 'La dashboard filtra servidores usando Discord OAuth. Solo aparecen servidores donde el usuario tiene permisos de owner, Administrator o Manage Server.'
+        }
+      );
+  }
+
+  if (view === 'premium') {
+    return base
+      .setTitle(`${EMOJIS.global} Premium de NexaDesk`)
+      .setDescription('Premium esta pensado para servidores que quieren soporte mas rapido, mas humano y mas facil de vender como experiencia profesional.')
+      .addFields(
+        {
+          name: 'Funciones incluidas',
+          value: [
+            'Voz Pro con STT/TTS y salas privadas vinculadas al ticket.',
+            'IA prioritaria con respuestas menos genericas y mejores escalados.',
+            'Transcripciones inteligentes para staff, dashboard y MD al usuario.',
+            'Security Plus para links sospechosos, flood, blacklist y avisos reforzados.',
+            'Branding propio e informes semanales para demostrar valor al owner.'
+          ].join('\n')
+        },
+        {
+          name: 'Como se activa',
+          value: [
+            'El owner autorizado puede usar `/activarpremium servidor:<ID>`.',
+            'Tambien puede activarse manualmente en Supabase con `plan = pro` o `voice_support_enabled = true`.',
+            `Despues se gestionan los modulos desde la dashboard: ${PUBLIC_DASHBOARD_URL}`
+          ].join('\n')
         }
       );
   }
@@ -1934,6 +1971,7 @@ function buildHelpEmbed({ view, config, guild }) {
           'Como creo un ticket?',
           'Como configuro el servidor?',
           'Seguridad del servidor',
+          'Premium',
           'Datos y transcripciones'
         ].join('\n')
       },
@@ -1960,6 +1998,10 @@ function buildHelpComponents({ view, config }) {
         .setCustomId('nexadesk:help:security')
         .setLabel('Seguridad')
         .setStyle(current === 'security' ? ButtonStyle.Success : ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId('nexadesk:help:premium')
+        .setLabel('Premium')
+        .setStyle(current === 'premium' ? ButtonStyle.Success : ButtonStyle.Secondary),
       new ButtonBuilder()
         .setCustomId('nexadesk:help:data')
         .setLabel('Datos')
@@ -2684,7 +2726,7 @@ async function handleGlobalStatsCommand({ interaction, storage, client }) {
   const activeTickets = botTickets.filter((ticket) => ticket.status !== 'closed');
   const voiceRooms = botTickets.filter((ticket) => ticket.voiceChannelId).length;
   const panels = guildConfigs.reduce((total, guild) => total + (guild.panels?.length ?? 0), 0);
-  const proGuilds = guildConfigs.filter(isVoiceSupportEnabled).length;
+  const proGuilds = guildConfigs.filter(isPremiumEntitled).length;
   const protectedGuilds = guildConfigs.filter((guild) => normalizeSecurityConfig(guild.security).enabled).length;
   const memoryMb = Math.round(process.memoryUsage().rss / 1024 / 1024);
 
@@ -2711,7 +2753,7 @@ async function handleGlobalStatsCommand({ interaction, storage, client }) {
         name: 'Dashboard',
         value: [
           `Servidores configurados: **${guildConfigs.length}**`,
-          `Servidores Pro Voice: **${proGuilds}**`,
+          `Servidores Premium: **${proGuilds}**`,
           `Servidores protegidos: **${protectedGuilds}**`,
           `Paneles publicados: **${panels}**`,
           `Salas de voz activas: **${voiceRooms}**`,
@@ -2890,8 +2932,9 @@ function canManageVoiceSupport(interaction, ticket, guildConfig) {
 }
 
 function isVoiceSupportEnabled(guildConfig) {
-  const plan = String(guildConfig?.plan ?? 'free').toLowerCase();
-  return Boolean(guildConfig?.voiceSupportEnabled || ['pro', 'enterprise', 'premium'].includes(plan));
+  if (!isPremiumEntitled(guildConfig)) return false;
+  const premium = normalizePremiumConfig(guildConfig?.premium, guildConfig);
+  return premium.voiceSupport !== false;
 }
 
 function buildVoicePermissionOverwrites({ interaction, guildConfig, ticket }) {

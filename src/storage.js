@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createClient } from '@supabase/supabase-js';
 import { normalizeBlacklistEntry, normalizeBlacklistEvidence, normalizeBlacklistLookup } from './blacklist.js';
+import { isPremiumEntitled, normalizePremiumConfig } from './premium.js';
 import { normalizeSecurityConfig } from './security.js';
 
 export class JsonStorage {
@@ -608,6 +609,10 @@ function fromGuildRow(row) {
     allianceChannelId: panelStore.alliance.channelId,
     allianceChannelName: panelStore.alliance.channelName,
     allianceTemplate: panelStore.alliance.template,
+    premium: normalizePremiumConfig(panelStore.premium, {
+      plan: row.plan ?? 'free',
+      voiceSupportEnabled: row.voice_support_enabled ?? false
+    }),
     panels: panelStore.panels,
     components: panelStore.components,
     security: panelStore.security,
@@ -620,6 +625,7 @@ function toGuildPanelStore(guild) {
     panels: guild.panels ?? [],
     components: guild.components ?? [],
     security: normalizeSecurityConfig(guild.security),
+    premium: normalizePremiumConfig(guild.premium, guild),
     alliance: normalizeAllianceConfig(guild)
   };
 }
@@ -630,6 +636,7 @@ function fromGuildPanelStore(value) {
       panels: value,
       components: [],
       security: normalizeSecurityConfig(),
+      premium: normalizePremiumConfig(),
       alliance: normalizeAllianceConfig()
     };
   }
@@ -639,6 +646,7 @@ function fromGuildPanelStore(value) {
       panels: Array.isArray(value.panels) ? value.panels : [],
       components: Array.isArray(value.components) ? value.components : [],
       security: normalizeSecurityConfig(value.security),
+      premium: normalizePremiumConfig(value.premium),
       alliance: normalizeAllianceConfig(value.alliance)
     };
   }
@@ -647,6 +655,7 @@ function fromGuildPanelStore(value) {
     panels: [],
     components: [],
     security: normalizeSecurityConfig(),
+    premium: normalizePremiumConfig(),
     alliance: normalizeAllianceConfig()
   };
 }
@@ -839,10 +848,7 @@ function buildStats({ guilds, tickets, transcriptMessages }) {
   const aiReadyGuilds = guilds.filter((guild) => guild.serverPrompt || guild.serverInfo).length;
   const securityReadyGuilds = guilds.filter((guild) => normalizeSecurityConfig(guild.security).enabled).length;
   const voiceRooms = tickets.filter((ticket) => ticket.status !== 'closed' && ticket.voiceChannelId).length;
-  const proGuilds = guilds.filter((guild) => {
-    const plan = String(guild.plan ?? 'free').toLowerCase();
-    return guild.voiceSupportEnabled || ['pro', 'premium', 'enterprise'].includes(plan);
-  }).length;
+  const proGuilds = guilds.filter(isPremiumEntitled).length;
 
   return {
     totalGuilds: guilds.length,

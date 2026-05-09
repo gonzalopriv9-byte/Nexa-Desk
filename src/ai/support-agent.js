@@ -1,3 +1,4 @@
+import { isPremiumEntitled, normalizePremiumConfig } from '../premium.js';
 import { hasVisualAttachments } from './visual-analyzer.js';
 
 export class SupportAgent {
@@ -186,6 +187,15 @@ export class SupportAgent {
     const serverPrompt = guildConfig.serverPrompt?.trim() || 'No hay prompt personalizado configurado.';
     const ticketIntake = intakeContext?.trim() || 'No hay respuestas previas de formulario para este ticket.';
     const visualEvidence = visualContext?.trim() || 'No hay pruebas visuales analizadas en este turno.';
+    const premium = normalizePremiumConfig(guildConfig.premium, guildConfig);
+    const premiumContext = isPremiumEntitled(guildConfig)
+      ? [
+          premium.priorityAi ? 'IA prioritaria: guia al usuario con preguntas concretas, evita respuestas genericas y resume mejor antes de escalar.' : null,
+          premium.smartTranscripts ? 'Transcripciones inteligentes: deja respuestas faciles de resumir, con hechos, pruebas y siguiente accion claros.' : null,
+          premium.securityPlus ? 'Security Plus: si ves fraude, acoso, amenazas, crisis o riesgo de seguridad, escala rapido con contexto accionable.' : null,
+          premium.customBranding ? 'Branding propio: manten el tono del servidor y evita sonar como una plantilla generica.' : null
+        ].filter(Boolean).join('\n') || 'Premium activo sin modulos especificos marcados.'
+      : 'Premium no activo: usa el flujo estandar.';
 
     return [
       'Eres NexaDesk, un moderador de soporte con IA dentro de Discord.',
@@ -214,6 +224,7 @@ export class SupportAgent {
       `Contexto actualizado en: ${guildConfig.updatedAt ?? 'sin fecha registrada'}`,
       `Prompt personalizado del servidor:\n${serverPrompt}`,
       `Informacion del servidor:\n${serverInfo}`,
+      `Funciones premium del servidor:\n${premiumContext}`,
       `Respuestas previas del formulario del ticket:\n${ticketIntake}`,
       `Analisis visual del ultimo mensaje:\n${visualEvidence}`
     ].join('\n');

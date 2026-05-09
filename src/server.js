@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { GroqClient } from './ai/groq-client.js';
 import { GLOBAL_BLACKLIST_ADMIN_USER_ID, buildGlobalBanCode, isBlacklistEntryActive, parseBlacklistDuration } from './blacklist.js';
 import { normalizeTicketComponent } from './panel-options.js';
+import { isPremiumEntitled, normalizePremiumConfig, summarizePremiumConfig } from './premium.js';
 import { normalizeSecurityConfig, summarizeSecurityConfig } from './security.js';
 import { buildTranscriptFileName, buildTranscriptText } from './transcripts.js';
 
@@ -287,11 +288,19 @@ export function createServer({ config, storage, bot, events }) {
 
   app.post('/api/guilds/:guildId', requireGuildAccess, asyncHandler(async (req, res) => {
     const guild = req.session.guilds.find((item) => item.id === req.params.guildId);
-    const patch = { guildName: req.body.guildName || guild?.name };
+    const existing = await storage.getGuildConfig(req.params.guildId);
+    const patch = { guildName: req.body.guildName || existing?.guildName || guild?.name };
     for (const key of ['ticketCategoryId', 'ticketCategoryName', 'staffRoleId', 'serverPrompt', 'serverInfo']) {
       if (Object.prototype.hasOwnProperty.call(req.body, key)) patch[key] = req.body[key];
     }
     if (req.body.security) patch.security = normalizeSecurityConfig(req.body.security);
+    if (req.session.user?.id === GLOBAL_BLACKLIST_ADMIN_USER_ID) {
+      if (Object.prototype.hasOwnProperty.call(req.body, 'plan')) patch.plan = req.body.plan;
+      if (Object.prototype.hasOwnProperty.call(req.body, 'voiceSupportEnabled')) patch.voiceSupportEnabled = Boolean(req.body.voiceSupportEnabled);
+    }
+    if (req.body.premium) {
+      patch.premium = normalizePremiumConfig(req.body.premium, { ...(existing ?? {}), ...patch });
+    }
     const updated = await storage.upsertGuildConfig(req.params.guildId, patch);
     res.json(updated);
   }));
@@ -503,6 +512,7 @@ function enrichDashboardStats(stats, guilds) {
     escalationReadyGuilds: guilds.filter((guild) => guild.staffRoleId).length,
     aiReadyGuilds: guilds.filter((guild) => guild.serverPrompt || guild.serverInfo).length,
     securityReadyGuilds: guilds.filter((guild) => normalizeSecurityConfig(guild.security).enabled).length,
+    proGuilds: guilds.filter(isPremiumEntitled).length,
     panels: guilds.reduce((total, guild) => total + (guild.panels?.length ?? 0), 0)
   };
 }
@@ -616,15 +626,16 @@ async function buildDashboardAssistantReply({ config, message, guild, stats, act
       system: [
         'Eres el copiloto de la dashboard de NexaDesk.',
         'Responde en espanol claro, breve y accionable.',
-        'Ayuda a configurar servidores Discord para tickets con IA, paneles, componentes, staff, voz Pro con STT/TTS, transcripciones y Security Guard.',
-        'La dashboard real tiene estas secciones: Resumen, Servidores, Configuracion, Componentes, Paneles y Tickets.',
+        'Ayuda a configurar servidores Discord para tickets con IA, paneles, componentes, staff, voz Pro con STT/TTS, transcripciones, Security Guard y Premium.',
+        'La dashboard real tiene estas secciones: Resumen, Servidores, Configuracion, Componentes, Paneles, Premium y Tickets.',
         'En Configuracion se elige categoria, rol staff, prompt del servidor, informacion del servidor y Security Guard.',
         'En Componentes se crean opciones del menu con preguntas previas, primer mensaje y modo Texto o Voz Pro.',
         'En Paneles se publica el embed, boton o menu en un canal de Discord; los botones tambien pueden abrir tickets de voz Pro.',
+        'En Premium se gestionan Voz Pro, IA prioritaria, transcripciones inteligentes, Security Plus, branding propio e informes semanales por servidor.',
         'En Tickets se ven tickets y transcripciones guardadas.',
         'Si el usuario pide que tu metas algo, explica que puedes rellenar campos con botones de accion, pero el usuario debe revisar y guardar/publicar.',
         'No pidas IDs si la dashboard ya ofrece selectores de roles, canales y categorias.',
-        'Si recomiendas navegar, menciona una seccion exacta: Resumen, Servidores, Configuracion, Componentes, Paneles o Tickets.',
+        'Si recomiendas navegar, menciona una seccion exacta: Resumen, Servidores, Configuracion, Componentes, Paneles, Premium o Tickets.',
         'No inventes datos fuera del contexto recibido.'
       ].join('\n'),
       messages: [
@@ -667,6 +678,10 @@ function buildDashboardAssistantFallback({ message, guild, stats, activeView, ac
     reply += guild.components?.length
       ? 'Para publicar un panel, ve a Paneles, elige canal, modo boton o menu y revisa la previsualizacion antes de publicar.'
       : 'Si quieres un menu desplegable, crea primero opciones en Componentes y despues publica el panel desde Paneles.';
+  } else if (lower.includes('premium') || lower.includes('pro') || lower.includes('voz') || lower.includes('voice') || lower.includes('branding') || lower.includes('analitica') || lower.includes('insight')) {
+    reply += isPremiumEntitled(guild)
+      ? 'Ve a Premium para activar o pausar Voz Pro, IA prioritaria, transcripciones inteligentes, Security Plus, branding propio e informes semanales por servidor.'
+      : 'Ve a Premium para ver que desbloquea el plan. La activacion del plan se hace manualmente con /activarpremium o desde Supabase, y despues alli gestionas los modulos.';
   } else if (lower.includes('seguridad') || lower.includes('security') || lower.includes('anti') || lower.includes('raid') || lower.includes('flood') || lower.includes('nuke') || lower.includes('phishing') || lower.includes('estafa') || lower.includes('links')) {
     reply += 'Ve a Configuracion y baja hasta Security Guard. Puedes activar nivel intermedio, Anti-links IA, elegir un canal de logs y guardar. Si Discord bloquea acciones, actualiza permisos desde el boton superior.';
   } else if (lower.includes('transcrip') || lower.includes('ticket')) {
@@ -772,6 +787,7 @@ function suggestDashboardActions(message, guild) {
     add('Abrir Configuracion', 'settings');
   }
 
+  if (lower.includes('premium') || lower.includes('pro') || lower.includes('voz') || lower.includes('voice') || lower.includes('branding') || lower.includes('analitica') || lower.includes('insight')) add('Abrir Premium', 'premium');
   if (lower.includes('servidor') || lower.includes('invitar') || lower.includes('instalar')) add('Ir a Servidores', 'servers');
   if (lower.includes('ia') || lower.includes('prompt') || lower.includes('contexto') || lower.includes('staff') || lower.includes('rol') || lower.includes('seguridad') || lower.includes('security') || lower.includes('anti') || lower.includes('raid') || lower.includes('flood') || lower.includes('nuke') || lower.includes('phishing') || lower.includes('estafa') || lower.includes('links')) add('Abrir Configuracion', 'settings');
   if (lower.includes('componente') || lower.includes('pregunta') || lower.includes('menu')) add('Crear Componentes', 'components');
@@ -870,6 +886,7 @@ function summarizeGuildForAssistant(guild = {}) {
     hasStaffRole: Boolean(guild.staffRoleId),
     hasAiContext: Boolean(guild.serverPrompt || guild.serverInfo),
     security: summarizeSecurityConfig(normalizeSecurityConfig(guild.security)),
+    premium: summarizePremiumConfig(guild),
     panels: guild.panels?.length ?? 0,
     components: guild.components?.length ?? 0
   };
@@ -1152,6 +1169,21 @@ function renderDashboard({ session, guilds, tickets, stats }) {
     .recommendation { border:1px solid var(--soft-line); border-radius:13px; padding:13px; background:rgba(255,255,255,.04); transition:transform .22s ease, border-color .22s ease; }
     .recommendation:hover { transform:translateY(-2px); border-color:rgba(255,255,255,.28); }
     .recommendation strong { display:block; margin-bottom:6px; }
+    .premium-grid { display:grid; grid-template-columns:minmax(320px,.92fr) minmax(0,1.08fr); gap:16px; align-items:start; }
+    .premium-hero { min-height:100%; background:radial-gradient(circle at 20% 0%, rgba(255,255,255,.18), transparent 34%), linear-gradient(145deg, rgba(255,255,255,.12), rgba(255,255,255,.025)); }
+    .premium-plan { display:inline-flex; align-items:center; gap:8px; border:1px solid rgba(255,255,255,.42); border-radius:999px; padding:7px 10px; color:#050505; background:#fff; font-size:12px; font-weight:900; text-transform:uppercase; letter-spacing:.08em; }
+    .premium-hero h2 { margin-top:18px; font-size:clamp(28px, 4vw, 48px); line-height:.98; }
+    .premium-lock { margin-top:16px; border:1px dashed rgba(255,255,255,.38); border-radius:14px; padding:14px; background:rgba(255,255,255,.045); }
+    .premium-feature-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; margin-top:16px; }
+    .premium-feature { border:1px solid var(--soft-line); border-radius:13px; padding:12px; background:rgba(255,255,255,.045); transition:transform .22s ease, border-color .22s ease, background .22s ease; }
+    .premium-feature:hover { transform:translateY(-2px); border-color:rgba(255,255,255,.3); background:rgba(255,255,255,.075); }
+    .premium-feature strong,.premium-feature span { display:block; }
+    .premium-feature span { margin-top:5px; color:var(--muted); font-size:13px; line-height:1.45; }
+    .premium-toggle-list { display:grid; grid-template-columns:1fr; gap:10px; }
+    .premium-toggle { display:grid; grid-template-columns:minmax(0,1fr) 150px; gap:12px; align-items:center; border:1px solid var(--soft-line); border-radius:14px; padding:13px; background:rgba(255,255,255,.035); }
+    .premium-toggle strong,.premium-toggle span { display:block; }
+    .premium-toggle span { color:var(--muted); font-size:13px; margin-top:3px; line-height:1.45; }
+    .premium-locked .premium-toggle select { opacity:.54; }
     .control-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px; }
     .control-card { border:1px solid var(--line); border-radius:14px; padding:18px; background:linear-gradient(180deg, rgba(24,24,24,.94), rgba(8,8,8,.94)); transition:transform .28s cubic-bezier(.2,.8,.2,1), border-color .28s ease, box-shadow .28s ease; }
     .control-card:hover { transform:translateY(-2px); border-color:rgba(255,255,255,.26); box-shadow:0 24px 80px rgba(0,0,0,.28); }
@@ -1265,7 +1297,7 @@ function renderDashboard({ session, guilds, tickets, stats }) {
     @keyframes bannerGlow { 0%,100% { box-shadow:0 22px 70px rgba(0,0,0,.42), 0 0 0 1px rgba(255,255,255,.03) inset; } 50% { box-shadow:0 22px 90px rgba(255,255,255,.08), 0 0 0 1px rgba(255,255,255,.09) inset; } }
     @keyframes spin { to { transform:rotate(360deg); } }
     @media (prefers-reduced-motion:reduce) { .banner-frame,.banner-frame::before,.banner-frame img { animation:none; transition:none; } }
-    @media (max-width:1120px) { .app-shell,.workspace,.topbar,.command-center,.panel-builder { grid-template-columns:1fr; } .sidebar { position:relative; height:auto; top:auto; } .nav-foot { position:static; margin-top:18px; } .panel-preview-wrap { position:relative; top:auto; } }
+    @media (max-width:1120px) { .app-shell,.workspace,.topbar,.command-center,.panel-builder,.premium-grid { grid-template-columns:1fr; } .sidebar { position:relative; height:auto; top:auto; } .nav-foot { position:static; margin-top:18px; } .panel-preview-wrap { position:relative; top:auto; } }
     @media (max-width:760px) {
       body { overflow-x:hidden; background-size:auto; }
       .app-shell { width:100%; gap:12px; padding:0 10px 96px; }
@@ -1287,7 +1319,7 @@ function renderDashboard({ session, guilds, tickets, stats }) {
       .topbar,.workspace,.command-center,.panel-builder { gap:12px; margin-bottom:12px; }
       .view-heading,.section-heading,.ticket-tools,.transcript-head { display:grid; align-items:start; gap:10px; }
       .active-server { margin-bottom:12px; }
-      form,.control-grid,.stats,.server-status,.mini-grid,.panel-fields,.form-section,.readiness-checklist,.recommendation-grid { grid-template-columns:1fr; }
+      form,.control-grid,.stats,.server-status,.mini-grid,.panel-fields,.form-section,.readiness-checklist,.recommendation-grid,.premium-feature-grid,.premium-toggle { grid-template-columns:1fr; }
       label,button { margin-top:0; }
       textarea { min-height:118px; }
       .form-section { padding:10px; }
@@ -1334,6 +1366,7 @@ function renderDashboard({ session, guilds, tickets, stats }) {
     <a class="nav-link" href="#settings" data-view="settings">Configuracion</a>
     <a class="nav-link" href="#components" data-view="components">Componentes</a>
     <a class="nav-link" href="#panels" data-view="panels">Paneles</a>
+    <a class="nav-link" href="#premium" data-view="premium">Premium</a>
     <a class="nav-link" href="#tickets" data-view="tickets">Tickets</a>
     <div class="nav-foot">
       <form method="post" action="/logout"><button class="secondary-button" type="submit">Cerrar sesion</button></form>
@@ -1363,8 +1396,8 @@ function renderDashboard({ session, guilds, tickets, stats }) {
         <div><span>Categoria</span><strong id="activeCategory">Sin configurar</strong></div>
         <div><span>Staff</span><strong id="activeStaff">Sin configurar</strong></div>
         <div><span>Paneles</span><strong id="activePanels">0</strong></div>
-        <div><span>Voz Pro</span><strong id="activeVoice">Free</strong></div>
         <div><span>Seguridad</span><strong id="activeSecurity">Off</strong></div>
+        <div><span>Premium</span><strong id="activePremium">Free</strong></div>
       </div>
       <div class="install-banner" id="installBanner" hidden>
         <div><strong id="installTitle">NexaDesk no esta instalado en este servidor.</strong><p id="installText">Al seleccionarlo puedes invitar el bot directamente con permisos recomendados.</p></div>
@@ -1375,7 +1408,7 @@ function renderDashboard({ session, guilds, tickets, stats }) {
     <div class="view-stage">
       <section class="dashboard-view is-active" id="view-overview" data-view="overview">
         <div class="view-heading">
-          <div><h2>Resumen</h2><p>Una vista rapida del estado global de NexaDesk.</p></div>
+          <div><h2>Resumen</h2><p>Solo lo que importa: servidores listos, tickets, datos guardados y conversion premium.</p></div>
         </div>
         <div class="stats" id="overview">
           <div class="stat"><strong id="guildCount">${stats.totalGuilds}</strong><span>Servidores gestionables</span><small id="guildInstallMeta">${stats.installedGuilds ?? 0} con bot - ${stats.notInstalledGuilds ?? 0} por invitar</small></div>
@@ -1394,12 +1427,12 @@ function renderDashboard({ session, guilds, tickets, stats }) {
             <div class="mini-grid">
               <div><strong id="panelCount">${stats.panels}</strong><small>Paneles publicados</small></div>
               <div><strong id="aiReadyCount">${stats.aiReadyGuilds}</strong><small>Servidores con IA lista</small></div>
-              <div><strong id="proGuildCount">${stats.proGuilds ?? 0}</strong><small>Servidores Pro Voice</small></div>
+              <div><strong id="proGuildCount">${stats.proGuilds ?? 0}</strong><small>Servidores Premium</small></div>
               <div><strong id="securityReadyCount">${stats.securityReadyGuilds ?? 0}</strong><small>Servidores protegidos</small></div>
             </div>
           </article>
           <article class="insight-card">
-            <p class="kicker">Actividad</p>
+            <p class="kicker">Datos utiles</p>
             <div class="mini-grid">
               <div><strong id="transcriptCount">${stats.transcriptMessages}</strong><small>Mensajes guardados</small></div>
               <div><strong id="staffReadyCount">${stats.escalationReadyGuilds}</strong><small>Escalado con staff</small></div>
@@ -1412,6 +1445,7 @@ function renderDashboard({ session, guilds, tickets, stats }) {
           <button class="quick-action" type="button" data-go-view="settings">Activar seguridad</button>
           <button class="quick-action" type="button" data-go-view="components">Crear menu de tickets</button>
           <button class="quick-action" type="button" data-go-view="panels">Publicar panel</button>
+          <button class="quick-action" type="button" data-go-view="premium">Gestionar Premium</button>
           <button class="quick-action" type="button" data-go-view="tickets">Ver transcripciones</button>
         </div>
         <section class="surface">
@@ -1621,6 +1655,43 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
         </article>
       </section>
       </section>
+      <section class="dashboard-view" id="view-premium" data-view="premium">
+        <div class="view-heading">
+          <div><h2>Premium</h2><p>Gestiona las funciones de alto valor por servidor. La activacion del plan se hace con /activarpremium o Supabase.</p></div>
+        </div>
+        <section class="premium-grid">
+          <article class="control-card premium-hero" id="premiumHeroCard">
+            <span class="premium-plan" id="premiumPlanBadge">Free</span>
+            <h2 id="premiumHeroTitle">Convierte NexaDesk en un agente de pago.</h2>
+            <p id="premiumHeroText">Premium desbloquea voz natural, IA mas proactiva, transcripciones accionables, seguridad reforzada, branding propio e informes para que el owner vea valor real.</p>
+            <div class="premium-lock" id="premiumLockNotice">
+              <strong>Plan no activo todavia</strong>
+              <p>Activalo con <code>/activarpremium servidor:&lt;ID&gt;</code> o poniendo <code>plan = pro</code> / <code>voice_support_enabled = true</code> en Supabase. Las preferencias se pueden dejar preparadas.</p>
+            </div>
+            <div class="premium-feature-grid">
+              <div class="premium-feature"><strong>Voz Pro</strong><span>Tickets con sala privada, STT/TTS y transcripcion en el canal.</span></div>
+              <div class="premium-feature"><strong>IA prioritaria</strong><span>Respuestas mas proactivas, checklist de datos y escalados mejor resumidos.</span></div>
+              <div class="premium-feature"><strong>Smart transcripts</strong><span>Resumen ejecutivo, puntos clave y descarga lista para staff.</span></div>
+              <div class="premium-feature"><strong>Security Plus</strong><span>Anti-scam IA, senales de riesgo y alertas mas visibles para staff.</span></div>
+              <div class="premium-feature"><strong>Branding propio</strong><span>Paneles y mensajes mas personalizables para comunidades serias.</span></div>
+              <div class="premium-feature"><strong>Informes semanales</strong><span>Ideas de mejora: motivos frecuentes, volumen y necesidades de staff.</span></div>
+            </div>
+          </article>
+          <article class="control-card" id="premiumSettingsCard">
+            <div class="card-head"><span class="step">P</span><div><h2>Modulos premium</h2><p>Activa lo que quieres ofrecer en este servidor cuando el plan este disponible.</p></div></div>
+            <form class="premium-toggle-list" onsubmit="return savePremium(event)">
+              <select id="premiumGuildId" hidden required>${guildOptions}</select>
+              <label class="premium-toggle"><span><strong>Voz Pro STT/TTS</strong><span>Permite paneles de voz y salas privadas vinculadas al ticket.</span></span><select id="premiumVoiceSupport"><option value="true">Activo</option><option value="false">Pausado</option></select></label>
+              <label class="premium-toggle"><span><strong>IA prioritaria</strong><span>La IA pregunta mejor, resume antes de escalar y evita respuestas roboticas.</span></span><select id="premiumPriorityAi"><option value="true">Activo</option><option value="false">Pausado</option></select></label>
+              <label class="premium-toggle"><span><strong>Transcripciones inteligentes</strong><span>Prepara cada cierre para dashboard, MD al usuario y revision de staff.</span></span><select id="premiumSmartTranscripts"><option value="true">Activo</option><option value="false">Pausado</option></select></label>
+              <label class="premium-toggle"><span><strong>Security Plus</strong><span>Refuerza links sospechosos, blacklist, flood y avisos para staff.</span></span><select id="premiumSecurityPlus"><option value="true">Activo</option><option value="false">Pausado</option></select></label>
+              <label class="premium-toggle"><span><strong>Branding propio</strong><span>Permite preparar una experiencia mas white-label para el servidor.</span></span><select id="premiumCustomBranding"><option value="false">Desactivado</option><option value="true">Activo</option></select></label>
+              <label class="premium-toggle"><span><strong>Informes semanales</strong><span>Activa el futuro reporte de tendencias para vender valor continuo.</span></span><select id="premiumWeeklyInsights"><option value="true">Activo</option><option value="false">Pausado</option></select></label>
+              <button type="submit">Guardar modulos premium</button>
+            </form>
+          </article>
+        </section>
+      </section>
       <section class="dashboard-view" id="view-tickets" data-view="tickets">
         <div class="view-heading">
           <div><h2>Tickets</h2><p>Consulta actividad reciente y abre transcripciones guardadas.</p></div>
@@ -1652,13 +1723,14 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       <button class="assistant-close secondary-button" id="assistantClose" type="button" aria-label="Cerrar asistente">x</button>
     </div>
     <div class="assistant-body" id="assistantBody">
-      <article class="assistant-message">Dime que quieres preparar y te llevo directo. Puedo ayudarte con IA, staff, seguridad, paneles, menus y transcripciones.</article>
+      <article class="assistant-message">Dime que quieres preparar y te llevo directo. Puedo ayudarte con IA, staff, seguridad, paneles, menus, premium y transcripciones.</article>
     </div>
     <div class="assistant-quick" aria-label="Preguntas rapidas">
       <button class="assistant-chip" type="button" data-assistant-prompt="Que me falta para dejar este servidor listo?">Que falta?</button>
       <button class="assistant-chip" type="button" data-assistant-prompt="Como creo un panel con menu desplegable?">Panel con menu</button>
       <button class="assistant-chip" type="button" data-assistant-prompt="Como hago que la IA escale al staff?">Escalado staff</button>
       <button class="assistant-chip" type="button" data-assistant-prompt="Mete una configuracion de seguridad recomendada">Seguridad</button>
+      <button class="assistant-chip" type="button" data-assistant-prompt="Que funciones premium puedo activar aqui?">Premium</button>
       <button class="assistant-chip" type="button" data-assistant-prompt="Donde veo las transcripciones?">Transcripciones</button>
     </div>
     <form class="assistant-form" id="assistantForm">
@@ -1784,6 +1856,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
         const activeGuild = getGuildConfig(activeGuildId);
         renderComponentHistory(activeGuild || {});
         renderPanelHistory(activeGuild || {});
+        renderPremiumPanel(activeGuild || {});
         renderGuildSelectors(activeGuildId);
       }
     }
@@ -1832,6 +1905,27 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       const plan = String(guild.plan || 'free').toUpperCase();
       const enabled = Boolean(guild.voiceSupportEnabled || ['PRO', 'ENTERPRISE', 'PREMIUM'].includes(plan));
       return enabled ? 'Pro activo' : plan === 'FREE' ? 'Free' : plan;
+    }
+    function normalizePremium(guild = {}) {
+      const plan = String(guild.plan || 'free').toLowerCase();
+      const entitled = Boolean(guild.voiceSupportEnabled || ['pro', 'enterprise', 'premium'].includes(plan));
+      const raw = guild.premium || {};
+      return {
+        entitled,
+        plan,
+        enabled: entitled && raw.enabled !== false,
+        voiceSupport: raw.voiceSupport !== false,
+        priorityAi: raw.priorityAi !== false,
+        smartTranscripts: raw.smartTranscripts !== false,
+        securityPlus: raw.securityPlus !== false,
+        customBranding: raw.customBranding === true,
+        weeklyInsights: raw.weeklyInsights !== false
+      };
+    }
+    function formatPremiumState(guild = {}) {
+      const premium = normalizePremium(guild);
+      if (premium.entitled) return String(guild.plan || 'pro').toUpperCase();
+      return 'Free';
     }
     function normalizeSecurity(guild = {}) {
       const raw = guild.security || {};
@@ -1904,11 +1998,11 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       });
     }
     function setConfigurationDisabled(disabled) {
-      for (const selector of ['#ticketCategoryId', '#staffRoleId', '#serverPrompt', '#serverInfo', '#categoryName', '#securityEnabled', '#securityLevel', '#securityLogChannelId', '#securityMinAccountAgeDays', '#securityAntiFlood', '#securityAntiScamLinks', '#securityAntiBot', '#securityAntiAlt', '#securityAntiNuke', '#componentLabel', '#componentEmoji', '#componentDescription', '#componentTicketCategoryId', '#componentTicketMode', '#componentQuestions', '#componentWelcomeMessage', '#panelType', '#panelSelectPlaceholder', '#panelComponentIds', '#panelChannelId', '#panelTicketCategoryId', '#panelTicketMode', '#panelButtonLabel', '#panelButtonStyle', '#panelButtonEmoji', '#panelTitle', '#panelEmbedColor', '#panelAuthorName', '#panelAuthorIconUrl', '#panelDescription', '#panelThumbnailUrl', '#panelImageUrl', '#panelFooterText', '#panelWelcomeMessage']) {
+      for (const selector of ['#ticketCategoryId', '#staffRoleId', '#serverPrompt', '#serverInfo', '#categoryName', '#securityEnabled', '#securityLevel', '#securityLogChannelId', '#securityMinAccountAgeDays', '#securityAntiFlood', '#securityAntiScamLinks', '#securityAntiBot', '#securityAntiAlt', '#securityAntiNuke', '#componentLabel', '#componentEmoji', '#componentDescription', '#componentTicketCategoryId', '#componentTicketMode', '#componentQuestions', '#componentWelcomeMessage', '#panelType', '#panelSelectPlaceholder', '#panelComponentIds', '#panelChannelId', '#panelTicketCategoryId', '#panelTicketMode', '#panelButtonLabel', '#panelButtonStyle', '#panelButtonEmoji', '#panelTitle', '#panelEmbedColor', '#panelAuthorName', '#panelAuthorIconUrl', '#panelDescription', '#panelThumbnailUrl', '#panelImageUrl', '#panelFooterText', '#panelWelcomeMessage', '#premiumVoiceSupport', '#premiumPriorityAi', '#premiumSmartTranscripts', '#premiumSecurityPlus', '#premiumCustomBranding', '#premiumWeeklyInsights']) {
         const element = document.querySelector(selector);
         if (element) element.disabled = disabled;
       }
-      document.querySelectorAll('#settings button, #components button, #panels button').forEach((button) => {
+      document.querySelectorAll('#settings button, #components button, #panels button, #view-premium button').forEach((button) => {
         button.disabled = disabled;
       });
     }
@@ -1930,10 +2024,11 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       document.querySelector('#activeCategory').textContent = 'Bot no instalado';
       document.querySelector('#activeStaff').textContent = 'Bot no instalado';
       document.querySelector('#activePanels').textContent = String(guild.panels?.length ?? 0);
-      document.querySelector('#activeVoice').textContent = formatVoiceState(guild);
       document.querySelector('#activeSecurity').textContent = formatSecurityState(guild);
+      document.querySelector('#activePremium').textContent = formatPremiumState(guild);
       renderComponentHistory(guild);
       renderPanelHistory(guild);
+      renderPremiumPanel(guild);
       renderReadinessChecklist(guild);
       renderRecommendations(guild);
       document.querySelectorAll('.guild-pill').forEach((button) => button.classList.toggle('is-active', button.dataset.guildId === guild.guildId));
@@ -1957,10 +2052,11 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       document.querySelector('#activeCategory').textContent = 'Token requerido';
       document.querySelector('#activeStaff').textContent = 'Token requerido';
       document.querySelector('#activePanels').textContent = String(guild.panels?.length ?? 0);
-      document.querySelector('#activeVoice').textContent = formatVoiceState(guild);
       document.querySelector('#activeSecurity').textContent = formatSecurityState(guild);
+      document.querySelector('#activePremium').textContent = formatPremiumState(guild);
       renderComponentHistory(guild);
       renderPanelHistory(guild);
+      renderPremiumPanel(guild);
       renderReadinessChecklist(guild);
       renderRecommendations(guild);
       document.querySelectorAll('.guild-pill').forEach((button) => button.classList.toggle('is-active', button.dataset.guildId === guildId));
@@ -2023,10 +2119,11 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       const staffOption = document.querySelector('#staffRoleId')?.selectedOptions?.[0];
       document.querySelector('#activeStaff').textContent = staffOption?.value ? staffOption.textContent : 'Sin configurar';
       document.querySelector('#activePanels').textContent = String(config.panels?.length ?? 0);
-      document.querySelector('#activeVoice').textContent = formatVoiceState(config);
       document.querySelector('#activeSecurity').textContent = formatSecurityState(config);
+      document.querySelector('#activePremium').textContent = formatPremiumState(config);
       renderComponentHistory(config);
       renderPanelHistory(config);
+      renderPremiumPanel(config);
       renderReadinessChecklist(config);
       renderRecommendations(config);
       updatePanelMode();
@@ -2041,7 +2138,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       const guildId = document.querySelector(sourceId).value;
       const guild = getGuildConfig(guildId);
       resetPanelEditor({ keepFields: true });
-      for (const selector of ['#guildId', '#categoryGuildId', '#componentGuildId', '#panelGuildId']) {
+      for (const selector of ['#guildId', '#categoryGuildId', '#componentGuildId', '#panelGuildId', '#premiumGuildId']) {
         const element = document.querySelector(selector);
         if (element && element.value !== guildId) element.value = guildId;
       }
@@ -2100,6 +2197,28 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       }
       return false;
     }
+    async function savePremium(event) {
+      event.preventDefault();
+      const guildId = document.querySelector('#premiumGuildId')?.value || document.querySelector('#guildId').value;
+      const updated = await postJson('/api/guilds/' + guildId, {
+        premium: {
+          voiceSupport: document.querySelector('#premiumVoiceSupport').value === 'true',
+          priorityAi: document.querySelector('#premiumPriorityAi').value === 'true',
+          smartTranscripts: document.querySelector('#premiumSmartTranscripts').value === 'true',
+          securityPlus: document.querySelector('#premiumSecurityPlus').value === 'true',
+          customBranding: document.querySelector('#premiumCustomBranding').value === 'true',
+          weeklyInsights: document.querySelector('#premiumWeeklyInsights').value === 'true'
+        }
+      }).catch((error) => showToast(error.message));
+      if (updated) {
+        const index = guildConfigs.findIndex((guild) => guild.guildId === guildId);
+        if (index >= 0) guildConfigs[index] = { ...guildConfigs[index], ...updated };
+        renderGuildSelectors(guildId);
+        refreshStats().catch(() => {});
+        showToast('Modulos premium guardados para este servidor.');
+      }
+      return false;
+    }
     async function createCategory(event) {
       event.preventDefault();
       await postJson('/api/guilds/' + document.querySelector('#categoryGuildId').value + '/categories', { name: document.querySelector('#categoryName').value }).then(() => location.reload()).catch((error) => showToast(error.message));
@@ -2142,6 +2261,32 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
         ? panels.slice().reverse().map((panel) => '<article class="panel-card"><strong>' + escapeHtml(panel.title || 'Panel sin titulo') + '</strong><small>Tipo: ' + escapeHtml(panel.panelType === 'menu' ? 'Menu desplegable' : 'Boton') + '</small><small>Modo boton: ' + escapeHtml(panel.ticketMode === 'voice' ? 'Voz Pro + STT/TTS' : 'Texto + IA') + '</small><small>Canal: ' + escapeHtml(panel.channelName || panel.channelId || 'sin canal') + '</small><small>Categoria: ' + escapeHtml(panel.ticketCategoryName || guild.ticketCategoryName || 'principal') + '</small><small>' + escapeHtml(panel.panelType === 'menu' ? ('Componentes: ' + (panel.componentIds || []).length) : ('Boton: ' + (panel.buttonLabel || 'Abrir ticket'))) + '</small><button class="secondary-button table-action" type="button" data-edit-panel="' + escapeHtml(panel.messageId || '') + '">Editar panel enviado</button></article>').join('')
         : '<p class="notice">Aun no hay paneles publicados en este servidor.</p>';
       bindPanelEditButtons(panelHistory);
+    }
+    function renderPremiumPanel(guild = getActiveGuild()) {
+      const premium = normalizePremium(guild || {});
+      const planLabel = premium.entitled ? String(guild?.plan || 'pro').toUpperCase() : 'FREE';
+      document.querySelector('#premiumPlanBadge').textContent = planLabel;
+      document.querySelector('#premiumHeroCard')?.classList.toggle('premium-locked', !premium.entitled);
+      document.querySelector('#premiumSettingsCard')?.classList.toggle('premium-locked', !premium.entitled);
+      document.querySelector('#premiumLockNotice')?.classList.toggle('is-hidden', premium.entitled);
+      document.querySelector('#premiumHeroTitle').textContent = premium.entitled
+        ? 'Premium activo en este servidor.'
+        : 'Prepara el upgrade antes de venderlo.';
+      document.querySelector('#premiumHeroText').textContent = premium.entitled
+        ? 'Configura que modulos quieres dejar activos: voz, IA prioritaria, smart transcripts, seguridad avanzada, branding e informes.'
+        : 'Puedes dejar estos modulos preparados. Cuando el owner active Premium, NexaDesk desbloqueara las funciones de mayor valor sin rehacer la configuracion.';
+      const values = {
+        premiumVoiceSupport: premium.voiceSupport,
+        premiumPriorityAi: premium.priorityAi,
+        premiumSmartTranscripts: premium.smartTranscripts,
+        premiumSecurityPlus: premium.securityPlus,
+        premiumCustomBranding: premium.customBranding,
+        premiumWeeklyInsights: premium.weeklyInsights
+      };
+      for (const [id, value] of Object.entries(values)) {
+        const element = document.querySelector('#' + id);
+        if (element) element.value = value ? 'true' : 'false';
+      }
     }
     function renderPanelComponentPicker(guild = getActiveGuild()) {
       const picker = document.querySelector('#panelComponentPicker');
@@ -2460,7 +2605,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       document.querySelector('#liveState').textContent = 'Reconectando';
       document.querySelector('#liveState').className = '';
     };
-    for (const selector of ['#guildId', '#categoryGuildId', '#componentGuildId', '#panelGuildId']) {
+    for (const selector of ['#guildId', '#categoryGuildId', '#componentGuildId', '#panelGuildId', '#premiumGuildId']) {
       document.querySelector(selector)?.addEventListener('change', () => syncGuildForm(selector));
     }
     document.querySelectorAll('.nav-link[data-view]').forEach((link) => {
@@ -2505,6 +2650,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
     }
     bindTranscriptButtons();
     updatePanelPreview();
+    renderPremiumPanel(getActiveGuild());
     renderReadinessChecklist(getActiveGuild());
     renderRecommendations(getActiveGuild());
     setActiveView((location.hash || '#overview').slice(1), { updateHash: false });
