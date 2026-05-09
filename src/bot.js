@@ -2748,18 +2748,6 @@ function isTicketEscalated(ticket) {
 }
 
 async function shouldStaySilentInTicket({ storage, message, ticket, guildConfig, client }) {
-  const staffTakeover = isConfiguredStaffMember(message.member, message.author, guildConfig);
-  if (staffTakeover) {
-    await pauseAiForHumanTakeover({
-      storage,
-      message,
-      ticket,
-      reason: 'Un miembro del staff ha escrito en el ticket.',
-      actorId: message.author.id
-    });
-    return true;
-  }
-
   const mentionedBot = getMentionedExternalBot(message, client);
   if (mentionedBot) {
     await pauseAiForHumanTakeover({
@@ -2772,10 +2760,24 @@ async function shouldStaySilentInTicket({ storage, message, ticket, guildConfig,
     return true;
   }
 
+  if (isTicketOpener(message, ticket)) return false;
+
+  const staffTakeover = isConfiguredStaffMember(message.member, message.author, guildConfig);
+  if (staffTakeover) {
+    await pauseAiForHumanTakeover({
+      storage,
+      message,
+      ticket,
+      reason: 'Un miembro del staff ha escrito en el ticket.',
+      actorId: message.author.id
+    });
+    return true;
+  }
+
   if (isMessageAddressedToNexaDesk(message, client)) return false;
 
   const recentMessages = await fetchRecentChannelMessages(message.channel, 12);
-  const recentStaffMessage = findRecentStaffHumanMessage(recentMessages, message, guildConfig);
+  const recentStaffMessage = findRecentStaffHumanMessage(recentMessages, message, guildConfig, ticket);
   if (recentStaffMessage) {
     await pauseAiForHumanTakeover({
       storage,
@@ -2788,6 +2790,10 @@ async function shouldStaySilentInTicket({ storage, message, ticket, guildConfig,
   }
 
   return false;
+}
+
+function isTicketOpener(message, ticket) {
+  return Boolean(ticket?.openedBy && message.author?.id === ticket.openedBy);
 }
 
 async function pauseAiForHumanTakeover({ storage, message, ticket, reason, actorId }) {
@@ -3131,7 +3137,7 @@ function isCrisisRiskMessage(content) {
 
 async function resolveAllianceTicketFlow({ message, storage, guildConfig, ticket, supportAgent }) {
   const recentMessages = await fetchRecentChannelMessages(message.channel, 20);
-  if (hasStaffHumanConversation(recentMessages, message)) {
+  if (hasStaffHumanConversation(recentMessages, message, guildConfig, ticket)) {
     return { type: 'none' };
   }
 
@@ -3385,14 +3391,21 @@ function isAllianceRulesReadAck(content) {
   return /\bya\s+(?:las\s+)?(?:he|e)\s+leido\b/i.test(normalizeText(content));
 }
 
-function hasStaffHumanConversation(recentMessages, currentMessage) {
+function hasStaffHumanConversation(recentMessages, currentMessage, guildConfig = null, ticket = null) {
   if (isMessageAddressedToNexaDesk(currentMessage, currentMessage.client)) return false;
   const currentIndex = recentMessages.findIndex((item) => item.id === currentMessage.id);
   const previous = currentIndex >= 0 ? recentMessages.slice(0, currentIndex) : recentMessages;
-  return previous.slice(-8).some((item) => !item.author.bot && isLikelyStaffHumanMessage(item, currentMessage));
+  return previous.slice(-8).some((item) => (
+    !item.author.bot
+    && item.author.id !== currentMessage.author.id
+    && item.author.id !== ticket?.openedBy
+    && (guildConfig
+      ? isConfiguredStaffMember(item.member, item.author, guildConfig)
+      : isLikelyStaffHumanMessage(item, currentMessage))
+  ));
 }
 
-function findRecentStaffHumanMessage(recentMessages, currentMessage, guildConfig) {
+function findRecentStaffHumanMessage(recentMessages, currentMessage, guildConfig, ticket) {
   const currentIndex = recentMessages.findIndex((item) => item.id === currentMessage.id);
   const previous = currentIndex >= 0 ? recentMessages.slice(0, currentIndex) : recentMessages;
   return previous
@@ -3401,6 +3414,7 @@ function findRecentStaffHumanMessage(recentMessages, currentMessage, guildConfig
     .find((item) => (
       !item.author.bot
       && item.author.id !== currentMessage.author.id
+      && item.author.id !== ticket?.openedBy
       && isConfiguredStaffMember(item.member, item.author, guildConfig)
     )) ?? null;
 }
