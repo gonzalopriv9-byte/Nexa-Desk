@@ -102,6 +102,11 @@ export function createBot({ config, storage, supportAgent, voiceManager = null, 
         return;
       }
 
+      if (interaction.isButton() && interaction.customId.startsWith('nexadesk:music:')) {
+        await handleMusicButton({ interaction, storage, musicManager });
+        return;
+      }
+
       if (interaction.isStringSelectMenu() && interaction.customId.startsWith('nexadesk:select_ticket_component')) {
         const guildConfig = await storage.getGuildConfig(interaction.guildId);
         const panel = findPanelForInteraction(guildConfig, interaction);
@@ -1239,28 +1244,31 @@ async function handleMusicCommand({ interaction, storage, musicManager = null, v
       track: result.track,
       description: result.started ? 'La cola arranca ahora.' : `Posicion en cola: ${result.position}`
     });
-    await interaction.editReply({ embeds: [embed] });
+    await interaction.editReply({
+      embeds: [embed],
+      components: buildMusicControls(musicManager.getQueue(interaction.guildId))
+    });
     return;
   }
 
   if (subcommand === 'buscar') {
     await interaction.deferReply({ ephemeral: true });
     const query = interaction.options.getString('consulta', true);
-    const results = await musicManager.search(query, 5);
+    const results = await musicManager.search(query, 5, { preferSpotify: true });
     const embed = new EmbedBuilder()
       .setColor(0xffffff)
       .setTitle(`${EMOJIS.global} Resultados de musica`)
       .setDescription(results.length
         ? results.map((track, index) => `**${index + 1}.** ${track.title}\n${track.uploader || 'Fuente desconocida'} - ${formatTrackDuration(track.duration)}`).join('\n\n')
         : 'No encontre resultados.')
-      .setFooter({ text: 'Usa /musica reproducir consulta:<titulo o enlace> para reproducir.' });
+      .setFooter({ text: results.some((track) => track.spotify) ? 'Spotify identificado primero. Usa /musica reproducir con el titulo o enlace de Spotify.' : 'Usa /musica reproducir consulta:<titulo o enlace> para reproducir.' });
     await interaction.editReply({ embeds: [embed] });
     return;
   }
 
   if (subcommand === 'cola') {
     const queue = musicManager.getQueue(interaction.guildId);
-    await interaction.reply({ embeds: [buildMusicQueueEmbed(queue)] });
+    await interaction.reply({ embeds: [buildMusicQueueEmbed(queue)], components: buildMusicControls(queue) });
     return;
   }
 
@@ -1311,6 +1319,78 @@ async function handleMusicCommand({ interaction, storage, musicManager = null, v
   }
 }
 
+async function handleMusicButton({ interaction, storage, musicManager = null }) {
+  if (!interaction.inGuild()) {
+    await interaction.reply({ content: 'La musica solo funciona dentro de un servidor.', ephemeral: true });
+    return;
+  }
+
+  if (!musicManager) {
+    await interaction.reply({ content: 'El sistema de musica esta desactivado en este despliegue.', ephemeral: true });
+    return;
+  }
+
+  const action = interaction.customId.replace('nexadesk:music:', '');
+  const guildConfig = await storage.getGuildConfig(interaction.guildId);
+  const musicConfig = normalizeMusicConfig(guildConfig?.music);
+  const commandForPermission = action === 'queue' ? 'cola' : action === 'autocola' ? 'autocola' : action;
+  if (!canUseMusicCommand(interaction, musicConfig, commandForPermission)) {
+    await interaction.reply({
+      content: 'Este servidor ha configurado un rol DJ para controlar la musica.',
+      ephemeral: true
+    });
+    return;
+  }
+
+  if (action === 'queue') {
+    const queue = musicManager.getQueue(interaction.guildId);
+    await interaction.reply({ embeds: [buildMusicQueueEmbed(queue)], components: buildMusicControls(queue), ephemeral: true });
+    return;
+  }
+
+  if (action === 'pause') {
+    const paused = musicManager.pause(interaction.guildId);
+    await interaction.reply({ content: paused ? 'Musica pausada.' : 'No pude pausar porque no hay reproduccion activa.', ephemeral: true });
+    return;
+  }
+
+  if (action === 'resume') {
+    const resumed = musicManager.resume(interaction.guildId);
+    await interaction.reply({ content: resumed ? 'Musica reanudada.' : 'No pude reanudar porque no hay musica pausada.', ephemeral: true });
+    return;
+  }
+
+  if (action === 'skip') {
+    const skipped = musicManager.skip(interaction.guildId);
+    await interaction.reply({ content: skipped ? 'Saltando a la siguiente cancion.' : 'No hay musica activa.', ephemeral: true });
+    return;
+  }
+
+  if (action === 'stop') {
+    const stopped = musicManager.stop(interaction.guildId);
+    await interaction.reply({ content: stopped ? 'Musica parada y cola limpiada.' : 'No hay musica activa.', ephemeral: true });
+    return;
+  }
+
+  if (action === 'autocola') {
+    const queue = musicManager.getQueue(interaction.guildId);
+    const current = normalizeMusicConfig(guildConfig?.music);
+    const enabled = !queue.autoQueue;
+    await storage.upsertGuildConfig(interaction.guildId, {
+      guildName: interaction.guild.name,
+      music: { ...current, autoQueue: enabled }
+    });
+    musicManager.setAutoQueue(interaction.guildId, enabled);
+    await interaction.reply({
+      content: enabled ? 'Autocola IA activada.' : 'Autocola IA desactivada.',
+      ephemeral: true
+    });
+    return;
+  }
+
+  await interaction.reply({ content: 'Control de musica no reconocido.', ephemeral: true });
+}
+
 function canUseMusicCommand(interaction, musicConfig, subcommand) {
   if (!musicConfig.djRoleId) return true;
   if (['buscar', 'cola'].includes(subcommand)) return true;
@@ -1322,12 +1402,30 @@ function buildMusicTrackEmbed({ title, track, description }) {
   const embed = new EmbedBuilder()
     .setColor(0xffffff)
     .setTitle(`${EMOJIS.global} ${title}`)
-    .setDescription(`**${track.title}**\n${description}`)
+    .setDescription([
+      `**${track.title}**`,
+      track.spotify ? 'Identificada primero en Spotify para evitar videoclips, intros o versiones raras.' : '',
+      description
+    ].filter(Boolean).join('\n'))
     .addFields(
       { name: 'Duracion', value: formatTrackDuration(track.duration), inline: true },
       { name: 'Fuente', value: track.uploader || 'Desconocida', inline: true },
       { name: 'Pedido por', value: track.autoQueued ? 'Autocola IA' : track.requestedByName || 'Usuario', inline: true }
     );
+  if (track.spotify?.spotifyUrl) {
+    embed.addFields({
+      name: 'Spotify',
+      value: `[${track.spotify.album || 'Abrir cancion'}](${track.spotify.spotifyUrl})`,
+      inline: true
+    });
+  }
+  if (track.sourceTitle) {
+    embed.addFields({
+      name: 'Audio elegido',
+      value: `[${track.sourceTitle}](${track.url})${track.sourceUploader ? `\n${track.sourceUploader}` : ''}`,
+      inline: true
+    });
+  }
   if (track.thumbnail) embed.setThumbnail(track.thumbnail);
   if (track.url) embed.setURL(track.url);
   return embed;
@@ -1359,6 +1457,44 @@ function buildMusicQueueEmbed(queue) {
     embed.setFooter({ text: `Historial disponible: ${queue.history.length} canciones` });
   }
   return embed;
+}
+
+function buildMusicControls(queue = {}) {
+  const active = Boolean(queue.active);
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId('nexadesk:music:pause')
+        .setLabel('Pausar')
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(!active),
+      new ButtonBuilder()
+        .setCustomId('nexadesk:music:resume')
+        .setLabel('Continuar')
+        .setStyle(ButtonStyle.Success)
+        .setDisabled(!active),
+      new ButtonBuilder()
+        .setCustomId('nexadesk:music:skip')
+        .setLabel('Saltar')
+        .setStyle(ButtonStyle.Primary)
+        .setDisabled(!active),
+      new ButtonBuilder()
+        .setCustomId('nexadesk:music:queue')
+        .setLabel('Cola')
+        .setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId('nexadesk:music:stop')
+        .setLabel('Parar')
+        .setStyle(ButtonStyle.Danger)
+        .setDisabled(!active)
+    ),
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId('nexadesk:music:autocola')
+        .setLabel(queue.autoQueue ? 'Autocola IA: ON' : 'Autocola IA: OFF')
+        .setStyle(queue.autoQueue ? ButtonStyle.Success : ButtonStyle.Secondary)
+    )
+  ];
 }
 
 async function getVoiceCommandContext({ interaction, storage, allowFreeStatus = false }) {

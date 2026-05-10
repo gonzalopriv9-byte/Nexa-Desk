@@ -69,7 +69,10 @@ const schema = z.object({
   YTDLP_BIN: z.string().default('yt-dlp'),
   FFMPEG_BIN: z.string().default('ffmpeg'),
   MUSIC_YTDLP_FORMAT: z.string().default('bestaudio[ext=webm]/bestaudio/best'),
-  MUSIC_METADATA_TIMEOUT_MS: z.coerce.number().int().min(5_000).max(45_000).default(18_000)
+  MUSIC_METADATA_TIMEOUT_MS: z.coerce.number().int().min(5_000).max(45_000).default(18_000),
+  SPOTIFY_CLIENT_ID: z.string().optional().default(''),
+  SPOTIFY_CLIENT_SECRET: z.string().optional().default(''),
+  SPOTIFY_MARKET: z.string().default('ES')
 });
 
 export const config = schema.parse(process.env);

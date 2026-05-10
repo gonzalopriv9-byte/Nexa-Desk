@@ -12,6 +12,7 @@ import {
   VoiceConnectionStatus
 } from '@discordjs/voice';
 import { normalizeMusicConfig } from './music-config.js';
+import { buildSpotifySongQuery, isSpotifyTrackUrl } from './spotify-client.js';
 
 const SAMPLE_RATE = 48_000;
 const CHANNELS = 2;
@@ -27,24 +28,34 @@ const VIDEOCLIP_PATTERN = /\b(official video|video oficial|videoclip|video clip|
 const ALTERED_VERSION_PATTERN = /\b(live|en vivo|concert|cover|karaoke|instrumental|remix|slowed|reverb|sped up|nightcore|edit|intro|extended)\b/i;
 
 export class MusicManager {
-  constructor({ aiClient = null, config = {} }) {
+  constructor({ aiClient = null, spotifyClient = null, config = {} }) {
     this.aiClient = aiClient;
+    this.spotifyClient = spotifyClient;
     this.config = config;
     this.sessions = new Map();
     this.searchCache = new Map();
     this.streamCache = new Map();
     this.aiQueryCache = new Map();
+    this.spotifyCache = new Map();
   }
 
   getSession(guildId) {
     return this.sessions.get(guildId) ?? null;
   }
 
-  async search(query, limit = 5) {
+  async search(query, limit = 5, options = {}) {
     const cleanQuery = normalizeQuery(query);
     if (!cleanQuery) throw new Error('Escribe una busqueda o un enlace.');
 
-    const cached = this.#getCache(this.searchCache, `${limit}:${cleanQuery.toLowerCase()}`);
+    if (options.preferSpotify) {
+      const spotifyResults = await this.#spotifySearchEntries(cleanQuery, limit).catch((error) => {
+        console.error('Spotify music search failed, falling back to YouTube:', normalizeProcessError(error));
+        return [];
+      });
+      if (spotifyResults.length) return spotifyResults;
+    }
+
+    const cached = this.#getCache(this.searchCache, `yt:${limit}:${cleanQuery.toLowerCase()}`);
     if (cached) return cached;
 
     const quickResults = await this.#quickYoutubeSearch(cleanQuery, limit).catch((error) => {
@@ -53,7 +64,7 @@ export class MusicManager {
     });
     if (quickResults.length) {
       const ranked = rankPlayableCandidates(quickResults, cleanQuery).slice(0, limit);
-      this.#setCache(this.searchCache, `${limit}:${cleanQuery.toLowerCase()}`, ranked);
+      this.#setCache(this.searchCache, `yt:${limit}:${cleanQuery.toLowerCase()}`, ranked);
       return ranked;
     }
 
@@ -65,7 +76,7 @@ export class MusicManager {
     ], { timeoutMs: this.#metadataTimeoutMs() });
 
     const entries = rankPlayableCandidates(normalizeSearchEntries(result?.entries ?? []), cleanQuery).slice(0, limit);
-    this.#setCache(this.searchCache, `${limit}:${cleanQuery.toLowerCase()}`, entries);
+    this.#setCache(this.searchCache, `yt:${limit}:${cleanQuery.toLowerCase()}`, entries);
     return entries;
   }
 
@@ -110,21 +121,33 @@ export class MusicManager {
     const cleanQuery = normalizeQuery(query);
     if (!cleanQuery) throw new Error('Escribe una busqueda o un enlace.');
 
-    const metadata = URL_PATTERN.test(cleanQuery)
-      ? await this.#metadataForUrl(cleanQuery)
-      : await this.#metadataForSongOnlySearch(cleanQuery);
+    const spotifyTrack = isSpotifyTrackUrl(cleanQuery)
+      ? await this.#spotifyTrackFromUrl(cleanQuery).catch((error) => {
+        console.error('Spotify URL lookup failed, trying direct metadata:', normalizeProcessError(error));
+        return null;
+      })
+      : null;
+    const metadata = spotifyTrack
+      ? await this.#metadataForSpotifyTrack(spotifyTrack, cleanQuery)
+      : URL_PATTERN.test(cleanQuery)
+        ? await this.#metadataForUrl(cleanQuery)
+        : await this.#metadataForSongOnlySearch(cleanQuery);
     const entry = normalizeTrackMetadata(metadata);
     if (!entry?.webpageUrl) {
       throw new Error('No he encontrado una cancion reproducible para esa busqueda.');
     }
+    const spotify = entry.spotify ?? null;
 
     return {
       id: entry.id || randomUUID(),
-      title: entry.title || cleanQuery,
+      title: spotify ? `${spotify.artistText} - ${spotify.title}` : entry.title || cleanQuery,
       url: entry.webpageUrl,
-      duration: entry.duration ?? null,
-      uploader: entry.uploader || entry.channel || 'Fuente desconocida',
-      thumbnail: entry.thumbnail || '',
+      duration: spotify?.duration ?? entry.duration ?? null,
+      uploader: spotify ? `Spotify: ${spotify.artistText}` : entry.uploader || entry.channel || 'Fuente desconocida',
+      thumbnail: spotify?.thumbnail || entry.thumbnail || '',
+      sourceTitle: entry.title || '',
+      sourceUploader: entry.uploader || entry.channel || '',
+      spotify,
       requestedById: requestedBy?.id ?? null,
       requestedByName: requestedBy?.username ?? 'Autocola IA',
       autoQueued,
@@ -402,6 +425,14 @@ export class MusicManager {
   }
 
   async #metadataForSongOnlySearch(query) {
+    const spotifyTrack = await this.#searchSpotifyTrack(query).catch((error) => {
+      console.error('Spotify lookup failed, using AI YouTube query:', normalizeProcessError(error));
+      return null;
+    });
+    if (spotifyTrack) {
+      return this.#metadataForSpotifyTrack(spotifyTrack, query);
+    }
+
     const optimizedQuery = await this.#buildSongOnlySearchQuery(query);
     const candidates = [
       ...await this.search(optimizedQuery, 8).catch(() => []),
@@ -451,6 +482,60 @@ export class MusicManager {
     }
   }
 
+  async #metadataForSpotifyTrack(spotifyTrack, originalQuery) {
+    const primaryQuery = buildSpotifySongQuery(spotifyTrack);
+    const compact = `${spotifyTrack.artistText} ${spotifyTrack.title}`.replace(/\s+/g, ' ').trim();
+    const candidates = [
+      ...await this.search(primaryQuery, 8).catch(() => []),
+      ...await this.search(`${compact} official audio`, 6).catch(() => []),
+      ...await this.search(`${compact} topic`, 6).catch(() => [])
+    ];
+    const best = rankPlayableCandidates(dedupeTracks(candidates), originalQuery, { spotifyTrack })[0];
+    if (best) return { ...best, spotify: spotifyTrack };
+
+    const fallback = await this.#metadataForSearch(primaryQuery);
+    return { ...fallback, spotify: spotifyTrack };
+  }
+
+  async #searchSpotifyTrack(query) {
+    const tracks = await this.#spotifySearchTracks(query, 6);
+    return rankSpotifyCandidates(tracks, query)[0] ?? null;
+  }
+
+  async #spotifyTrackFromUrl(url) {
+    if (!this.spotifyClient?.isConfigured?.()) return null;
+    const cached = this.#getCache(this.spotifyCache, `url:${url}`);
+    if (cached) return cached;
+    const track = await this.spotifyClient.getTrackFromUrl(url);
+    if (track) this.#setCache(this.spotifyCache, `url:${url}`, track);
+    return track;
+  }
+
+  async #spotifySearchTracks(query, limit = 5) {
+    if (!this.spotifyClient?.isConfigured?.()) return [];
+    const cleanQuery = normalizeQuery(query);
+    const cacheKey = `search:${limit}:${cleanQuery.toLowerCase()}`;
+    const cached = this.#getCache(this.spotifyCache, cacheKey);
+    if (cached) return cached;
+    const tracks = await this.spotifyClient.searchTracks(cleanQuery, limit);
+    const ranked = rankSpotifyCandidates(tracks, cleanQuery).slice(0, limit);
+    this.#setCache(this.spotifyCache, cacheKey, ranked);
+    return ranked;
+  }
+
+  async #spotifySearchEntries(query, limit = 5) {
+    const tracks = await this.#spotifySearchTracks(query, limit);
+    return tracks.map((track) => ({
+      id: `spotify:${track.id}`,
+      title: `${track.artistText} - ${track.title}`,
+      webpageUrl: track.spotifyUrl,
+      duration: track.duration,
+      uploader: `Spotify: ${track.album || track.artistText}`,
+      thumbnail: track.thumbnail,
+      spotify: track
+    }));
+  }
+
   async #metadataForUrl(url) {
     return readJsonProcess(this.#ytDlpBin(), [
       '--dump-single-json',
@@ -498,7 +583,7 @@ export class MusicManager {
       const uploader = matchJsonString(block, /"ownerText":\{"runs":\[\{"text":"([^"]+)"/)
         || matchJsonString(block, /"shortBylineText":\{"runs":\[\{"text":"([^"]+)"/)
         || 'YouTube';
-      const durationLabel = matchJsonString(block, /"lengthText":\{"simpleText":"([^"]+)"/);
+      const durationLabel = matchJsonString(block, /"lengthText":\{.*?"simpleText":"([^"]+)"/);
       seen.add(id);
       results.push({
         id,
@@ -573,17 +658,17 @@ function normalizeSearchEntries(entries) {
     .filter((entry) => entry.title && entry.webpageUrl);
 }
 
-function rankPlayableCandidates(entries, query) {
+function rankPlayableCandidates(entries, query, context = {}) {
   return [...entries]
     .map((entry, index) => ({
       entry,
-      score: scorePlayableCandidate(entry, query) - index * 0.25
+      score: scorePlayableCandidate(entry, query, context) - index * 0.25
     }))
     .sort((a, b) => b.score - a.score)
     .map((item) => item.entry);
 }
 
-function scorePlayableCandidate(track, query) {
+function scorePlayableCandidate(track, query, context = {}) {
   const title = normalizeComparable(track.title);
   const uploader = normalizeComparable(track.uploader || track.channel);
   const rawTitle = String(track.title ?? '');
@@ -609,7 +694,51 @@ function scorePlayableCandidate(track, query) {
     if (title.includes(token) || uploader.includes(token)) score += 2;
   }
 
+  const spotifyTrack = context.spotifyTrack;
+  if (spotifyTrack) {
+    const spotifyTitle = normalizeComparable(spotifyTrack.title);
+    const spotifyArtists = normalizeComparable(spotifyTrack.artistText);
+    const artistTokens = spotifyArtists.split(' ').filter((part) => part.length > 2).slice(0, 8);
+    const titleTokens = spotifyTitle.split(' ').filter((part) => part.length > 2).slice(0, 8);
+
+    if (spotifyTitle && (title.includes(spotifyTitle) || spotifyTitle.includes(title))) score += 45;
+    for (const token of titleTokens) {
+      if (title.includes(token)) score += 5;
+    }
+    for (const token of artistTokens) {
+      if (title.includes(token) || uploader.includes(token)) score += 6;
+    }
+    if (artistTokens.some((token) => uploader.includes(token)) && /\btopic\b/i.test(rawUploader)) score += 24;
+
+    if (spotifyTrack.duration && track.duration) {
+      const diff = Math.abs(Number(track.duration) - Number(spotifyTrack.duration));
+      if (diff <= 8) score += 42;
+      else if (diff <= 18) score += 26;
+      else if (diff <= 35) score += 8;
+      else if (diff > 90) score -= 75;
+      else if (diff > 45) score -= 38;
+    }
+  }
+
   return score;
+}
+
+function rankSpotifyCandidates(tracks, query) {
+  const normalizedQuery = normalizeComparable(query);
+  return [...tracks]
+    .map((track, index) => {
+      const text = normalizeComparable(`${track.artistText} ${track.title} ${track.album}`);
+      let score = 100 - index * 0.5;
+      for (const token of normalizedQuery.split(' ').filter((part) => part.length > 2).slice(0, 12)) {
+        if (text.includes(token)) score += 7;
+      }
+      const title = normalizeComparable(track.title);
+      if (title && normalizedQuery.includes(title)) score += 24;
+      if (track.duration && track.duration >= 70 && track.duration <= 540) score += 8;
+      return { track, score };
+    })
+    .sort((a, b) => b.score - a.score)
+    .map((item) => item.track);
 }
 
 function queryAllowsAlteredVersion(normalizedQuery, rawTitle) {
@@ -644,7 +773,8 @@ function normalizeTrackMetadata(entry = {}) {
     webpageUrl,
     duration: entry.duration,
     uploader: entry.uploader || entry.channel,
-    thumbnail: entry.thumbnail
+    thumbnail: entry.thumbnail,
+    spotify: entry.spotify || entry.spotifyTrack || null
   };
 }
 
