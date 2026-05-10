@@ -17,12 +17,18 @@ const SAMPLE_RATE = 48_000;
 const CHANNELS = 2;
 const DEFAULT_FORMAT = 'bestaudio[ext=webm]/bestaudio/best';
 const URL_PATTERN = /^https?:\/\/\S+/i;
+const YOUTUBE_WATCH_URL = 'https://www.youtube.com/watch?v=';
+const CACHE_TTL_MS = 1000 * 60 * 20;
+const QUICK_SEARCH_TIMEOUT_MS = 4_500;
+const MUSIC_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
 
 export class MusicManager {
   constructor({ aiClient = null, config = {} }) {
     this.aiClient = aiClient;
     this.config = config;
     this.sessions = new Map();
+    this.searchCache = new Map();
+    this.streamCache = new Map();
   }
 
   getSession(guildId) {
@@ -33,6 +39,18 @@ export class MusicManager {
     const cleanQuery = normalizeQuery(query);
     if (!cleanQuery) throw new Error('Escribe una busqueda o un enlace.');
 
+    const cached = this.#getCache(this.searchCache, `${limit}:${cleanQuery.toLowerCase()}`);
+    if (cached) return cached;
+
+    const quickResults = await this.#quickYoutubeSearch(cleanQuery, limit).catch((error) => {
+      console.error('Fast YouTube search failed, falling back to yt-dlp:', normalizeProcessError(error));
+      return [];
+    });
+    if (quickResults.length) {
+      this.#setCache(this.searchCache, `${limit}:${cleanQuery.toLowerCase()}`, quickResults);
+      return quickResults;
+    }
+
     const result = await readJsonProcess(this.#ytDlpBin(), [
       '--dump-single-json',
       '--no-warnings',
@@ -40,7 +58,9 @@ export class MusicManager {
       `ytsearch${Math.max(Math.min(limit, 10), 1)}:${cleanQuery}`
     ], { timeoutMs: this.#metadataTimeoutMs() });
 
-    return normalizeSearchEntries(result?.entries ?? []).slice(0, limit);
+    const entries = normalizeSearchEntries(result?.entries ?? []).slice(0, limit);
+    this.#setCache(this.searchCache, `${limit}:${cleanQuery.toLowerCase()}`, entries);
+    return entries;
   }
 
   async enqueue({ interaction, query, guildConfig }) {
@@ -54,12 +74,17 @@ export class MusicManager {
       throw new Error('Entra primero a un canal de voz para que pueda unirme.');
     }
 
+    const existingSession = this.sessions.get(interaction.guildId);
+    if (existingSession?.queue?.length >= musicConfig.maxQueueSize) {
+      throw new Error(`La cola ya tiene ${musicConfig.maxQueueSize} canciones. Sube el limite desde la dashboard o espera a que avance.`);
+    }
+
+    const track = await this.resolveTrack(query, { requestedBy: interaction.user });
     const session = await this.#ensureSession({ interaction, guildConfig, musicConfig, voiceChannel: memberVoiceChannel });
     if (session.queue.length >= musicConfig.maxQueueSize) {
       throw new Error(`La cola ya tiene ${musicConfig.maxQueueSize} canciones. Sube el limite desde la dashboard o espera a que avance.`);
     }
 
-    const track = await this.resolveTrack(query, { requestedBy: interaction.user });
     session.queue.push(track);
     session.autoQueue = musicConfig.autoQueue;
     const started = session.player.state.status === AudioPlayerStatus.Idle && !session.current;
@@ -188,7 +213,7 @@ export class MusicManager {
       channelId: voiceChannel.id,
       guildId: interaction.guildId,
       adapterCreator: interaction.guild.voiceAdapterCreator,
-      selfDeaf: true,
+      selfDeaf: false,
       selfMute: false
     });
     const player = createAudioPlayer({
@@ -358,6 +383,9 @@ export class MusicManager {
   }
 
   async #metadataForSearch(query) {
+    const [quickResult] = await this.search(query, 1).catch(() => []);
+    if (quickResult) return quickResult;
+
     const result = await readJsonProcess(this.#ytDlpBin(), [
       '--dump-single-json',
       '--no-warnings',
@@ -378,17 +406,72 @@ export class MusicManager {
   }
 
   async #getStreamUrl(url) {
+    const cached = this.#getCache(this.streamCache, url);
+    if (cached) return cached;
+
     const output = await readTextProcess(this.#ytDlpBin(), [
       '-f',
       this.config.MUSIC_YTDLP_FORMAT || DEFAULT_FORMAT,
       '--no-playlist',
       '--no-warnings',
+      '--socket-timeout',
+      '8',
       '--get-url',
       url
     ], { timeoutMs: this.#metadataTimeoutMs() });
     const streamUrl = output.split(/\r?\n/).map((line) => line.trim()).find(Boolean);
     if (!streamUrl) throw new Error('yt-dlp no devolvio una URL de audio reproducible.');
+    this.#setCache(this.streamCache, url, streamUrl, 1000 * 60 * 8);
     return streamUrl;
+  }
+
+  async #quickYoutubeSearch(query, limit = 5) {
+    const url = `https://www.youtube.com/results?search_query=${encodeURIComponent(query)}&sp=EgIQAQ%253D%253D`;
+    const html = await fetchText(url, { timeoutMs: QUICK_SEARCH_TIMEOUT_MS });
+    const blocks = html.split('"videoRenderer":').slice(1);
+    const results = [];
+    const seen = new Set();
+
+    for (const block of blocks) {
+      if (results.length >= limit) break;
+      const id = matchJsonString(block, /"videoId":"([^"]+)"/);
+      if (!id || seen.has(id)) continue;
+      const title = matchJsonString(block, /"title":\{"runs":\[\{"text":"([^"]+)"/)
+        || matchJsonString(block, /"title":\{"simpleText":"([^"]+)"/);
+      if (!title) continue;
+      const uploader = matchJsonString(block, /"ownerText":\{"runs":\[\{"text":"([^"]+)"/)
+        || matchJsonString(block, /"shortBylineText":\{"runs":\[\{"text":"([^"]+)"/)
+        || 'YouTube';
+      const durationLabel = matchJsonString(block, /"lengthText":\{"simpleText":"([^"]+)"/);
+      seen.add(id);
+      results.push({
+        id,
+        title,
+        webpageUrl: `${YOUTUBE_WATCH_URL}${id}`,
+        duration: parseDurationLabel(durationLabel),
+        uploader,
+        thumbnail: `https://i.ytimg.com/vi/${id}/hqdefault.jpg`
+      });
+    }
+
+    return results;
+  }
+
+  #getCache(cache, key) {
+    const entry = cache.get(key);
+    if (!entry) return null;
+    if (Date.now() > entry.expiresAt) {
+      cache.delete(key);
+      return null;
+    }
+    return entry.value;
+  }
+
+  #setCache(cache, key, value, ttlMs = CACHE_TTL_MS) {
+    cache.set(key, {
+      value,
+      expiresAt: Date.now() + ttlMs
+    });
   }
 
   #handlePlaybackError(session, error) {
@@ -486,6 +569,49 @@ function readTextProcess(command, args, { timeoutMs = 15_000 } = {}) {
       reject(new Error(`${command} fallo: ${details.slice(0, 700)}`));
     });
   });
+}
+
+async function fetchText(url, { timeoutMs = 5_000 } = {}) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, {
+      signal: controller.signal,
+      headers: {
+        'user-agent': MUSIC_USER_AGENT,
+        'accept-language': 'es-ES,es;q=0.9,en;q=0.7'
+      }
+    });
+    if (!response.ok) throw new Error(`YouTube respondio ${response.status}`);
+    return response.text();
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function matchJsonString(value, pattern) {
+  const match = pattern.exec(value);
+  return match ? decodeJsonText(match[1]) : '';
+}
+
+function decodeJsonText(value) {
+  try {
+    return JSON.parse(`"${String(value).replace(/"/g, '\\"')}"`);
+  } catch {
+    return String(value ?? '')
+      .replace(/\\u([0-9a-f]{4})/gi, (_, hex) => String.fromCharCode(Number.parseInt(hex, 16)))
+      .replace(/\\"/g, '"')
+      .replace(/\\\\/g, '\\');
+  }
+}
+
+function parseDurationLabel(value) {
+  const parts = String(value ?? '')
+    .split(':')
+    .map((part) => Number(part.trim()))
+    .filter((part) => Number.isFinite(part));
+  if (!parts.length) return null;
+  return parts.reduce((total, part) => total * 60 + part, 0);
 }
 
 function normalizeProcessError(error) {
