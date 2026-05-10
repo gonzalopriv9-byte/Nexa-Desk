@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { Innertube } from 'youtubei.js';
 import {
   AudioPlayerStatus,
   createAudioPlayer,
@@ -38,6 +39,12 @@ export class MusicManager {
     this.streamInflight = new Map();
     this.aiQueryCache = new Map();
     this.spotifyCache = new Map();
+    this.youtubeClientPromise = null;
+    if (this.#fastStreamEnabled()) {
+      this.#getYoutubeClient().catch((error) => {
+        console.error('YouTube fast stream warmup failed:', normalizeProcessError(error));
+      });
+    }
   }
 
   getSession(guildId) {
@@ -569,6 +576,19 @@ export class MusicManager {
     const inflight = this.streamInflight.get(url);
     if (inflight) return inflight;
 
+    const promise = this.#getFastYoutubeStreamUrl(url)
+      .catch((error) => {
+        console.error('YouTube fast stream failed, falling back to yt-dlp:', normalizeProcessError(error));
+        return this.#getYtDlpStreamUrl(url);
+      })
+      .finally(() => {
+        this.streamInflight.delete(url);
+      });
+    this.streamInflight.set(url, promise);
+    return promise;
+  }
+
+  async #getYtDlpStreamUrl(url) {
     const args = [
       '-f',
       this.config.MUSIC_YTDLP_FORMAT || DEFAULT_FORMAT,
@@ -583,18 +603,52 @@ export class MusicManager {
       args.splice(args.length - 1, 0, '--force-ipv4');
     }
 
-    const promise = readTextProcess(this.#ytDlpBin(), args, { timeoutMs: this.#metadataTimeoutMs() })
-      .then((output) => {
-        const streamUrl = output.split(/\r?\n/).map((line) => line.trim()).find(Boolean);
-        if (!streamUrl) throw new Error('yt-dlp no devolvio una URL de audio reproducible.');
+    const output = await readTextProcess(this.#ytDlpBin(), args, { timeoutMs: this.#metadataTimeoutMs() });
+    const streamUrl = output.split(/\r?\n/).map((line) => line.trim()).find(Boolean);
+    if (!streamUrl) throw new Error('yt-dlp no devolvio una URL de audio reproducible.');
+    this.#setCache(this.streamCache, url, streamUrl, 1000 * 60 * 8);
+    return streamUrl;
+  }
+
+  async #getFastYoutubeStreamUrl(url) {
+    if (!this.#fastStreamEnabled()) throw new Error('fast stream desactivado');
+    const videoId = extractYouTubeVideoId(url);
+    if (!videoId) throw new Error('no es una URL de YouTube compatible');
+
+    const youtube = await this.#getYoutubeClient();
+    const clients = parseFastStreamClients(this.config.MUSIC_FAST_STREAM_CLIENTS);
+    let lastError = null;
+    for (const client of clients) {
+      try {
+        const startedAt = Date.now();
+        const info = await youtube.getBasicInfo(videoId, { client });
+        const format = chooseInnertubeAudioFormat([
+          ...(info.streaming_data?.formats ?? []),
+          ...(info.streaming_data?.adaptive_formats ?? [])
+        ]);
+        if (!format?.url) throw new Error(`sin formato de audio usable con ${client}`);
+        const streamUrl = String(format.url);
         this.#setCache(this.streamCache, url, streamUrl, 1000 * 60 * 8);
+        if (this.config.MUSIC_DEBUG_STREAMS) {
+          console.log(`YouTube fast stream ${client} ${format.itag} in ${Date.now() - startedAt}ms`);
+        }
         return streamUrl;
-      })
-      .finally(() => {
-        this.streamInflight.delete(url);
-      });
-    this.streamInflight.set(url, promise);
-    return promise;
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    throw lastError || new Error('no se pudo resolver stream rapido');
+  }
+
+  #getYoutubeClient() {
+    if (!this.youtubeClientPromise) {
+      this.youtubeClientPromise = Innertube.create();
+    }
+    return this.youtubeClientPromise;
+  }
+
+  #fastStreamEnabled() {
+    return this.config.MUSIC_FAST_STREAM_ENABLED !== false;
   }
 
   #warmStreamUrl(url) {
@@ -902,6 +956,49 @@ function parseDurationLabel(value) {
     .filter((part) => Number.isFinite(part));
   if (!parts.length) return null;
   return parts.reduce((total, part) => total * 60 + part, 0);
+}
+
+function extractYouTubeVideoId(value) {
+  const text = String(value || '');
+  const patterns = [
+    /(?:youtube\.com\/watch\?.*?v=|youtu\.be\/|youtube\.com\/shorts\/|youtube\.com\/embed\/)([a-zA-Z0-9_-]{11})/i,
+    /^[a-zA-Z0-9_-]{11}$/
+  ];
+  for (const pattern of patterns) {
+    const match = pattern.exec(text);
+    if (match) return match[1] || match[0];
+  }
+  return '';
+}
+
+function parseFastStreamClients(value) {
+  const clients = String(value || 'ANDROID,IOS')
+    .split(',')
+    .map((client) => client.trim().toUpperCase())
+    .filter(Boolean);
+  return clients.length ? clients : ['ANDROID', 'IOS'];
+}
+
+function chooseInnertubeAudioFormat(formats = []) {
+  const preferredItags = new Map([
+    [251, 1000],
+    [250, 900],
+    [249, 800],
+    [140, 700],
+    [139, 500],
+    [600, 350],
+    [599, 300]
+  ]);
+  return formats
+    .filter((format) => format?.url && String(format.mime_type || format.mimeType || '').includes('audio'))
+    .map((format) => ({
+      format,
+      score: (preferredItags.get(Number(format.itag)) || 0)
+        + (Number(format.bitrate) || 0) / 1000
+        + (String(format.mime_type || '').includes('opus') ? 35 : 0)
+    }))
+    .sort((a, b) => b.score - a.score)
+    .map((item) => item.format)[0] ?? null;
 }
 
 function normalizeProcessError(error) {
