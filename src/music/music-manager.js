@@ -3,6 +3,13 @@ import { randomUUID } from 'node:crypto';
 import { Readable } from 'node:stream';
 import { Innertube } from 'youtubei.js';
 import {
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  EmbedBuilder,
+  Events
+} from 'discord.js';
+import {
   AudioPlayerStatus,
   createAudioPlayer,
   createAudioResource,
@@ -13,6 +20,7 @@ import {
   StreamType,
   VoiceConnectionStatus
 } from '@discordjs/voice';
+import { LavalinkManager, NodeType } from 'lavalink-client';
 import { normalizeMusicConfig } from './music-config.js';
 import { buildSpotifySongQuery, isSpotifyTrackUrl } from './spotify-client.js';
 
@@ -28,6 +36,10 @@ const AUDIO_HINT_PATTERN = /\b(official audio|audio oficial|topic|provided to yo
 const LYRIC_VIDEO_PATTERN = /\b(letra|lyrics|lyric video|subtitulado|subtitulos)\b/i;
 const VIDEOCLIP_PATTERN = /\b(official video|video oficial|videoclip|video clip|music video|mv|trailer|teaser|shorts?)\b/i;
 const ALTERED_VERSION_PATTERN = /\b(live|en vivo|concert|cover|karaoke|instrumental|remix|slowed|reverb|sped up|nightcore|edit|intro|extended)\b/i;
+const EMOJIS = {
+  wifi: '<a:wifi:1499732411829846116>',
+  global: '<a:Global:1499728413974593708>'
+};
 
 export class MusicManager {
   constructor({ aiClient = null, spotifyClient = null, config = {} }) {
@@ -41,11 +53,121 @@ export class MusicManager {
     this.aiQueryCache = new Map();
     this.spotifyCache = new Map();
     this.youtubeClientPromise = null;
+    this.discordClient = null;
+    this.lavalink = null;
+    this.lavalinkReady = false;
+    this.lavalinkInitStarted = false;
     if (this.#fastStreamEnabled()) {
       this.#getYoutubeClient().catch((error) => {
         console.error('YouTube fast stream warmup failed:', normalizeProcessError(error));
       });
     }
+  }
+
+  attachDiscordClient(client) {
+    if (!this.#lavalinkConfigured() || this.lavalinkInitStarted) return;
+    this.discordClient = client;
+    this.lavalinkInitStarted = true;
+
+    const nodeType = this.#lavalinkNodeType();
+    this.lavalink = new LavalinkManager({
+      nodes: [
+        {
+          id: this.config.LAVALINK_NODE_ID || 'NexaDesk',
+          host: this.config.LAVALINK_HOST || '127.0.0.1',
+          port: Number(this.config.LAVALINK_PORT) || 2333,
+          authorization: this.config.LAVALINK_PASSWORD || 'youshallnotpass',
+          secure: Boolean(this.config.LAVALINK_SECURE),
+          nodeType,
+          retryAmount: 2,
+          retryDelay: 2500,
+          requestSignalTimeoutMS: 5000
+        }
+      ],
+      sendToShard: (guildId, payload) => {
+        const guild = client.guilds.cache.get(guildId);
+        guild?.shard?.send(payload);
+      },
+      autoSkip: true,
+      autoMove: true,
+      autoSkipOnResolveError: true,
+      emitNewSongsOnly: true,
+      client: {
+        id: this.config.DISCORD_CLIENT_ID,
+        username: 'NexaDesk'
+      },
+      playerOptions: {
+        defaultSearchPlatform: this.#lavalinkSearchSource(),
+        onDisconnect: {
+          autoReconnect: true,
+          autoReconnectOnlyWithTracks: true
+        },
+        maxErrorsPerTime: {
+          threshold: 30_000,
+          maxAmount: 2
+        },
+        onEmptyQueue: {
+          destroyAfterMs: 60_000
+        }
+      }
+    });
+
+    client.on('raw', (data) => {
+      this.lavalink?.sendRawData(data).catch((error) => {
+        if (this.#debugStreams()) console.error('Lavalink raw voice update failed:', normalizeProcessError(error));
+      });
+    });
+
+    client.once(Events.ClientReady, async (readyClient) => {
+      try {
+        await this.lavalink.init({
+          id: readyClient.user.id,
+          username: readyClient.user.username
+        });
+      } catch (error) {
+        this.lavalinkReady = false;
+        console.error('Lavalink init failed, local music backend remains available:', normalizeProcessError(error));
+      }
+    });
+
+    this.lavalink.nodeManager.on('connect', (node) => {
+      this.lavalinkReady = true;
+      console.log(`NexaDesk music node connected: ${node.id}`);
+    });
+    this.lavalink.nodeManager.on('disconnect', (node, reason) => {
+      this.lavalinkReady = this.#hasConnectedLavalinkNode();
+      console.warn(`NexaDesk music node disconnected: ${node.id}`, reason ?? '');
+    });
+    this.lavalink.nodeManager.on('error', (node, error) => {
+      this.lavalinkReady = this.#hasConnectedLavalinkNode();
+      console.error(`NexaDesk music node error (${node.id}):`, normalizeProcessError(error));
+    });
+
+    this.lavalink.on('trackStart', (player, lavalinkTrack) => {
+      this.#handleLavalinkTrackStart(player, lavalinkTrack).catch((error) => {
+        console.error('Failed to announce Lavalink track start:', normalizeProcessError(error));
+      });
+    });
+    this.lavalink.on('trackEnd', (player, lavalinkTrack) => {
+      this.#handleLavalinkTrackEnd(player, lavalinkTrack).catch((error) => {
+        console.error('Failed to update Lavalink history:', normalizeProcessError(error));
+      });
+    });
+    this.lavalink.on('queueEnd', (player) => {
+      this.#handleLavalinkQueueEnd(player).catch((error) => {
+        console.error('Failed to finish Lavalink queue:', normalizeProcessError(error));
+      });
+    });
+    this.lavalink.on('trackError', (player, track, payload) => {
+      this.#handleLavalinkTrackError(player, track, payload).catch((error) => {
+        console.error('Failed to handle Lavalink track error:', normalizeProcessError(error));
+      });
+    });
+    this.lavalink.on('trackStuck', (player, track, payload) => {
+      this.#handleLavalinkTrackError(player, track, payload).catch((error) => {
+        console.error('Failed to handle Lavalink stuck track:', normalizeProcessError(error));
+      });
+    });
   }
 
   getSession(guildId) {
@@ -103,6 +225,16 @@ export class MusicManager {
     const existingSession = this.sessions.get(interaction.guildId);
     if (existingSession?.queue?.length >= musicConfig.maxQueueSize) {
       throw new Error(`La cola ya tiene ${musicConfig.maxQueueSize} canciones. Sube el limite desde la dashboard o espera a que avance.`);
+    }
+
+    if (this.#shouldTryLavalink()) {
+      try {
+        return await this.#enqueueLavalink({ interaction, query, guildConfig, musicConfig, voiceChannel: memberVoiceChannel });
+      } catch (error) {
+        if (this.#mustUseLavalink()) throw error;
+        console.error('Lavalink playback failed, falling back to local backend:', normalizeProcessError(error));
+        await this.#destroyLavalinkSession(interaction.guildId, 'fallback-to-local').catch(() => {});
+      }
     }
 
     let track = null;
@@ -180,6 +312,13 @@ export class MusicManager {
   skip(guildId) {
     const session = this.getSession(guildId);
     if (!session) return false;
+    if (session.backend === 'lavalink') {
+      session.skipRequested = true;
+      session.player.skip().catch((error) => {
+        console.error('Lavalink skip failed:', normalizeProcessError(error));
+      });
+      return true;
+    }
     session.skipRequested = true;
     this.#killCurrentProcess(session);
     session.player.stop(true);
@@ -189,6 +328,13 @@ export class MusicManager {
   stop(guildId) {
     const session = this.getSession(guildId);
     if (!session) return false;
+
+    if (session.backend === 'lavalink') {
+      this.#destroyLavalinkSession(guildId, 'manual-stop').catch((error) => {
+        console.error('Lavalink stop failed:', normalizeProcessError(error));
+      });
+      return true;
+    }
 
     session.destroyed = true;
     session.queue = [];
@@ -205,18 +351,34 @@ export class MusicManager {
   }
 
   pause(guildId) {
-    return this.getSession(guildId)?.player.pause(true) ?? false;
+    const session = this.getSession(guildId);
+    if (!session) return false;
+    if (session.backend === 'lavalink') {
+      session.player.pause().catch((error) => console.error('Lavalink pause failed:', normalizeProcessError(error)));
+      return true;
+    }
+    return session.player.pause(true) ?? false;
   }
 
   resume(guildId) {
-    return this.getSession(guildId)?.player.unpause() ?? false;
+    const session = this.getSession(guildId);
+    if (!session) return false;
+    if (session.backend === 'lavalink') {
+      session.player.resume().catch((error) => console.error('Lavalink resume failed:', normalizeProcessError(error)));
+      return true;
+    }
+    return session.player.unpause() ?? false;
   }
 
   setVolume(guildId, percent) {
     const session = this.getSession(guildId);
     if (!session) return null;
     session.volume = clampVolume(percent);
-    session.currentResource?.volume?.setVolume(session.volume / 100);
+    if (session.backend === 'lavalink') {
+      session.player.setVolume(session.volume).catch((error) => console.error('Lavalink volume failed:', normalizeProcessError(error)));
+    } else {
+      session.currentResource?.volume?.setVolume(session.volume / 100);
+    }
     return session.volume;
   }
 
@@ -243,12 +405,92 @@ export class MusicManager {
     return {
       active: true,
       current: session.current,
-      queue: [...session.queue],
+      queue: session.backend === 'lavalink' ? this.#lavalinkQueuedTracks(session.player) : [...session.queue],
       history: [...session.history],
       autoQueue: session.autoQueue,
       volume: session.volume,
       voiceChannelName: session.voiceChannelName
     };
+  }
+
+  async #enqueueLavalink({ interaction, query, guildConfig, musicConfig, voiceChannel }) {
+    if (!this.#canUseLavalink()) {
+      throw new Error('El nodo de musica rapida todavia no esta conectado.');
+    }
+
+    const session = await this.#ensureLavalinkSession({ interaction, guildConfig, musicConfig, voiceChannel });
+    if (session.queue.length >= musicConfig.maxQueueSize) {
+      throw new Error(`La cola ya tiene ${musicConfig.maxQueueSize} canciones. Sube el limite desde la dashboard o espera a que avance.`);
+    }
+
+    const track = await this.resolveTrack(query, { requestedBy: interaction.user });
+    const wasIdle = !session.player.playing && !session.player.paused && !session.player.queue.current;
+    const lavalinkTrack = await this.#loadLavalinkTrack(session, track, interaction.user);
+    lavalinkTrack.userData = {
+      ...(lavalinkTrack.userData ?? {}),
+      nexadeskTrack: track
+    };
+    session.player.queue.add(lavalinkTrack);
+    session.queue = this.#lavalinkQueuedTracks(session.player);
+    session.autoQueue = musicConfig.autoQueue;
+    session.volume = clampVolume(musicConfig.defaultVolume);
+    await session.player.setVolume(session.volume).catch(() => {});
+    if (wasIdle) {
+      await session.player.play();
+    }
+
+    return {
+      track,
+      position: wasIdle ? 1 : session.player.queue.tracks.length,
+      started: wasIdle,
+      queueLength: session.player.queue.tracks.length
+    };
+  }
+
+  async #ensureLavalinkSession({ interaction, guildConfig, musicConfig, voiceChannel }) {
+    const existing = this.sessions.get(interaction.guildId);
+    if (existing) {
+      if (existing.voiceChannelId !== voiceChannel.id) {
+        throw new Error(`Ya estoy reproduciendo musica en ${existing.voiceChannelName}. Entra ahi o usa /musica parar.`);
+      }
+      if (existing.backend !== 'lavalink') {
+        throw new Error('Ya hay una sesion de musica local activa en este servidor.');
+      }
+      return existing;
+    }
+
+    const player = this.lavalink.createPlayer({
+      guildId: interaction.guildId,
+      voiceChannelId: voiceChannel.id,
+      textChannelId: interaction.channelId,
+      volume: clampVolume(musicConfig.defaultVolume),
+      selfDeaf: false,
+      selfMute: false
+    });
+    await player.connect();
+
+    const session = {
+      backend: 'lavalink',
+      guildId: interaction.guildId,
+      guildName: interaction.guild.name,
+      textChannel: interaction.channel,
+      textChannelId: interaction.channelId,
+      voiceChannelId: voiceChannel.id,
+      voiceChannelName: voiceChannel.name,
+      player,
+      queue: [],
+      history: [],
+      current: null,
+      autoQueue: musicConfig.autoQueue,
+      volume: clampVolume(musicConfig.defaultVolume),
+      guildConfig,
+      destroyed: false,
+      skipRequested: false,
+      autoQueueInFlight: false
+    };
+
+    this.sessions.set(interaction.guildId, session);
+    return session;
   }
 
   async #ensureSession({ interaction, guildConfig, musicConfig, voiceChannel }) {
@@ -366,12 +608,149 @@ export class MusicManager {
     session.connection.subscribe(session.player);
     session.player.play(resource);
     await entersState(session.player, AudioPlayerStatus.Playing, 12_000);
+    await this.#sendNowPlayingMessage(session, track);
+  }
+
+  async #loadLavalinkTrack(session, track, requester) {
+    const attempts = [
+      track.url,
+      track.spotify ? `${track.spotify.artistText} ${track.spotify.title}` : track.title,
+      `${track.title} official audio topic`
+    ].filter(Boolean);
+
+    let lastError = null;
+    for (const query of attempts) {
+      try {
+        const source = URL_PATTERN.test(query) ? undefined : this.#lavalinkSearchSource();
+        const result = await session.player.search(source ? { query, source } : query, requester, false);
+        const [first] = result?.tracks ?? [];
+        if (first) return first;
+      } catch (error) {
+        lastError = error;
+      }
+    }
+
+    throw new Error(`No pude cargar la cancion en el nodo rapido. ${lastError ? normalizeProcessError(lastError) : 'Sin resultados.'}`);
+  }
+
+  async #handleLavalinkTrackStart(player, lavalinkTrack) {
+    const session = this.sessions.get(player.guildId);
+    if (!session || session.backend !== 'lavalink' || session.destroyed) return;
+    const track = this.#trackFromLavalinkTrack(lavalinkTrack);
+    session.current = track;
+    session.queue = this.#lavalinkQueuedTracks(player);
+    session.skipRequested = false;
+    await this.#sendNowPlayingMessage(session, track);
+  }
+
+  async #handleLavalinkTrackEnd(player, lavalinkTrack) {
+    const session = this.sessions.get(player.guildId);
+    if (!session || session.backend !== 'lavalink' || session.destroyed) return;
+    const track = session.current ?? this.#trackFromLavalinkTrack(lavalinkTrack);
+    if (track && !session.skipRequested) {
+      session.history.unshift(track);
+      session.history = session.history.slice(0, 18);
+    }
+    session.current = null;
+    session.queue = this.#lavalinkQueuedTracks(player);
+  }
+
+  async #handleLavalinkQueueEnd(player) {
+    const session = this.sessions.get(player.guildId);
+    if (!session || session.backend !== 'lavalink' || session.destroyed) return;
+
+    if (session.autoQueue) {
+      const added = await this.#enqueueLavalinkAiSuggestion(session);
+      if (added && !player.playing) {
+        await player.play().catch((error) => {
+          console.error('Lavalink autoplay start failed:', normalizeProcessError(error));
+        });
+        return;
+      }
+    }
+
+    await session.textChannel.send('Cola terminada. Me quedo disponible por si quieres poner mas musica.').catch(() => {});
+  }
+
+  async #handleLavalinkTrackError(player, lavalinkTrack, payload) {
+    const session = this.sessions.get(player.guildId);
+    if (!session || session.backend !== 'lavalink' || session.destroyed) return;
+    const track = this.#trackFromLavalinkTrack(lavalinkTrack);
+    const reason = payload?.exception?.message || payload?.reason || 'error desconocido del nodo rapido';
+    await session.textChannel.send(`No pude reproducir **${track?.title ?? 'esa cancion'}** con el nodo rapido: ${reason}`).catch(() => {});
+  }
+
+  async #enqueueLavalinkAiSuggestion(session) {
+    if (session.autoQueueInFlight || !session.history.length) return false;
+    session.autoQueueInFlight = true;
+    try {
+      const query = await this.#buildAutoQueueQuery(session.history);
+      if (!query) return false;
+      const normalizedExisting = new Set([...session.history, ...this.#lavalinkQueuedTracks(session.player), session.current]
+        .filter(Boolean)
+        .map((track) => normalizeComparable(track.title)));
+      const suggestion = await this.resolveTrack(query, { autoQueued: true });
+      if (normalizedExisting.has(normalizeComparable(suggestion.title))) return false;
+      const lavalinkTrack = await this.#loadLavalinkTrack(session, suggestion, {
+        id: this.config.DISCORD_CLIENT_ID,
+        username: 'Autocola IA'
+      });
+      lavalinkTrack.userData = {
+        ...(lavalinkTrack.userData ?? {}),
+        nexadeskTrack: suggestion
+      };
+      session.player.queue.add(lavalinkTrack);
+      session.queue = this.#lavalinkQueuedTracks(session.player);
+      await session.textChannel.send(`Autocola IA preparo: **${suggestion.title}**`).catch(() => {});
+      return true;
+    } catch (error) {
+      console.error('Lavalink AI autoqueue failed:', normalizeProcessError(error));
+      return false;
+    } finally {
+      session.autoQueueInFlight = false;
+    }
+  }
+
+  async #destroyLavalinkSession(guildId, reason = 'destroy') {
+    const session = this.sessions.get(guildId);
+    if (!session || session.backend !== 'lavalink') return false;
+    session.destroyed = true;
+    session.queue = [];
+    session.current = null;
+    this.sessions.delete(guildId);
+    await session.player.destroy(reason, true).catch(() => {});
+    return true;
+  }
+
+  #lavalinkQueuedTracks(player) {
+    return [...(player?.queue?.tracks ?? [])].map((track) => this.#trackFromLavalinkTrack(track));
+  }
+
+  #trackFromLavalinkTrack(lavalinkTrack) {
+    if (lavalinkTrack?.userData?.nexadeskTrack) return lavalinkTrack.userData.nexadeskTrack;
+    const info = lavalinkTrack?.info ?? {};
+    const durationMs = Number(info.duration ?? info.length ?? 0);
+    return {
+      id: info.identifier || lavalinkTrack?.encoded || randomUUID(),
+      title: info.title || 'Cancion desconocida',
+      url: info.uri || '',
+      duration: durationMs > 0 ? Math.round(durationMs / 1000) : null,
+      uploader: info.author || info.sourceName || 'Fuente desconocida',
+      thumbnail: info.artworkUrl || lavalinkTrack?.pluginInfo?.artworkUrl || '',
+      sourceTitle: info.title || '',
+      sourceUploader: info.author || '',
+      spotify: null,
+      requestedById: lavalinkTrack?.requester?.id ?? null,
+      requestedByName: lavalinkTrack?.requester?.username ?? 'Usuario',
+      autoQueued: false,
+      createdAt: new Date().toISOString()
+    };
+  }
+
+  async #sendNowPlayingMessage(session, track) {
     await session.textChannel.send({
-      content: [
-        `Reproduciendo ahora: **${track.title}**`,
-        track.uploader ? `Fuente: ${track.uploader}` : '',
-        track.autoQueued ? 'Autocola IA: elegida por similitud con el historial.' : `Pedida por: ${track.requestedByName}`
-      ].filter(Boolean).join('\n')
+      embeds: [buildNowPlayingEmbed({ track, queue: this.getQueue(session.guildId), backend: session.backend ?? 'local' })],
+      components: buildMusicControls(this.getQueue(session.guildId))
     }).catch(() => {});
   }
 
@@ -786,6 +1165,43 @@ export class MusicManager {
     }
   }
 
+  #lavalinkConfigured() {
+    return ['auto', 'lavalink', 'nodelink'].includes(this.#musicBackend());
+  }
+
+  #shouldTryLavalink() {
+    return this.#lavalinkConfigured() && this.#canUseLavalink();
+  }
+
+  #mustUseLavalink() {
+    return ['lavalink', 'nodelink'].includes(this.#musicBackend());
+  }
+
+  #canUseLavalink() {
+    return Boolean(this.lavalink && this.lavalinkReady && this.#hasConnectedLavalinkNode());
+  }
+
+  #hasConnectedLavalinkNode() {
+    return Boolean(this.lavalink && Array.from(this.lavalink.nodeManager.nodes.values()).some((node) => node.connected));
+  }
+
+  #musicBackend() {
+    return String(this.config.MUSIC_BACKEND || 'local').toLowerCase();
+  }
+
+  #lavalinkNodeType() {
+    const value = String(this.config.LAVALINK_NODE_TYPE || this.config.MUSIC_BACKEND || 'lavalink').toLowerCase();
+    return value === 'nodelink' ? NodeType.NodeLink : NodeType.Lavalink;
+  }
+
+  #lavalinkSearchSource() {
+    return this.config.LAVALINK_SEARCH_SOURCE || 'ytsearch';
+  }
+
+  #debugStreams() {
+    return this.config.MUSIC_DEBUG_STREAMS === true;
+  }
+
   #ytDlpBin() {
     return this.config.YTDLP_BIN || 'yt-dlp';
   }
@@ -797,6 +1213,84 @@ export class MusicManager {
   #metadataTimeoutMs() {
     return Number(this.config.MUSIC_METADATA_TIMEOUT_MS) || 18_000;
   }
+}
+
+function buildNowPlayingEmbed({ track, queue, backend }) {
+  const nextCount = queue?.queue?.length ?? 0;
+  const embed = new EmbedBuilder()
+    .setColor(0xffffff)
+    .setTitle(`${EMOJIS.global} Reproduciendo ahora`)
+    .setDescription([
+      `**${track.title}**`,
+      track.spotify ? 'Identificada primero en Spotify para evitar videoclips, intros o versiones raras.' : '',
+      track.autoQueued ? 'Autocola IA: elegida por similitud con el historial.' : '',
+      nextCount ? `Siguientes en cola: **${nextCount}**` : 'No hay mas canciones en cola.'
+    ].filter(Boolean).join('\n'))
+    .addFields(
+      { name: 'Duracion', value: formatTrackDuration(track.duration), inline: true },
+      { name: 'Fuente', value: track.uploader || 'Desconocida', inline: true },
+      { name: 'Pedido por', value: track.autoQueued ? 'Autocola IA' : track.requestedByName || 'Usuario', inline: true },
+      { name: 'Motor', value: backend === 'lavalink' ? 'Nodo rapido' : 'Local seguro', inline: true },
+      { name: 'Volumen', value: `${queue?.volume ?? 0}%`, inline: true },
+      { name: 'Autocola', value: queue?.autoQueue ? 'Activa' : 'Off', inline: true }
+    );
+
+  if (track.spotify?.spotifyUrl) {
+    embed.addFields({
+      name: 'Spotify',
+      value: `[${track.spotify.album || 'Abrir cancion'}](${track.spotify.spotifyUrl})`,
+      inline: true
+    });
+  }
+  if (track.sourceTitle) {
+    embed.addFields({
+      name: 'Audio elegido',
+      value: `[${track.sourceTitle}](${track.url})${track.sourceUploader ? `\n${track.sourceUploader}` : ''}`,
+      inline: true
+    });
+  }
+  if (track.thumbnail) embed.setThumbnail(track.thumbnail);
+  if (track.url) embed.setURL(track.url);
+  embed.setFooter({ text: 'Controles rapidos debajo. Usa /queue para ver la cola completa.' });
+  return embed;
+}
+
+function buildMusicControls(queue = {}) {
+  const active = Boolean(queue.active);
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId('nexadesk:music:pause')
+        .setLabel('Pausar')
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(!active),
+      new ButtonBuilder()
+        .setCustomId('nexadesk:music:resume')
+        .setLabel('Continuar')
+        .setStyle(ButtonStyle.Success)
+        .setDisabled(!active),
+      new ButtonBuilder()
+        .setCustomId('nexadesk:music:skip')
+        .setLabel('Saltar')
+        .setStyle(ButtonStyle.Primary)
+        .setDisabled(!active),
+      new ButtonBuilder()
+        .setCustomId('nexadesk:music:queue')
+        .setLabel('Cola')
+        .setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId('nexadesk:music:stop')
+        .setLabel('Parar')
+        .setStyle(ButtonStyle.Danger)
+        .setDisabled(!active)
+    ),
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId('nexadesk:music:autocola')
+        .setLabel(queue.autoQueue ? 'Autocola IA: ON' : 'Autocola IA: OFF')
+        .setStyle(queue.autoQueue ? ButtonStyle.Success : ButtonStyle.Secondary)
+    )
+  ];
 }
 
 function normalizeSearchEntries(entries) {

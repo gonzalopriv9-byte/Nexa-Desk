@@ -78,6 +78,7 @@ export function createBot({ config, storage, supportAgent, voiceManager = null, 
   const blacklistAlertedChannels = new Set();
   const ticketWelcomeChannels = new Set();
   const securityManager = new SecurityManager({ storage, client, supportAgent });
+  musicManager?.attachDiscordClient?.(client);
 
   client.once(Events.ClientReady, (readyClient) => {
     applyBotPresence(readyClient);
