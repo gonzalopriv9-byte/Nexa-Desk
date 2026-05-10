@@ -21,6 +21,10 @@ const YOUTUBE_WATCH_URL = 'https://www.youtube.com/watch?v=';
 const CACHE_TTL_MS = 1000 * 60 * 20;
 const QUICK_SEARCH_TIMEOUT_MS = 4_500;
 const MUSIC_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
+const AUDIO_HINT_PATTERN = /\b(official audio|audio oficial|topic|provided to youtube|visualizer)\b/i;
+const LYRIC_VIDEO_PATTERN = /\b(letra|lyrics|lyric video|subtitulado|subtitulos)\b/i;
+const VIDEOCLIP_PATTERN = /\b(official video|video oficial|videoclip|video clip|music video|mv|trailer|teaser|shorts?)\b/i;
+const ALTERED_VERSION_PATTERN = /\b(live|en vivo|concert|cover|karaoke|instrumental|remix|slowed|reverb|sped up|nightcore|edit|intro|extended)\b/i;
 
 export class MusicManager {
   constructor({ aiClient = null, config = {} }) {
@@ -29,6 +33,7 @@ export class MusicManager {
     this.sessions = new Map();
     this.searchCache = new Map();
     this.streamCache = new Map();
+    this.aiQueryCache = new Map();
   }
 
   getSession(guildId) {
@@ -47,8 +52,9 @@ export class MusicManager {
       return [];
     });
     if (quickResults.length) {
-      this.#setCache(this.searchCache, `${limit}:${cleanQuery.toLowerCase()}`, quickResults);
-      return quickResults;
+      const ranked = rankPlayableCandidates(quickResults, cleanQuery).slice(0, limit);
+      this.#setCache(this.searchCache, `${limit}:${cleanQuery.toLowerCase()}`, ranked);
+      return ranked;
     }
 
     const result = await readJsonProcess(this.#ytDlpBin(), [
@@ -58,7 +64,7 @@ export class MusicManager {
       `ytsearch${Math.max(Math.min(limit, 10), 1)}:${cleanQuery}`
     ], { timeoutMs: this.#metadataTimeoutMs() });
 
-    const entries = normalizeSearchEntries(result?.entries ?? []).slice(0, limit);
+    const entries = rankPlayableCandidates(normalizeSearchEntries(result?.entries ?? []), cleanQuery).slice(0, limit);
     this.#setCache(this.searchCache, `${limit}:${cleanQuery.toLowerCase()}`, entries);
     return entries;
   }
@@ -106,7 +112,7 @@ export class MusicManager {
 
     const metadata = URL_PATTERN.test(cleanQuery)
       ? await this.#metadataForUrl(cleanQuery)
-      : await this.#metadataForSearch(cleanQuery);
+      : await this.#metadataForSongOnlySearch(cleanQuery);
     const entry = normalizeTrackMetadata(metadata);
     if (!entry?.webpageUrl) {
       throw new Error('No he encontrado una cancion reproducible para esa busqueda.');
@@ -395,6 +401,56 @@ export class MusicManager {
     return Array.isArray(result?.entries) ? result.entries[0] : result;
   }
 
+  async #metadataForSongOnlySearch(query) {
+    const optimizedQuery = await this.#buildSongOnlySearchQuery(query);
+    const candidates = [
+      ...await this.search(optimizedQuery, 8).catch(() => []),
+      ...await this.search(`${query} official audio topic`, 6).catch(() => [])
+    ];
+    const best = rankPlayableCandidates(dedupeTracks(candidates), query)[0];
+    if (best) return best;
+    return this.#metadataForSearch(optimizedQuery);
+  }
+
+  async #buildSongOnlySearchQuery(query) {
+    const cleanQuery = normalizeQuery(query);
+    const cached = this.#getCache(this.aiQueryCache, cleanQuery.toLowerCase());
+    if (cached) return cached;
+
+    const fallback = `${cleanQuery} official audio topic`;
+    if (!this.aiClient?.generate) {
+      this.#setCache(this.aiQueryCache, cleanQuery.toLowerCase(), fallback);
+      return fallback;
+    }
+
+    try {
+      const answer = await this.aiClient.generate({
+        system: [
+          'Eres un buscador musical para un bot de Discord.',
+          'Convierte la peticion del usuario en una busqueda corta para encontrar SOLO la cancion limpia, no videoclip.',
+          'Prioriza audio oficial, Topic, official audio o audio oficial.',
+          'Evita terminos como official video, videoclip, live, remix, cover, extended intro, trailer o reaction.',
+          'Si el usuario solo da titulo, mantenlo y anade official audio topic.',
+          'Responde SOLO con la busqueda, sin comillas ni explicaciones.'
+        ].join('\n'),
+        messages: [
+          { role: 'user', content: cleanQuery }
+        ]
+      });
+      const optimized = normalizeQuery(answer)
+        .replace(/^["'`]+|["'`]+$/g, '')
+        .split('\n', 1)[0]
+        .slice(0, 140);
+      const result = optimized || fallback;
+      this.#setCache(this.aiQueryCache, cleanQuery.toLowerCase(), result);
+      return result;
+    } catch (error) {
+      console.error('AI song-only query failed, using fallback:', normalizeProcessError(error));
+      this.#setCache(this.aiQueryCache, cleanQuery.toLowerCase(), fallback, 1000 * 60 * 5);
+      return fallback;
+    }
+  }
+
   async #metadataForUrl(url) {
     return readJsonProcess(this.#ytDlpBin(), [
       '--dump-single-json',
@@ -515,6 +571,66 @@ function normalizeSearchEntries(entries) {
   return entries
     .map((entry) => normalizeTrackMetadata(entry))
     .filter((entry) => entry.title && entry.webpageUrl);
+}
+
+function rankPlayableCandidates(entries, query) {
+  return [...entries]
+    .map((entry, index) => ({
+      entry,
+      score: scorePlayableCandidate(entry, query) - index * 0.25
+    }))
+    .sort((a, b) => b.score - a.score)
+    .map((item) => item.entry);
+}
+
+function scorePlayableCandidate(track, query) {
+  const title = normalizeComparable(track.title);
+  const uploader = normalizeComparable(track.uploader || track.channel);
+  const rawTitle = String(track.title ?? '');
+  const rawUploader = String(track.uploader || track.channel || '');
+  const normalizedQuery = normalizeComparable(query);
+  let score = 100;
+
+  if (/\btopic\b/i.test(rawUploader) || /\btopic\b/i.test(rawTitle)) score += 55;
+  if (AUDIO_HINT_PATTERN.test(rawTitle) || AUDIO_HINT_PATTERN.test(rawUploader)) score += 38;
+  if (/\bofficial audio\b|\baudio oficial\b/i.test(rawTitle)) score += 28;
+  if (LYRIC_VIDEO_PATTERN.test(rawTitle)) score -= 16;
+  if (track.duration && track.duration >= 95 && track.duration <= 480) score += 18;
+  if (track.duration && track.duration > 540) score -= 45;
+  if (track.duration && track.duration < 70) score -= 40;
+
+  if (VIDEOCLIP_PATTERN.test(rawTitle)) score -= 95;
+  if (VIDEOCLIP_PATTERN.test(rawUploader)) score -= 35;
+  if (ALTERED_VERSION_PATTERN.test(rawTitle) && !queryAllowsAlteredVersion(normalizedQuery, rawTitle)) score -= 65;
+  if (/\bfull album\b|\balbum completo\b|\bplaylist\b|\bmix\b/i.test(rawTitle)) score -= 90;
+  if (/\breaction\b|\breaccion\b|\breview\b|\banalisis\b/i.test(rawTitle)) score -= 100;
+
+  for (const token of normalizedQuery.split(' ').filter((part) => part.length > 2).slice(0, 10)) {
+    if (title.includes(token) || uploader.includes(token)) score += 2;
+  }
+
+  return score;
+}
+
+function queryAllowsAlteredVersion(normalizedQuery, rawTitle) {
+  const title = normalizeComparable(rawTitle);
+  for (const keyword of ['live', 'en vivo', 'cover', 'karaoke', 'instrumental', 'remix', 'slowed', 'reverb', 'sped up', 'nightcore']) {
+    const normalizedKeyword = normalizeComparable(keyword);
+    if (title.includes(normalizedKeyword) && normalizedQuery.includes(normalizedKeyword)) return true;
+  }
+  return false;
+}
+
+function dedupeTracks(entries) {
+  const seen = new Set();
+  const result = [];
+  for (const entry of entries) {
+    const key = entry.id || entry.webpageUrl || normalizeComparable(entry.title);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    result.push(entry);
+  }
+  return result;
 }
 
 function normalizeTrackMetadata(entry = {}) {
