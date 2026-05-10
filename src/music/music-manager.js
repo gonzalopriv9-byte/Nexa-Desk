@@ -16,7 +16,7 @@ import { buildSpotifySongQuery, isSpotifyTrackUrl } from './spotify-client.js';
 
 const SAMPLE_RATE = 48_000;
 const CHANNELS = 2;
-const DEFAULT_FORMAT = 'bestaudio[ext=webm]/bestaudio/best';
+const DEFAULT_FORMAT = '251/250/249/140/bestaudio[ext=webm]/bestaudio/best';
 const URL_PATTERN = /^https?:\/\/\S+/i;
 const YOUTUBE_WATCH_URL = 'https://www.youtube.com/watch?v=';
 const CACHE_TTL_MS = 1000 * 60 * 20;
@@ -35,6 +35,7 @@ export class MusicManager {
     this.sessions = new Map();
     this.searchCache = new Map();
     this.streamCache = new Map();
+    this.streamInflight = new Map();
     this.aiQueryCache = new Map();
     this.spotifyCache = new Map();
   }
@@ -96,8 +97,21 @@ export class MusicManager {
       throw new Error(`La cola ya tiene ${musicConfig.maxQueueSize} canciones. Sube el limite desde la dashboard o espera a que avance.`);
     }
 
-    const track = await this.resolveTrack(query, { requestedBy: interaction.user });
-    const session = await this.#ensureSession({ interaction, guildConfig, musicConfig, voiceChannel: memberVoiceChannel });
+    let track = null;
+    const sessionPromise = this.#ensureSession({ interaction, guildConfig, musicConfig, voiceChannel: memberVoiceChannel });
+    const hadExistingSession = Boolean(existingSession);
+    try {
+      track = await this.resolveTrack(query, { requestedBy: interaction.user });
+      this.#warmStreamUrl(track.url);
+    } catch (error) {
+      const session = await sessionPromise.catch(() => null);
+      if (!hadExistingSession && session && !session.current && !session.queue.length) {
+        this.stop(interaction.guildId);
+      }
+      throw error;
+    }
+
+    const session = await sessionPromise;
     if (session.queue.length >= musicConfig.maxQueueSize) {
       throw new Error(`La cola ya tiene ${musicConfig.maxQueueSize} canciones. Sube el limite desde la dashboard o espera a que avance.`);
     }
@@ -308,6 +322,7 @@ export class MusicManager {
 
     session.current = track;
     session.skipRequested = false;
+    this.#warmQueuedStreams(session);
     const streamUrl = await this.#getStreamUrl(track.url);
     const ffmpeg = spawn(this.#ffmpegBin(), [
       '-hide_banner',
@@ -434,10 +449,11 @@ export class MusicManager {
     }
 
     const optimizedQuery = await this.#buildSongOnlySearchQuery(query);
-    const candidates = [
-      ...await this.search(optimizedQuery, 8).catch(() => []),
-      ...await this.search(`${query} official audio topic`, 6).catch(() => [])
-    ];
+    const [optimizedResults, fallbackResults] = await Promise.all([
+      this.search(optimizedQuery, 8).catch(() => []),
+      this.search(`${query} official audio topic`, 6).catch(() => [])
+    ]);
+    const candidates = [...optimizedResults, ...fallbackResults];
     const best = rankPlayableCandidates(dedupeTracks(candidates), query)[0];
     if (best) return best;
     return this.#metadataForSearch(optimizedQuery);
@@ -485,11 +501,12 @@ export class MusicManager {
   async #metadataForSpotifyTrack(spotifyTrack, originalQuery) {
     const primaryQuery = buildSpotifySongQuery(spotifyTrack);
     const compact = `${spotifyTrack.artistText} ${spotifyTrack.title}`.replace(/\s+/g, ' ').trim();
-    const candidates = [
-      ...await this.search(primaryQuery, 8).catch(() => []),
-      ...await this.search(`${compact} official audio`, 6).catch(() => []),
-      ...await this.search(`${compact} topic`, 6).catch(() => [])
-    ];
+    const [primaryResults, officialResults, topicResults] = await Promise.all([
+      this.search(primaryQuery, 8).catch(() => []),
+      this.search(`${compact} official audio`, 6).catch(() => []),
+      this.search(`${compact} topic`, 6).catch(() => [])
+    ]);
+    const candidates = [...primaryResults, ...officialResults, ...topicResults];
     const best = rankPlayableCandidates(dedupeTracks(candidates), originalQuery, { spotifyTrack })[0];
     if (best) return { ...best, spotify: spotifyTrack };
 
@@ -549,8 +566,10 @@ export class MusicManager {
   async #getStreamUrl(url) {
     const cached = this.#getCache(this.streamCache, url);
     if (cached) return cached;
+    const inflight = this.streamInflight.get(url);
+    if (inflight) return inflight;
 
-    const output = await readTextProcess(this.#ytDlpBin(), [
+    const args = [
       '-f',
       this.config.MUSIC_YTDLP_FORMAT || DEFAULT_FORMAT,
       '--no-playlist',
@@ -559,11 +578,36 @@ export class MusicManager {
       '8',
       '--get-url',
       url
-    ], { timeoutMs: this.#metadataTimeoutMs() });
-    const streamUrl = output.split(/\r?\n/).map((line) => line.trim()).find(Boolean);
-    if (!streamUrl) throw new Error('yt-dlp no devolvio una URL de audio reproducible.');
-    this.#setCache(this.streamCache, url, streamUrl, 1000 * 60 * 8);
-    return streamUrl;
+    ];
+    if (this.config.MUSIC_YTDLP_FORCE_IPV4) {
+      args.splice(args.length - 1, 0, '--force-ipv4');
+    }
+
+    const promise = readTextProcess(this.#ytDlpBin(), args, { timeoutMs: this.#metadataTimeoutMs() })
+      .then((output) => {
+        const streamUrl = output.split(/\r?\n/).map((line) => line.trim()).find(Boolean);
+        if (!streamUrl) throw new Error('yt-dlp no devolvio una URL de audio reproducible.');
+        this.#setCache(this.streamCache, url, streamUrl, 1000 * 60 * 8);
+        return streamUrl;
+      })
+      .finally(() => {
+        this.streamInflight.delete(url);
+      });
+    this.streamInflight.set(url, promise);
+    return promise;
+  }
+
+  #warmStreamUrl(url) {
+    if (!url) return;
+    this.#getStreamUrl(url).catch((error) => {
+      console.error('Music stream prewarm failed:', normalizeProcessError(error));
+    });
+  }
+
+  #warmQueuedStreams(session) {
+    for (const track of session.queue.slice(0, 2)) {
+      this.#warmStreamUrl(track.url);
+    }
   }
 
   async #quickYoutubeSearch(query, limit = 5) {
