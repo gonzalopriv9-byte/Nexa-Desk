@@ -98,6 +98,81 @@ const commands = [
     )
     .toJSON(),
   new SlashCommandBuilder()
+    .setName('musica')
+    .setDescription('Musica de alta calidad con cola y autocola IA.')
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName('reproducir')
+        .setDescription('Busca y reproduce una cancion o enlace.')
+        .addStringOption((option) =>
+          option
+            .setName('consulta')
+            .setDescription('Titulo, artista o enlace.')
+            .setRequired(true)
+        )
+    )
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName('buscar')
+        .setDescription('Busca canciones rapido antes de reproducir.')
+        .addStringOption((option) =>
+          option
+            .setName('consulta')
+            .setDescription('Titulo o artista.')
+            .setRequired(true)
+        )
+    )
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName('cola')
+        .setDescription('Muestra la cancion actual y la cola.')
+    )
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName('saltar')
+        .setDescription('Salta la cancion actual.')
+    )
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName('parar')
+        .setDescription('Para la musica y limpia la cola.')
+    )
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName('pausa')
+        .setDescription('Pausa la reproduccion actual.')
+    )
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName('continuar')
+        .setDescription('Reanuda la reproduccion pausada.')
+    )
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName('volumen')
+        .setDescription('Ajusta el volumen de la musica.')
+        .addIntegerOption((option) =>
+          option
+            .setName('porcentaje')
+            .setDescription('Volumen entre 1 y 150.')
+            .setMinValue(1)
+            .setMaxValue(150)
+            .setRequired(true)
+        )
+    )
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName('autocola')
+        .setDescription('Activa o desactiva la autocola con IA.')
+        .addBooleanOption((option) =>
+          option
+            .setName('activo')
+            .setDescription('Estado de la autocola IA.')
+            .setRequired(true)
+        )
+    )
+    .toJSON(),
+  new SlashCommandBuilder()
     .setName('transcripcion')
     .setDescription('Gestiona transcripciones de tickets.')
     .addSubcommand((subcommand) =>

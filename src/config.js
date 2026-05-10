@@ -64,7 +64,12 @@ const schema = z.object({
   VOICE_TTS_MAX_CHARS: z.coerce.number().int().min(120).max(900).default(320),
   VOICE_MAX_RECORDING_MS: z.coerce.number().int().min(2_000).max(30_000).default(12_000),
   VOICE_MIN_RECORDING_MS: z.coerce.number().int().min(250).max(5_000).default(900),
-  VOICE_SILENCE_DURATION_MS: z.coerce.number().int().min(350).max(2_000).default(650)
+  VOICE_SILENCE_DURATION_MS: z.coerce.number().int().min(350).max(2_000).default(650),
+  MUSIC_ENABLED: envBoolean.default(true),
+  YTDLP_BIN: z.string().default('yt-dlp'),
+  FFMPEG_BIN: z.string().default('ffmpeg'),
+  MUSIC_YTDLP_FORMAT: z.string().default('bestaudio[ext=webm]/bestaudio/best'),
+  MUSIC_METADATA_TIMEOUT_MS: z.coerce.number().int().min(5_000).max(45_000).default(18_000)
 });
 
 export const config = schema.parse(process.env);

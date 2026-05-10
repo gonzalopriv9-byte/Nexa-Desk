@@ -9,6 +9,7 @@ import { GroqClient } from './ai/groq-client.js';
 import { GLOBAL_BLACKLIST_ADMIN_USER_ID, buildGlobalBanCode, isBlacklistEntryActive, parseBlacklistDuration } from './blacklist.js';
 import { normalizeTotpSecret, verifyTotpCode } from './docs-auth.js';
 import { normalizeTicketComponent } from './panel-options.js';
+import { normalizeMusicConfig, summarizeMusicConfig } from './music/music-config.js';
 import { isPremiumEntitled, normalizePremiumConfig, summarizePremiumConfig } from './premium.js';
 import { normalizeSecurityConfig, summarizeSecurityConfig } from './security.js';
 import { buildTranscriptFileName, buildTranscriptText } from './transcripts.js';
@@ -372,6 +373,9 @@ export function createServer({ config, storage, bot, events }) {
     }
     if (req.body.premium) {
       patch.premium = normalizePremiumConfig(req.body.premium, { ...(existing ?? {}), ...patch });
+    }
+    if (req.body.music) {
+      patch.music = normalizeMusicConfig(req.body.music);
     }
     const updated = await storage.upsertGuildConfig(req.params.guildId, patch);
     res.json(updated);
@@ -761,16 +765,17 @@ async function buildDashboardAssistantReply({ config, message, guild, stats, act
       system: [
         'Eres el copiloto de la dashboard de NexaDesk.',
         'Responde en espanol claro, breve y accionable.',
-        'Ayuda a configurar servidores Discord para tickets con IA, paneles, componentes, staff, voz Pro con STT/TTS, transcripciones, Security Guard y Premium.',
-        'La dashboard real tiene estas secciones: Resumen, Servidores, Configuracion, Componentes, Paneles, Premium y Tickets.',
+        'Ayuda a configurar servidores Discord para tickets con IA, paneles, componentes, staff, voz Pro con STT/TTS, musica IA, transcripciones, Security Guard y Premium.',
+        'La dashboard real tiene estas secciones: Resumen, Servidores, Configuracion, Componentes, Paneles, Premium, Musica y Tickets.',
         'En Configuracion se elige categoria, rol staff, prompt del servidor, informacion del servidor y Security Guard.',
         'En Componentes se crean opciones del menu con preguntas previas, primer mensaje y modo Texto o Voz Pro.',
         'En Paneles se publica el embed, boton o menu en un canal de Discord; los botones tambien pueden abrir tickets de voz Pro.',
         'En Premium se gestionan Voz Pro, IA prioritaria, transcripciones inteligentes, Security Plus, branding propio e informes semanales por servidor.',
+        'En Musica se configura el reproductor, volumen por defecto, autocola IA y rol DJ opcional.',
         'En Tickets se ven tickets y transcripciones guardadas.',
         'Si el usuario pide que tu metas algo, explica que puedes rellenar campos con botones de accion, pero el usuario debe revisar y guardar/publicar.',
         'No pidas IDs si la dashboard ya ofrece selectores de roles, canales y categorias.',
-        'Si recomiendas navegar, menciona una seccion exacta: Resumen, Servidores, Configuracion, Componentes, Paneles, Premium o Tickets.',
+        'Si recomiendas navegar, menciona una seccion exacta: Resumen, Servidores, Configuracion, Componentes, Paneles, Premium, Musica o Tickets.',
         'No inventes datos fuera del contexto recibido.'
       ].join('\n'),
       messages: [
@@ -813,6 +818,8 @@ function buildDashboardAssistantFallback({ message, guild, stats, activeView, ac
     reply += guild.components?.length
       ? 'Para publicar un panel, ve a Paneles, elige canal, modo boton o menu y revisa la previsualizacion antes de publicar.'
       : 'Si quieres un menu desplegable, crea primero opciones en Componentes y despues publica el panel desde Paneles.';
+  } else if (lower.includes('musica') || lower.includes('music') || lower.includes('cancion') || lower.includes('cola') || lower.includes('autocola') || lower.includes('dj')) {
+    reply += 'Ve a Musica para activar el reproductor, ajustar volumen, limite de cola, rol DJ opcional y autocola IA. Para probarlo usa /musica reproducir consulta:<cancion>.';
   } else if (lower.includes('premium') || lower.includes('pro') || lower.includes('voz') || lower.includes('voice') || lower.includes('branding') || lower.includes('analitica') || lower.includes('insight')) {
     reply += isPremiumEntitled(guild)
       ? 'Ve a Premium para activar o pausar Voz Pro, IA prioritaria, transcripciones inteligentes, Security Plus, branding propio e informes semanales por servidor.'
@@ -923,6 +930,7 @@ function suggestDashboardActions(message, guild) {
   }
 
   if (lower.includes('premium') || lower.includes('pro') || lower.includes('voz') || lower.includes('voice') || lower.includes('branding') || lower.includes('analitica') || lower.includes('insight')) add('Abrir Premium', 'premium');
+  if (lower.includes('musica') || lower.includes('music') || lower.includes('cancion') || lower.includes('cola') || lower.includes('autocola') || lower.includes('dj')) add('Abrir Musica', 'music');
   if (lower.includes('servidor') || lower.includes('invitar') || lower.includes('instalar')) add('Ir a Servidores', 'servers');
   if (lower.includes('ia') || lower.includes('prompt') || lower.includes('contexto') || lower.includes('staff') || lower.includes('rol') || lower.includes('seguridad') || lower.includes('security') || lower.includes('anti') || lower.includes('raid') || lower.includes('flood') || lower.includes('nuke') || lower.includes('phishing') || lower.includes('estafa') || lower.includes('links')) add('Abrir Configuracion', 'settings');
   if (lower.includes('componente') || lower.includes('pregunta') || lower.includes('menu')) add('Crear Componentes', 'components');
@@ -1022,6 +1030,7 @@ function summarizeGuildForAssistant(guild = {}) {
     hasAiContext: Boolean(guild.serverPrompt || guild.serverInfo),
     security: summarizeSecurityConfig(normalizeSecurityConfig(guild.security)),
     premium: summarizePremiumConfig(guild),
+    music: summarizeMusicConfig(guild.music),
     panels: guild.panels?.length ?? 0,
     components: guild.components?.length ?? 0
   };
@@ -1230,7 +1239,7 @@ function buildDocsSections(config) {
           'Privileged intents recomendados: MESSAGE CONTENT INTENT y SERVER MEMBERS INTENT.',
           'Permisos de invitacion: Manage Channels, Manage Roles, View Audit Log, Manage Messages, Moderate Members, Kick, Ban, voz y lectura de historial.',
           'El bot registra slash commands globales con npm run register.',
-          'Comandos clave: /setup, /ayuda, /desactivar ia, /activar ia, /ticket cerrar, /ticket resumen, /voz crear, /globalstats, /activarpremium.',
+          'Comandos clave: /setup, /ayuda, /desactivar ia, /activar ia, /ticket cerrar, /ticket resumen, /voz crear, /musica reproducir, /musica autocola, /globalstats, /activarpremium.',
           'Si entra staff al ticket, NexaDesk deja de responder salvo mencion, reply o llamada directa.'
         ] }
       ]
@@ -1280,10 +1289,11 @@ function buildDocsSections(config) {
       summary: 'Funciones vendibles y flujo administrativo.',
       blocks: [
         { type: 'list', items: [
-          'Dashboard: Resumen, Servidores, Configuracion, Componentes, Paneles, Premium y Tickets.',
+          'Dashboard: Resumen, Servidores, Configuracion, Componentes, Paneles, Premium, Musica y Tickets.',
           'Paneles soportan boton unico o menu desplegable con 2+ componentes.',
           'Componentes guardan preguntas previas, categoria destino, primer mensaje y modo texto/voz.',
           'Premium incluye Voz Pro, IA prioritaria, transcripciones inteligentes, Security Plus, branding propio e informes semanales.',
+          'Musica incluye busqueda por titulo/enlace, cola por servidor, audio 48 kHz con yt-dlp/ffmpeg y autocola IA basada en historial.',
           'Premium se activa con /activarpremium servidor:<ID> por el owner autorizado o manualmente en Supabase.'
         ] }
       ]
@@ -1797,7 +1807,7 @@ function renderDashboard({ session, guilds, tickets, stats }) {
     .section-heading p { margin:4px 0 0; }
     .active-server { padding:18px; margin-bottom:16px; background:linear-gradient(135deg, rgba(255,255,255,.075), rgba(255,255,255,.025)); }
     .active-server select { margin-top:12px; }
-    .server-status { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:8px; margin-top:12px; }
+    .server-status { display:grid; grid-template-columns:repeat(6,minmax(0,1fr)); gap:8px; margin-top:12px; }
     .server-status div { border:1px solid var(--soft-line); border-radius:10px; padding:10px; background:rgba(5,8,10,.42); }
     .server-status strong { display:block; font-size:13px; margin-top:4px; }
     .server-score { display:grid; grid-template-columns:minmax(0,1fr) 220px auto; align-items:center; gap:12px; margin-top:12px; border:1px solid var(--soft-line); border-radius:14px; padding:14px; background:linear-gradient(135deg, rgba(255,255,255,.08), rgba(255,255,255,.025)); }
@@ -2029,6 +2039,7 @@ function renderDashboard({ session, guilds, tickets, stats }) {
     <a class="nav-link" href="#components" data-view="components">Componentes</a>
     <a class="nav-link" href="#panels" data-view="panels">Paneles</a>
     <a class="nav-link" href="#premium" data-view="premium">Premium</a>
+    <a class="nav-link" href="#music" data-view="music">Musica</a>
     <a class="nav-link" href="#tickets" data-view="tickets">Tickets</a>
     <div class="nav-foot">
       <form method="post" action="/logout"><button class="secondary-button" type="submit">Cerrar sesion</button></form>
@@ -2060,6 +2071,7 @@ function renderDashboard({ session, guilds, tickets, stats }) {
         <div><span>Paneles</span><strong id="activePanels">0</strong></div>
         <div><span>Seguridad</span><strong id="activeSecurity">Off</strong></div>
         <div><span>Premium</span><strong id="activePremium">Free</strong></div>
+        <div><span>Musica</span><strong id="activeMusic">On</strong></div>
       </div>
       <div class="server-score">
         <div>
@@ -2117,6 +2129,7 @@ function renderDashboard({ session, guilds, tickets, stats }) {
           <button class="quick-action" type="button" data-go-view="components">Crear menu de tickets</button>
           <button class="quick-action" type="button" data-go-view="panels">Publicar panel</button>
           <button class="quick-action" type="button" data-go-view="premium">Gestionar Premium</button>
+          <button class="quick-action" type="button" data-go-view="music">Configurar musica</button>
           <button class="quick-action" type="button" data-go-view="tickets">Ver transcripciones</button>
         </div>
         <section class="surface">
@@ -2363,6 +2376,51 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
           </article>
         </section>
       </section>
+      <section class="dashboard-view" id="view-music" data-view="music">
+        <div class="view-heading">
+          <div><h2>Musica IA</h2><p>Reproductor de alta calidad, busqueda rapida y autocola basada en historial.</p></div>
+        </div>
+        <section class="control-grid">
+          <article class="control-card wide">
+            <div class="card-head"><span class="step">M</span><div><h2>Reproductor del servidor</h2><p>Configura como se comporta /musica en este servidor.</p></div></div>
+            <form onsubmit="return saveMusic(event)">
+              <select id="musicGuildId" hidden required>${guildOptions}</select>
+              <label>Estado
+                <select id="musicEnabled"><option value="true">Activado</option><option value="false">Desactivado</option></select>
+              </label>
+              <label>Autocola IA
+                <select id="musicAutoQueue"><option value="true">Activa</option><option value="false">Pausada</option></select>
+              </label>
+              <label>Volumen por defecto
+                <input id="musicDefaultVolume" type="number" min="1" max="150" value="85">
+              </label>
+              <label>Limite de cola
+                <input id="musicMaxQueueSize" type="number" min="5" max="100" value="50">
+              </label>
+              <label>Rol DJ opcional
+                <select id="musicDjRoleId"><option value="">Sin rol DJ</option></select>
+              </label>
+              <button type="submit">Guardar musica IA</button>
+            </form>
+          </article>
+          <article class="control-card">
+            <div class="card-head"><span class="step">AI</span><div><h2>Autocola inteligente</h2><p>NexaDesk mira las ultimas canciones y propone la siguiente para mantener energia, idioma y estilo.</p></div></div>
+            <div class="premium-feature-grid">
+              <div class="premium-feature"><strong>Busqueda rapida</strong><span><code>/musica reproducir</code> acepta titulo, artista o enlace.</span></div>
+              <div class="premium-feature"><strong>Calidad 48 kHz</strong><span>Resuelve con yt-dlp y convierte con ffmpeg para Discord.</span></div>
+              <div class="premium-feature"><strong>Control total</strong><span>Cola, saltar, pausa, continuar, volumen y parar.</span></div>
+              <div class="premium-feature"><strong>Modo seguro</strong><span>No se mezcla con salas de soporte por voz para no romper STT/TTS.</span></div>
+            </div>
+          </article>
+          <article class="control-card">
+            <div class="card-head"><span class="step">/</span><div><h2>Comandos</h2><p>Pruebas rapidas desde Discord.</p></div></div>
+            <p><code>/musica reproducir consulta:Bad Bunny Monaco</code></p>
+            <p><code>/musica buscar consulta:lofi latino</code></p>
+            <p><code>/musica autocola activo:true</code></p>
+            <p><code>/musica cola</code></p>
+          </article>
+        </section>
+      </section>
       <section class="dashboard-view" id="view-tickets" data-view="tickets">
         <div class="view-heading">
           <div><h2>Tickets</h2><p>Consulta actividad reciente y abre transcripciones guardadas.</p></div>
@@ -2402,6 +2460,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       <button class="assistant-chip" type="button" data-assistant-prompt="Como hago que la IA escale al staff?">Escalado staff</button>
       <button class="assistant-chip" type="button" data-assistant-prompt="Mete una configuracion de seguridad recomendada">Seguridad</button>
       <button class="assistant-chip" type="button" data-assistant-prompt="Que funciones premium puedo activar aqui?">Premium</button>
+      <button class="assistant-chip" type="button" data-assistant-prompt="Como activo musica con autocola IA?">Musica IA</button>
       <button class="assistant-chip" type="button" data-assistant-prompt="Donde veo las transcripciones?">Transcripciones</button>
     </div>
     <form class="assistant-form" id="assistantForm">
@@ -2627,10 +2686,24 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
         weeklyInsights: raw.weeklyInsights !== false
       };
     }
+    function normalizeMusic(guild = {}) {
+      const raw = guild.music || {};
+      return {
+        enabled: raw.enabled !== false,
+        autoQueue: raw.autoQueue !== false,
+        defaultVolume: Number.isFinite(Number(raw.defaultVolume)) ? Math.min(Math.max(Math.round(Number(raw.defaultVolume)), 1), 150) : 85,
+        maxQueueSize: Number.isFinite(Number(raw.maxQueueSize)) ? Math.min(Math.max(Math.round(Number(raw.maxQueueSize)), 5), 100) : 50,
+        djRoleId: raw.djRoleId || ''
+      };
+    }
     function formatPremiumState(guild = {}) {
       const premium = normalizePremium(guild);
       if (premium.entitled) return String(guild.plan || 'pro').toUpperCase();
       return 'Free';
+    }
+    function formatMusicState(guild = {}) {
+      const music = normalizeMusic(guild);
+      return music.enabled ? (music.autoQueue ? 'IA auto' : 'On') : 'Off';
     }
     function normalizeSecurity(guild = {}) {
       const raw = guild.security || {};
@@ -2704,11 +2777,11 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       });
     }
     function setConfigurationDisabled(disabled) {
-      for (const selector of ['#ticketCategoryId', '#staffRoleId', '#serverPrompt', '#serverInfo', '#categoryName', '#securityEnabled', '#securityLevel', '#securityLogChannelId', '#securityMinAccountAgeDays', '#securityAntiFlood', '#securityAntiScamLinks', '#securityAntiBot', '#securityAntiAlt', '#securityAntiNuke', '#componentLabel', '#componentEmoji', '#componentDescription', '#componentTicketCategoryId', '#componentTicketMode', '#componentQuestions', '#componentWelcomeMessage', '#panelType', '#panelSelectPlaceholder', '#panelComponentIds', '#panelChannelId', '#panelTicketCategoryId', '#panelTicketMode', '#panelButtonLabel', '#panelButtonStyle', '#panelButtonEmoji', '#panelTitle', '#panelEmbedColor', '#panelAuthorName', '#panelAuthorIconUrl', '#panelDescription', '#panelThumbnailUrl', '#panelImageUrl', '#panelFooterText', '#panelWelcomeMessage', '#premiumVoiceSupport', '#premiumPriorityAi', '#premiumSmartTranscripts', '#premiumSecurityPlus', '#premiumCustomBranding', '#premiumWeeklyInsights']) {
+      for (const selector of ['#ticketCategoryId', '#staffRoleId', '#serverPrompt', '#serverInfo', '#categoryName', '#securityEnabled', '#securityLevel', '#securityLogChannelId', '#securityMinAccountAgeDays', '#securityAntiFlood', '#securityAntiScamLinks', '#securityAntiBot', '#securityAntiAlt', '#securityAntiNuke', '#componentLabel', '#componentEmoji', '#componentDescription', '#componentTicketCategoryId', '#componentTicketMode', '#componentQuestions', '#componentWelcomeMessage', '#panelType', '#panelSelectPlaceholder', '#panelComponentIds', '#panelChannelId', '#panelTicketCategoryId', '#panelTicketMode', '#panelButtonLabel', '#panelButtonStyle', '#panelButtonEmoji', '#panelTitle', '#panelEmbedColor', '#panelAuthorName', '#panelAuthorIconUrl', '#panelDescription', '#panelThumbnailUrl', '#panelImageUrl', '#panelFooterText', '#panelWelcomeMessage', '#premiumVoiceSupport', '#premiumPriorityAi', '#premiumSmartTranscripts', '#premiumSecurityPlus', '#premiumCustomBranding', '#premiumWeeklyInsights', '#musicEnabled', '#musicAutoQueue', '#musicDefaultVolume', '#musicMaxQueueSize', '#musicDjRoleId']) {
         const element = document.querySelector(selector);
         if (element) element.disabled = disabled;
       }
-      document.querySelectorAll('#settings button, #components button, #panels button, #view-premium button').forEach((button) => {
+      document.querySelectorAll('#settings button, #components button, #panels button, #view-premium button, #view-music button').forEach((button) => {
         button.disabled = disabled;
       });
     }
@@ -2732,9 +2805,11 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       document.querySelector('#activePanels').textContent = String(guild.panels?.length ?? 0);
       document.querySelector('#activeSecurity').textContent = formatSecurityState(guild);
       document.querySelector('#activePremium').textContent = formatPremiumState(guild);
+      document.querySelector('#activeMusic').textContent = formatMusicState(guild);
       renderComponentHistory(guild);
       renderPanelHistory(guild);
       renderPremiumPanel(guild);
+      renderMusicPanel(guild);
       renderReadinessChecklist(guild);
       renderRecommendations(guild);
       document.querySelectorAll('.guild-pill').forEach((button) => button.classList.toggle('is-active', button.dataset.guildId === guild.guildId));
@@ -2760,9 +2835,11 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       document.querySelector('#activePanels').textContent = String(guild.panels?.length ?? 0);
       document.querySelector('#activeSecurity').textContent = formatSecurityState(guild);
       document.querySelector('#activePremium').textContent = formatPremiumState(guild);
+      document.querySelector('#activeMusic').textContent = formatMusicState(guild);
       renderComponentHistory(guild);
       renderPanelHistory(guild);
       renderPremiumPanel(guild);
+      renderMusicPanel(guild);
       renderReadinessChecklist(guild);
       renderRecommendations(guild);
       document.querySelectorAll('.guild-pill').forEach((button) => button.classList.toggle('is-active', button.dataset.guildId === guildId));
@@ -2796,6 +2873,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       const textChannels = meta.channels.filter((channel) => channel.type === 0);
       document.querySelector('#ticketCategoryId').innerHTML = '<option value="">Sin categoria</option>' + categories.map((channel) => '<option value="' + channel.id + '">' + escapeHtml(channel.name) + '</option>').join('');
       document.querySelector('#staffRoleId').innerHTML = '<option value="">Sin rol staff</option>' + meta.roles.map((role) => '<option value="' + role.id + '">' + escapeHtml(role.name) + '</option>').join('');
+      document.querySelector('#musicDjRoleId').innerHTML = '<option value="">Sin rol DJ</option>' + meta.roles.map((role) => '<option value="' + role.id + '">' + escapeHtml(role.name) + '</option>').join('');
       document.querySelector('#componentTicketCategoryId').innerHTML = '<option value="">Usar categoria principal</option>' + categories.map((channel) => '<option value="' + channel.id + '">' + escapeHtml(channel.name) + '</option>').join('');
       document.querySelector('#panelChannelId').innerHTML = textChannels.map((channel) => '<option value="' + channel.id + '">#' + escapeHtml(channel.name) + '</option>').join('');
       document.querySelector('#panelTicketCategoryId').innerHTML = '<option value="">Usar categoria principal</option>' + categories.map((channel) => '<option value="' + channel.id + '">' + escapeHtml(channel.name) + '</option>').join('');
@@ -2827,9 +2905,11 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       document.querySelector('#activePanels').textContent = String(config.panels?.length ?? 0);
       document.querySelector('#activeSecurity').textContent = formatSecurityState(config);
       document.querySelector('#activePremium').textContent = formatPremiumState(config);
+      document.querySelector('#activeMusic').textContent = formatMusicState(config);
       renderComponentHistory(config);
       renderPanelHistory(config);
       renderPremiumPanel(config);
+      renderMusicPanel(config);
       renderReadinessChecklist(config);
       renderRecommendations(config);
       updatePanelMode();
@@ -2844,7 +2924,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       const guildId = document.querySelector(sourceId).value;
       const guild = getGuildConfig(guildId);
       resetPanelEditor({ keepFields: true });
-      for (const selector of ['#guildId', '#categoryGuildId', '#componentGuildId', '#panelGuildId', '#premiumGuildId']) {
+      for (const selector of ['#guildId', '#categoryGuildId', '#componentGuildId', '#panelGuildId', '#premiumGuildId', '#musicGuildId']) {
         const element = document.querySelector(selector);
         if (element && element.value !== guildId) element.value = guildId;
       }
@@ -2925,6 +3005,26 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       }
       return false;
     }
+    async function saveMusic(event) {
+      event.preventDefault();
+      const guildId = document.querySelector('#musicGuildId')?.value || document.querySelector('#guildId').value;
+      const updated = await postJson('/api/guilds/' + guildId, {
+        music: {
+          enabled: document.querySelector('#musicEnabled').value === 'true',
+          autoQueue: document.querySelector('#musicAutoQueue').value === 'true',
+          defaultVolume: Number(document.querySelector('#musicDefaultVolume').value || 85),
+          maxQueueSize: Number(document.querySelector('#musicMaxQueueSize').value || 50),
+          djRoleId: document.querySelector('#musicDjRoleId').value || ''
+        }
+      }).catch((error) => showToast(error.message));
+      if (updated) {
+        const index = guildConfigs.findIndex((guild) => guild.guildId === guildId);
+        if (index >= 0) guildConfigs[index] = { ...guildConfigs[index], ...updated };
+        renderGuildSelectors(guildId);
+        showToast('Configuracion de musica guardada.');
+      }
+      return false;
+    }
     async function createCategory(event) {
       event.preventDefault();
       await postJson('/api/guilds/' + document.querySelector('#categoryGuildId').value + '/categories', { name: document.querySelector('#categoryName').value }).then(() => location.reload()).catch((error) => showToast(error.message));
@@ -2992,6 +3092,21 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       for (const [id, value] of Object.entries(values)) {
         const element = document.querySelector('#' + id);
         if (element) element.value = value ? 'true' : 'false';
+      }
+    }
+    function renderMusicPanel(guild = getActiveGuild()) {
+      const music = normalizeMusic(guild || {});
+      const values = {
+        musicEnabled: music.enabled,
+        musicAutoQueue: music.autoQueue,
+        musicDefaultVolume: music.defaultVolume,
+        musicMaxQueueSize: music.maxQueueSize,
+        musicDjRoleId: music.djRoleId
+      };
+      for (const [id, value] of Object.entries(values)) {
+        const element = document.querySelector('#' + id);
+        if (!element) continue;
+        element.value = typeof value === 'boolean' ? String(value) : String(value ?? '');
       }
     }
     function renderPanelComponentPicker(guild = getActiveGuild()) {
@@ -3311,7 +3426,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       document.querySelector('#liveState').textContent = 'Reconectando';
       document.querySelector('#liveState').className = '';
     };
-    for (const selector of ['#guildId', '#categoryGuildId', '#componentGuildId', '#panelGuildId', '#premiumGuildId']) {
+    for (const selector of ['#guildId', '#categoryGuildId', '#componentGuildId', '#panelGuildId', '#premiumGuildId', '#musicGuildId']) {
       document.querySelector(selector)?.addEventListener('change', () => syncGuildForm(selector));
     }
     document.querySelectorAll('.nav-link[data-view]').forEach((link) => {
@@ -3357,6 +3472,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
     bindTranscriptButtons();
     updatePanelPreview();
     renderPremiumPanel(getActiveGuild());
+    renderMusicPanel(getActiveGuild());
     renderReadinessChecklist(getActiveGuild());
     renderRecommendations(getActiveGuild());
     setActiveView((location.hash || '#overview').slice(1), { updateHash: false });

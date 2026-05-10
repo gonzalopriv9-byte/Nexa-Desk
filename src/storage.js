@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createClient } from '@supabase/supabase-js';
 import { normalizeBlacklistEntry, normalizeBlacklistEvidence, normalizeBlacklistLookup } from './blacklist.js';
+import { normalizeMusicConfig } from './music/music-config.js';
 import { isPremiumEntitled, normalizePremiumConfig } from './premium.js';
 import { normalizeSecurityConfig } from './security.js';
 
@@ -616,6 +617,7 @@ function fromGuildRow(row) {
     panels: panelStore.panels,
     components: panelStore.components,
     security: panelStore.security,
+    music: panelStore.music,
     updatedAt: row.updated_at
   };
 }
@@ -626,7 +628,8 @@ function toGuildPanelStore(guild) {
     components: guild.components ?? [],
     security: normalizeSecurityConfig(guild.security),
     premium: normalizePremiumConfig(guild.premium, guild),
-    alliance: normalizeAllianceConfig(guild)
+    alliance: normalizeAllianceConfig(guild),
+    music: normalizeMusicConfig(guild.music)
   };
 }
 
@@ -637,7 +640,8 @@ function fromGuildPanelStore(value) {
       components: [],
       security: normalizeSecurityConfig(),
       premium: normalizePremiumConfig(),
-      alliance: normalizeAllianceConfig()
+      alliance: normalizeAllianceConfig(),
+      music: normalizeMusicConfig()
     };
   }
 
@@ -647,7 +651,8 @@ function fromGuildPanelStore(value) {
       components: Array.isArray(value.components) ? value.components : [],
       security: normalizeSecurityConfig(value.security),
       premium: normalizePremiumConfig(value.premium),
-      alliance: normalizeAllianceConfig(value.alliance)
+      alliance: normalizeAllianceConfig(value.alliance),
+      music: normalizeMusicConfig(value.music)
     };
   }
 
@@ -656,7 +661,8 @@ function fromGuildPanelStore(value) {
     components: [],
     security: normalizeSecurityConfig(),
     premium: normalizePremiumConfig(),
-    alliance: normalizeAllianceConfig()
+    alliance: normalizeAllianceConfig(),
+    music: normalizeMusicConfig()
   };
 }
 

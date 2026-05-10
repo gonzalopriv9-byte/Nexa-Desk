@@ -22,6 +22,8 @@ import {
   parseBlacklistDuration
 } from './blacklist.js';
 import { buildPanelActionRow, buildPanelEmbed, normalizePanelOptions, normalizeTicketComponent, panelWelcomeMessage } from './panel-options.js';
+import { formatTrackDuration } from './music/music-manager.js';
+import { normalizeMusicConfig } from './music/music-config.js';
 import { isPremiumEntitled, normalizePremiumConfig } from './premium.js';
 import { SecurityManager, SECURITY_LEVELS, normalizeSecurityConfig, normalizeSecurityLevel, summarizeSecurityConfig } from './security.js';
 import { buildTranscriptFileName, buildTranscriptText } from './transcripts.js';
@@ -39,7 +41,7 @@ const ALLIANCE_MARKER = '[NexaDesk alliance]';
 const CRISIS_MARKER = '[NexaDesk crisis]';
 const STAFF_HANDOFF_MARKER = '[NexaDesk staff handoff]';
 
-export function createBot({ config, storage, supportAgent, voiceManager = null }) {
+export function createBot({ config, storage, supportAgent, voiceManager = null, musicManager = null }) {
   const intents = [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
@@ -91,7 +93,7 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
       if (interaction.isButton() && interaction.customId === 'nexadesk:create_ticket') {
         const guildConfig = await storage.getGuildConfig(interaction.guildId);
         const panel = findPanelForInteraction(guildConfig, interaction);
-        await createTicketFromConfiguredSource({ interaction, storage, guildConfig, panel, panelCreatedChannels, blacklistAlertedChannels, config, voiceManager });
+        await createTicketFromConfiguredSource({ interaction, storage, guildConfig, panel, panelCreatedChannels, blacklistAlertedChannels, config, voiceManager, musicManager });
         return;
       }
 
@@ -115,7 +117,7 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
           return;
         }
 
-        await createTicketFromConfiguredSource({ interaction, storage, guildConfig, panel, component, panelCreatedChannels, blacklistAlertedChannels, config, voiceManager });
+        await createTicketFromConfiguredSource({ interaction, storage, guildConfig, panel, component, panelCreatedChannels, blacklistAlertedChannels, config, voiceManager, musicManager });
         return;
       }
 
@@ -132,7 +134,7 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
           question,
           answer: interaction.fields.getTextInputValue(`question_${index}`) || 'Sin respuesta'
         }));
-        await createTicketFromConfiguredSource({ interaction, storage, guildConfig, component, answers, panelCreatedChannels, blacklistAlertedChannels, config, voiceManager });
+        await createTicketFromConfiguredSource({ interaction, storage, guildConfig, component, answers, panelCreatedChannels, blacklistAlertedChannels, config, voiceManager, musicManager });
         return;
       }
 
@@ -210,7 +212,7 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
       if (interaction.commandName === 'voz') {
         const subcommand = interaction.options.getSubcommand();
         if (subcommand === 'crear') {
-          await handleVoiceCreateCommand({ interaction, storage, voiceManager });
+          await handleVoiceCreateCommand({ interaction, storage, voiceManager, musicManager });
           return;
         }
         if (subcommand === 'estado') {
@@ -223,13 +225,18 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
         }
       }
 
+      if (interaction.commandName === 'musica') {
+        await handleMusicCommand({ interaction, storage, musicManager, voiceManager });
+        return;
+      }
+
       if (interaction.commandName === 'transcripcion' && interaction.options.getSubcommand() === 'enviar') {
         await handleSendTranscriptCommand({ interaction, storage });
         return;
       }
 
       if (interaction.commandName === 'globalstats') {
-        await handleGlobalStatsCommand({ interaction, storage, client });
+        await handleGlobalStatsCommand({ interaction, storage, client, musicManager });
         return;
       }
 
@@ -1002,10 +1009,18 @@ async function handleCloseTicketCommand({ interaction, storage, client, voiceMan
   });
 }
 
-async function handleVoiceCreateCommand({ interaction, storage, voiceManager = null }) {
+async function handleVoiceCreateCommand({ interaction, storage, voiceManager = null, musicManager = null }) {
   const context = await getVoiceCommandContext({ interaction, storage });
   if (!context) return;
   const { ticket, guildConfig } = context;
+
+  if (musicManager?.getSession(interaction.guildId)) {
+    await interaction.reply({
+      content: 'Hay musica activa en este servidor. Usa `/musica parar` antes de abrir una sala de soporte por voz.',
+      ephemeral: true
+    });
+    return;
+  }
 
   const existingChannel = ticket.voiceChannelId
     ? await interaction.guild.channels.fetch(ticket.voiceChannelId).catch(() => null)
@@ -1178,6 +1193,172 @@ async function handleVoiceCloseCommand({ interaction, storage, voiceManager = nu
   });
 
   await interaction.reply({ content: `${EMOJIS.global} Sala de voz cerrada y desvinculada del ticket.` });
+}
+
+async function handleMusicCommand({ interaction, storage, musicManager = null, voiceManager = null }) {
+  if (!interaction.inGuild()) {
+    await interaction.reply({ content: 'La musica solo funciona dentro de un servidor.', ephemeral: true });
+    return;
+  }
+
+  if (!musicManager) {
+    await interaction.reply({ content: 'El sistema de musica esta desactivado en este despliegue.', ephemeral: true });
+    return;
+  }
+
+  const subcommand = interaction.options.getSubcommand();
+  const guildConfig = await storage.getGuildConfig(interaction.guildId);
+  const musicConfig = normalizeMusicConfig(guildConfig?.music);
+  if (!canUseMusicCommand(interaction, musicConfig, subcommand)) {
+    await interaction.reply({
+      content: 'Este servidor ha configurado un rol DJ para controlar la musica.',
+      ephemeral: true
+    });
+    return;
+  }
+
+  if (!musicConfig.enabled && !['cola', 'parar'].includes(subcommand)) {
+    await interaction.reply({ content: 'La musica esta desactivada para este servidor desde la dashboard.', ephemeral: true });
+    return;
+  }
+
+  if (voiceManager?.getSession(interaction.guildId) && !['cola', 'parar'].includes(subcommand)) {
+    await interaction.reply({
+      content: 'Hay una sala de soporte por voz activa. Para no romper STT/TTS, cierra esa sala antes de usar musica.',
+      ephemeral: true
+    });
+    return;
+  }
+
+  if (subcommand === 'reproducir') {
+    await interaction.deferReply();
+    const query = interaction.options.getString('consulta', true);
+    const result = await musicManager.enqueue({ interaction, query, guildConfig });
+    const embed = buildMusicTrackEmbed({
+      title: result.started ? 'Reproduciendo' : 'Anadida a la cola',
+      track: result.track,
+      description: result.started ? 'La cola arranca ahora.' : `Posicion en cola: ${result.position}`
+    });
+    await interaction.editReply({ embeds: [embed] });
+    return;
+  }
+
+  if (subcommand === 'buscar') {
+    await interaction.deferReply({ ephemeral: true });
+    const query = interaction.options.getString('consulta', true);
+    const results = await musicManager.search(query, 5);
+    const embed = new EmbedBuilder()
+      .setColor(0xffffff)
+      .setTitle(`${EMOJIS.global} Resultados de musica`)
+      .setDescription(results.length
+        ? results.map((track, index) => `**${index + 1}.** ${track.title}\n${track.uploader || 'Fuente desconocida'} - ${formatTrackDuration(track.duration)}`).join('\n\n')
+        : 'No encontre resultados.')
+      .setFooter({ text: 'Usa /musica reproducir consulta:<titulo o enlace> para reproducir.' });
+    await interaction.editReply({ embeds: [embed] });
+    return;
+  }
+
+  if (subcommand === 'cola') {
+    const queue = musicManager.getQueue(interaction.guildId);
+    await interaction.reply({ embeds: [buildMusicQueueEmbed(queue)] });
+    return;
+  }
+
+  if (subcommand === 'saltar') {
+    const skipped = musicManager.skip(interaction.guildId);
+    await interaction.reply({ content: skipped ? 'Saltando a la siguiente cancion.' : 'No hay musica activa.' });
+    return;
+  }
+
+  if (subcommand === 'parar') {
+    const stopped = musicManager.stop(interaction.guildId);
+    await interaction.reply({ content: stopped ? 'Musica parada y cola limpiada.' : 'No hay musica activa.' });
+    return;
+  }
+
+  if (subcommand === 'pausa') {
+    const paused = musicManager.pause(interaction.guildId);
+    await interaction.reply({ content: paused ? 'Musica pausada.' : 'No pude pausar porque no hay reproduccion activa.' });
+    return;
+  }
+
+  if (subcommand === 'continuar') {
+    const resumed = musicManager.resume(interaction.guildId);
+    await interaction.reply({ content: resumed ? 'Musica reanudada.' : 'No pude reanudar porque no hay musica pausada.' });
+    return;
+  }
+
+  if (subcommand === 'volumen') {
+    const percent = interaction.options.getInteger('porcentaje', true);
+    const volume = musicManager.setVolume(interaction.guildId, percent);
+    await interaction.reply({ content: volume ? `Volumen ajustado a ${volume}%.` : 'No hay musica activa.' });
+    return;
+  }
+
+  if (subcommand === 'autocola') {
+    const enabled = interaction.options.getBoolean('activo', true);
+    const current = normalizeMusicConfig(guildConfig?.music);
+    await storage.upsertGuildConfig(interaction.guildId, {
+      guildName: interaction.guild.name,
+      music: { ...current, autoQueue: enabled }
+    });
+    musicManager.setAutoQueue(interaction.guildId, enabled);
+    await interaction.reply({
+      content: enabled
+        ? 'Autocola IA activada. Cuando la cola se quede vacia, NexaDesk sugerira la siguiente cancion segun el historial.'
+        : 'Autocola IA desactivada para este servidor.'
+    });
+  }
+}
+
+function canUseMusicCommand(interaction, musicConfig, subcommand) {
+  if (!musicConfig.djRoleId) return true;
+  if (['buscar', 'cola'].includes(subcommand)) return true;
+  if (interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) return true;
+  return Boolean(interaction.member?.roles?.cache?.has(musicConfig.djRoleId));
+}
+
+function buildMusicTrackEmbed({ title, track, description }) {
+  const embed = new EmbedBuilder()
+    .setColor(0xffffff)
+    .setTitle(`${EMOJIS.global} ${title}`)
+    .setDescription(`**${track.title}**\n${description}`)
+    .addFields(
+      { name: 'Duracion', value: formatTrackDuration(track.duration), inline: true },
+      { name: 'Fuente', value: track.uploader || 'Desconocida', inline: true },
+      { name: 'Pedido por', value: track.autoQueued ? 'Autocola IA' : track.requestedByName || 'Usuario', inline: true }
+    );
+  if (track.thumbnail) embed.setThumbnail(track.thumbnail);
+  if (track.url) embed.setURL(track.url);
+  return embed;
+}
+
+function buildMusicQueueEmbed(queue) {
+  const embed = new EmbedBuilder()
+    .setColor(0xffffff)
+    .setTitle(`${EMOJIS.wifi} Cola de musica`)
+    .setDescription(queue.active
+      ? `Canal de voz: **${queue.voiceChannelName ?? 'activo'}**\nAutocola IA: **${queue.autoQueue ? 'Activa' : 'Off'}**\nVolumen: **${queue.volume}%**`
+      : 'No hay musica activa en este servidor.');
+
+  if (queue.current) {
+    embed.addFields({
+      name: 'Ahora',
+      value: `**${queue.current.title}**\n${queue.current.uploader || 'Fuente desconocida'} - ${formatTrackDuration(queue.current.duration)}`
+    });
+  }
+
+  embed.addFields({
+    name: 'Siguientes',
+    value: queue.queue.length
+      ? queue.queue.slice(0, 10).map((track, index) => `${index + 1}. ${track.title} (${formatTrackDuration(track.duration)})`).join('\n')
+      : 'La cola esta vacia.'
+  });
+
+  if (queue.history?.length) {
+    embed.setFooter({ text: `Historial disponible: ${queue.history.length} canciones` });
+  }
+  return embed;
 }
 
 async function getVoiceCommandContext({ interaction, storage, allowFreeStatus = false }) {
@@ -1914,6 +2095,33 @@ function buildHelpEmbed({ view, config, guild }) {
       );
   }
 
+  if (view === 'music') {
+    return base
+      .setTitle(`${EMOJIS.global} Musica y autocola IA`)
+      .setDescription('NexaDesk tambien puede funcionar como reproductor de musica con cola por servidor y sugerencias automaticas segun el historial.')
+      .addFields(
+        {
+          name: 'Comandos principales',
+          value: [
+            '`/musica reproducir consulta:<cancion o enlace>`',
+            '`/musica buscar consulta:<titulo o artista>`',
+            '`/musica cola`',
+            '`/musica saltar`',
+            '`/musica parar`',
+            '`/musica autocola activo:true`'
+          ].join('\n')
+        },
+        {
+          name: 'Autocola IA',
+          value: 'Cuando la cola se queda vacia, NexaDesk analiza las ultimas canciones y prepara una busqueda parecida para mantener energia, idioma y estilo.'
+        },
+        {
+          name: 'Calidad',
+          value: 'El servidor usa `yt-dlp` para resolver audio y `ffmpeg` a 48 kHz stereo para enviarlo a Discord con la maxima estabilidad posible.'
+        }
+      );
+  }
+
   if (view === 'security') {
     return base
       .setTitle(`${EMOJIS.wifi} Seguridad del servidor`)
@@ -1967,6 +2175,7 @@ function buildHelpEmbed({ view, config, guild }) {
           'Como configuro el servidor?',
           'Seguridad del servidor',
           'Premium',
+          'Musica IA',
           'Datos y transcripciones',
           'Comando util: `/diagnostico` para auditar el setup actual.'
         ].join('\n')
@@ -2005,6 +2214,10 @@ function buildHelpComponents({ view, config }) {
     ),
     new ActionRowBuilder().addComponents(
       new ButtonBuilder()
+        .setCustomId('nexadesk:help:music')
+        .setLabel('Musica IA')
+        .setStyle(current === 'music' ? ButtonStyle.Success : ButtonStyle.Secondary),
+      new ButtonBuilder()
         .setStyle(ButtonStyle.Link)
         .setLabel('Dashboard')
         .setURL(PUBLIC_DASHBOARD_URL),
@@ -2016,7 +2229,7 @@ function buildHelpComponents({ view, config }) {
   ];
 }
 
-async function createTicketFromConfiguredSource({ interaction, storage, guildConfig, panel = null, component = null, answers = [], panelCreatedChannels, blacklistAlertedChannels, config, voiceManager = null }) {
+async function createTicketFromConfiguredSource({ interaction, storage, guildConfig, panel = null, component = null, answers = [], panelCreatedChannels, blacklistAlertedChannels, config, voiceManager = null, musicManager = null }) {
   if (!interaction.inGuild()) {
     await interaction.reply({ content: 'Los tickets solo se pueden abrir dentro de un servidor.', ephemeral: true });
     return;
@@ -2037,6 +2250,14 @@ async function createTicketFromConfiguredSource({ interaction, storage, guildCon
         `${EMOJIS.wifi} Este panel abre tickets de voz, pero este servidor no tiene Pro Voice activo.`,
         'Activa `plan = pro` o `voice_support_enabled = true` en Supabase para este servidor.'
       ].join('\n'),
+      ephemeral: true
+    });
+    return;
+  }
+
+  if (ticketMode === 'voice' && musicManager?.getSession(interaction.guildId)) {
+    await interaction.reply({
+      content: 'Hay musica activa en este servidor. Para crear un ticket por voz, primero usa `/musica parar`.',
       ephemeral: true
     });
     return;
@@ -2729,7 +2950,7 @@ async function sendTranscriptDm({ targetUser, ticket, messages, guildName }) {
   });
 }
 
-async function handleGlobalStatsCommand({ interaction, storage, client }) {
+async function handleGlobalStatsCommand({ interaction, storage, client, musicManager = null }) {
   await interaction.deferReply();
 
   const installedGuildIds = new Set(client.guilds.cache.keys());
@@ -2740,6 +2961,7 @@ async function handleGlobalStatsCommand({ interaction, storage, client }) {
   const botTickets = tickets.filter((ticket) => installedGuildIds.has(ticket.guildId));
   const activeTickets = botTickets.filter((ticket) => ticket.status !== 'closed');
   const voiceRooms = botTickets.filter((ticket) => ticket.voiceChannelId).length;
+  const activeMusicSessions = musicManager?.sessions?.size ?? 0;
   const panels = guildConfigs.reduce((total, guild) => total + (guild.panels?.length ?? 0), 0);
   const proGuilds = guildConfigs.filter(isPremiumEntitled).length;
   const protectedGuilds = guildConfigs.filter((guild) => normalizeSecurityConfig(guild.security).enabled).length;
@@ -2777,6 +2999,7 @@ async function handleGlobalStatsCommand({ interaction, storage, client }) {
           `Servidores protegidos: **${protectedGuilds}**`,
           `Paneles publicados: **${panels}**`,
           `Salas de voz activas: **${voiceRooms}**`,
+          `Musica activa: **${activeMusicSessions}**`,
           `Canales cacheados: **${client.channels.cache.size}**`
         ].join('\n'),
         inline: true
