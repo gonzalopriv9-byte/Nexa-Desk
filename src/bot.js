@@ -233,6 +233,11 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
         return;
       }
 
+      if (interaction.commandName === 'diagnostico') {
+        await handleDiagnosticsCommand({ interaction, storage, client });
+        return;
+      }
+
       if (interaction.commandName === 'seguridad') {
         await handleSecurityCommand({ interaction, storage });
         return;
@@ -1840,7 +1845,8 @@ function buildHelpEmbed({ view, config, guild }) {
             '4. Selecciona el rol de staff.',
             '5. Escribe el prompt/contexto del servidor para que la IA responda con criterio.',
             '6. Crea componentes y publica paneles de boton o menu.',
-            '7. Si el servidor tiene Pro, entra en Premium y activa los modulos que quieras ofrecer.'
+            '7. Ejecuta `/diagnostico` para ver el NexaScore y lo que falta.',
+            '8. Si el servidor tiene Pro, entra en Premium y activa los modulos que quieras ofrecer.'
           ].join('\n')
         },
         {
@@ -1961,7 +1967,8 @@ function buildHelpEmbed({ view, config, guild }) {
           'Como configuro el servidor?',
           'Seguridad del servidor',
           'Premium',
-          'Datos y transcripciones'
+          'Datos y transcripciones',
+          'Comando util: `/diagnostico` para auditar el setup actual.'
         ].join('\n')
       },
       {
@@ -2736,6 +2743,11 @@ async function handleGlobalStatsCommand({ interaction, storage, client }) {
   const panels = guildConfigs.reduce((total, guild) => total + (guild.panels?.length ?? 0), 0);
   const proGuilds = guildConfigs.filter(isPremiumEntitled).length;
   const protectedGuilds = guildConfigs.filter((guild) => normalizeSecurityConfig(guild.security).enabled).length;
+  const staleTickets = activeTickets.filter((ticket) => {
+    const date = new Date(ticket.updatedAt || ticket.createdAt || 0);
+    return date.getTime() && Date.now() - date.getTime() > 1000 * 60 * 60 * 24;
+  }).length;
+  const staffTickets = activeTickets.filter((ticket) => ['staff_waiting', 'staff_active', 'escalated'].includes(ticket.status)).length;
   const memoryMb = Math.round(process.memoryUsage().rss / 1024 / 1024);
 
   const embed = new EmbedBuilder()
@@ -2770,6 +2782,15 @@ async function handleGlobalStatsCommand({ interaction, storage, client }) {
         inline: true
       },
       {
+        name: 'Atencion operativa',
+        value: [
+          `Tickets esperando staff: **${staffTickets}**`,
+          `Tickets +24h abiertos: **${staleTickets}**`,
+          `Cobertura Security: **${client.guilds.cache.size ? Math.round((protectedGuilds / client.guilds.cache.size) * 100) : 0}%**`
+        ].join('\n'),
+        inline: true
+      },
+      {
         name: 'Runtime',
         value: [
           `Uptime: **${formatDuration(client.uptime ?? 0)}**`,
@@ -2783,6 +2804,165 @@ async function handleGlobalStatsCommand({ interaction, storage, client }) {
     .setTimestamp(new Date());
 
   await interaction.editReply({ embeds: [embed] });
+}
+
+async function handleDiagnosticsCommand({ interaction, storage, client }) {
+  if (!interaction.inGuild()) {
+    await interaction.reply({ content: 'Este diagnostico solo funciona dentro de un servidor.', ephemeral: true });
+    return;
+  }
+
+  if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+    await interaction.reply({
+      content: 'Necesitas permiso **Manage Server** para ejecutar el diagnostico de NexaDesk.',
+      ephemeral: true
+    });
+    return;
+  }
+
+  await interaction.deferReply({ ephemeral: true });
+
+  const [guildConfig, tickets] = await Promise.all([
+    storage.getGuildConfig(interaction.guildId),
+    storage.listTickets().catch(() => [])
+  ]);
+  const operational = buildGuildOperationalScore(guildConfig, { installed: true });
+  const guildTickets = tickets.filter((ticket) => ticket.guildId === interaction.guildId);
+  const activeTickets = guildTickets.filter((ticket) => ticket.status !== 'closed');
+  const todayStart = new Date();
+  todayStart.setHours(0, 0, 0, 0);
+  const todayTickets = guildTickets.filter((ticket) => {
+    const createdAt = new Date(ticket.createdAt || 0);
+    return createdAt.getTime() >= todayStart.getTime();
+  }).length;
+  const escalatedTickets = activeTickets.filter((ticket) => ['staff_waiting', 'staff_active', 'escalated'].includes(ticket.status)).length;
+  const nextActions = operational.missing.slice(0, 4);
+  const security = normalizeSecurityConfig(guildConfig?.security);
+  const premium = normalizePremiumConfig(guildConfig?.premium, guildConfig ?? {});
+
+  const embed = new EmbedBuilder()
+    .setColor(operational.score >= 80 ? 0xffffff : operational.score >= 55 ? 0xffcc00 : 0xff5f57)
+    .setTitle(`${EMOJIS.global} Diagnostico NexaDesk`)
+    .setDescription([
+      `Servidor: **${interaction.guild.name}**`,
+      `NexaScore operativo: **${operational.score}%**`,
+      operational.summary
+    ].join('\n'))
+    .addFields(
+      {
+        name: 'Checklist',
+        value: operational.checks.map((item) => `${item.done ? '[OK]' : '[Falta]'} ${item.label}`).join('\n'),
+        inline: false
+      },
+      {
+        name: 'Tickets',
+        value: [
+          `Abiertos: **${activeTickets.length}**`,
+          `Creados hoy: **${todayTickets}**`,
+          `Esperando staff: **${escalatedTickets}**`,
+          `Con voz: **${activeTickets.filter((ticket) => ticket.voiceChannelId).length}**`
+        ].join('\n'),
+        inline: true
+      },
+      {
+        name: 'Modulos',
+        value: [
+          `IA: **${guildConfig?.serverPrompt || guildConfig?.serverInfo ? 'Con contexto' : 'Sin contexto'}**`,
+          `Security Guard: **${security.enabled ? 'Activo' : 'Off'}**`,
+          `Premium: **${isPremiumEntitled(guildConfig ?? {}) ? 'Pro' : 'Free'}**`,
+          `Voz Pro: **${premium.voiceSupport && isPremiumEntitled(guildConfig ?? {}) ? 'Activa' : 'No activa'}**`
+        ].join('\n'),
+        inline: true
+      },
+      {
+        name: 'Siguiente mejor accion',
+        value: nextActions.length
+          ? nextActions.map((item) => `- ${item.action}`).join('\n')
+          : 'El servidor esta listo. Revisa transcripciones y estadisticas para optimizar tiempos de respuesta.',
+        inline: false
+      }
+    )
+    .setFooter({ text: `Ping ${Math.max(Math.round(client.ws.ping), 0)} ms - /globalstats para vision global` })
+    .setTimestamp(new Date());
+
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setStyle(ButtonStyle.Link)
+      .setLabel('Abrir dashboard')
+      .setURL(PUBLIC_DASHBOARD_URL),
+    new ButtonBuilder()
+      .setStyle(ButtonStyle.Link)
+      .setLabel('Soporte oficial')
+      .setURL(SUPPORT_SERVER_URL)
+  );
+
+  await interaction.editReply({ embeds: [embed], components: [row] });
+}
+
+function buildGuildOperationalScore(guildConfig, { installed = false } = {}) {
+  const security = normalizeSecurityConfig(guildConfig?.security);
+  const checks = [
+    {
+      key: 'installed',
+      label: 'Bot instalado',
+      done: installed,
+      weight: 10,
+      action: 'Invita NexaDesk con permisos recomendados desde la dashboard.'
+    },
+    {
+      key: 'category',
+      label: 'Categoria de tickets',
+      done: Boolean(guildConfig?.ticketCategoryId),
+      weight: 15,
+      action: 'Selecciona la categoria donde se crean los tickets.'
+    },
+    {
+      key: 'staff',
+      label: 'Rol staff',
+      done: Boolean(guildConfig?.staffRoleId),
+      weight: 15,
+      action: 'Configura el rol que recibira escalados y avisos.'
+    },
+    {
+      key: 'context',
+      label: 'Contexto IA',
+      done: Boolean(guildConfig?.serverPrompt || guildConfig?.serverInfo),
+      weight: 20,
+      action: 'Escribe un prompt con normas, tono, FAQ y cuando pedir pruebas.'
+    },
+    {
+      key: 'security',
+      label: 'Security Guard',
+      done: Boolean(security.enabled),
+      weight: 15,
+      action: 'Activa Security Guard para anti-flood, links sospechosos y audit logs.'
+    },
+    {
+      key: 'components',
+      label: 'Componentes o menu',
+      done: Boolean(guildConfig?.components?.length),
+      weight: 10,
+      action: 'Crea componentes con preguntas previas para tickets mas claros.'
+    },
+    {
+      key: 'panels',
+      label: 'Panel publicado',
+      done: Boolean(guildConfig?.panels?.length),
+      weight: 15,
+      action: 'Publica un panel de tickets para que los usuarios abran casos.'
+    }
+  ];
+  const total = checks.reduce((sum, item) => sum + item.weight, 0);
+  const done = checks.reduce((sum, item) => sum + (item.done ? item.weight : 0), 0);
+  const score = total ? Math.round((done / total) * 100) : 0;
+  const missing = checks.filter((item) => !item.done);
+  const summary = score >= 85
+    ? 'Listo para operar con una experiencia muy solida.'
+    : score >= 60
+      ? 'Ya puede operar, pero aun hay mejoras importantes antes de venderlo como setup completo.'
+      : 'Necesita setup basico antes de confiarle soporte real.';
+
+  return { score, checks, missing, summary };
 }
 
 async function sendFlowMessages({ message, storage, flow }) {

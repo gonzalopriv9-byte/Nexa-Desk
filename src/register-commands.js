@@ -117,6 +117,10 @@ const commands = [
     .setDescription('Muestra estadisticas globales de NexaDesk.')
     .toJSON(),
   new SlashCommandBuilder()
+    .setName('diagnostico')
+    .setDescription('Audita si NexaDesk esta listo para operar en este servidor.')
+    .toJSON(),
+  new SlashCommandBuilder()
     .setName('seguridad')
     .setDescription('Configura NexaDesk Security Guard para anti-raid y moderacion preventiva.')
     .addSubcommand((subcommand) =>

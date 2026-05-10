@@ -1800,6 +1800,12 @@ function renderDashboard({ session, guilds, tickets, stats }) {
     .server-status { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:8px; margin-top:12px; }
     .server-status div { border:1px solid var(--soft-line); border-radius:10px; padding:10px; background:rgba(5,8,10,.42); }
     .server-status strong { display:block; font-size:13px; margin-top:4px; }
+    .server-score { display:grid; grid-template-columns:minmax(0,1fr) 220px auto; align-items:center; gap:12px; margin-top:12px; border:1px solid var(--soft-line); border-radius:14px; padding:14px; background:linear-gradient(135deg, rgba(255,255,255,.08), rgba(255,255,255,.025)); }
+    .server-score span { color:var(--muted); }
+    .server-score strong { display:block; font-size:30px; line-height:1; margin:6px 0; }
+    .server-score small { display:block; color:var(--muted); }
+    .server-score .meter { margin:0; min-width:180px; }
+    .server-score .quick-action { white-space:nowrap; justify-self:end; }
     .guild-list { display:grid; gap:8px; max-height:560px; overflow:auto; padding-right:4px; }
     .guild-pill { display:flex; align-items:center; justify-content:space-between; gap:12px; text-align:left; border:1px solid var(--soft-line); background:#071014; color:var(--text); border-radius:12px; padding:12px; cursor:pointer; transition:transform .22s cubic-bezier(.2,.8,.2,1), border-color .22s ease, background .22s ease; }
     .guild-pill:hover { transform:translateX(3px); }
@@ -1973,7 +1979,7 @@ function renderDashboard({ session, guilds, tickets, stats }) {
       .topbar,.workspace,.command-center,.panel-builder { gap:12px; margin-bottom:12px; }
       .view-heading,.section-heading,.ticket-tools,.transcript-head { display:grid; align-items:start; gap:10px; }
       .active-server { margin-bottom:12px; }
-      form,.control-grid,.stats,.server-status,.mini-grid,.panel-fields,.form-section,.readiness-checklist,.recommendation-grid,.premium-feature-grid,.premium-toggle { grid-template-columns:1fr; }
+      form,.control-grid,.stats,.server-status,.server-score,.mini-grid,.panel-fields,.form-section,.readiness-checklist,.recommendation-grid,.premium-feature-grid,.premium-toggle { grid-template-columns:1fr; }
       label,button { margin-top:0; }
       textarea { min-height:118px; }
       .form-section { padding:10px; }
@@ -1982,6 +1988,8 @@ function renderDashboard({ session, guilds, tickets, stats }) {
       .guild-list,.component-list,.component-picker,.panel-stack { max-height:320px; }
       .guild-pill { padding:11px; }
       .guild-pill:hover,.panel-card:hover { transform:none; }
+      .server-score .meter { min-width:0; }
+      .server-score .quick-action { justify-self:stretch; }
       .preview-message { grid-template-columns:34px minmax(0,1fr); gap:9px; }
       .preview-avatar { width:34px; height:34px; }
       .embed-preview { max-width:100%; }
@@ -2052,6 +2060,15 @@ function renderDashboard({ session, guilds, tickets, stats }) {
         <div><span>Paneles</span><strong id="activePanels">0</strong></div>
         <div><span>Seguridad</span><strong id="activeSecurity">Off</strong></div>
         <div><span>Premium</span><strong id="activePremium">Free</strong></div>
+      </div>
+      <div class="server-score">
+        <div>
+          <span>NexaScore del servidor</span>
+          <strong id="activeScore">0%</strong>
+          <small id="activeScoreText">Selecciona un servidor para auditarlo.</small>
+        </div>
+        <div class="meter" id="activeScoreMeter" style="--value:0%"><span></span></div>
+        <button class="quick-action" type="button" id="activeNextAction" data-go-view="settings">Siguiente accion</button>
       </div>
       <div class="install-banner" id="installBanner" hidden>
         <div><strong id="installTitle">NexaDesk no esta instalado en este servidor.</strong><p id="installText">Al seleccionarlo puedes invitar el bot directamente con permisos recomendados.</p></div>
@@ -2555,6 +2572,40 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
         { key: 'panels', label: 'Panel publicado', done: Boolean(guild.panels?.length), view: 'panels' }
       ];
     }
+    function getGuildScore(guild = {}) {
+      const weights = { installed:10, category:15, staff:15, context:20, security:15, components:10, panels:15 };
+      const readiness = getGuildReadiness(guild).map((item) => ({ ...item, weight: weights[item.key] || 10 }));
+      const total = readiness.reduce((sum, item) => sum + item.weight, 0);
+      const done = readiness.reduce((sum, item) => sum + (item.done ? item.weight : 0), 0);
+      const score = total ? Math.round((done / total) * 100) : 0;
+      const missing = readiness.filter((item) => !item.done);
+      const label = score >= 85 ? 'Listo para operar' : score >= 60 ? 'Casi listo' : score >= 35 ? 'Setup a medias' : 'Necesita setup';
+      return { score, missing, label };
+    }
+    function renderServerScore(guild = getActiveGuild()) {
+      const scoreEl = document.querySelector('#activeScore');
+      const textEl = document.querySelector('#activeScoreText');
+      const meterEl = document.querySelector('#activeScoreMeter');
+      const button = document.querySelector('#activeNextAction');
+      if (!scoreEl || !textEl || !meterEl || !button) return;
+      if (!guild) {
+        scoreEl.textContent = '0%';
+        textEl.textContent = 'Selecciona un servidor para auditarlo.';
+        meterEl.style.setProperty('--value', '0%');
+        button.textContent = 'Seleccionar servidor';
+        button.dataset.goView = 'servers';
+        bindNavigationButtons(button.parentElement || document);
+        return;
+      }
+      const result = getGuildScore(guild);
+      const next = result.missing[0];
+      scoreEl.textContent = result.score + '%';
+      textEl.textContent = next ? result.label + ' - falta: ' + next.label : result.label + ' - revisa tickets y transcripciones.';
+      meterEl.style.setProperty('--value', result.score + '%');
+      button.textContent = next ? 'Resolver: ' + next.label : 'Ver tickets';
+      button.dataset.goView = next?.view || 'tickets';
+      bindNavigationButtons(button.parentElement || document);
+    }
     function formatVoiceState(guild = {}) {
       const plan = String(guild.plan || 'free').toUpperCase();
       const enabled = Boolean(guild.voiceSupportEnabled || ['PRO', 'ENTERPRISE', 'PREMIUM'].includes(plan));
@@ -2602,6 +2653,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       return map[security.level] || 'Activo';
     }
     function renderReadinessChecklist(guild = getActiveGuild()) {
+      renderServerScore(guild);
       const target = document.querySelector('#readinessChecklist');
       if (!target) return;
       if (!guild) {
