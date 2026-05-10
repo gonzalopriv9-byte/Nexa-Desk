@@ -172,6 +172,7 @@ const commands = [
         )
     )
     .toJSON(),
+  ...buildDirectMusicCommands(),
   new SlashCommandBuilder()
     .setName('transcripcion')
     .setDescription('Gestiona transcripciones de tickets.')
@@ -285,6 +286,64 @@ const commands = [
     .setDescription('Abre la guia interactiva de NexaDesk.')
     .toJSON()
 ];
+
+function buildDirectMusicCommands() {
+  return [
+    new SlashCommandBuilder()
+      .setName('play')
+      .setDescription('Busca en Spotify y reproduce una cancion o enlace.')
+      .addStringOption((option) =>
+        option
+          .setName('query')
+          .setDescription('Titulo, artista, enlace de Spotify o enlace de YouTube.')
+          .setRequired(true)
+      ),
+    new SlashCommandBuilder()
+      .setName('search')
+      .setDescription('Busca canciones rapido antes de reproducir.')
+      .addStringOption((option) =>
+        option
+          .setName('query')
+          .setDescription('Titulo o artista.')
+          .setRequired(true)
+      ),
+    new SlashCommandBuilder()
+      .setName('queue')
+      .setDescription('Muestra la cancion actual y la cola.'),
+    new SlashCommandBuilder()
+      .setName('skip')
+      .setDescription('Salta la cancion actual.'),
+    new SlashCommandBuilder()
+      .setName('stop')
+      .setDescription('Para la musica y limpia la cola.'),
+    new SlashCommandBuilder()
+      .setName('pause')
+      .setDescription('Pausa la reproduccion actual.'),
+    new SlashCommandBuilder()
+      .setName('continue')
+      .setDescription('Reanuda la reproduccion pausada.'),
+    new SlashCommandBuilder()
+      .setName('volume')
+      .setDescription('Ajusta el volumen de la musica.')
+      .addIntegerOption((option) =>
+        option
+          .setName('percent')
+          .setDescription('Volumen entre 1 y 150.')
+          .setMinValue(1)
+          .setMaxValue(150)
+          .setRequired(true)
+      ),
+    new SlashCommandBuilder()
+      .setName('autoplay')
+      .setDescription('Activa o desactiva la autocola con IA.')
+      .addBooleanOption((option) =>
+        option
+          .setName('enabled')
+          .setDescription('Estado de la autocola IA.')
+          .setRequired(true)
+      )
+  ].map((command) => command.toJSON());
+}
 
 const rest = new REST({ version: '10' }).setToken(config.DISCORD_TOKEN);
 

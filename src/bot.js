@@ -40,6 +40,17 @@ const PREMIUM_ADMIN_USER_ID = '1352652366330986526';
 const ALLIANCE_MARKER = '[NexaDesk alliance]';
 const CRISIS_MARKER = '[NexaDesk crisis]';
 const STAFF_HANDOFF_MARKER = '[NexaDesk staff handoff]';
+const DIRECT_MUSIC_COMMANDS = new Map([
+  ['play', 'reproducir'],
+  ['search', 'buscar'],
+  ['queue', 'cola'],
+  ['skip', 'saltar'],
+  ['stop', 'parar'],
+  ['pause', 'pausa'],
+  ['continue', 'continuar'],
+  ['volume', 'volumen'],
+  ['autoplay', 'autocola']
+]);
 
 export function createBot({ config, storage, supportAgent, voiceManager = null, musicManager = null }) {
   const intents = [
@@ -232,6 +243,12 @@ export function createBot({ config, storage, supportAgent, voiceManager = null, 
 
       if (interaction.commandName === 'musica') {
         await handleMusicCommand({ interaction, storage, musicManager, voiceManager });
+        return;
+      }
+
+      const directMusicSubcommand = DIRECT_MUSIC_COMMANDS.get(interaction.commandName);
+      if (directMusicSubcommand) {
+        await handleMusicCommand({ interaction, storage, musicManager, voiceManager, forcedSubcommand: directMusicSubcommand });
         return;
       }
 
@@ -1021,7 +1038,7 @@ async function handleVoiceCreateCommand({ interaction, storage, voiceManager = n
 
   if (musicManager?.getSession(interaction.guildId)) {
     await interaction.reply({
-      content: 'Hay musica activa en este servidor. Usa `/musica parar` antes de abrir una sala de soporte por voz.',
+      content: 'Hay musica activa en este servidor. Usa `/stop` antes de abrir una sala de soporte por voz.',
       ephemeral: true
     });
     return;
@@ -1200,7 +1217,7 @@ async function handleVoiceCloseCommand({ interaction, storage, voiceManager = nu
   await interaction.reply({ content: `${EMOJIS.global} Sala de voz cerrada y desvinculada del ticket.` });
 }
 
-async function handleMusicCommand({ interaction, storage, musicManager = null, voiceManager = null }) {
+async function handleMusicCommand({ interaction, storage, musicManager = null, voiceManager = null, forcedSubcommand = null }) {
   if (!interaction.inGuild()) {
     await interaction.reply({ content: 'La musica solo funciona dentro de un servidor.', ephemeral: true });
     return;
@@ -1211,7 +1228,7 @@ async function handleMusicCommand({ interaction, storage, musicManager = null, v
     return;
   }
 
-  const subcommand = interaction.options.getSubcommand();
+  const subcommand = forcedSubcommand ?? interaction.options.getSubcommand();
   const guildConfig = await storage.getGuildConfig(interaction.guildId);
   const musicConfig = normalizeMusicConfig(guildConfig?.music);
   if (!canUseMusicCommand(interaction, musicConfig, subcommand)) {
@@ -1237,7 +1254,8 @@ async function handleMusicCommand({ interaction, storage, musicManager = null, v
 
   if (subcommand === 'reproducir') {
     await interaction.deferReply();
-    const query = interaction.options.getString('consulta', true);
+    const query = getMusicStringOption(interaction, 'consulta', 'query');
+    if (!query) throw new Error('Escribe una cancion, artista o enlace.');
     const result = await musicManager.enqueue({ interaction, query, guildConfig });
     const embed = buildMusicTrackEmbed({
       title: result.started ? 'Reproduciendo' : 'Anadida a la cola',
@@ -1253,7 +1271,8 @@ async function handleMusicCommand({ interaction, storage, musicManager = null, v
 
   if (subcommand === 'buscar') {
     await interaction.deferReply({ ephemeral: true });
-    const query = interaction.options.getString('consulta', true);
+    const query = getMusicStringOption(interaction, 'consulta', 'query');
+    if (!query) throw new Error('Escribe una cancion o artista para buscar.');
     const results = await musicManager.search(query, 5, { preferSpotify: true });
     const embed = new EmbedBuilder()
       .setColor(0xffffff)
@@ -1261,7 +1280,7 @@ async function handleMusicCommand({ interaction, storage, musicManager = null, v
       .setDescription(results.length
         ? results.map((track, index) => `**${index + 1}.** ${track.title}\n${track.uploader || 'Fuente desconocida'} - ${formatTrackDuration(track.duration)}`).join('\n\n')
         : 'No encontre resultados.')
-      .setFooter({ text: results.some((track) => track.spotify) ? 'Spotify identificado primero. Usa /musica reproducir con el titulo o enlace de Spotify.' : 'Usa /musica reproducir consulta:<titulo o enlace> para reproducir.' });
+      .setFooter({ text: results.some((track) => track.spotify) ? 'Spotify identificado primero. Usa /play con el titulo o enlace de Spotify.' : 'Usa /play query:<titulo o enlace> para reproducir.' });
     await interaction.editReply({ embeds: [embed] });
     return;
   }
@@ -1297,14 +1316,16 @@ async function handleMusicCommand({ interaction, storage, musicManager = null, v
   }
 
   if (subcommand === 'volumen') {
-    const percent = interaction.options.getInteger('porcentaje', true);
+    const percent = getMusicIntegerOption(interaction, 'porcentaje', 'percent');
+    if (!percent) throw new Error('Indica un volumen entre 1 y 150.');
     const volume = musicManager.setVolume(interaction.guildId, percent);
     await interaction.reply({ content: volume ? `Volumen ajustado a ${volume}%.` : 'No hay musica activa.' });
     return;
   }
 
   if (subcommand === 'autocola') {
-    const enabled = interaction.options.getBoolean('activo', true);
+    const enabled = getMusicBooleanOption(interaction, 'activo', 'enabled');
+    if (typeof enabled !== 'boolean') throw new Error('Indica si quieres activar o desactivar la autocola.');
     const current = normalizeMusicConfig(guildConfig?.music);
     await storage.upsertGuildConfig(interaction.guildId, {
       guildName: interaction.guild.name,
@@ -1317,6 +1338,18 @@ async function handleMusicCommand({ interaction, storage, musicManager = null, v
         : 'Autocola IA desactivada para este servidor.'
     });
   }
+}
+
+function getMusicStringOption(interaction, legacyName, directName) {
+  return interaction.options.getString(legacyName) || interaction.options.getString(directName) || '';
+}
+
+function getMusicIntegerOption(interaction, legacyName, directName) {
+  return interaction.options.getInteger(legacyName) ?? interaction.options.getInteger(directName);
+}
+
+function getMusicBooleanOption(interaction, legacyName, directName) {
+  return interaction.options.getBoolean(legacyName) ?? interaction.options.getBoolean(directName);
 }
 
 async function handleMusicButton({ interaction, storage, musicManager = null }) {
@@ -2239,12 +2272,12 @@ function buildHelpEmbed({ view, config, guild }) {
         {
           name: 'Comandos principales',
           value: [
-            '`/musica reproducir consulta:<cancion o enlace>`',
-            '`/musica buscar consulta:<titulo o artista>`',
-            '`/musica cola`',
-            '`/musica saltar`',
-            '`/musica parar`',
-            '`/musica autocola activo:true`'
+            '`/play query:<cancion o enlace>`',
+            '`/search query:<titulo o artista>`',
+            '`/queue`',
+            '`/skip`',
+            '`/stop`',
+            '`/autoplay enabled:true`'
           ].join('\n')
         },
         {
@@ -2393,7 +2426,7 @@ async function createTicketFromConfiguredSource({ interaction, storage, guildCon
 
   if (ticketMode === 'voice' && musicManager?.getSession(interaction.guildId)) {
     await interaction.reply({
-      content: 'Hay musica activa en este servidor. Para crear un ticket por voz, primero usa `/musica parar`.',
+      content: 'Hay musica activa en este servidor. Para crear un ticket por voz, primero usa `/stop`.',
       ephemeral: true
     });
     return;
