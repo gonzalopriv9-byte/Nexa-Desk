@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { Readable } from 'node:stream';
 import { Innertube } from 'youtubei.js';
 import {
   AudioPlayerStatus,
@@ -288,17 +289,24 @@ export class MusicManager {
       history: [],
       current: null,
       currentProcess: null,
+      currentInputProcess: null,
+      currentAbortController: null,
       currentResource: null,
       autoQueue: musicConfig.autoQueue,
       volume: clampVolume(musicConfig.defaultVolume),
       guildConfig,
       destroyed: false,
       skipRequested: false,
+      recoveringFromError: false,
       autoQueueInFlight: false
     };
 
     player.on(AudioPlayerStatus.Idle, () => {
       if (session.destroyed) return;
+      if (session.recoveringFromError) {
+        session.recoveringFromError = false;
+        return;
+      }
       this.#killCurrentProcess(session);
       if (session.current) {
         session.history.unshift(session.current);
@@ -330,32 +338,12 @@ export class MusicManager {
     session.current = track;
     session.skipRequested = false;
     this.#warmQueuedStreams(session);
-    const streamUrl = await this.#getStreamUrl(track.url);
-    const ffmpeg = spawn(this.#ffmpegBin(), [
-      '-hide_banner',
-      '-loglevel',
-      'error',
-      '-reconnect',
-      '1',
-      '-reconnect_streamed',
-      '1',
-      '-reconnect_delay_max',
-      '5',
-      '-i',
-      streamUrl,
-      '-vn',
-      '-af',
-      'aresample=async=1:first_pts=0',
-      '-f',
-      's16le',
-      '-ar',
-      String(SAMPLE_RATE),
-      '-ac',
-      String(CHANNELS),
-      'pipe:1'
-    ], { stdio: ['ignore', 'pipe', 'pipe'] });
+    const streamInfo = await this.#getStreamInfo(track.url);
+    const { ffmpeg, abortController, inputProcess } = await this.#spawnFfmpeg(streamInfo);
 
     session.currentProcess = ffmpeg;
+    session.currentInputProcess = inputProcess;
+    session.currentAbortController = abortController;
     const stderr = [];
     ffmpeg.stderr.on('data', (chunk) => {
       stderr.push(chunk);
@@ -570,16 +558,16 @@ export class MusicManager {
     ], { timeoutMs: this.#metadataTimeoutMs() });
   }
 
-  async #getStreamUrl(url) {
+  async #getStreamInfo(url) {
     const cached = this.#getCache(this.streamCache, url);
-    if (cached) return cached;
+    if (cached) return normalizeStreamInfo(cached);
     const inflight = this.streamInflight.get(url);
     if (inflight) return inflight;
 
-    const promise = this.#getFastYoutubeStreamUrl(url)
+    const promise = this.#getFastYoutubeStreamInfo(url)
       .catch((error) => {
         console.error('YouTube fast stream failed, falling back to yt-dlp:', normalizeProcessError(error));
-        return this.#getYtDlpStreamUrl(url);
+        return this.#getYtDlpStreamInfo(url);
       })
       .finally(() => {
         this.streamInflight.delete(url);
@@ -588,7 +576,18 @@ export class MusicManager {
     return promise;
   }
 
-  async #getYtDlpStreamUrl(url) {
+  async #getYtDlpStreamInfo(url) {
+    const streamInfo = {
+      url,
+      transport: 'ytdlp-pipe',
+      source: 'yt-dlp',
+      args: this.#buildYtDlpPipeArgs(url)
+    };
+    this.#setCache(this.streamCache, url, streamInfo, 1000 * 60 * 8);
+    return streamInfo;
+  }
+
+  #buildYtDlpPipeArgs(url) {
     const args = [
       '-f',
       this.config.MUSIC_YTDLP_FORMAT || DEFAULT_FORMAT,
@@ -596,21 +595,17 @@ export class MusicManager {
       '--no-warnings',
       '--socket-timeout',
       '8',
-      '--get-url',
+      '-o',
+      '-',
       url
     ];
     if (this.config.MUSIC_YTDLP_FORCE_IPV4) {
       args.splice(args.length - 1, 0, '--force-ipv4');
     }
-
-    const output = await readTextProcess(this.#ytDlpBin(), args, { timeoutMs: this.#metadataTimeoutMs() });
-    const streamUrl = output.split(/\r?\n/).map((line) => line.trim()).find(Boolean);
-    if (!streamUrl) throw new Error('yt-dlp no devolvio una URL de audio reproducible.');
-    this.#setCache(this.streamCache, url, streamUrl, 1000 * 60 * 8);
-    return streamUrl;
+    return args;
   }
 
-  async #getFastYoutubeStreamUrl(url) {
+  async #getFastYoutubeStreamInfo(url) {
     if (!this.#fastStreamEnabled()) throw new Error('fast stream desactivado');
     const videoId = extractYouTubeVideoId(url);
     if (!videoId) throw new Error('no es una URL de YouTube compatible');
@@ -628,11 +623,18 @@ export class MusicManager {
         ]);
         if (!format?.url) throw new Error(`sin formato de audio usable con ${client}`);
         const streamUrl = String(format.url);
-        this.#setCache(this.streamCache, url, streamUrl, 1000 * 60 * 8);
+        const streamInfo = {
+          url: streamUrl,
+          transport: 'fetch-range',
+          source: `innertube:${client}`,
+          contentLength: Number(format.content_length || format.contentLength) || parseContentLengthFromUrl(streamUrl)
+        };
+        await validateFastStreamInfo(streamInfo);
+        this.#setCache(this.streamCache, url, streamInfo, 1000 * 60 * 8);
         if (this.config.MUSIC_DEBUG_STREAMS) {
           console.log(`YouTube fast stream ${client} ${format.itag} in ${Date.now() - startedAt}ms`);
         }
-        return streamUrl;
+        return streamInfo;
       } catch (error) {
         lastError = error;
       }
@@ -648,12 +650,13 @@ export class MusicManager {
   }
 
   #fastStreamEnabled() {
-    return this.config.MUSIC_FAST_STREAM_ENABLED !== false;
+    return this.config.MUSIC_FAST_STREAM_ENABLED !== false
+      && String(this.config.MUSIC_FAST_STREAM_ENABLED ?? 'true').toLowerCase() !== 'false';
   }
 
   #warmStreamUrl(url) {
     if (!url) return;
-    this.#getStreamUrl(url).catch((error) => {
+    this.#getStreamInfo(url).catch((error) => {
       console.error('Music stream prewarm failed:', normalizeProcessError(error));
     });
   }
@@ -662,6 +665,38 @@ export class MusicManager {
     for (const track of session.queue.slice(0, 2)) {
       this.#warmStreamUrl(track.url);
     }
+  }
+
+  async #spawnFfmpeg(streamInfo) {
+    if (streamInfo.transport === 'fetch-range') {
+      const abortController = new AbortController();
+      const ffmpeg = spawn(this.#ffmpegBin(), buildFfmpegArgs('pipe:0', false), { stdio: ['pipe', 'pipe', 'pipe'] });
+      const body = Readable.from(streamRangeChunks(streamInfo, abortController.signal));
+      body.on('error', (error) => {
+        if (!ffmpeg.killed) ffmpeg.stdin.destroy(error);
+      });
+      ffmpeg.stdin.on('error', () => {});
+      body.pipe(ffmpeg.stdin);
+      return { ffmpeg, abortController, inputProcess: null };
+    }
+
+    if (streamInfo.transport === 'ytdlp-pipe') {
+      const ytdlp = spawn(this.#ytDlpBin(), streamInfo.args || this.#buildYtDlpPipeArgs(streamInfo.url), { stdio: ['ignore', 'pipe', 'pipe'] });
+      const ffmpeg = spawn(this.#ffmpegBin(), buildFfmpegArgs('pipe:0', false), { stdio: ['pipe', 'pipe', 'pipe'] });
+      ytdlp.stdout.pipe(ffmpeg.stdin);
+      ytdlp.stderr.on('data', () => {});
+      ytdlp.once('close', () => {
+        ffmpeg.stdin.end();
+      });
+      ffmpeg.stdin.on('error', () => {});
+      return { ffmpeg, abortController: null, inputProcess: ytdlp };
+    }
+
+    return {
+      ffmpeg: spawn(this.#ffmpegBin(), buildFfmpegArgs(streamInfo.url, true), { stdio: ['ignore', 'pipe', 'pipe'] }),
+      abortController: null,
+      inputProcess: null
+    };
   }
 
   async #quickYoutubeSearch(query, limit = 5) {
@@ -715,6 +750,7 @@ export class MusicManager {
 
   #handlePlaybackError(session, error) {
     if (session.destroyed) return;
+    session.recoveringFromError = true;
     console.error(`Music playback failed for guild ${session.guildId}:`, error);
     const message = normalizeProcessError(error);
     session.textChannel?.send(`No pude reproducir esa cancion: ${message}`).catch(() => {});
@@ -723,10 +759,23 @@ export class MusicManager {
     session.currentResource = null;
     setTimeout(() => this.#playNext(session).catch((nextError) => {
       console.error(`Music queue recovery failed for guild ${session.guildId}:`, nextError);
+    }).finally(() => {
+      session.recoveringFromError = false;
     }), 800);
   }
 
   #killCurrentProcess(session) {
+    session.currentAbortController?.abort();
+    session.currentAbortController = null;
+    const inputProcess = session.currentInputProcess;
+    session.currentInputProcess = null;
+    if (inputProcess && !inputProcess.killed) {
+      try {
+        inputProcess.kill('SIGKILL');
+      } catch {
+        // Best effort cleanup.
+      }
+    }
     const process = session.currentProcess;
     session.currentProcess = null;
     if (!process || process.killed) return;
@@ -754,6 +803,34 @@ function normalizeSearchEntries(entries) {
   return entries
     .map((entry) => normalizeTrackMetadata(entry))
     .filter((entry) => entry.title && entry.webpageUrl);
+}
+
+function buildFfmpegArgs(input, reconnect) {
+  return [
+    '-hide_banner',
+    '-loglevel',
+    'error',
+    ...(reconnect ? [
+      '-reconnect',
+      '1',
+      '-reconnect_streamed',
+      '1',
+      '-reconnect_delay_max',
+      '5'
+    ] : []),
+    '-i',
+    input,
+    '-vn',
+    '-af',
+    'aresample=async=1:first_pts=0',
+    '-f',
+    's16le',
+    '-ar',
+    String(SAMPLE_RATE),
+    '-ac',
+    String(CHANNELS),
+    'pipe:1'
+  ];
 }
 
 function rankPlayableCandidates(entries, query, context = {}) {
@@ -858,6 +935,76 @@ function dedupeTracks(entries) {
     result.push(entry);
   }
   return result;
+}
+
+function normalizeStreamInfo(value) {
+  if (typeof value === 'string') {
+    return { url: value, transport: 'direct', source: 'legacy' };
+  }
+  return {
+    url: value?.url || '',
+    transport: value?.transport || 'direct',
+    source: value?.source || 'unknown',
+    contentLength: Number(value?.contentLength) || parseContentLengthFromUrl(value?.url)
+  };
+}
+
+async function* streamRangeChunks(streamInfo, signal) {
+  const chunkSize = 1024 * 1024;
+  const total = Number(streamInfo.contentLength) || 0;
+  let start = 0;
+
+  while (!signal.aborted && (!total || start < total)) {
+    const end = total ? Math.min(start + chunkSize - 1, total - 1) : start + chunkSize - 1;
+    const response = await fetch(streamInfo.url, {
+      signal,
+      headers: {
+        Range: `bytes=${start}-${end}`,
+        'user-agent': 'com.google.android.youtube/19.09.37 (Linux; U; Android 11) gzip'
+      }
+    });
+
+    if (response.status === 416) return;
+    if (!response.ok && response.status !== 206) {
+      throw new Error(`fast stream range ${start}-${end} respondio ${response.status}`);
+    }
+
+    const chunk = Buffer.from(await response.arrayBuffer());
+    if (!chunk.length) return;
+    yield chunk;
+    start += chunk.length;
+    if (!total && chunk.length < chunkSize) return;
+  }
+}
+
+async function validateFastStreamInfo(streamInfo) {
+  const total = Number(streamInfo.contentLength) || 0;
+  const starts = total > 1024 * 1024
+    ? [0, 1024 * 1024, Math.max(total - 1024, 0)]
+    : [0];
+
+  for (const start of starts) {
+    const end = Math.min(start + 1023, Math.max(total - 1, start + 1023));
+    const response = await fetch(streamInfo.url, {
+      headers: {
+        Range: `bytes=${start}-${end}`,
+        'user-agent': 'com.google.android.youtube/19.09.37 (Linux; U; Android 11) gzip'
+      }
+    });
+    response.body?.cancel().catch(() => {});
+    if (!response.ok && response.status !== 206) {
+      throw new Error(`fast stream no valido en rango ${start}-${end}: ${response.status}`);
+    }
+  }
+}
+
+function parseContentLengthFromUrl(value) {
+  try {
+    const url = new URL(String(value || ''));
+    return Number(url.searchParams.get('clen')) || 0;
+  } catch {
+    return 0;
+  }
 }
 
 function normalizeTrackMetadata(entry = {}) {
