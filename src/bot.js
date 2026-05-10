@@ -63,6 +63,7 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
   const activeResponses = new Set();
   const panelCreatedChannels = new Set();
   const blacklistAlertedChannels = new Set();
+  const ticketWelcomeChannels = new Set();
   const securityManager = new SecurityManager({ storage, client, supportAgent });
 
   client.once(Events.ClientReady, (readyClient) => {
@@ -340,11 +341,7 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
     if (!ticket && (isConfiguredTicketCategory(message.channel, guildConfig) || ticketKingDetected)) {
       ticket = await createDetectedTicketRecord({ storage, channel: message.channel, openedBy: ticketKingOpenerId });
       if (ticketKingDetected && !ticket.alreadyExists && message.author.bot) {
-        const welcome = await message.channel.send([
-          `${EMOJIS.global} Hola, soy **NexaDesk**.`,
-          'He detectado este ticket de Ticket King y voy a ayudarte aqui. Cuentame que necesitas y, si hace falta, avisare al staff con un resumen claro.'
-        ].join('\n'));
-        await saveTranscript(storage, welcome, 'assistant');
+        await sendTicketKingWelcomeOnce({ storage, message, ticketWelcomeChannels });
 
         ticket = await maybeAlertTicketOpenerXnProtect({
           storage,
@@ -2363,6 +2360,25 @@ async function createDetectedTicketRecord({ storage, channel, openedBy = null })
   return storage.createTicket(ticket);
 }
 
+async function sendTicketKingWelcomeOnce({ storage, message, ticketWelcomeChannels }) {
+  if (ticketWelcomeChannels.has(message.channel.id)) return null;
+  ticketWelcomeChannels.add(message.channel.id);
+
+  const transcript = await storage.listTranscriptMessages(message.channel.id).catch(() => []);
+  if (transcript.some((item) => isTicketKingWelcomeContent(item.content))) return null;
+
+  const welcome = await message.channel.send([
+    `${EMOJIS.global} Hola, soy **NexaDesk**.`,
+    'He detectado este ticket de Ticket King y voy a ayudarte aqui. Cuentame que necesitas y, si hace falta, avisare al staff con un resumen claro.'
+  ].join('\n'));
+  await saveTranscript(storage, welcome, 'assistant');
+  return welcome;
+}
+
+function isTicketKingWelcomeContent(content) {
+  return /he\s+detectado\s+este\s+ticket\s+de\s+ticket\s+king/i.test(String(content ?? ''));
+}
+
 function isConfiguredTicketCategory(channel, guildConfig) {
   return Boolean(channel && guildConfig?.ticketCategoryId && channel.parentId === guildConfig.ticketCategoryId);
 }
@@ -3363,13 +3379,34 @@ async function resolveAllianceTicketFlow({ message, storage, guildConfig, ticket
   }
 
   const transcript = await storage.listTranscriptMessages(message.channel.id).catch(() => []);
-  const allianceState = parseAllianceState(transcript);
+  let allianceState = parseAllianceState(transcript);
   const allianceContext = isAllianceIntent(message.content)
     || allianceState.started
     || recentMessages.some((item) => !item.author.bot && isAllianceIntent(item.content));
 
   if (!allianceContext) return { type: 'none' };
   if (isAllianceChatter(message.content)) return { type: 'none' };
+  if (allianceState.started && isAllianceCancelRequest(message.content)) {
+    await markAllianceState(storage, message.channel, 'cancelled');
+    return {
+      type: 'reply',
+      publicAnswer: 'Alianza cancelada. Si quieres retomarla mas adelante, escribe otra vez que quieres hacer una alianza.'
+    };
+  }
+
+  if (allianceState.cancelled) {
+    if (!isAllianceIntent(message.content)) return { type: 'none' };
+    await markAllianceState(storage, message.channel, 'reopened');
+    allianceState = createAllianceState();
+  }
+
+  if (allianceState.started && isUserRequestingStaff(message.content)) {
+    return {
+      type: 'escalate',
+      reason: 'El usuario solicita asistencia humana durante el flujo de alianza.',
+      publicAnswer: 'Aviso al staff para que revise esta alianza manualmente.'
+    };
+  }
 
   const missingAllianceConfig = [];
   if (!guildConfig?.allianceChannelId) missingAllianceConfig.push('canal de alianzas');
@@ -3541,31 +3578,41 @@ async function resolveAllianceTicketFlow({ message, storage, guildConfig, ticket
 }
 
 function parseAllianceState(messages = []) {
-  const state = {
-    started: false,
-    rulesAsked: false,
-    rulesRead: false,
-    userTemplate: '',
-    serverTemplateSent: false,
-    proofVerified: false,
-    published: false
-  };
+  const state = createAllianceState();
 
   for (const item of messages) {
     const content = String(item.content ?? '');
     if (!content.includes(ALLIANCE_MARKER)) continue;
+    if (content.includes('reopened')) {
+      Object.assign(state, createAllianceState());
+      continue;
+    }
     state.started = true;
     if (content.includes('rules_asked')) state.rulesAsked = true;
     if (content.includes('rules_read')) state.rulesRead = true;
     if (content.includes('server_template_sent')) state.serverTemplateSent = true;
     if (content.includes('proof_verified')) state.proofVerified = true;
     if (content.includes('published')) state.published = true;
+    if (content.includes('cancelled')) state.cancelled = true;
     if (content.includes('user_template:')) {
       state.userTemplate = content.split('user_template:').slice(1).join('user_template:').trim();
     }
   }
 
   return state;
+}
+
+function createAllianceState() {
+  return {
+    started: false,
+    rulesAsked: false,
+    rulesRead: false,
+    userTemplate: '',
+    serverTemplateSent: false,
+    proofVerified: false,
+    published: false,
+    cancelled: false
+  };
 }
 
 async function markAllianceState(storage, channel, action, details = '') {
@@ -3712,6 +3759,15 @@ function isAllianceChatter(content) {
   return [
     /^(bruh|x dios|jsjs|jaja+|jeje+|xd|uh|q pesado|que pesado)[.!?\s]*$/,
     /\b(?:me la borra|lo borra|borra la plantilla)\b/
+  ].some((pattern) => pattern.test(normalized));
+}
+
+function isAllianceCancelRequest(content) {
+  const normalized = normalizeText(content);
+  return [
+    /\b(?:cancela|cancelar|cancelo|anula|anular|parar|deten)\b.*\balianza\b/,
+    /\balianza\b.*\b(?:cancelada|cancelar|cancela|anula|anular|parar|deten)\b/,
+    /\b(?:ya\s+no|no\s+quiero)\b.*\balianza\b/
   ].some((pattern) => pattern.test(normalized));
 }
 

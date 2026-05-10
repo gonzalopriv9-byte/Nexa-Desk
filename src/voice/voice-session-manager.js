@@ -242,11 +242,17 @@ export class VoiceSessionManager {
 
   async #answerVoiceTicket(session, transcript, member) {
     const history = await this.storage.listTranscriptMessages(session.ticketChannelId);
+    const hasVisualEvidence = hasRecentVisualEvidence(history);
     const system = [
       'Eres NexaDesk, soporte por voz para tickets de Discord.',
       'Responde en el mismo idioma del ultimo mensaje del usuario.',
       'Se breve y natural para poder leerlo en voz alta.',
       'Recibes transcripciones limpias de audio. Si hay texto del usuario, nunca digas que no puedes procesar, escuchar o entender el audio.',
+      'La transcripcion del ticket es memoria fuerte: usa mensajes de voz anteriores como contexto y no reinicies el caso.',
+      'No afirmes que estas viendo una captura, imagen, video o adjunto salvo que la transcripcion incluya un adjunto o analisis visual real.',
+      hasVisualEvidence
+        ? 'Hay evidencia visual o adjuntos en la transcripcion: puedes referirte solo a lo que este escrito ahi.'
+        : 'No hay adjuntos ni analisis visuales en la transcripcion: si el usuario dice que enviara una captura, espera a que la mande y no diagnostiques todavia.',
       'No incluyas prefijos como "NexaDesk:", "[Voz]", ":Global:" ni nombres de emojis.',
       'Si el caso requiere staff humano, empieza con [ESCALATE] y explica el motivo sin repetir menciones.',
       'Si el usuario quiere reportar acoso, amenazas, abuso o incumplimientos, pide datos clave y escala al staff cuando sea necesario.',
@@ -265,6 +271,10 @@ export class VoiceSessionManager {
 
     const raw = await this.aiClient.generate({ system, messages });
     const parsed = parseVoiceEscalation(raw);
+    if (!hasVisualEvidence && claimsToSeeVisualEvidence(parsed.publicAnswer)) {
+      parsed.publicAnswer = 'Perfecto, mandame la captura cuando puedas y la reviso con el contexto del error que me has contado.';
+      parsed.shouldEscalate = false;
+    }
     return {
       ...parsed,
       mentionStaff: parsed.shouldEscalate && Boolean(session.guildConfig.staffRoleId)
@@ -811,6 +821,21 @@ function isBadAudioProcessingAnswer(content) {
     || normalized.includes('no pude procesar el audio')
     || normalized.includes('repite tu mensaje de manera clara')
     || normalized.includes('no puedo escuchar el audio');
+}
+
+function hasRecentVisualEvidence(history = []) {
+  return history
+    .slice(-30)
+    .some((message) => /\[adjunto:|pruebas visuales analizadas|analisis visual|captura recibida|imagen recibida|video recibido/i.test(String(message.content ?? '')));
+}
+
+function claimsToSeeVisualEvidence(content) {
+  const normalized = normalizeComparableText(content);
+  return [
+    /\b(?:estoy|estoy viendo|veo|viendo|revisando)\b.*\b(?:captura|imagen|foto|pantallazo|screenshot)\b/,
+    /\b(?:en|segun)\s+(?:la|tu)\s+(?:captura|imagen|foto|pantallazo|screenshot)\b/,
+    /\bparece\s+que\s+el\s+error\s+se\s+debe\b/
+  ].some((pattern) => pattern.test(normalized));
 }
 
 function normalizeComparableText(content) {

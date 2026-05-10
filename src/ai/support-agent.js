@@ -119,11 +119,22 @@ export class SupportAgent {
       };
     }
 
+    if (hasAllianceTemplatePrefixMatch({ visualContext, serverAllianceTemplate })) {
+      return {
+        verified: true,
+        reason: 'La captura muestra el inicio de la plantilla esperada con suficiente coincidencia.',
+        visualContext
+      };
+    }
+
     const answer = await this.aiClient.generate({
       system: [
         'Eres NexaDesk verificando una prueba visual para un flujo de alianzas de Discord.',
         'Debes decidir si la captura demuestra que el usuario envio la plantilla del servidor actual en otro servidor/canal.',
-        'Se estricto: acepta solo si se ve texto suficientemente parecido a la plantilla esperada o una publicacion claramente equivalente.',
+        'Acepta si la captura empieza igual que la plantilla esperada, aunque no se vea la plantilla completa.',
+        'Acepta si el texto visible es una copia exacta o casi exacta de la plantilla esperada.',
+        'No exijas que el canal, titulo, servidor externo o embed se llamen igual que el servidor actual; solo importa que el mensaje publicado contenga nuestra plantilla.',
+        'Rechaza si no se ve texto inicial suficientemente parecido o si podria ser otro mensaje distinto.',
         'No inventes. Responde exactamente con este formato:',
         'VERIFIED: yes/no',
         'REASON: una frase breve'
@@ -144,9 +155,18 @@ export class SupportAgent {
       ]
     });
 
+    const reason = (answer.match(/\breason\s*:\s*(.+)/i)?.[1] ?? answer).trim().slice(0, 500);
+    if (isPositiveAllianceProofReason(reason) || hasAllianceTemplatePrefixMatch({ visualContext: `${visualContext}\n${answer}`, serverAllianceTemplate })) {
+      return {
+        verified: true,
+        reason: reason || 'La captura muestra una copia suficientemente parecida de la plantilla esperada.',
+        visualContext
+      };
+    }
+
     return {
       verified: /\bverified\s*:\s*yes\b/i.test(answer),
-      reason: (answer.match(/\breason\s*:\s*(.+)/i)?.[1] ?? answer).trim().slice(0, 500),
+      reason,
       visualContext
     };
   }
@@ -231,14 +251,38 @@ export class SupportAgent {
   }
 
   async #loadHistory(channel) {
-    const messages = await channel.messages.fetch({ limit: this.maxHistoryMessages });
-    return [...messages.values()]
-      .reverse()
-      .filter((item) => item.content?.trim() || item.attachments?.size)
+    const [messages, transcriptMessages] = await Promise.all([
+      channel.messages.fetch({ limit: this.maxHistoryMessages }).catch(() => new Map()),
+      this.storage.listTranscriptMessages(channel.id).catch(() => [])
+    ]);
+
+    const discordHistory = [...messages.values()]
+      .filter((item) => (item.content?.trim() || item.attachments?.size) && !isDiscordVoiceMirrorMessage(item))
       .map((item) => ({
         role: item.author.bot ? 'assistant' : 'user',
-        content: formatHistoryMessage(item).slice(0, 1800)
+        content: formatHistoryMessage(item).slice(0, 1800),
+        createdAt: item.createdTimestamp ?? 0
       }));
+
+    const transcriptHistory = transcriptMessages
+      .filter((item) => ['user', 'assistant'].includes(item.role) && String(item.content ?? '').trim())
+      .map((item) => ({
+        role: item.role === 'assistant' ? 'assistant' : 'user',
+        content: formatStoredTranscriptMessage(item).slice(0, 1800),
+        createdAt: Date.parse(item.createdAt ?? '') || 0
+      }));
+
+    const seen = new Set();
+    return [...transcriptHistory, ...discordHistory]
+      .sort((a, b) => a.createdAt - b.createdAt)
+      .filter((item) => {
+        const key = `${item.role}:${normalizeHistoryDedupeKey(item.content)}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      })
+      .slice(-this.maxHistoryMessages)
+      .map(({ role, content }) => ({ role, content }));
   }
 
   async #analyzeVisualContext({ message, guildConfig }) {
@@ -330,6 +374,56 @@ function parseLinkThreatJson(answer = '') {
   }
 }
 
+function hasAllianceTemplatePrefixMatch({ visualContext, serverAllianceTemplate }) {
+  const expectedTokens = tokenizeAllianceProofText(serverAllianceTemplate).slice(0, 36);
+  const observedTokens = tokenizeAllianceProofText(visualContext);
+  if (expectedTokens.length < 6 || observedTokens.length < 6) return false;
+
+  const observedText = observedTokens.join(' ');
+  for (const length of [24, 18, 14, 10, 8, 6]) {
+    if (expectedTokens.length >= length && observedText.includes(expectedTokens.slice(0, length).join(' '))) {
+      return true;
+    }
+  }
+
+  let cursor = 0;
+  for (const token of observedTokens) {
+    if (token === expectedTokens[cursor]) cursor += 1;
+    if (cursor >= 10) return true;
+  }
+
+  return cursor >= Math.min(8, Math.ceil(expectedTokens.length * 0.45));
+}
+
+function tokenizeAllianceProofText(value) {
+  return String(value ?? '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/https?:\/\/\S+/g, ' ')
+    .replace(/discord\.(?:gg|com\/invite)\/\S+/g, ' ')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+    .split(/\s+/)
+    .filter((token) => token.length > 1);
+}
+
+function isPositiveAllianceProofReason(reason) {
+  const normalized = String(reason ?? '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase();
+
+  return [
+    /\bcopia\s+exacta\b/,
+    /\bcasi\s+exacta\b/,
+    /\btexto\s+suficientemente\s+parecido\b/,
+    /\bempieza\s+igual\b/,
+    /\binicio\s+de\s+la\s+plantilla\b/,
+    /\bplantilla\s+esperada\b.*\b(?:enviada|publicada|visible|coincide)\b/
+  ].some((pattern) => pattern.test(normalized));
+}
+
 function normalizeLinkVerdict(value) {
   const verdict = String(value ?? '').toLowerCase().trim();
   if (['safe', 'suspicious', 'malicious'].includes(verdict)) return verdict;
@@ -372,6 +466,27 @@ function formatHistoryMessage(message) {
   const fullContent = [content, attachments].filter(Boolean).join('\n');
   if (message.author.bot) return fullContent;
   return `${message.author.username}: ${fullContent || '[mensaje sin texto]'}`;
+}
+
+function formatStoredTranscriptMessage(message) {
+  const content = String(message.content ?? '').trim();
+  const author = message.authorName || (message.role === 'assistant' ? 'NexaDesk' : 'Usuario');
+  if (message.role === 'assistant') return stripAssistantPrefix(content, 'NexaDesk');
+  return `${author}: ${content || '[mensaje sin texto]'}`;
+}
+
+function isDiscordVoiceMirrorMessage(message) {
+  return message.author?.bot && /\*\*.+?\s+por\s+voz:\*\*/iu.test(message.content ?? '');
+}
+
+function normalizeHistoryDedupeKey(content) {
+  return String(content ?? '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 500);
 }
 
 function formatAttachmentSummary(message) {
