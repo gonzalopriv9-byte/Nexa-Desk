@@ -3637,28 +3637,33 @@ async function publishAllianceTemplate({ message, guildConfig, ticket, userTempl
     throw new Error('El canal de alianzas configurado no existe o no es de texto.');
   }
 
-  const embed = new EmbedBuilder()
-    .setColor(0xffffff)
-    .setTitle(`${EMOJIS.global} Nueva solicitud de alianza verificada`)
-    .setDescription('NexaDesk verifico que el usuario envio la plantilla del servidor antes de publicar esta solicitud.')
-    .addFields(
-      { name: 'Solicitante', value: `${message.author} (${message.author.id})`, inline: true },
-      { name: 'Ticket', value: message.channel.url, inline: true },
-      { name: 'Canal', value: `#${ticket.channelName ?? message.channel.name}`, inline: true },
-      { name: 'Plantilla recibida', value: userTemplate.slice(0, 1024) || 'No pude recuperar la plantilla del usuario.' }
-    )
-    .setFooter({ text: 'NexaDesk Alliance Flow' })
-    .setTimestamp(new Date());
+  const content = [
+    '@everyone @here',
+    '',
+    `${EMOJIS.global} **Nueva solicitud de alianza verificada**`,
+    'NexaDesk verifico que el usuario envio la plantilla del servidor antes de publicar esta solicitud.',
+    '',
+    `**Solicitante:** ${message.author} (${message.author.id})`,
+    `**Ticket:** ${message.channel}`,
+    `**Canal:** #${ticket.channelName ?? message.channel.name}`,
+    '',
+    '**Plantilla recibida:**',
+    userTemplate.trim() || 'No pude recuperar la plantilla del usuario.'
+  ].join('\n');
 
-  const sent = await channel.send({
-    content: `${EMOJIS.global} Solicitud de alianza verificada desde ${message.channel}.`,
-    embeds: [embed],
-    allowedMentions: { parse: [] }
-  });
+  const chunks = splitDiscordText(content, 1900);
+  let firstMessage = null;
+  for (const [index, chunk] of chunks.entries()) {
+    const sent = await channel.send({
+      content: chunk,
+      allowedMentions: index === 0 ? { parse: ['everyone'] } : { parse: [] }
+    });
+    firstMessage ??= sent;
+  }
 
   return {
     channelMention: `${channel}`,
-    messageId: sent.id
+    messageId: firstMessage?.id
   };
 }
 
