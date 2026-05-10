@@ -17,7 +17,7 @@ export class SpotifyClient {
 
   async searchTracks(query, limit = 5) {
     if (!this.isConfigured()) return [];
-    const cleanQuery = String(query || '').replace(/\s+/g, ' ').trim();
+    const cleanQuery = String(query || '').replace(/\s+/g, ' ').trim().slice(0, 240);
     if (!cleanQuery) return [];
 
     const params = new URLSearchParams({
