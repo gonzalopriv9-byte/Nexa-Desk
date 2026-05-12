@@ -1887,6 +1887,14 @@ function renderDashboard({ session, guilds, tickets, stats }) {
     .premium-toggle strong,.premium-toggle span { display:block; }
     .premium-toggle span { color:var(--muted); font-size:13px; margin-top:3px; line-height:1.45; }
     .premium-locked .premium-toggle select { opacity:.54; }
+    .premium-denied { position:relative; min-height:min(580px, calc(100vh - 250px)); display:grid; place-items:center; border:1px solid rgba(244,201,93,.24); border-radius:22px; overflow:hidden; background:radial-gradient(circle at 50% 22%, rgba(244,201,93,.16), transparent 26%), linear-gradient(145deg, #020202, #080704 58%, #000); box-shadow:0 36px 140px rgba(0,0,0,.62), 0 0 0 1px rgba(244,201,93,.08) inset; }
+    .premium-denied::before { content:""; position:absolute; inset:26px; border:1px solid rgba(244,201,93,.22); border-radius:18px; pointer-events:none; }
+    .premium-denied::after { content:"PREMIUM"; position:absolute; inset:auto 0 18px; text-align:center; color:rgba(244,201,93,.07); font-size:clamp(48px, 13vw, 160px); font-weight:950; letter-spacing:.18em; pointer-events:none; }
+    .premium-denied-inner { position:relative; z-index:1; width:min(780px, calc(100% - 48px)); text-align:center; padding:70px 24px; }
+    .premium-denied-kicker { display:inline-flex; margin-bottom:18px; border:1px solid rgba(244,201,93,.45); border-radius:999px; padding:8px 13px; color:#f9df91; background:rgba(244,201,93,.06); font-size:12px; font-weight:900; letter-spacing:.18em; text-transform:uppercase; }
+    .premium-denied h2 { font-family:Georgia, "Times New Roman", serif; margin:0; color:#fff4c9; font-size:clamp(40px, 8vw, 92px); line-height:.92; letter-spacing:.02em; text-shadow:0 0 34px rgba(244,201,93,.28); }
+    .premium-denied p { margin:22px auto 0; max-width:560px; color:#d7c27a; font-size:clamp(17px, 2.2vw, 24px); }
+    .premium-denied a { display:inline-flex; margin-top:28px; align-items:center; justify-content:center; border:1px solid rgba(244,201,93,.45); border-radius:999px; padding:12px 18px; color:#080704; background:linear-gradient(135deg, #fff6c8, #f4c95d); text-decoration:none; font-weight:950; box-shadow:0 0 42px rgba(244,201,93,.18); }
     .control-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px; }
     .control-card { border:1px solid var(--line); border-radius:14px; padding:18px; background:linear-gradient(180deg, rgba(24,24,24,.94), rgba(8,8,8,.94)); transition:transform .28s cubic-bezier(.2,.8,.2,1), border-color .28s ease, box-shadow .28s ease; }
     .control-card:hover { transform:translateY(-2px); border-color:rgba(255,255,255,.26); box-shadow:0 24px 80px rgba(0,0,0,.28); }
@@ -2101,37 +2109,37 @@ function renderDashboard({ session, guilds, tickets, stats }) {
         </div>
       </aside>
     </div>
-    <section class="active-server">
-      <p class="kicker">Servidor activo</p>
-      <select id="guildId" required>${guildOptions}</select>
-      <div class="server-status">
-        <div><span>Categoria</span><strong id="activeCategory">Sin configurar</strong></div>
-        <div><span>Staff</span><strong id="activeStaff">Sin configurar</strong></div>
-        <div><span>Paneles</span><strong id="activePanels">0</strong></div>
-        <div><span>Seguridad</span><strong id="activeSecurity">Off</strong></div>
-        <div><span>Premium</span><strong id="activePremium">Free</strong></div>
-        <div><span>Transcripciones</span><strong id="activeTranscripts">0</strong></div>
-      </div>
-      <div class="server-score">
-        <div>
-          <span>NexaScore del servidor</span>
-          <strong id="activeScore">0%</strong>
-          <small id="activeScoreText">Selecciona un servidor para auditarlo.</small>
-        </div>
-        <div class="meter" id="activeScoreMeter" style="--value:0%"><span></span></div>
-        <button class="quick-action" type="button" id="activeNextAction" data-go-view="settings">Siguiente accion</button>
-      </div>
-      <div class="install-banner" id="installBanner" hidden>
-        <div><strong id="installTitle">NexaDesk no esta instalado en este servidor.</strong><p id="installText">Al seleccionarlo puedes invitar el bot directamente con permisos recomendados.</p></div>
-        <a id="installLink" href="#">Invitar bot</a>
-      </div>
-      <div class="readiness-checklist" id="readinessChecklist" aria-label="Checklist del servidor activo"></div>
-    </section>
     <div class="view-stage">
       <section class="dashboard-view is-active" id="view-overview" data-view="overview">
         <div class="view-heading">
           <div><h2>Resumen</h2><p>Solo lo que importa: servidores listos, tickets, datos guardados y conversion premium.</p></div>
         </div>
+        <section class="active-server">
+          <p class="kicker">Servidor activo</p>
+          <select id="guildId" required>${guildOptions}</select>
+          <div class="server-status">
+            <div><span>Categoria</span><strong id="activeCategory">Sin configurar</strong></div>
+            <div><span>Staff</span><strong id="activeStaff">Sin configurar</strong></div>
+            <div><span>Paneles</span><strong id="activePanels">0</strong></div>
+            <div><span>Seguridad</span><strong id="activeSecurity">Off</strong></div>
+            <div><span>Premium</span><strong id="activePremium">Free</strong></div>
+            <div><span>Transcripciones</span><strong id="activeTranscripts">0</strong></div>
+          </div>
+          <div class="server-score">
+            <div>
+              <span>NexaScore del servidor</span>
+              <strong id="activeScore">0%</strong>
+              <small id="activeScoreText">Selecciona un servidor para auditarlo.</small>
+            </div>
+            <div class="meter" id="activeScoreMeter" style="--value:0%"><span></span></div>
+            <button class="quick-action" type="button" id="activeNextAction" data-go-view="settings">Siguiente accion</button>
+          </div>
+          <div class="install-banner" id="installBanner" hidden>
+            <div><strong id="installTitle">NexaDesk no esta instalado en este servidor.</strong><p id="installText">Al seleccionarlo puedes invitar el bot directamente con permisos recomendados.</p></div>
+            <a id="installLink" href="#">Invitar bot</a>
+          </div>
+          <div class="readiness-checklist" id="readinessChecklist" aria-label="Checklist del servidor activo"></div>
+        </section>
         <div class="stats" id="overview">
           <div class="stat"><strong id="guildCount">${stats.totalGuilds}</strong><span>Servidores gestionables</span><small id="guildInstallMeta">${stats.installedGuilds ?? 0} con bot - ${stats.notInstalledGuilds ?? 0} por invitar</small></div>
           <div class="stat"><strong id="ticketCount">${stats.totalTickets}</strong><span>Tickets detectados</span><small>${stats.ticketsToday} hoy - ${stats.ticketsThisWeek} esta semana</small></div>
@@ -2385,7 +2393,15 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
         <div class="view-heading">
           <div><h2>Premium</h2><p>Gestiona las funciones de alto valor por servidor. La activacion del plan se hace con /activarpremium o Supabase.</p></div>
         </div>
-        <section class="premium-grid">
+        <section class="premium-denied is-hidden" id="premiumDenied" aria-live="polite">
+          <div class="premium-denied-inner">
+            <span class="premium-denied-kicker">NexaDesk Premium</span>
+            <h2>Este servidor no tiene premium</h2>
+            <p>Activalo abriendo ticket en el servidor de soporte</p>
+            <a href="https://discord.gg/vVXbq7ePEZ" target="_blank" rel="noopener">Abrir soporte</a>
+          </div>
+        </section>
+        <section class="premium-grid" id="premiumContent">
           <article class="control-card premium-hero" id="premiumHeroCard">
             <span class="premium-plan" id="premiumPlanBadge">Free</span>
             <h2 id="premiumHeroTitle">Convierte NexaDesk en un agente de pago.</h2>
@@ -2494,11 +2510,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
     const guildConfigs = ${JSON.stringify(guilds)};
     let guildMeta = {};
     function setActiveView(view, { updateHash = true } = {}) {
-      let nextView = document.querySelector('[data-view="' + view + '"].dashboard-view') ? view : 'overview';
-      if (nextView === 'premium' && !hasAnyPremiumGuild()) {
-        nextView = 'overview';
-        showToast('Premium solo se abre cuando al menos uno de tus servidores tiene plan activo.');
-      }
+      const nextView = document.querySelector('[data-view="' + view + '"].dashboard-view') ? view : 'overview';
       state.activeView = nextView;
       document.querySelectorAll('.dashboard-view').forEach((section) => {
         section.classList.toggle('is-active', section.dataset.view === nextView);
@@ -2615,9 +2627,6 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
     }
     function getActiveGuild() {
       return getGuildConfig(document.querySelector('#guildId')?.value);
-    }
-    function hasAnyPremiumGuild() {
-      return guildConfigs.some((guild) => normalizePremium(guild).entitled);
     }
     function goToView(view) {
       setActiveView(view);
@@ -3043,6 +3052,8 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
     function renderPremiumPanel(guild = getActiveGuild()) {
       const premium = normalizePremium(guild || {});
       const planLabel = premium.entitled ? String(guild?.plan || 'pro').toUpperCase() : 'FREE';
+      document.querySelector('#premiumDenied')?.classList.toggle('is-hidden', premium.entitled);
+      document.querySelector('#premiumContent')?.classList.toggle('is-hidden', !premium.entitled);
       document.querySelector('#premiumPlanBadge').textContent = planLabel;
       document.querySelector('#premiumHeroCard')?.classList.toggle('premium-locked', !premium.entitled);
       document.querySelector('#premiumSettingsCard')?.classList.toggle('premium-locked', !premium.entitled);
