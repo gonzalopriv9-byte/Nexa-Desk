@@ -9,7 +9,6 @@ import { GroqClient } from './ai/groq-client.js';
 import { GLOBAL_BLACKLIST_ADMIN_USER_ID, buildGlobalBanCode, isBlacklistEntryActive, parseBlacklistDuration } from './blacklist.js';
 import { normalizeTotpSecret, verifyTotpCode } from './docs-auth.js';
 import { normalizeTicketComponent } from './panel-options.js';
-import { normalizeMusicConfig, summarizeMusicConfig } from './music/music-config.js';
 import { isPremiumEntitled, normalizePremiumConfig, summarizePremiumConfig } from './premium.js';
 import { normalizeSecurityConfig, summarizeSecurityConfig } from './security.js';
 import { buildTranscriptFileName, buildTranscriptText } from './transcripts.js';
@@ -373,9 +372,6 @@ export function createServer({ config, storage, bot, events }) {
     }
     if (req.body.premium) {
       patch.premium = normalizePremiumConfig(req.body.premium, { ...(existing ?? {}), ...patch });
-    }
-    if (req.body.music) {
-      patch.music = normalizeMusicConfig(req.body.music);
     }
     const updated = await storage.upsertGuildConfig(req.params.guildId, patch);
     res.json(updated);
@@ -765,17 +761,17 @@ async function buildDashboardAssistantReply({ config, message, guild, stats, act
       system: [
         'Eres el copiloto de la dashboard de NexaDesk.',
         'Responde en espanol claro, breve y accionable.',
-        'Ayuda a configurar servidores Discord para tickets con IA, paneles, componentes, staff, voz Pro con STT/TTS, musica IA, transcripciones, Security Guard y Premium.',
-        'La dashboard real tiene estas secciones: Resumen, Servidores, Configuracion, Componentes, Paneles, Premium, Musica y Tickets.',
+        'Ayuda a configurar servidores Discord para tickets con IA, paneles, componentes, staff, voz Pro con STT/TTS, transcripciones, Security Guard y Premium.',
+        'La dashboard real tiene estas secciones: Resumen, Servidores, Configuracion, Componentes, Paneles, Premium y Tickets.',
         'En Configuracion se elige categoria, rol staff, prompt del servidor, informacion del servidor y Security Guard.',
         'En Componentes se crean opciones del menu con preguntas previas, primer mensaje y modo Texto o Voz Pro.',
         'En Paneles se publica el embed, boton o menu en un canal de Discord; los botones tambien pueden abrir tickets de voz Pro.',
         'En Premium se gestionan Voz Pro, IA prioritaria, transcripciones inteligentes, Security Plus, branding propio e informes semanales por servidor.',
-        'En Musica se configura el reproductor, volumen por defecto, autocola IA y rol DJ opcional.',
+        'Security Guard incluye anti-flood, anti-links IA, XN Protect Automod, anti-bots, anti-alts y anti-nuke.',
         'En Tickets se ven tickets y transcripciones guardadas.',
         'Si el usuario pide que tu metas algo, explica que puedes rellenar campos con botones de accion, pero el usuario debe revisar y guardar/publicar.',
         'No pidas IDs si la dashboard ya ofrece selectores de roles, canales y categorias.',
-        'Si recomiendas navegar, menciona una seccion exacta: Resumen, Servidores, Configuracion, Componentes, Paneles, Premium, Musica o Tickets.',
+        'Si recomiendas navegar, menciona una seccion exacta: Resumen, Servidores, Configuracion, Componentes, Paneles, Premium o Tickets.',
         'No inventes datos fuera del contexto recibido.'
       ].join('\n'),
       messages: [
@@ -819,13 +815,13 @@ function buildDashboardAssistantFallback({ message, guild, stats, activeView, ac
       ? 'Para publicar un panel, ve a Paneles, elige canal, modo boton o menu y revisa la previsualizacion antes de publicar.'
       : 'Si quieres un menu desplegable, crea primero opciones en Componentes y despues publica el panel desde Paneles.';
   } else if (lower.includes('musica') || lower.includes('music') || lower.includes('cancion') || lower.includes('cola') || lower.includes('autocola') || lower.includes('dj')) {
-    reply += 'Ve a Musica para activar el reproductor, ajustar volumen, limite de cola, rol DJ opcional y autocola IA. Para probarlo usa /musica reproducir consulta:<cancion>.';
+    reply += 'El modulo de musica ya no forma parte de NexaDesk. La dashboard se centra en soporte, seguridad, voz Pro, paneles, alianzas, transcripciones y Premium.';
   } else if (lower.includes('premium') || lower.includes('pro') || lower.includes('voz') || lower.includes('voice') || lower.includes('branding') || lower.includes('analitica') || lower.includes('insight')) {
     reply += isPremiumEntitled(guild)
       ? 'Ve a Premium para activar o pausar Voz Pro, IA prioritaria, transcripciones inteligentes, Security Plus, branding propio e informes semanales por servidor.'
       : 'Ve a Premium para ver que desbloquea el plan. La activacion del plan se hace manualmente con /activarpremium o desde Supabase, y despues alli gestionas los modulos.';
   } else if (lower.includes('seguridad') || lower.includes('security') || lower.includes('anti') || lower.includes('raid') || lower.includes('flood') || lower.includes('nuke') || lower.includes('phishing') || lower.includes('estafa') || lower.includes('links')) {
-    reply += 'Ve a Configuracion y baja hasta Security Guard. Puedes activar nivel intermedio, Anti-links IA, elegir un canal de logs y guardar. Si Discord bloquea acciones, actualiza permisos desde el boton superior.';
+    reply += 'Ve a Configuracion y baja hasta Security Guard. Puedes activar nivel intermedio, Anti-links IA, XN Protect Automod, elegir un canal de logs y guardar. Si Discord bloquea acciones, actualiza permisos desde el boton superior.';
   } else if (lower.includes('transcrip') || lower.includes('ticket')) {
     reply += 'En Tickets puedes abrir cada transcripcion guardada y descargarla en TXT. Si no aparecen tickets, abre uno desde un panel o una categoria configurada.';
   } else if (lower.includes('staff') || lower.includes('rol') || lower.includes('escalar')) {
@@ -909,6 +905,7 @@ function suggestDashboardActions(message, guild) {
         securityMinAccountAgeDays: lower.includes('alto') || lower.includes('raid') ? '7' : '3',
         securityAntiFlood: 'true',
         securityAntiScamLinks: 'true',
+        securityAntiOffensive: 'true',
         securityAntiBot: 'true',
         securityAntiAlt: 'true',
         securityAntiNuke: 'true'
@@ -930,7 +927,6 @@ function suggestDashboardActions(message, guild) {
   }
 
   if (lower.includes('premium') || lower.includes('pro') || lower.includes('voz') || lower.includes('voice') || lower.includes('branding') || lower.includes('analitica') || lower.includes('insight')) add('Abrir Premium', 'premium');
-  if (lower.includes('musica') || lower.includes('music') || lower.includes('cancion') || lower.includes('cola') || lower.includes('autocola') || lower.includes('dj')) add('Abrir Musica', 'music');
   if (lower.includes('servidor') || lower.includes('invitar') || lower.includes('instalar')) add('Ir a Servidores', 'servers');
   if (lower.includes('ia') || lower.includes('prompt') || lower.includes('contexto') || lower.includes('staff') || lower.includes('rol') || lower.includes('seguridad') || lower.includes('security') || lower.includes('anti') || lower.includes('raid') || lower.includes('flood') || lower.includes('nuke') || lower.includes('phishing') || lower.includes('estafa') || lower.includes('links')) add('Abrir Configuracion', 'settings');
   if (lower.includes('componente') || lower.includes('pregunta') || lower.includes('menu')) add('Crear Componentes', 'components');
@@ -1030,7 +1026,6 @@ function summarizeGuildForAssistant(guild = {}) {
     hasAiContext: Boolean(guild.serverPrompt || guild.serverInfo),
     security: summarizeSecurityConfig(normalizeSecurityConfig(guild.security)),
     premium: summarizePremiumConfig(guild),
-    music: summarizeMusicConfig(guild.music),
     panels: guild.panels?.length ?? 0,
     components: guild.components?.length ?? 0
   };
@@ -1184,7 +1179,12 @@ function buildDocsSections(config) {
     ['SUPABASE_SERVICE_ROLE_KEY', secretState(config.SUPABASE_SERVICE_ROLE_KEY), 'Acceso total a Supabase desde backend. Nunca exponer al cliente.'],
     ['GROQ_API_KEY', secretState(config.GROQ_API_KEY), 'Cuenta IA primaria.'],
     ['GROQ_FALLBACK_API_KEYS', secretState(config.GROQ_FALLBACK_API_KEYS), 'Cuentas IA backup separadas por coma.'],
-    ['AKIOMAE_API_KEY', secretState(config.AKIOMAE_API_KEY), 'Fallback externo cuando Groq agote limites.']
+    ['AKIOMAE_API_KEY', secretState(config.AKIOMAE_API_KEY), 'Fallback externo cuando Groq agote limites.'],
+    ['DISCORD_OWNER_ADMIN_ID', secretState(config.DISCORD_OWNER_ADMIN_ID), 'Usuario autorizado para activar Premium y funciones owner-only.'],
+    ['DASHBOARD_PUBLIC_URL', secretState(config.DASHBOARD_PUBLIC_URL), 'URL publica usada en /ayuda, MD de bienvenida e invitaciones.'],
+    ['VOICE_TTS_PROVIDER', secretState(config.VOICE_TTS_PROVIDER), 'Proveedor de voz para tickets Pro Voice.'],
+    ['EDGE_TTS_VOICE', secretState(config.EDGE_TTS_VOICE), 'Voz natural usada cuando Edge TTS esta disponible.'],
+    ['AI_VISUAL_ANALYSIS', secretState(config.AI_VISUAL_ANALYSIS), 'Activa analisis de imagenes y videos en tickets cuando el prompt lo permite.']
   ];
 
   return [
@@ -1198,6 +1198,8 @@ function buildDocsSections(config) {
           'La Raspberry Pi mantiene vivo el worker del bot con RUN_BOT=true y systemd.',
           'Supabase guarda configuracion, paneles, componentes, tickets, transcripciones y blacklist interna.',
           'Groq procesa soporte IA, vision, STT y parte de TTS; Akiomae queda como fallback final.',
+          'XN Protect aporta blacklist global y Automod ofensivo/malicioso. NexaDesk acredita la fuente y no banea automaticamente por blacklist externa.',
+          'Premium por servidor se decide con plan pro/premium/enterprise, voice_support_enabled o /activarpremium desde owner autorizado.',
           '/docs es una zona oculta: no aparece en la UI, requiere TOTP y no debe contener secretos en claro.'
         ] }
       ]
@@ -1239,8 +1241,30 @@ function buildDocsSections(config) {
           'Privileged intents recomendados: MESSAGE CONTENT INTENT y SERVER MEMBERS INTENT.',
           'Permisos de invitacion: Manage Channels, Manage Roles, View Audit Log, Manage Messages, Moderate Members, Kick, Ban, voz y lectura de historial.',
           'El bot registra slash commands globales con npm run register.',
-          'Comandos clave: /setup, /ayuda, /desactivar ia, /activar ia, /ticket cerrar, /ticket resumen, /voz crear, /musica reproducir, /musica autocola, /globalstats, /activarpremium.',
+          'Comandos clave: /setup, /ayuda, /desactivar ia, /activar ia, /ticket cerrar, /ticket resumen, /voz crear, /globalstats, /activarpremium, /seguridad configurar.',
+          '/seguridad configurar acepta nivel, canal_logs, edad_minima_dias, antiflood, antilinks, automod, antibots, antialts y antinuke.',
           'Si entra staff al ticket, NexaDesk deja de responder salvo mencion, reply o llamada directa.'
+        ] }
+      ]
+    },
+    {
+      title: 'Flujos de tickets y automatizacion',
+      classification: 'Support flow',
+      summary: 'Como decide NexaDesk cuando hablar, cuando callarse y como convive con otros bots.',
+      blocks: [
+        { type: 'table', headers: ['Flujo', 'Entrada', 'Respuesta'], rows: [
+          ['Panel NexaDesk boton/menu', 'Usuario pulsa componente y responde preguntas previas.', 'Crea canal privado, guarda respuestas, saluda, revisa blacklist externa, activa IA y opcionalmente sala de voz Pro.'],
+          ['Ticket King', 'Canal ticket-[numero] con mensaje inicial de Ticket King.', 'Detecta opener, saluda una sola vez, revisa XN Protect, atiende hasta staff.'],
+          ['Otros bots/categorias', 'Nuevo canal en categoria configurada por /setup o dashboard.', 'Registra ticket si encaja, guarda transcript y atiende segun prompt del servidor.'],
+          ['Staff humano', 'Staff escribe, responde o toma el ticket.', 'NexaDesk pregunta si se encargan; si aceptan, IA queda en modo silencio salvo mencion directa.'],
+          ['Cierre propio', '/ticket cerrar o cierre por intencion clara del usuario.', 'Guarda transcripcion, intenta enviar MD al opener y actualiza dashboard.'],
+          ['Cierre de terceros', 'Canal eliminado por otro bot.', 'El bot intenta capturar transcript previo con mensajes guardados y deja registro en Supabase si la tabla esta aplicada.']
+        ] },
+        { type: 'list', items: [
+          'Primer mensaje del usuario en un ticket nuevo siempre debe ser respondido por NexaDesk aunque haya avisos de blacklist previos.',
+          'La IA debe responder en el idioma del ultimo mensaje del usuario y no inventar que ha visto una imagen si no tiene analisis visual real.',
+          'El contexto de voz transcrito se guarda como transcript y entra en el historial para siguientes respuestas.',
+          'Si el usuario pide staff, asistencia manual, riesgo legal, amenazas, acoso serio o autolesion, NexaDesk escala con resumen claro.'
         ] }
       ]
     },
@@ -1289,11 +1313,12 @@ function buildDocsSections(config) {
       summary: 'Funciones vendibles y flujo administrativo.',
       blocks: [
         { type: 'list', items: [
-          'Dashboard: Resumen, Servidores, Configuracion, Componentes, Paneles, Premium, Musica y Tickets.',
+          'Dashboard: Resumen, Servidores, Configuracion, Componentes, Paneles, Premium y Tickets.',
           'Paneles soportan boton unico o menu desplegable con 2+ componentes.',
           'Componentes guardan preguntas previas, categoria destino, primer mensaje y modo texto/voz.',
           'Premium incluye Voz Pro, IA prioritaria, transcripciones inteligentes, Security Plus, branding propio e informes semanales.',
-          'Musica incluye busqueda por titulo/enlace, cola por servidor, audio 48 kHz con yt-dlp/ffmpeg y autocola IA basada en historial.',
+          'La seccion Premium usa paleta dorada y solo abre si el usuario tiene al menos un servidor con premium activo.',
+          'El antiguo modulo de musica fue retirado para centrar el producto en soporte, seguridad, voz, alianzas y transcripciones.',
           'Premium se activa con /activarpremium servidor:<ID> por el owner autorizado o manualmente en Supabase.'
         ] }
       ]
@@ -1304,8 +1329,10 @@ function buildDocsSections(config) {
       summary: 'Capas anti-raid, anti-scam, blacklist y crisis.',
       blocks: [
         { type: 'list', items: [
-          'Security Guard detecta flood, links sospechosos, alts, bots no deseados y patrones anti-nuke.',
+          'Security Guard detecta flood, links sospechosos, contenido ofensivo/malicioso, alts, bots no deseados y patrones anti-nuke.',
           'Los links se analizan con IA cuando aparecen en mensajes; puede recomendar review, borrado o aislamiento.',
+          'XN Protect Automod se consulta con contenido textual y, si response.malicioso=true, se borra el mensaje, se intenta aislar al autor y se loguea motivo/palabras.',
+          'Los mensajes de crisis/autolesion no se bloquean por Automod para permitir contencion y escalado humano.',
           'XN Protect se consulta al abrir tickets y deja aviso al staff sin banear automaticamente.',
           'En crisis/autolesion, NexaDesk debe escalar al staff inmediatamente y responder con contencion breve.',
           'En alianzas, el bot pide leer normas, recibe plantilla, entrega plantilla del servidor, verifica captura y publica en canal configurado.'
@@ -1749,8 +1776,11 @@ function renderDashboard({ session, guilds, tickets, stats }) {
     * { box-sizing:border-box; }
     img,svg,video { max-width:100%; }
     html { scroll-behavior:smooth; }
-    body { margin:0; font-family:"Segoe UI",ui-sans-serif,system-ui,sans-serif; background:radial-gradient(circle at 10% 0%, rgba(255,255,255,.12), transparent 30%), repeating-linear-gradient(90deg, rgba(255,255,255,.035) 0 1px, transparent 1px 72px), repeating-linear-gradient(0deg, rgba(255,255,255,.025) 0 1px, transparent 1px 72px), var(--bg); color:var(--text); }
-    .app-shell { width:min(1440px, calc(100% - 40px)); margin:0 auto; display:grid; grid-template-columns:220px minmax(0,1fr); gap:22px; padding:22px 0 52px; }
+    body { position:relative; min-height:100vh; margin:0; font-family:"Segoe UI",ui-sans-serif,system-ui,sans-serif; background:radial-gradient(circle at 10% 0%, rgba(255,255,255,.12), transparent 30%), repeating-linear-gradient(90deg, rgba(255,255,255,.035) 0 1px, transparent 1px 72px), repeating-linear-gradient(0deg, rgba(255,255,255,.025) 0 1px, transparent 1px 72px), var(--bg); color:var(--text); overflow-x:hidden; }
+    body::before,body::after { content:""; position:fixed; pointer-events:none; z-index:-2; }
+    body::before { inset:-25%; background:radial-gradient(circle at 15% 20%, rgba(255,255,255,.13), transparent 22%), radial-gradient(circle at 88% 10%, rgba(255,255,255,.09), transparent 24%), radial-gradient(circle at 60% 88%, rgba(255,255,255,.07), transparent 28%); filter:blur(12px); animation:orbDrift 16s ease-in-out infinite alternate; }
+    body::after { inset:0; z-index:-1; background:linear-gradient(115deg, transparent 0 44%, rgba(255,255,255,.06) 48%, transparent 52% 100%); opacity:.36; transform:translateX(-28%); animation:gridFlow 9s ease-in-out infinite; }
+    .app-shell { position:relative; z-index:1; width:min(1440px, calc(100% - 40px)); margin:0 auto; display:grid; grid-template-columns:220px minmax(0,1fr); gap:22px; padding:22px 0 52px; }
     .sidebar { position:sticky; top:22px; height:calc(100vh - 44px); border:1px solid var(--line); border-radius:14px; background:rgba(7,16,20,.88); padding:16px; animation:rise .55s ease both; }
     main { min-width:0; animation:rise .55s ease .08s both; }
     .topbar { display:grid; grid-template-columns:minmax(0,1fr) 360px; gap:16px; align-items:stretch; margin-bottom:16px; }
@@ -1765,7 +1795,8 @@ function renderDashboard({ session, guilds, tickets, stats }) {
     .brand-logo { width:42px; height:42px; object-fit:cover; border-radius:11px; border:1px solid rgba(255,255,255,.55); box-shadow:0 0 38px rgba(255,255,255,.12); }
     .mark { display:grid; place-items:center; width:42px; height:42px; border:1px solid rgba(255,255,255,.55); background:#fff; color:#050505; border-radius:10px; font-weight:900; }
     .nav-brand { display:flex; align-items:center; gap:12px; margin-bottom:18px; }
-    .nav-link { display:block; color:var(--muted); text-decoration:none; border:1px solid transparent; border-radius:10px; padding:10px 11px; margin:4px 0; transition:color .22s ease, border-color .22s ease, background .22s ease, transform .22s ease; }
+    .nav-link { display:flex; align-items:center; gap:10px; color:var(--muted); text-decoration:none; border:1px solid transparent; border-radius:10px; padding:10px 11px; margin:4px 0; transition:color .22s ease, border-color .22s ease, background .22s ease, transform .22s ease; }
+    .nav-icon { display:grid; place-items:center; width:24px; height:24px; border:1px solid rgba(255,255,255,.16); border-radius:8px; color:#fff; background:rgba(255,255,255,.045); font-size:13px; line-height:1; flex:0 0 auto; }
     .nav-link:hover,.nav-link.is-active { color:var(--text); border-color:rgba(255,255,255,.44); background:#0b1216; transform:translateX(3px); }
     .nav-foot { position:absolute; left:16px; right:16px; bottom:16px; }
     .hero-panel,.surface,.stat,.active-server { border:1px solid var(--line); border-radius:14px; background:rgba(11,18,22,.86); }
@@ -1840,8 +1871,10 @@ function renderDashboard({ session, guilds, tickets, stats }) {
     .recommendation:hover { transform:translateY(-2px); border-color:rgba(255,255,255,.28); }
     .recommendation strong { display:block; margin-bottom:6px; }
     .premium-grid { display:grid; grid-template-columns:minmax(320px,.92fr) minmax(0,1.08fr); gap:16px; align-items:start; }
-    .premium-hero { min-height:100%; background:radial-gradient(circle at 20% 0%, rgba(255,255,255,.18), transparent 34%), linear-gradient(145deg, rgba(255,255,255,.12), rgba(255,255,255,.025)); }
-    .premium-plan { display:inline-flex; align-items:center; gap:8px; border:1px solid rgba(255,255,255,.42); border-radius:999px; padding:7px 10px; color:#050505; background:#fff; font-size:12px; font-weight:900; text-transform:uppercase; letter-spacing:.08em; }
+    #view-premium { --gold:#f4c95d; --gold-2:#b98724; --gold-glow:rgba(244,201,93,.24); }
+    #view-premium .surface,#view-premium .control-card { border-color:rgba(244,201,93,.28); box-shadow:0 24px 95px rgba(95,61,8,.18); }
+    .premium-hero { min-height:100%; background:radial-gradient(circle at 22% 0%, rgba(244,201,93,.34), transparent 34%), linear-gradient(145deg, rgba(244,201,93,.18), rgba(7,7,6,.92)); }
+    .premium-plan { display:inline-flex; align-items:center; gap:8px; border:1px solid rgba(244,201,93,.65); border-radius:999px; padding:7px 10px; color:#120d02; background:linear-gradient(135deg, #fff4b8, var(--gold)); box-shadow:0 0 30px var(--gold-glow); font-size:12px; font-weight:900; text-transform:uppercase; letter-spacing:.08em; }
     .premium-hero h2 { margin-top:18px; font-size:clamp(28px, 4vw, 48px); line-height:.98; }
     .premium-lock { margin-top:16px; border:1px dashed rgba(255,255,255,.38); border-radius:14px; padding:14px; background:rgba(255,255,255,.045); }
     .premium-feature-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; margin-top:16px; }
@@ -1850,7 +1883,7 @@ function renderDashboard({ session, guilds, tickets, stats }) {
     .premium-feature strong,.premium-feature span { display:block; }
     .premium-feature span { margin-top:5px; color:var(--muted); font-size:13px; line-height:1.45; }
     .premium-toggle-list { display:grid; grid-template-columns:1fr; gap:10px; }
-    .premium-toggle { display:grid; grid-template-columns:minmax(0,1fr) 150px; gap:12px; align-items:center; border:1px solid var(--soft-line); border-radius:14px; padding:13px; background:rgba(255,255,255,.035); }
+    .premium-toggle { display:grid; grid-template-columns:minmax(0,1fr) 150px; gap:12px; align-items:center; border:1px solid rgba(244,201,93,.22); border-radius:14px; padding:13px; background:linear-gradient(135deg, rgba(244,201,93,.08), rgba(255,255,255,.025)); }
     .premium-toggle strong,.premium-toggle span { display:block; }
     .premium-toggle span { color:var(--muted); font-size:13px; margin-top:3px; line-height:1.45; }
     .premium-locked .premium-toggle select { opacity:.54; }
@@ -1955,18 +1988,25 @@ function renderDashboard({ session, guilds, tickets, stats }) {
     .assistant-form input { margin:0; background:#f3f3ee; color:#050505; border-color:rgba(0,0,0,.18); }
     .assistant-form input:focus { background:#fff; border-color:#050505; box-shadow:0 0 0 4px rgba(0,0,0,.08); }
     .assistant-form button { width:auto; min-width:88px; }
-    .loading { position:fixed; inset:0; z-index:60; display:grid; place-items:center; background:rgba(5,8,10,.9); backdrop-filter:blur(12px); transition:opacity .35s ease, visibility .35s ease; }
+    .loading { position:fixed; inset:0; z-index:60; display:grid; place-items:center; background:radial-gradient(circle at 50% 35%, rgba(255,255,255,.14), transparent 28%), rgba(5,8,10,.9); backdrop-filter:blur(14px); transition:opacity .35s ease, visibility .35s ease; }
     .loading.is-hidden { opacity:0; visibility:hidden; }
-    .loader { width:min(420px, calc(100% - 32px)); border:1px solid var(--line); background:#0b1216; border-radius:14px; padding:24px; text-align:center; }
-    .pulse { width:46px; height:46px; margin:0 auto 16px; border-radius:50%; border:2px solid rgba(255,255,255,.18); border-top-color:#fff; animation:spin 1s linear infinite; }
-    #loadingPhrase { color:var(--text); font-weight:800; }
+    .loader { position:relative; width:min(420px, calc(100% - 32px)); border:1px solid rgba(255,255,255,.28); background:linear-gradient(145deg, rgba(255,255,255,.1), rgba(7,18,22,.94)); border-radius:18px; padding:28px; text-align:center; overflow:hidden; box-shadow:0 30px 120px rgba(0,0,0,.55); }
+    .loader::after { content:""; position:absolute; inset:auto -20% 0; height:2px; background:linear-gradient(90deg, transparent, #fff, transparent); animation:loaderSweep 1.45s ease-in-out infinite; }
+    .pulse { position:relative; width:54px; height:54px; margin:0 auto 18px; border-radius:50%; border:2px solid rgba(255,255,255,.18); animation:loaderPulse 1.45s ease-in-out infinite; }
+    .pulse::before,.pulse::after { content:""; position:absolute; inset:9px; border:2px solid #fff; border-radius:50%; opacity:.9; }
+    .pulse::after { inset:20px; background:#fff; box-shadow:0 0 28px rgba(255,255,255,.42); }
+    #loadingPhrase { color:var(--text); font-weight:900; letter-spacing:.01em; }
     @keyframes rise { from { opacity:0; transform:translateY(14px); } to { opacity:1; transform:translateY(0); } }
     @keyframes viewIn { from { opacity:0; transform:translateY(14px) scale(.992); filter:blur(4px); } to { opacity:1; transform:translateY(0) scale(1); filter:blur(0); } }
+    @keyframes orbDrift { from { transform:translate3d(-2%, -1%, 0) scale(1); } to { transform:translate3d(3%, 2%, 0) scale(1.05); } }
+    @keyframes gridFlow { 0%,100% { transform:translateX(-32%); opacity:.18; } 50% { transform:translateX(34%); opacity:.42; } }
     @keyframes bannerIn { from { opacity:0; transform:translateY(18px) scale(.985); filter:blur(10px); } to { opacity:1; transform:translateY(0) scale(1); filter:blur(0); } }
     @keyframes bannerScan { 0%, 12% { transform:translateX(0) skewX(-18deg); opacity:0; } 30% { opacity:.85; } 58%, 100% { transform:translateX(430%) skewX(-18deg); opacity:0; } }
     @keyframes bannerGlow { 0%,100% { box-shadow:0 22px 70px rgba(0,0,0,.42), 0 0 0 1px rgba(255,255,255,.03) inset; } 50% { box-shadow:0 22px 90px rgba(255,255,255,.08), 0 0 0 1px rgba(255,255,255,.09) inset; } }
+    @keyframes loaderPulse { 0%,100% { transform:scale(.96); box-shadow:0 0 0 0 rgba(255,255,255,.18); } 50% { transform:scale(1.04); box-shadow:0 0 0 18px rgba(255,255,255,0); } }
+    @keyframes loaderSweep { from { transform:translateX(-55%); } to { transform:translateX(55%); } }
     @keyframes spin { to { transform:rotate(360deg); } }
-    @media (prefers-reduced-motion:reduce) { .banner-frame,.banner-frame::before,.banner-frame img { animation:none; transition:none; } }
+    @media (prefers-reduced-motion:reduce) { body::before,body::after,.banner-frame,.banner-frame::before,.banner-frame img,.loader::after,.pulse { animation:none; transition:none; } }
     @media (max-width:1120px) { .app-shell,.workspace,.topbar,.command-center,.panel-builder,.premium-grid { grid-template-columns:1fr; } .sidebar { position:relative; height:auto; top:auto; } .nav-foot { position:static; margin-top:18px; } .panel-preview-wrap { position:relative; top:auto; } }
     @media (max-width:760px) {
       body { overflow-x:hidden; background-size:auto; }
@@ -2033,14 +2073,13 @@ function renderDashboard({ session, guilds, tickets, stats }) {
   <div class="app-shell">
   <aside class="sidebar">
     <div class="nav-brand"><img class="brand-logo" src="/assets/nexadesk-logo.svg" alt="NexaDesk"><strong>NexaDesk</strong></div>
-    <a class="nav-link is-active" href="#overview" data-view="overview">Resumen</a>
-    <a class="nav-link" href="#servers" data-view="servers">Servidores</a>
-    <a class="nav-link" href="#settings" data-view="settings">Configuracion</a>
-    <a class="nav-link" href="#components" data-view="components">Componentes</a>
-    <a class="nav-link" href="#panels" data-view="panels">Paneles</a>
-    <a class="nav-link" href="#premium" data-view="premium">Premium</a>
-    <a class="nav-link" href="#music" data-view="music">Musica</a>
-    <a class="nav-link" href="#tickets" data-view="tickets">Tickets</a>
+    <a class="nav-link is-active" href="#overview" data-view="overview"><span class="nav-icon">⌂</span><span>Resumen</span></a>
+    <a class="nav-link" href="#servers" data-view="servers"><span class="nav-icon">◎</span><span>Servidores</span></a>
+    <a class="nav-link" href="#settings" data-view="settings"><span class="nav-icon">⚙</span><span>Configuracion</span></a>
+    <a class="nav-link" href="#components" data-view="components"><span class="nav-icon">▣</span><span>Componentes</span></a>
+    <a class="nav-link" href="#panels" data-view="panels"><span class="nav-icon">✦</span><span>Paneles</span></a>
+    <a class="nav-link" href="#premium" data-view="premium"><span class="nav-icon">◆</span><span>Premium</span></a>
+    <a class="nav-link" href="#tickets" data-view="tickets"><span class="nav-icon">☰</span><span>Tickets</span></a>
     <div class="nav-foot">
       <form method="post" action="/logout"><button class="secondary-button" type="submit">Cerrar sesion</button></form>
     </div>
@@ -2071,7 +2110,7 @@ function renderDashboard({ session, guilds, tickets, stats }) {
         <div><span>Paneles</span><strong id="activePanels">0</strong></div>
         <div><span>Seguridad</span><strong id="activeSecurity">Off</strong></div>
         <div><span>Premium</span><strong id="activePremium">Free</strong></div>
-        <div><span>Musica</span><strong id="activeMusic">On</strong></div>
+        <div><span>Transcripciones</span><strong id="activeTranscripts">0</strong></div>
       </div>
       <div class="server-score">
         <div>
@@ -2129,7 +2168,6 @@ function renderDashboard({ session, guilds, tickets, stats }) {
           <button class="quick-action" type="button" data-go-view="components">Crear menu de tickets</button>
           <button class="quick-action" type="button" data-go-view="panels">Publicar panel</button>
           <button class="quick-action" type="button" data-go-view="premium">Gestionar Premium</button>
-          <button class="quick-action" type="button" data-go-view="music">Configurar musica</button>
           <button class="quick-action" type="button" data-go-view="tickets">Ver transcripciones</button>
         </div>
         <section class="surface">
@@ -2174,7 +2212,7 @@ function renderDashboard({ session, guilds, tickets, stats }) {
           </form>
         </article>
         <article class="control-card wide">
-          <div class="card-head"><span class="step">3</span><div><h2>Security Guard</h2><p>Activa proteccion anti-flood, anti-links IA, anti-alts, anti-bots y anti-nuke usando audit logs.</p></div></div>
+          <div class="card-head"><span class="step">3</span><div><h2>Security Guard</h2><p>Activa proteccion anti-flood, anti-links IA, XN Protect Automod, anti-alts, anti-bots y anti-nuke usando audit logs.</p></div></div>
           <form onsubmit="return saveSecurity(event)">
             <label>Estado<select id="securityEnabled">
               <option value="false">Desactivado</option>
@@ -2192,6 +2230,10 @@ function renderDashboard({ session, guilds, tickets, stats }) {
               <option value="false">Desactivado</option>
             </select></label>
             <label>Anti-links IA<select id="securityAntiScamLinks">
+              <option value="true">Activo</option>
+              <option value="false">Desactivado</option>
+            </select></label>
+            <label>XN Protect Automod<select id="securityAntiOffensive">
               <option value="true">Activo</option>
               <option value="false">Desactivado</option>
             </select></label>
@@ -2376,51 +2418,6 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
           </article>
         </section>
       </section>
-      <section class="dashboard-view" id="view-music" data-view="music">
-        <div class="view-heading">
-          <div><h2>Musica IA</h2><p>Reproductor de alta calidad, busqueda rapida y autocola basada en historial.</p></div>
-        </div>
-        <section class="control-grid">
-          <article class="control-card wide">
-            <div class="card-head"><span class="step">M</span><div><h2>Reproductor del servidor</h2><p>Configura como se comporta /musica en este servidor.</p></div></div>
-            <form onsubmit="return saveMusic(event)">
-              <select id="musicGuildId" hidden required>${guildOptions}</select>
-              <label>Estado
-                <select id="musicEnabled"><option value="true">Activado</option><option value="false">Desactivado</option></select>
-              </label>
-              <label>Autocola IA
-                <select id="musicAutoQueue"><option value="true">Activa</option><option value="false">Pausada</option></select>
-              </label>
-              <label>Volumen por defecto
-                <input id="musicDefaultVolume" type="number" min="1" max="150" value="85">
-              </label>
-              <label>Limite de cola
-                <input id="musicMaxQueueSize" type="number" min="5" max="100" value="50">
-              </label>
-              <label>Rol DJ opcional
-                <select id="musicDjRoleId"><option value="">Sin rol DJ</option></select>
-              </label>
-              <button type="submit">Guardar musica IA</button>
-            </form>
-          </article>
-          <article class="control-card">
-            <div class="card-head"><span class="step">AI</span><div><h2>Autocola inteligente</h2><p>NexaDesk mira las ultimas canciones y propone la siguiente para mantener energia, idioma y estilo.</p></div></div>
-            <div class="premium-feature-grid">
-              <div class="premium-feature"><strong>Busqueda rapida</strong><span><code>/musica reproducir</code> acepta titulo, artista o enlace.</span></div>
-              <div class="premium-feature"><strong>Calidad 48 kHz</strong><span>Resuelve con yt-dlp y convierte con ffmpeg para Discord.</span></div>
-              <div class="premium-feature"><strong>Control total</strong><span>Cola, saltar, pausa, continuar, volumen y parar.</span></div>
-              <div class="premium-feature"><strong>Modo seguro</strong><span>No se mezcla con salas de soporte por voz para no romper STT/TTS.</span></div>
-            </div>
-          </article>
-          <article class="control-card">
-            <div class="card-head"><span class="step">/</span><div><h2>Comandos</h2><p>Pruebas rapidas desde Discord.</p></div></div>
-            <p><code>/musica reproducir consulta:Bad Bunny Monaco</code></p>
-            <p><code>/musica buscar consulta:lofi latino</code></p>
-            <p><code>/musica autocola activo:true</code></p>
-            <p><code>/musica cola</code></p>
-          </article>
-        </section>
-      </section>
       <section class="dashboard-view" id="view-tickets" data-view="tickets">
         <div class="view-heading">
           <div><h2>Tickets</h2><p>Consulta actividad reciente y abre transcripciones guardadas.</p></div>
@@ -2460,7 +2457,6 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       <button class="assistant-chip" type="button" data-assistant-prompt="Como hago que la IA escale al staff?">Escalado staff</button>
       <button class="assistant-chip" type="button" data-assistant-prompt="Mete una configuracion de seguridad recomendada">Seguridad</button>
       <button class="assistant-chip" type="button" data-assistant-prompt="Que funciones premium puedo activar aqui?">Premium</button>
-      <button class="assistant-chip" type="button" data-assistant-prompt="Como activo musica con autocola IA?">Musica IA</button>
       <button class="assistant-chip" type="button" data-assistant-prompt="Donde veo las transcripciones?">Transcripciones</button>
     </div>
     <form class="assistant-form" id="assistantForm">
@@ -2498,7 +2494,11 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
     const guildConfigs = ${JSON.stringify(guilds)};
     let guildMeta = {};
     function setActiveView(view, { updateHash = true } = {}) {
-      const nextView = document.querySelector('[data-view="' + view + '"].dashboard-view') ? view : 'overview';
+      let nextView = document.querySelector('[data-view="' + view + '"].dashboard-view') ? view : 'overview';
+      if (nextView === 'premium' && !hasAnyPremiumGuild()) {
+        nextView = 'overview';
+        showToast('Premium solo se abre cuando al menos uno de tus servidores tiene plan activo.');
+      }
       state.activeView = nextView;
       document.querySelectorAll('.dashboard-view').forEach((section) => {
         section.classList.toggle('is-active', section.dataset.view === nextView);
@@ -2616,6 +2616,9 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
     function getActiveGuild() {
       return getGuildConfig(document.querySelector('#guildId')?.value);
     }
+    function hasAnyPremiumGuild() {
+      return guildConfigs.some((guild) => normalizePremium(guild).entitled);
+    }
     function goToView(view) {
       setActiveView(view);
       document.querySelector('main')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -2686,24 +2689,14 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
         weeklyInsights: raw.weeklyInsights !== false
       };
     }
-    function normalizeMusic(guild = {}) {
-      const raw = guild.music || {};
-      return {
-        enabled: raw.enabled !== false,
-        autoQueue: raw.autoQueue !== false,
-        defaultVolume: Number.isFinite(Number(raw.defaultVolume)) ? Math.min(Math.max(Math.round(Number(raw.defaultVolume)), 1), 150) : 85,
-        maxQueueSize: Number.isFinite(Number(raw.maxQueueSize)) ? Math.min(Math.max(Math.round(Number(raw.maxQueueSize)), 5), 100) : 50,
-        djRoleId: raw.djRoleId || ''
-      };
-    }
     function formatPremiumState(guild = {}) {
       const premium = normalizePremium(guild);
       if (premium.entitled) return String(guild.plan || 'pro').toUpperCase();
       return 'Free';
     }
-    function formatMusicState(guild = {}) {
-      const music = normalizeMusic(guild);
-      return music.enabled ? (music.autoQueue ? 'IA auto' : 'On') : 'Off';
+    function formatTranscriptState(guild = {}) {
+      if (!guild?.guildId) return '0';
+      return String(state.tickets.filter((ticket) => ticket.guildId === guild.guildId).length);
     }
     function normalizeSecurity(guild = {}) {
       const raw = guild.security || {};
@@ -2714,6 +2707,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
         minAccountAgeDays: Number.isFinite(Number(raw.minAccountAgeDays)) ? Number(raw.minAccountAgeDays) : 3,
         antiFlood: raw.antiFlood !== false,
         antiScamLinks: raw.antiScamLinks !== false,
+        antiOffensive: raw.antiOffensive !== false,
         antiBot: raw.antiBot !== false,
         antiAlt: raw.antiAlt !== false,
         antiNuke: raw.antiNuke !== false
@@ -2777,11 +2771,11 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       });
     }
     function setConfigurationDisabled(disabled) {
-      for (const selector of ['#ticketCategoryId', '#staffRoleId', '#serverPrompt', '#serverInfo', '#categoryName', '#securityEnabled', '#securityLevel', '#securityLogChannelId', '#securityMinAccountAgeDays', '#securityAntiFlood', '#securityAntiScamLinks', '#securityAntiBot', '#securityAntiAlt', '#securityAntiNuke', '#componentLabel', '#componentEmoji', '#componentDescription', '#componentTicketCategoryId', '#componentTicketMode', '#componentQuestions', '#componentWelcomeMessage', '#panelType', '#panelSelectPlaceholder', '#panelComponentIds', '#panelChannelId', '#panelTicketCategoryId', '#panelTicketMode', '#panelButtonLabel', '#panelButtonStyle', '#panelButtonEmoji', '#panelTitle', '#panelEmbedColor', '#panelAuthorName', '#panelAuthorIconUrl', '#panelDescription', '#panelThumbnailUrl', '#panelImageUrl', '#panelFooterText', '#panelWelcomeMessage', '#premiumVoiceSupport', '#premiumPriorityAi', '#premiumSmartTranscripts', '#premiumSecurityPlus', '#premiumCustomBranding', '#premiumWeeklyInsights', '#musicEnabled', '#musicAutoQueue', '#musicDefaultVolume', '#musicMaxQueueSize', '#musicDjRoleId']) {
+      for (const selector of ['#ticketCategoryId', '#staffRoleId', '#serverPrompt', '#serverInfo', '#categoryName', '#securityEnabled', '#securityLevel', '#securityLogChannelId', '#securityMinAccountAgeDays', '#securityAntiFlood', '#securityAntiScamLinks', '#securityAntiOffensive', '#securityAntiBot', '#securityAntiAlt', '#securityAntiNuke', '#componentLabel', '#componentEmoji', '#componentDescription', '#componentTicketCategoryId', '#componentTicketMode', '#componentQuestions', '#componentWelcomeMessage', '#panelType', '#panelSelectPlaceholder', '#panelComponentIds', '#panelChannelId', '#panelTicketCategoryId', '#panelTicketMode', '#panelButtonLabel', '#panelButtonStyle', '#panelButtonEmoji', '#panelTitle', '#panelEmbedColor', '#panelAuthorName', '#panelAuthorIconUrl', '#panelDescription', '#panelThumbnailUrl', '#panelImageUrl', '#panelFooterText', '#panelWelcomeMessage', '#premiumVoiceSupport', '#premiumPriorityAi', '#premiumSmartTranscripts', '#premiumSecurityPlus', '#premiumCustomBranding', '#premiumWeeklyInsights']) {
         const element = document.querySelector(selector);
         if (element) element.disabled = disabled;
       }
-      document.querySelectorAll('#settings button, #components button, #panels button, #view-premium button, #view-music button').forEach((button) => {
+      document.querySelectorAll('#settings button, #components button, #panels button, #view-premium button').forEach((button) => {
         button.disabled = disabled;
       });
     }
@@ -2805,11 +2799,10 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       document.querySelector('#activePanels').textContent = String(guild.panels?.length ?? 0);
       document.querySelector('#activeSecurity').textContent = formatSecurityState(guild);
       document.querySelector('#activePremium').textContent = formatPremiumState(guild);
-      document.querySelector('#activeMusic').textContent = formatMusicState(guild);
+      document.querySelector('#activeTranscripts').textContent = formatTranscriptState(guild);
       renderComponentHistory(guild);
       renderPanelHistory(guild);
       renderPremiumPanel(guild);
-      renderMusicPanel(guild);
       renderReadinessChecklist(guild);
       renderRecommendations(guild);
       document.querySelectorAll('.guild-pill').forEach((button) => button.classList.toggle('is-active', button.dataset.guildId === guild.guildId));
@@ -2835,11 +2828,10 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       document.querySelector('#activePanels').textContent = String(guild.panels?.length ?? 0);
       document.querySelector('#activeSecurity').textContent = formatSecurityState(guild);
       document.querySelector('#activePremium').textContent = formatPremiumState(guild);
-      document.querySelector('#activeMusic').textContent = formatMusicState(guild);
+      document.querySelector('#activeTranscripts').textContent = formatTranscriptState(guild);
       renderComponentHistory(guild);
       renderPanelHistory(guild);
       renderPremiumPanel(guild);
-      renderMusicPanel(guild);
       renderReadinessChecklist(guild);
       renderRecommendations(guild);
       document.querySelectorAll('.guild-pill').forEach((button) => button.classList.toggle('is-active', button.dataset.guildId === guildId));
@@ -2873,7 +2865,6 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       const textChannels = meta.channels.filter((channel) => channel.type === 0);
       document.querySelector('#ticketCategoryId').innerHTML = '<option value="">Sin categoria</option>' + categories.map((channel) => '<option value="' + channel.id + '">' + escapeHtml(channel.name) + '</option>').join('');
       document.querySelector('#staffRoleId').innerHTML = '<option value="">Sin rol staff</option>' + meta.roles.map((role) => '<option value="' + role.id + '">' + escapeHtml(role.name) + '</option>').join('');
-      document.querySelector('#musicDjRoleId').innerHTML = '<option value="">Sin rol DJ</option>' + meta.roles.map((role) => '<option value="' + role.id + '">' + escapeHtml(role.name) + '</option>').join('');
       document.querySelector('#componentTicketCategoryId').innerHTML = '<option value="">Usar categoria principal</option>' + categories.map((channel) => '<option value="' + channel.id + '">' + escapeHtml(channel.name) + '</option>').join('');
       document.querySelector('#panelChannelId').innerHTML = textChannels.map((channel) => '<option value="' + channel.id + '">#' + escapeHtml(channel.name) + '</option>').join('');
       document.querySelector('#panelTicketCategoryId').innerHTML = '<option value="">Usar categoria principal</option>' + categories.map((channel) => '<option value="' + channel.id + '">' + escapeHtml(channel.name) + '</option>').join('');
@@ -2896,6 +2887,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       document.querySelector('#securityMinAccountAgeDays').value = security.minAccountAgeDays;
       document.querySelector('#securityAntiFlood').value = security.antiFlood ? 'true' : 'false';
       document.querySelector('#securityAntiScamLinks').value = security.antiScamLinks ? 'true' : 'false';
+      document.querySelector('#securityAntiOffensive').value = security.antiOffensive ? 'true' : 'false';
       document.querySelector('#securityAntiBot').value = security.antiBot ? 'true' : 'false';
       document.querySelector('#securityAntiAlt').value = security.antiAlt ? 'true' : 'false';
       document.querySelector('#securityAntiNuke').value = security.antiNuke ? 'true' : 'false';
@@ -2905,11 +2897,10 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       document.querySelector('#activePanels').textContent = String(config.panels?.length ?? 0);
       document.querySelector('#activeSecurity').textContent = formatSecurityState(config);
       document.querySelector('#activePremium').textContent = formatPremiumState(config);
-      document.querySelector('#activeMusic').textContent = formatMusicState(config);
+      document.querySelector('#activeTranscripts').textContent = formatTranscriptState(config);
       renderComponentHistory(config);
       renderPanelHistory(config);
       renderPremiumPanel(config);
-      renderMusicPanel(config);
       renderReadinessChecklist(config);
       renderRecommendations(config);
       updatePanelMode();
@@ -2924,7 +2915,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       const guildId = document.querySelector(sourceId).value;
       const guild = getGuildConfig(guildId);
       resetPanelEditor({ keepFields: true });
-      for (const selector of ['#guildId', '#categoryGuildId', '#componentGuildId', '#panelGuildId', '#premiumGuildId', '#musicGuildId']) {
+      for (const selector of ['#guildId', '#categoryGuildId', '#componentGuildId', '#panelGuildId', '#premiumGuildId']) {
         const element = document.querySelector(selector);
         if (element && element.value !== guildId) element.value = guildId;
       }
@@ -2969,6 +2960,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
           minAccountAgeDays: document.querySelector('#securityMinAccountAgeDays').value,
           antiFlood: document.querySelector('#securityAntiFlood').value === 'true',
           antiScamLinks: document.querySelector('#securityAntiScamLinks').value === 'true',
+          antiOffensive: document.querySelector('#securityAntiOffensive').value === 'true',
           antiBot: document.querySelector('#securityAntiBot').value === 'true',
           antiAlt: document.querySelector('#securityAntiAlt').value === 'true',
           antiNuke: document.querySelector('#securityAntiNuke').value === 'true'
@@ -3002,26 +2994,6 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
         renderGuildSelectors(guildId);
         refreshStats().catch(() => {});
         showToast('Modulos premium guardados para este servidor.');
-      }
-      return false;
-    }
-    async function saveMusic(event) {
-      event.preventDefault();
-      const guildId = document.querySelector('#musicGuildId')?.value || document.querySelector('#guildId').value;
-      const updated = await postJson('/api/guilds/' + guildId, {
-        music: {
-          enabled: document.querySelector('#musicEnabled').value === 'true',
-          autoQueue: document.querySelector('#musicAutoQueue').value === 'true',
-          defaultVolume: Number(document.querySelector('#musicDefaultVolume').value || 85),
-          maxQueueSize: Number(document.querySelector('#musicMaxQueueSize').value || 50),
-          djRoleId: document.querySelector('#musicDjRoleId').value || ''
-        }
-      }).catch((error) => showToast(error.message));
-      if (updated) {
-        const index = guildConfigs.findIndex((guild) => guild.guildId === guildId);
-        if (index >= 0) guildConfigs[index] = { ...guildConfigs[index], ...updated };
-        renderGuildSelectors(guildId);
-        showToast('Configuracion de musica guardada.');
       }
       return false;
     }
@@ -3092,21 +3064,6 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       for (const [id, value] of Object.entries(values)) {
         const element = document.querySelector('#' + id);
         if (element) element.value = value ? 'true' : 'false';
-      }
-    }
-    function renderMusicPanel(guild = getActiveGuild()) {
-      const music = normalizeMusic(guild || {});
-      const values = {
-        musicEnabled: music.enabled,
-        musicAutoQueue: music.autoQueue,
-        musicDefaultVolume: music.defaultVolume,
-        musicMaxQueueSize: music.maxQueueSize,
-        musicDjRoleId: music.djRoleId
-      };
-      for (const [id, value] of Object.entries(values)) {
-        const element = document.querySelector('#' + id);
-        if (!element) continue;
-        element.value = typeof value === 'boolean' ? String(value) : String(value ?? '');
       }
     }
     function renderPanelComponentPicker(guild = getActiveGuild()) {
@@ -3426,7 +3383,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       document.querySelector('#liveState').textContent = 'Reconectando';
       document.querySelector('#liveState').className = '';
     };
-    for (const selector of ['#guildId', '#categoryGuildId', '#componentGuildId', '#panelGuildId', '#premiumGuildId', '#musicGuildId']) {
+    for (const selector of ['#guildId', '#categoryGuildId', '#componentGuildId', '#panelGuildId', '#premiumGuildId']) {
       document.querySelector(selector)?.addEventListener('change', () => syncGuildForm(selector));
     }
     document.querySelectorAll('.nav-link[data-view]').forEach((link) => {
@@ -3472,7 +3429,6 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
     bindTranscriptButtons();
     updatePanelPreview();
     renderPremiumPanel(getActiveGuild());
-    renderMusicPanel(getActiveGuild());
     renderReadinessChecklist(getActiveGuild());
     renderRecommendations(getActiveGuild());
     setActiveView((location.hash || '#overview').slice(1), { updateHash: false });

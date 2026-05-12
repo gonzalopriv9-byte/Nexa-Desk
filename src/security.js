@@ -11,6 +11,7 @@ export const SECURITY_LEVELS = {
     label: 'Bajo',
     antiFlood: true,
     antiScamLinks: true,
+    antiOffensive: true,
     antiBot: true,
     antiAlt: false,
     antiNuke: false,
@@ -27,6 +28,7 @@ export const SECURITY_LEVELS = {
     label: 'Intermedio',
     antiFlood: true,
     antiScamLinks: true,
+    antiOffensive: true,
     antiBot: true,
     antiAlt: true,
     antiNuke: true,
@@ -43,6 +45,7 @@ export const SECURITY_LEVELS = {
     label: 'Alto',
     antiFlood: true,
     antiScamLinks: true,
+    antiOffensive: true,
     antiBot: true,
     antiAlt: true,
     antiNuke: true,
@@ -87,6 +90,7 @@ export function normalizeSecurityConfig(input = {}) {
     logChannelName: source.logChannelName ? String(source.logChannelName).slice(0, 100) : null,
     antiFlood: toBoolean(source.antiFlood, defaults.antiFlood),
     antiScamLinks: toBoolean(source.antiScamLinks ?? source.antiLinks ?? source.antiPhishing, defaults.antiScamLinks),
+    antiOffensive: toBoolean(source.antiOffensive ?? source.antiAutomod ?? source.xnProtectAutomod, defaults.antiOffensive),
     antiBot: toBoolean(source.antiBot, defaults.antiBot),
     antiAlt: toBoolean(source.antiAlt, defaults.antiAlt),
     antiNuke: toBoolean(source.antiNuke, defaults.antiNuke),
@@ -112,6 +116,7 @@ export function summarizeSecurityConfig(config = {}) {
   const enabled = [
     security.antiFlood ? 'Anti-flood' : null,
     security.antiScamLinks ? 'Anti-links IA' : null,
+    security.antiOffensive ? 'XN Automod' : null,
     security.antiBot ? 'Anti-bots' : null,
     security.antiAlt ? 'Anti-alts' : null,
     security.antiNuke ? 'Anti-nuke' : null
@@ -141,6 +146,11 @@ export class SecurityManager {
     if (security.antiScamLinks && urls.length) {
       const handledLinkThreat = await this.handleMessageLinks({ message, guildConfig, security, urls });
       if (handledLinkThreat) return true;
+    }
+
+    if (security.antiOffensive && message.content && !shouldSkipAutomodContent(message.content)) {
+      const handledOffensiveContent = await this.handleOffensiveContent({ message, security });
+      if (handledOffensiveContent) return true;
     }
 
     if (!security.antiFlood) return false;
@@ -242,6 +252,39 @@ export class SecurityManager {
     }
 
     return heuristicLinkThreatAnalysis({ content: message.content, urls });
+  }
+
+  async handleOffensiveContent({ message, security }) {
+    const analysis = await reviewXnProtectAutomod(message.content);
+    if (!analysis.malicious) return false;
+
+    const deleted = await message.delete().then(() => true).catch(() => false);
+    const isolation = await this.isolateFloodActor(message, security, {
+      repeated: true,
+      flooding: true,
+      repeatWarning: true,
+      reasonOverride: `NexaDesk Security Guard: ${analysis.reason || 'contenido ofensivo o malicioso'}`
+    });
+
+    await this.sendSecurityLog({
+      guild: message.guild,
+      config: security,
+      title: 'Contenido ofensivo bloqueado',
+      description: `${message.author} envio contenido marcado como ofensivo o malicioso por XN Protect Automod.`,
+      fields: [
+        { name: 'Usuario', value: `${message.author.tag} (${message.author.id})`, inline: true },
+        { name: 'Tipo', value: message.author.bot ? 'Bot' : 'Usuario', inline: true },
+        { name: 'Canal', value: `${message.channel}`, inline: true },
+        { name: 'Motivo', value: analysis.reason || 'No indicado.' },
+        { name: 'Palabras detectadas', value: analysis.words.length ? analysis.words.join(', ').slice(0, 700) : 'No indicadas.' },
+        { name: 'Mensaje borrado', value: deleted ? 'Si' : 'No pude borrarlo por permisos o antiguedad', inline: true },
+        { name: 'Aislamiento', value: isolation },
+        { name: 'Fuente', value: 'XN Protect Automod API. Derechos reservados por XN Protect.' }
+      ],
+      important: true
+    });
+
+    return true;
   }
 
   async deleteFloodBurstMessages(message, bucket, security) {
@@ -704,6 +747,49 @@ function heuristicLinkThreatAnalysis({ content, urls }) {
     riskSignals: [],
     source: 'heuristic'
   };
+}
+
+async function reviewXnProtectAutomod(content = '') {
+  const safeContent = String(content ?? '').trim().slice(0, 1200);
+  if (!safeContent) return { malicious: false, words: [], reason: '', source: 'empty' };
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 5500);
+  try {
+    const url = new URL('https://apis.ebixcloud.com/apis/xnprotect/automod/query');
+    url.searchParams.set('content', safeContent);
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: { accept: 'application/json' },
+      signal: controller.signal
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok || body?.success === false) {
+      return { malicious: false, words: [], reason: '', source: 'xnprotect-error' };
+    }
+    const result = body?.response && typeof body.response === 'object' ? body.response : {};
+    const words = Array.isArray(result.palabras_maliciosas)
+      ? result.palabras_maliciosas.map((item) => String(item).slice(0, 80)).filter(Boolean).slice(0, 12)
+      : [];
+    return {
+      malicious: result.malicioso === true,
+      words,
+      reason: String(result.reason ?? '').slice(0, 700),
+      source: 'xnprotect'
+    };
+  } catch (error) {
+    if (error?.name !== 'AbortError') {
+      console.error('XN Protect automod query failed:', error);
+    }
+    return { malicious: false, words: [], reason: '', source: 'xnprotect-unavailable' };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function shouldSkipAutomodContent(content = '') {
+  const normalized = normalizeContent(content);
+  return /\b(?:suicid|matarme|quitarme la vida|tirar(?:me)? por la ventana|kill myself|end my life|self harm|autolesion|自杀|輕生)\b/i.test(normalized);
 }
 
 function defangUrl(url = '') {

@@ -8,8 +8,6 @@ import { OllamaClient } from './ai/ollama-client.js';
 import { OpenAICompatibleClient } from './ai/openai-compatible-client.js';
 import { SupportAgent } from './ai/support-agent.js';
 import { VisualAnalyzer } from './ai/visual-analyzer.js';
-import { MusicManager } from './music/music-manager.js';
-import { SpotifyClient } from './music/spotify-client.js';
 import { VoiceSessionManager } from './voice/voice-session-manager.js';
 import { createBot, createTicketCategory, createTicketPanel, listGuildChannels, listGuildRoles, listInstalledGuildIds, updateTicketPanel } from './bot.js';
 import { createServer } from './server.js';
@@ -30,8 +28,6 @@ await storage.init();
 const aiClient = createAiClient();
 const visualAnalyzer = createVisualAnalyzer();
 const voiceManager = createVoiceManager();
-const spotifyClient = createSpotifyClient();
-const musicManager = createMusicManager(aiClient, spotifyClient);
 
 const supportAgent = new SupportAgent({
   aiClient,
@@ -40,7 +36,7 @@ const supportAgent = new SupportAgent({
   visualAnalyzer
 });
 
-const bot = createBot({ config, storage, supportAgent, voiceManager, musicManager });
+const bot = createBot({ config, storage, supportAgent, voiceManager });
 const botActions = config.RUN_BOT
   ? {
       createTicketCategory: (input) => createTicketCategory(bot, storage, input),
@@ -112,23 +108,6 @@ function createVoiceManager() {
     storage,
     aiClient: createGroqFallbackClient(),
     config
-  });
-}
-
-function createMusicManager(client, spotifyClient) {
-  if (!config.MUSIC_ENABLED) return null;
-  return new MusicManager({
-    aiClient: client,
-    spotifyClient,
-    config
-  });
-}
-
-function createSpotifyClient() {
-  return new SpotifyClient({
-    clientId: config.SPOTIFY_CLIENT_ID,
-    clientSecret: config.SPOTIFY_CLIENT_SECRET,
-    market: config.SPOTIFY_MARKET
   });
 }
 
