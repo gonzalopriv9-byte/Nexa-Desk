@@ -1194,7 +1194,9 @@ function buildDocsSections(config) {
     ['DASHBOARD_PUBLIC_URL', secretState(config.DASHBOARD_PUBLIC_URL), 'URL publica usada en /ayuda, MD de bienvenida e invitaciones.'],
     ['VOICE_TTS_PROVIDER', secretState(config.VOICE_TTS_PROVIDER), 'Proveedor de voz para tickets Pro Voice.'],
     ['EDGE_TTS_VOICE', secretState(config.EDGE_TTS_VOICE), 'Voz natural usada cuando Edge TTS esta disponible.'],
-    ['AI_VISUAL_ANALYSIS', secretState(config.AI_VISUAL_ANALYSIS), 'Activa analisis de imagenes y videos en tickets cuando el prompt lo permite.']
+    ['AI_VISUAL_ANALYSIS', secretState(config.AI_VISUAL_ANALYSIS), 'Activa analisis de imagenes y videos en tickets cuando el prompt lo permite.'],
+    ['ANNOUNCEMENT_SOURCE_GUILD_ID', secretState(config.ANNOUNCEMENT_SOURCE_GUILD_ID), 'Servidor central desde donde salen anuncios globales.'],
+    ['ANNOUNCEMENT_SOURCE_CHANNEL_ID', secretState(config.ANNOUNCEMENT_SOURCE_CHANNEL_ID), 'Canal central que se replica a los canales de anuncios detectados.']
   ];
 
   return [
@@ -1212,6 +1214,7 @@ function buildDocsSections(config) {
           'Premium por servidor se decide con plan pro/premium/enterprise, voice_support_enabled o /activarpremium desde owner autorizado.',
           'Modo mantenimiento global se activa con /mantenimiento; ralentiza solo servidores Free y avisa al abrir tickets.',
           'Smart Discovery recorre todos los canales de cada servidor instalado, normaliza tipografias raras y detecta anuncios, normas, FAQ, soporte y categorias candidatas.',
+          'El canal de anuncios detectado es destino de broadcast: todo mensaje publicado en ANNOUNCEMENT_SOURCE_CHANNEL_ID dentro de ANNOUNCEMENT_SOURCE_GUILD_ID se replica ahi.',
           '/docs es una zona oculta: no aparece en la UI, requiere TOTP y no debe contener secretos en claro.'
         ] }
       ]
@@ -1327,6 +1330,7 @@ function buildDocsSections(config) {
         { type: 'list', items: [
           'Dashboard: Resumen, Servidores, Configuracion, Componentes, Paneles, Premium y Tickets.',
           'Configuracion incluye Descubrimiento inteligente para reescanear canales y usar anuncios/normas/FAQ como contexto operativo.',
+          'Los anuncios globales salen del canal central configurado y llegan al canal de anuncios detectado de cada servidor; por defecto no replica menciones para evitar @everyone accidental.',
           'Paneles soportan boton unico o menu desplegable con 2+ componentes.',
           'Componentes guardan preguntas previas, categoria destino, primer mensaje y modo texto/voz.',
           'Premium incluye Voz Pro, IA prioritaria, transcripciones inteligentes, Security Plus, branding propio e informes semanales.',
@@ -2270,7 +2274,7 @@ function renderDashboard({ session, guilds, tickets, stats }) {
             <div class="discovery-item"><span>FAQ/info</span><strong>No detectado</strong></div>
             <div class="discovery-item"><span>Categoria sugerida</span><strong>No detectada</strong></div>
           </div>
-          <p class="notice">NexaDesk usa estos canales como contexto operativo para IA, onboarding, avisos y recomendaciones de setup.</p>
+          <p class="notice">El canal de anuncios detectado recibe los mensajes globales publicados desde el canal central de NexaDesk y tambien ayuda como contexto operativo.</p>
           <button class="secondary-button" type="button" onclick="return rescanDiscovery()">Reescanear canales</button>
         </article>
         <article class="control-card wide">
@@ -2769,7 +2773,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       const target = document.querySelector('#discoverySummary');
       const discovery = guild?.discovery || {};
       const items = [
-        ['Anuncios', discovery.announcementChannelName, 'Canal para avisos, cambios y mensajes importantes.'],
+        ['Anuncios', discovery.announcementChannelName, 'Destino de anuncios globales enviados desde el canal central.'],
         ['Normas', discovery.rulesChannelName, 'Reglas que ayudan a la IA a responder con contexto.'],
         ['FAQ/info', discovery.faqChannelName, 'Preguntas frecuentes y datos utiles del servidor.'],
         ['Soporte publico', discovery.supportChannelName, 'Canal publico donde suelen pedir ayuda.'],

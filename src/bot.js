@@ -348,6 +348,8 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
 
   client.on(Events.MessageCreate, async (message) => {
     if (!message.guild || !message.channel) return;
+    if (await maybeMirrorGlobalAnnouncement({ client, storage, config, message })) return;
+
     const handledBySecurity = await securityManager.handleMessageCreate(message).catch((error) => {
       console.error(`Security message guard failed in ${message.guild.id}:`, error);
       return false;
@@ -4186,6 +4188,86 @@ function normalizeText(value) {
     .replace(/[\u0300-\u036f]/g, '')
     .toLowerCase()
     .trim();
+}
+
+async function maybeMirrorGlobalAnnouncement({ client, storage, config, message }) {
+  if (!config.ANNOUNCEMENT_MIRROR_ENABLED) return false;
+  if (message.author?.id === client.user?.id) return false;
+  if (message.guild.id !== config.ANNOUNCEMENT_SOURCE_GUILD_ID) return false;
+  if (message.channel.id !== config.ANNOUNCEMENT_SOURCE_CHANNEL_ID) return false;
+
+  if (!hasMirrorableAnnouncementContent(message)) {
+    console.log(`Global announcement ${message.id} skipped: empty content.`);
+    return true;
+  }
+
+  const guildConfigs = await storage.listGuildConfigs().catch((error) => {
+    console.error('Failed to load guild configs for announcement mirror:', error);
+    return [];
+  });
+  const deliveredChannelIds = new Set();
+  let delivered = 0;
+  let skipped = 0;
+  let failed = 0;
+
+  for (const guildConfig of guildConfigs) {
+    const discovery = normalizeDiscoveryConfig(guildConfig.discovery);
+    const targetChannelId = discovery.announcementChannelId;
+    if (!targetChannelId || deliveredChannelIds.has(targetChannelId)) {
+      skipped += 1;
+      continue;
+    }
+    deliveredChannelIds.add(targetChannelId);
+
+    if (guildConfig.guildId === message.guild.id && targetChannelId === message.channel.id) {
+      skipped += 1;
+      continue;
+    }
+
+    try {
+      const channel = await client.channels.fetch(targetChannelId);
+      if (!channel?.isTextBased?.() || typeof channel.send !== 'function') {
+        skipped += 1;
+        continue;
+      }
+
+      const permissions = channel.permissionsFor?.(client.user);
+      if (permissions && !permissions.has(PermissionFlagsBits.SendMessages)) {
+        skipped += 1;
+        continue;
+      }
+
+      await channel.send(buildAnnouncementMirrorPayload(message, config, permissions));
+      delivered += 1;
+    } catch (error) {
+      failed += 1;
+      console.warn(`Failed to mirror announcement ${message.id} to ${targetChannelId}:`, error?.message ?? error);
+    }
+  }
+
+  console.log(`Global announcement ${message.id} mirrored. Delivered: ${delivered}. Skipped: ${skipped}. Failed: ${failed}.`);
+  return true;
+}
+
+function hasMirrorableAnnouncementContent(message) {
+  return Boolean(message.content?.trim() || message.embeds?.length || message.attachments?.size);
+}
+
+function buildAnnouncementMirrorPayload(message, config, permissions) {
+  const canEmbed = !permissions || permissions.has(PermissionFlagsBits.EmbedLinks);
+  const contentParts = [];
+  if (message.content?.trim()) contentParts.push(message.content.trim());
+  if (message.attachments?.size) {
+    contentParts.push(...[...message.attachments.values()].map((attachment) => attachment.url).filter(Boolean));
+  }
+  const embeds = canEmbed ? message.embeds.slice(0, 10).map((embed) => embed.toJSON()) : undefined;
+  const content = contentParts.join('\n').slice(0, 2000) || (embeds?.length ? undefined : 'Anuncio global de NexaDesk sin texto visible.');
+
+  return {
+    content,
+    embeds,
+    allowedMentions: config.ANNOUNCEMENT_MIRROR_ALLOW_MENTIONS ? undefined : { parse: [] }
+  };
 }
 
 async function sendTicketResponse(message, payload) {
