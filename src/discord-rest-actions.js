@@ -1,5 +1,6 @@
 import { REST, Routes, ChannelType } from 'discord.js';
 import { buildPanelActionRow, buildPanelEmbed, normalizePanelOptions } from './panel-options.js';
+import { analyzeGuildChannelsForDiscovery } from './server-discovery.js';
 
 export function createDiscordRestActions({ config, storage }) {
   const botToken = config.DISCORD_TOKEN?.trim();
@@ -107,7 +108,12 @@ export function createDiscordRestActions({ config, storage }) {
       requireBotToken(botToken);
       const channels = await rest.get(Routes.guildChannels(guildId));
       return channels
-        .filter((channel) => channel.type === ChannelType.GuildText || channel.type === ChannelType.GuildCategory)
+        .filter((channel) => (
+          channel.type === ChannelType.GuildText
+          || channel.type === ChannelType.GuildAnnouncement
+          || channel.type === ChannelType.GuildForum
+          || channel.type === ChannelType.GuildCategory
+        ))
         .sort((a, b) => Number(a.position ?? 0) - Number(b.position ?? 0))
         .map((channel) => ({
           id: channel.id,
@@ -115,6 +121,24 @@ export function createDiscordRestActions({ config, storage }) {
           type: channel.type,
           parentId: channel.parent_id
         }));
+    },
+
+    async refreshGuildDiscovery({ guildId, reason = 'dashboard' }) {
+      requireBotToken(botToken);
+      const [guild, channels] = await Promise.all([
+        rest.get(Routes.guild(guildId)),
+        rest.get(Routes.guildChannels(guildId))
+      ]);
+      const discovery = analyzeGuildChannelsForDiscovery(channels);
+      const existing = await storage.getGuildConfig(guildId).catch(() => null);
+      return storage.upsertGuildConfig(guildId, {
+        guildName: guild.name,
+        discovery: {
+          ...(existing?.discovery ?? {}),
+          ...discovery,
+          reason
+        }
+      });
     },
 
     async listInstalledGuildIds() {

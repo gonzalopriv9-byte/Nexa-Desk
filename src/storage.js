@@ -5,6 +5,7 @@ import { normalizeBlacklistEntry, normalizeBlacklistEvidence, normalizeBlacklist
 import { normalizeMaintenanceState } from './maintenance.js';
 import { isPremiumEntitled, normalizePremiumConfig } from './premium.js';
 import { normalizeSecurityConfig } from './security.js';
+import { normalizeDiscoveryConfig } from './server-discovery.js';
 
 const GLOBAL_SETTINGS_GUILD_ID = '__nexadesk_global__';
 
@@ -705,6 +706,9 @@ function fromGuildRow(row) {
       plan: row.plan ?? 'free',
       voiceSupportEnabled: row.voice_support_enabled ?? false
     }),
+    discovery: panelStore.discovery,
+    announcementChannelId: panelStore.discovery.announcementChannelId,
+    announcementChannelName: panelStore.discovery.announcementChannelName,
     panels: panelStore.panels,
     components: panelStore.components,
     security: panelStore.security,
@@ -718,7 +722,8 @@ function toGuildPanelStore(guild) {
     components: guild.components ?? [],
     security: normalizeSecurityConfig(guild.security),
     premium: normalizePremiumConfig(guild.premium, guild),
-    alliance: normalizeAllianceConfig(guild)
+    alliance: normalizeAllianceConfig(guild),
+    discovery: normalizeDiscoveryConfig(guild.discovery ?? guild)
   };
 }
 
@@ -729,7 +734,8 @@ function fromGuildPanelStore(value) {
       components: [],
       security: normalizeSecurityConfig(),
       premium: normalizePremiumConfig(),
-      alliance: normalizeAllianceConfig()
+      alliance: normalizeAllianceConfig(),
+      discovery: normalizeDiscoveryConfig()
     };
   }
 
@@ -739,7 +745,8 @@ function fromGuildPanelStore(value) {
       components: Array.isArray(value.components) ? value.components : [],
       security: normalizeSecurityConfig(value.security),
       premium: normalizePremiumConfig(value.premium),
-      alliance: normalizeAllianceConfig(value.alliance)
+      alliance: normalizeAllianceConfig(value.alliance),
+      discovery: normalizeDiscoveryConfig(value.discovery)
     };
   }
 
@@ -748,7 +755,8 @@ function fromGuildPanelStore(value) {
     components: [],
     security: normalizeSecurityConfig(),
     premium: normalizePremiumConfig(),
-    alliance: normalizeAllianceConfig()
+    alliance: normalizeAllianceConfig(),
+    discovery: normalizeDiscoveryConfig()
   };
 }
 

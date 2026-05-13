@@ -30,6 +30,7 @@ import {
 import { buildPanelActionRow, buildPanelEmbed, normalizePanelOptions, normalizeTicketComponent, panelWelcomeMessage } from './panel-options.js';
 import { isPremiumEntitled, normalizePremiumConfig } from './premium.js';
 import { SecurityManager, SECURITY_LEVELS, normalizeSecurityConfig, normalizeSecurityLevel, summarizeSecurityConfig } from './security.js';
+import { analyzeGuildChannelsForDiscovery, hasUsefulDiscovery, normalizeDiscoveryConfig } from './server-discovery.js';
 import { buildTranscriptFileName, buildTranscriptText } from './transcripts.js';
 import { createWelcomeCard } from './welcome-card.js';
 import { XNPROTECT_BLACKLIST_CREDIT, checkXnProtectGlobalBan } from './xnprotect-blacklist.js';
@@ -76,6 +77,17 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
     applyBotPresence(readyClient);
     const presenceInterval = setInterval(() => applyBotPresence(readyClient), 1000 * 60 * 5);
     presenceInterval.unref?.();
+    setTimeout(() => {
+      scanInstalledGuildsForDiscovery({ client: readyClient, storage }).catch((error) => {
+        console.error('Initial smart discovery failed:', error);
+      });
+    }, 12_000).unref?.();
+    const discoveryInterval = setInterval(() => {
+      scanInstalledGuildsForDiscovery({ client: readyClient, storage }).catch((error) => {
+        console.error('Scheduled smart discovery failed:', error);
+      });
+    }, 1000 * 60 * 60 * 6);
+    discoveryInterval.unref?.();
     console.log(`NexaDesk online as ${readyClient.user.tag}`);
   });
 
@@ -83,6 +95,7 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
     try {
       applyBotPresence(client);
       await handleGuildJoin({ guild, storage, config });
+      await refreshGuildDiscovery(client, storage, { guildId: guild.id, reason: 'guild_join' });
     } catch (error) {
       console.error(`Failed to send NexaDesk onboarding for guild ${guild.id}:`, error);
     }
@@ -2948,6 +2961,9 @@ async function handleDiagnosticsCommand({ interaction, storage, client }) {
   }
 
   await interaction.deferReply({ ephemeral: true });
+  await refreshGuildDiscovery(client, storage, { guildId: interaction.guildId, reason: 'diagnostics' }).catch((error) => {
+    console.error(`Diagnostics smart discovery failed in ${interaction.guildId}:`, error);
+  });
 
   const [guildConfig, tickets] = await Promise.all([
     storage.getGuildConfig(interaction.guildId),
@@ -2966,6 +2982,7 @@ async function handleDiagnosticsCommand({ interaction, storage, client }) {
   const nextActions = operational.missing.slice(0, 4);
   const security = normalizeSecurityConfig(guildConfig?.security);
   const premium = normalizePremiumConfig(guildConfig?.premium, guildConfig ?? {});
+  const discovery = normalizeDiscoveryConfig(guildConfig?.discovery);
 
   const embed = new EmbedBuilder()
     .setColor(operational.score >= 80 ? 0xffffff : operational.score >= 55 ? 0xffcc00 : 0xff5f57)
@@ -2998,6 +3015,16 @@ async function handleDiagnosticsCommand({ interaction, storage, client }) {
           `Security Guard: **${security.enabled ? 'Activo' : 'Off'}**`,
           `Premium: **${isPremiumEntitled(guildConfig ?? {}) ? 'Pro' : 'Free'}**`,
           `Voz Pro: **${premium.voiceSupport && isPremiumEntitled(guildConfig ?? {}) ? 'Activa' : 'No activa'}**`
+        ].join('\n'),
+        inline: true
+      },
+      {
+        name: 'Descubrimiento inteligente',
+        value: [
+          `Anuncios: **${discovery.announcementChannelName ? `#${discovery.announcementChannelName}` : 'No detectado'}**`,
+          `Normas: **${discovery.rulesChannelName ? `#${discovery.rulesChannelName}` : 'No detectado'}**`,
+          `FAQ/info: **${discovery.faqChannelName ? `#${discovery.faqChannelName}` : 'No detectado'}**`,
+          `Categoria sugerida: **${discovery.suggestedTicketCategoryName ?? 'No detectada'}**`
         ].join('\n'),
         inline: true
       },
@@ -3063,6 +3090,13 @@ function buildGuildOperationalScore(guildConfig, { installed = false } = {}) {
       done: Boolean(security.enabled),
       weight: 15,
       action: 'Activa Security Guard para anti-flood, links sospechosos y audit logs.'
+    },
+    {
+      key: 'announcements',
+      label: 'Canal de anuncios detectado',
+      done: Boolean(guildConfig?.discovery?.announcementChannelId),
+      weight: 5,
+      action: 'Deja que NexaDesk detecte el canal de anuncios para futuras notificaciones y contexto.'
     },
     {
       key: 'components',
@@ -4231,6 +4265,35 @@ export async function createTicketCategory(client, storage, { guildId, name }) {
   });
 }
 
+async function scanInstalledGuildsForDiscovery({ client, storage }) {
+  const guilds = [...client.guilds.cache.values()];
+  let detected = 0;
+  for (const guild of guilds) {
+    const result = await refreshGuildDiscovery(client, storage, { guildId: guild.id, reason: 'scheduled_scan' }).catch((error) => {
+      console.warn(`Smart discovery failed for ${guild.name} (${guild.id}):`, error?.message ?? error);
+      return null;
+    });
+    if (result && hasUsefulDiscovery(result.discovery)) detected += 1;
+  }
+  console.log(`NexaDesk smart discovery scanned ${guilds.length} guilds; useful channels found in ${detected}.`);
+}
+
+export async function refreshGuildDiscovery(client, storage, { guildId, reason = 'manual' }) {
+  const guild = await client.guilds.fetch(guildId);
+  const channels = await guild.channels.fetch();
+  const discovery = analyzeGuildChannelsForDiscovery(channels.values());
+  const existing = await storage.getGuildConfig(guildId).catch(() => null);
+  const updated = await storage.upsertGuildConfig(guildId, {
+    guildName: guild.name,
+    discovery: {
+      ...(existing?.discovery ?? {}),
+      ...discovery,
+      reason
+    }
+  });
+  return updated;
+}
+
 export async function createTicketPanel(client, storage, { guildId, channelId, ...panelInput }) {
   const guild = await client.guilds.fetch(guildId);
   const channel = await guild.channels.fetch(channelId);
@@ -4315,7 +4378,12 @@ export async function listGuildChannels(client, { guildId }) {
   const guild = await client.guilds.fetch(guildId);
   const channels = await guild.channels.fetch();
   return [...channels.values()]
-    .filter((channel) => channel && (channel.type === ChannelType.GuildText || channel.type === ChannelType.GuildCategory))
+    .filter((channel) => channel && (
+      channel.type === ChannelType.GuildText
+      || channel.type === ChannelType.GuildAnnouncement
+      || channel.type === ChannelType.GuildForum
+      || channel.type === ChannelType.GuildCategory
+    ))
     .sort((a, b) => a.position - b.position)
     .map((channel) => ({
       id: channel.id,

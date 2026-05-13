@@ -358,6 +358,14 @@ export function createServer({ config, storage, bot, events }) {
     res.json(await bot.listGuildChannels({ guildId: req.params.guildId }));
   }));
 
+  app.post('/api/guilds/:guildId/discovery', requireGuildAccess, asyncHandler(async (req, res) => {
+    if (typeof bot.refreshGuildDiscovery !== 'function') {
+      res.status(501).json({ error: 'Smart discovery is not available in this runtime.' });
+      return;
+    }
+    res.json(await bot.refreshGuildDiscovery({ guildId: req.params.guildId, reason: 'dashboard' }));
+  }));
+
   app.post('/api/guilds/:guildId', requireGuildAccess, asyncHandler(async (req, res) => {
     const guild = req.session.guilds.find((item) => item.id === req.params.guildId);
     const existing = await storage.getGuildConfig(req.params.guildId);
@@ -764,6 +772,7 @@ async function buildDashboardAssistantReply({ config, message, guild, stats, act
         'Ayuda a configurar servidores Discord para tickets con IA, paneles, componentes, staff, voz Pro con STT/TTS, transcripciones, Security Guard, Premium y mantenimiento global.',
         'La dashboard real tiene estas secciones: Resumen, Servidores, Configuracion, Componentes, Paneles, Premium y Tickets.',
         'En Configuracion se elige categoria, rol staff, prompt del servidor, informacion del servidor y Security Guard.',
+        'Descubrimiento inteligente escanea canales y detecta anuncios, normas, FAQ, soporte y categorias aunque usen tipografias raras.',
         'En Componentes se crean opciones del menu con preguntas previas, primer mensaje y modo Texto o Voz Pro.',
         'En Paneles se publica el embed, boton o menu en un canal de Discord; los botones tambien pueden abrir tickets de voz Pro.',
         'En Premium se gestionan Voz Pro, IA prioritaria, transcripciones inteligentes, Security Plus, branding propio e informes semanales por servidor.',
@@ -1202,6 +1211,7 @@ function buildDocsSections(config) {
           'XN Protect aporta blacklist global y Automod ofensivo/malicioso. NexaDesk acredita la fuente y no banea automaticamente por blacklist externa.',
           'Premium por servidor se decide con plan pro/premium/enterprise, voice_support_enabled o /activarpremium desde owner autorizado.',
           'Modo mantenimiento global se activa con /mantenimiento; ralentiza solo servidores Free y avisa al abrir tickets.',
+          'Smart Discovery recorre todos los canales de cada servidor instalado, normaliza tipografias raras y detecta anuncios, normas, FAQ, soporte y categorias candidatas.',
           '/docs es una zona oculta: no aparece en la UI, requiere TOTP y no debe contener secretos en claro.'
         ] }
       ]
@@ -1316,6 +1326,7 @@ function buildDocsSections(config) {
       blocks: [
         { type: 'list', items: [
           'Dashboard: Resumen, Servidores, Configuracion, Componentes, Paneles, Premium y Tickets.',
+          'Configuracion incluye Descubrimiento inteligente para reescanear canales y usar anuncios/normas/FAQ como contexto operativo.',
           'Paneles soportan boton unico o menu desplegable con 2+ componentes.',
           'Componentes guardan preguntas previas, categoria destino, primer mensaje y modo texto/voz.',
           'Premium incluye Voz Pro, IA prioritaria, transcripciones inteligentes, Security Plus, branding propio e informes semanales.',
@@ -1854,7 +1865,7 @@ function renderDashboard({ session, guilds, tickets, stats }) {
     .section-heading p { margin:4px 0 0; }
     .active-server { position:relative; padding:18px; margin-bottom:16px; background:linear-gradient(135deg, rgba(255,255,255,.09), rgba(255,255,255,.025)); overflow:hidden; }
     .active-server select { margin-top:12px; }
-    .server-status { display:grid; grid-template-columns:repeat(6,minmax(0,1fr)); gap:8px; margin-top:12px; }
+    .server-status { display:grid; grid-template-columns:repeat(auto-fit,minmax(125px,1fr)); gap:8px; margin-top:12px; }
     .server-status div { border:1px solid var(--soft-line); border-radius:10px; padding:10px; background:rgba(5,8,10,.42); }
     .server-status strong { display:block; font-size:13px; margin-top:4px; }
     .server-score { display:grid; grid-template-columns:minmax(0,1fr) 220px auto; align-items:center; gap:12px; margin-top:12px; border:1px solid var(--soft-line); border-radius:14px; padding:14px; background:linear-gradient(135deg, rgba(255,255,255,.08), rgba(255,255,255,.025)); }
@@ -1886,6 +1897,10 @@ function renderDashboard({ session, guilds, tickets, stats }) {
     .recommendation { border:1px solid var(--soft-line); border-radius:13px; padding:13px; background:rgba(255,255,255,.04); transition:transform .22s ease, border-color .22s ease; }
     .recommendation:hover { transform:translateY(-2px); border-color:rgba(255,255,255,.28); }
     .recommendation strong { display:block; margin-bottom:6px; }
+    .discovery-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; margin:14px 0; }
+    .discovery-item { border:1px solid var(--soft-line); border-radius:13px; padding:12px; background:linear-gradient(145deg, rgba(255,255,255,.07), rgba(255,255,255,.025)); }
+    .discovery-item span { display:block; color:var(--muted); font-size:12px; margin-bottom:5px; }
+    .discovery-item strong { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     .premium-grid { display:grid; grid-template-columns:minmax(320px,.92fr) minmax(0,1.08fr); gap:16px; align-items:start; }
     #view-premium { --gold:#f4c95d; --gold-2:#b98724; --gold-glow:rgba(244,201,93,.24); }
     #view-premium .surface,#view-premium .control-card { border-color:rgba(244,201,93,.28); box-shadow:0 24px 95px rgba(95,61,8,.18); }
@@ -2151,6 +2166,7 @@ function renderDashboard({ session, guilds, tickets, stats }) {
             <div><span>Seguridad</span><strong id="activeSecurity">Off</strong></div>
             <div><span>Premium</span><strong id="activePremium">Free</strong></div>
             <div><span>Transcripciones</span><strong id="activeTranscripts">0</strong></div>
+            <div><span>Anuncios</span><strong id="activeAnnouncements">No detectado</strong></div>
           </div>
           <div class="server-score">
             <div>
@@ -2245,6 +2261,17 @@ function renderDashboard({ session, guilds, tickets, stats }) {
             <label class="span-2">Nombre de categoria<input id="categoryName" placeholder="NexaDesk Tickets" required></label>
             <button class="span-2" type="submit">Crear y activar categoria</button>
           </form>
+        </article>
+        <article class="control-card">
+          <div class="card-head"><span class="step">AI</span><div><h2>Descubrimiento inteligente</h2><p>Escanea todos los canales y entiende nombres raros como 𝓐𝓷𝓾𝓷𝓬𝓲𝓸𝓼, avisos o news.</p></div></div>
+          <div class="discovery-grid" id="discoverySummary">
+            <div class="discovery-item"><span>Anuncios</span><strong>No detectado</strong></div>
+            <div class="discovery-item"><span>Normas</span><strong>No detectado</strong></div>
+            <div class="discovery-item"><span>FAQ/info</span><strong>No detectado</strong></div>
+            <div class="discovery-item"><span>Categoria sugerida</span><strong>No detectada</strong></div>
+          </div>
+          <p class="notice">NexaDesk usa estos canales como contexto operativo para IA, onboarding, avisos y recomendaciones de setup.</p>
+          <button class="secondary-button" type="button" onclick="return rescanDiscovery()">Reescanear canales</button>
         </article>
         <article class="control-card wide">
           <div class="card-head"><span class="step">3</span><div><h2>Security Guard</h2><p>Activa proteccion anti-flood, anti-links IA, XN Protect Automod, anti-alts, anti-bots y anti-nuke usando audit logs.</p></div></div>
@@ -2663,6 +2690,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       return [
         { key: 'installed', label: 'Bot instalado', done: Boolean(guild.installed), view: 'servers' },
         { key: 'category', label: 'Categoria de tickets', done: Boolean(guild.ticketCategoryId), view: 'settings' },
+        { key: 'announcements', label: 'Canal anuncios', done: Boolean(guild.discovery?.announcementChannelId), view: 'settings' },
         { key: 'staff', label: 'Rol staff', done: Boolean(guild.staffRoleId), view: 'settings' },
         { key: 'context', label: 'Contexto IA', done: Boolean(guild.serverPrompt || guild.serverInfo), view: 'settings' },
         { key: 'security', label: 'Security Guard', done: Boolean(guild.security?.enabled), view: 'settings' },
@@ -2671,7 +2699,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       ];
     }
     function getGuildScore(guild = {}) {
-      const weights = { installed:10, category:15, staff:15, context:20, security:15, components:10, panels:15 };
+      const weights = { installed:10, category:15, announcements:5, staff:15, context:20, security:15, components:10, panels:15 };
       const readiness = getGuildReadiness(guild).map((item) => ({ ...item, weight: weights[item.key] || 10 }));
       const total = readiness.reduce((sum, item) => sum + item.weight, 0);
       const done = readiness.reduce((sum, item) => sum + (item.done ? item.weight : 0), 0);
@@ -2734,6 +2762,54 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       if (!guild?.guildId) return '0';
       return String(state.tickets.filter((ticket) => ticket.guildId === guild.guildId).length);
     }
+    function formatDiscoveredChannel(name, fallback = 'No detectado') {
+      return name ? '#' + name : fallback;
+    }
+    function renderDiscoverySummary(guild = {}) {
+      const target = document.querySelector('#discoverySummary');
+      const discovery = guild?.discovery || {};
+      const items = [
+        ['Anuncios', discovery.announcementChannelName, 'Canal para avisos, cambios y mensajes importantes.'],
+        ['Normas', discovery.rulesChannelName, 'Reglas que ayudan a la IA a responder con contexto.'],
+        ['FAQ/info', discovery.faqChannelName, 'Preguntas frecuentes y datos utiles del servidor.'],
+        ['Soporte publico', discovery.supportChannelName, 'Canal publico donde suelen pedir ayuda.'],
+        ['Categoria sugerida', discovery.suggestedTicketCategoryName, 'Posible categoria donde viven los tickets.'],
+        ['Ultimo escaneo', discovery.scannedAt ? new Date(discovery.scannedAt).toLocaleString() : '', 'Actualiza cuando cambies canales o nombres.']
+      ];
+      if (target) {
+        target.innerHTML = items.map(([label, value, helper]) => {
+          const display = label === 'Ultimo escaneo'
+            ? (value || 'Pendiente')
+            : label === 'Categoria sugerida'
+              ? (value || 'No detectada')
+              : formatDiscoveredChannel(value);
+          return '<div class="discovery-item"><span>' + escapeHtml(label) + '</span><strong>' + escapeHtml(display) + '</strong><small>' + escapeHtml(helper) + '</small></div>';
+        }).join('');
+      }
+      const active = document.querySelector('#activeAnnouncements');
+      if (active) active.textContent = formatDiscoveredChannel(discovery.announcementChannelName, 'No detectado');
+    }
+    async function rescanDiscovery() {
+      const guildId = document.querySelector('#guildId')?.value;
+      if (!guildId) {
+        showToast('Selecciona un servidor primero.');
+        return false;
+      }
+      showToast('Escaneando canales con Smart Discovery...');
+      try {
+        const updated = await postJson('/api/guilds/' + guildId + '/discovery', {});
+        const index = guildConfigs.findIndex((guild) => guild.guildId === guildId);
+        if (index >= 0) guildConfigs[index] = updated;
+        else guildConfigs.push(updated);
+        renderGuildSelectors(guildId);
+        showToast(updated.discovery?.announcementChannelName
+          ? 'Anuncios detectado: #' + updated.discovery.announcementChannelName
+          : 'Escaneo completado. No encontre un canal claro de anuncios.');
+      } catch (error) {
+        showToast(error.message);
+      }
+      return false;
+    }
     function normalizeSecurity(guild = {}) {
       const raw = guild.security || {};
       return {
@@ -2793,6 +2869,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       const map = {
         installed: { title: 'Invita NexaDesk', text: 'Este servidor aparece en tu cuenta, pero el bot no esta dentro. Invitalo con permisos recomendados antes de configurar.', view: 'servers', action: 'Abrir servidores' },
         category: { title: 'Elige categoria principal', text: 'Selecciona donde se detectan o crean tickets. Sin categoria, la IA no sabe que canales debe atender.', view: 'settings', action: 'Configurar categoria' },
+        announcements: { title: 'Detecta anuncios y canales clave', text: 'Reescanea canales para que NexaDesk encuentre anuncios, normas, FAQ y soporte incluso con tipografias raras.', view: 'settings', action: 'Revisar discovery' },
         staff: { title: 'Asigna rol de staff', text: 'NexaDesk necesita saber a quien avisar cuando haya escalado humano o asistencia manual.', view: 'settings', action: 'Elegir staff' },
         context: { title: 'Dale contexto a la IA', text: 'Anade reglas, FAQ, tono, limites y si debe pedir pruebas visuales. Esto mejora mucho las respuestas.', view: 'settings', action: 'Escribir prompt' },
         security: { title: 'Activa Security Guard', text: 'Protege el servidor con anti-flood, anti-links IA, anti-bots, anti-alts y anti-nuke antes de abrirlo al publico.', view: 'settings', action: 'Configurar seguridad' },
@@ -2836,9 +2913,11 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       document.querySelector('#activeSecurity').textContent = formatSecurityState(guild);
       document.querySelector('#activePremium').textContent = formatPremiumState(guild);
       document.querySelector('#activeTranscripts').textContent = formatTranscriptState(guild);
+      document.querySelector('#activeAnnouncements').textContent = formatDiscoveredChannel(guild.discovery?.announcementChannelName);
       renderComponentHistory(guild);
       renderPanelHistory(guild);
       renderPremiumPanel(guild);
+      renderDiscoverySummary(guild);
       renderReadinessChecklist(guild);
       renderRecommendations(guild);
       document.querySelectorAll('.guild-pill').forEach((button) => button.classList.toggle('is-active', button.dataset.guildId === guild.guildId));
@@ -2865,9 +2944,11 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       document.querySelector('#activeSecurity').textContent = formatSecurityState(guild);
       document.querySelector('#activePremium').textContent = formatPremiumState(guild);
       document.querySelector('#activeTranscripts').textContent = formatTranscriptState(guild);
+      document.querySelector('#activeAnnouncements').textContent = formatDiscoveredChannel(guild.discovery?.announcementChannelName);
       renderComponentHistory(guild);
       renderPanelHistory(guild);
       renderPremiumPanel(guild);
+      renderDiscoverySummary(guild);
       renderReadinessChecklist(guild);
       renderRecommendations(guild);
       document.querySelectorAll('.guild-pill').forEach((button) => button.classList.toggle('is-active', button.dataset.guildId === guildId));
@@ -2934,9 +3015,11 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       document.querySelector('#activeSecurity').textContent = formatSecurityState(config);
       document.querySelector('#activePremium').textContent = formatPremiumState(config);
       document.querySelector('#activeTranscripts').textContent = formatTranscriptState(config);
+      document.querySelector('#activeAnnouncements').textContent = formatDiscoveredChannel(config.discovery?.announcementChannelName);
       renderComponentHistory(config);
       renderPanelHistory(config);
       renderPremiumPanel(config);
+      renderDiscoverySummary(config);
       renderReadinessChecklist(config);
       renderRecommendations(config);
       updatePanelMode();

@@ -1,4 +1,5 @@
 import { isPremiumEntitled, normalizePremiumConfig } from '../premium.js';
+import { buildDiscoveryContext } from '../server-discovery.js';
 import { hasVisualAttachments } from './visual-analyzer.js';
 
 export class SupportAgent {
@@ -205,6 +206,7 @@ export class SupportAgent {
   #buildSystemPrompt({ ticket, guildConfig, userLanguage, intakeContext, visualContext }) {
     const serverInfo = guildConfig.serverInfo?.trim() || 'No hay informacion adicional configurada todavia.';
     const serverPrompt = guildConfig.serverPrompt?.trim() || 'No hay prompt personalizado configurado.';
+    const discoveryContext = buildDiscoveryContext(guildConfig.discovery);
     const ticketIntake = intakeContext?.trim() || 'No hay respuestas previas de formulario para este ticket.';
     const visualEvidence = visualContext?.trim() || 'No hay pruebas visuales analizadas en este turno.';
     const premium = normalizePremiumConfig(guildConfig.premium, guildConfig);
@@ -244,6 +246,7 @@ export class SupportAgent {
       `Contexto actualizado en: ${guildConfig.updatedAt ?? 'sin fecha registrada'}`,
       `Prompt personalizado del servidor:\n${serverPrompt}`,
       `Informacion del servidor:\n${serverInfo}`,
+      `Canales importantes detectados automaticamente:\n${discoveryContext}`,
       `Funciones premium del servidor:\n${premiumContext}`,
       `Respuestas previas del formulario del ticket:\n${ticketIntake}`,
       `Analisis visual del ultimo mensaje:\n${visualEvidence}`
