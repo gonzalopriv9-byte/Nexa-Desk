@@ -465,7 +465,7 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
         const latestTicket = await storage.getTicket(message.channel.id);
         if (!latestTicket || isClosedTicket(latestTicket)) return;
 
-        const reply = await message.reply({
+        const reply = await sendTicketResponse(message, {
           content: buildPublicReply(
             { shouldEscalate: true, reason: allianceFlow.reason, publicAnswer: allianceFlow.publicAnswer },
             guildConfig,
@@ -487,7 +487,7 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
         const latestTicket = await storage.getTicket(message.channel.id);
         if (!latestTicket || isClosedTicket(latestTicket)) return;
 
-        const reply = await message.reply({
+        const reply = await sendTicketResponse(message, {
           content: buildPublicReply(escalation, guildConfig, { mentionStaff: shouldMentionStaff }).slice(0, 1900),
           allowedMentions: { roles: shouldMentionStaff && guildConfig.staffRoleId ? [guildConfig.staffRoleId] : [] }
         });
@@ -507,7 +507,7 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
           ? await registerTicketEscalation({ storage, message, guildConfig, ticket, reason: escalation.reason })
           : false;
 
-        const reply = await message.reply({
+        const reply = await sendTicketResponse(message, {
           content: buildPublicReply(escalation, guildConfig, { mentionStaff: shouldMentionStaff }).slice(0, 1900),
           allowedMentions: { roles: shouldMentionStaff && guildConfig.staffRoleId ? [guildConfig.staffRoleId] : [] }
         });
@@ -515,7 +515,7 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
       }
     } catch (error) {
       console.error('AI response failed:', error);
-      await message.reply('Ahora mismo no puedo consultar la IA. He dejado el ticket preparado para que el staff lo revise.');
+      await sendAiFailureNotice(message);
     } finally {
       activeResponses.delete(message.channel.id);
     }
@@ -4186,6 +4186,31 @@ function normalizeText(value) {
     .replace(/[\u0300-\u036f]/g, '')
     .toLowerCase()
     .trim();
+}
+
+async function sendTicketResponse(message, payload) {
+  try {
+    return await message.reply(payload);
+  } catch (error) {
+    if (!isUnknownReplyReferenceError(error)) throw error;
+    console.warn(`Reply target disappeared in ${message.channel?.id}; sending normal channel message instead.`);
+    return message.channel.send(payload);
+  }
+}
+
+async function sendAiFailureNotice(message) {
+  try {
+    return await sendTicketResponse(message, 'Ahora mismo no puedo consultar la IA. He dejado el ticket preparado para que el staff lo revise.');
+  } catch (error) {
+    console.error('Failed to send AI fallback notice:', error);
+    return null;
+  }
+}
+
+function isUnknownReplyReferenceError(error) {
+  if (error?.code === 10008) return true;
+  if (error?.code !== 50035) return false;
+  return JSON.stringify(error.rawError?.errors ?? {}).includes('MESSAGE_REFERENCE_UNKNOWN_MESSAGE');
 }
 
 async function registerTicketEscalation({ storage, message, guildConfig, ticket, reason }) {
