@@ -2,8 +2,11 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createClient } from '@supabase/supabase-js';
 import { normalizeBlacklistEntry, normalizeBlacklistEvidence, normalizeBlacklistLookup } from './blacklist.js';
+import { normalizeMaintenanceState } from './maintenance.js';
 import { isPremiumEntitled, normalizePremiumConfig } from './premium.js';
 import { normalizeSecurityConfig } from './security.js';
+
+const GLOBAL_SETTINGS_GUILD_ID = '__nexadesk_global__';
 
 export class JsonStorage {
   constructor(dataDir, events = null) {
@@ -12,6 +15,7 @@ export class JsonStorage {
     this.guildsFile = path.join(dataDir, 'guilds.json');
     this.ticketsFile = path.join(dataDir, 'tickets.json');
     this.transcriptsFile = path.join(dataDir, 'transcripts.json');
+    this.globalSettingsFile = path.join(dataDir, 'global-settings.json');
     this.blacklistFile = path.join(dataDir, 'global-blacklist.json');
     this.blacklistEvidenceFile = path.join(dataDir, 'global-blacklist-evidence.json');
   }
@@ -21,6 +25,7 @@ export class JsonStorage {
     await this.#ensureJson(this.guildsFile, {});
     await this.#ensureJson(this.ticketsFile, {});
     await this.#ensureJson(this.transcriptsFile, {});
+    await this.#ensureJson(this.globalSettingsFile, {});
     await this.#ensureJson(this.blacklistFile, {});
     await this.#ensureJson(this.blacklistEvidenceFile, {});
   }
@@ -131,6 +136,39 @@ export class JsonStorage {
     return buildStats({ guilds, tickets, transcriptMessages });
   }
 
+  async getGlobalSettings() {
+    return this.#readJson(this.globalSettingsFile);
+  }
+
+  async updateGlobalSettings(patch) {
+    const existing = await this.getGlobalSettings();
+    const next = {
+      ...existing,
+      ...patch,
+      updatedAt: new Date().toISOString()
+    };
+    await this.#writeJson(this.globalSettingsFile, next);
+    this.events?.publish('global.settings.updated', next);
+    return next;
+  }
+
+  async getMaintenanceState() {
+    const settings = await this.getGlobalSettings();
+    return normalizeMaintenanceState(settings.maintenance);
+  }
+
+  async setMaintenanceState(patch) {
+    const current = await this.getMaintenanceState();
+    const maintenance = normalizeMaintenanceState({
+      ...current,
+      ...patch,
+      updatedAt: new Date().toISOString()
+    });
+    const settings = await this.updateGlobalSettings({ maintenance });
+    this.events?.publish('maintenance.updated', settings.maintenance);
+    return normalizeMaintenanceState(settings.maintenance);
+  }
+
   async getBlacklistEntry(value) {
     const { userId } = normalizeBlacklistLookup(value);
     const entries = await this.#readJson(this.blacklistFile);
@@ -218,6 +256,58 @@ export class SupabaseStorage {
 
   async init() {}
 
+  async getGlobalSettings() {
+    const { data, error } = await this.client
+      .from('guild_configs')
+      .select('guild_id, panels, updated_at')
+      .eq('guild_id', GLOBAL_SETTINGS_GUILD_ID)
+      .maybeSingle();
+    if (error) throw error;
+    return data?.panels?.globalSettings && typeof data.panels.globalSettings === 'object'
+      ? data.panels.globalSettings
+      : {};
+  }
+
+  async updateGlobalSettings(patch) {
+    const existing = await this.getGlobalSettings();
+    const next = {
+      ...existing,
+      ...patch,
+      updatedAt: new Date().toISOString()
+    };
+    const { data, error } = await this.client
+      .from('guild_configs')
+      .upsert({
+        guild_id: GLOBAL_SETTINGS_GUILD_ID,
+        guild_name: 'NexaDesk Global Settings',
+        panels: { globalSettings: next },
+        updated_at: next.updatedAt
+      }, { onConflict: 'guild_id' })
+      .select('guild_id, panels, updated_at')
+      .single();
+    if (error) throw error;
+    const saved = data?.panels?.globalSettings ?? next;
+    this.events?.publish('global.settings.updated', saved);
+    return saved;
+  }
+
+  async getMaintenanceState() {
+    const settings = await this.getGlobalSettings();
+    return normalizeMaintenanceState(settings.maintenance);
+  }
+
+  async setMaintenanceState(patch) {
+    const current = await this.getMaintenanceState();
+    const maintenance = normalizeMaintenanceState({
+      ...current,
+      ...patch,
+      updatedAt: new Date().toISOString()
+    });
+    const settings = await this.updateGlobalSettings({ maintenance });
+    this.events?.publish('maintenance.updated', settings.maintenance);
+    return normalizeMaintenanceState(settings.maintenance);
+  }
+
   async getGuildConfig(guildId) {
     const { data, error } = await this.client
       .from('guild_configs')
@@ -270,7 +360,9 @@ export class SupabaseStorage {
       .select('*')
       .order('updated_at', { ascending: false });
     if (error) throw error;
-    return data.map((row) => this.#mergeGuildCompatibility(fromGuildRow(row)));
+    return data
+      .filter((row) => row.guild_id !== GLOBAL_SETTINGS_GUILD_ID)
+      .map((row) => this.#mergeGuildCompatibility(fromGuildRow(row)));
   }
 
   async createTicket(ticket) {

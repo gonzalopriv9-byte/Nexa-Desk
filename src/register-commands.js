@@ -212,6 +212,40 @@ const commands = [
     )
     .toJSON(),
   new SlashCommandBuilder()
+    .setName('mantenimiento')
+    .setDescription('Controla el modo mantenimiento global de NexaDesk.')
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName('estado')
+        .setDescription('Muestra si el modo mantenimiento global esta activo.')
+    )
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName('activar')
+        .setDescription('Activa mantenimiento para servidores Free.')
+        .addStringOption((option) =>
+          option
+            .setName('mensaje')
+            .setDescription('Mensaje publico opcional que se mostrara al abrir tickets Free.')
+            .setMaxLength(500)
+            .setRequired(false)
+        )
+        .addIntegerOption((option) =>
+          option
+            .setName('delay_segundos')
+            .setDescription('Ralentizacion de IA para Free. Recomendado: 3 a 5 segundos.')
+            .setMinValue(1)
+            .setMaxValue(15)
+            .setRequired(false)
+        )
+    )
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName('desactivar')
+        .setDescription('Desactiva el modo mantenimiento global.')
+    )
+    .toJSON(),
+  new SlashCommandBuilder()
     .setName('ayuda')
     .setDescription('Abre la guia interactiva de NexaDesk.')
     .toJSON()

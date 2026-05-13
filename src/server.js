@@ -761,12 +761,13 @@ async function buildDashboardAssistantReply({ config, message, guild, stats, act
       system: [
         'Eres el copiloto de la dashboard de NexaDesk.',
         'Responde en espanol claro, breve y accionable.',
-        'Ayuda a configurar servidores Discord para tickets con IA, paneles, componentes, staff, voz Pro con STT/TTS, transcripciones, Security Guard y Premium.',
+        'Ayuda a configurar servidores Discord para tickets con IA, paneles, componentes, staff, voz Pro con STT/TTS, transcripciones, Security Guard, Premium y mantenimiento global.',
         'La dashboard real tiene estas secciones: Resumen, Servidores, Configuracion, Componentes, Paneles, Premium y Tickets.',
         'En Configuracion se elige categoria, rol staff, prompt del servidor, informacion del servidor y Security Guard.',
         'En Componentes se crean opciones del menu con preguntas previas, primer mensaje y modo Texto o Voz Pro.',
         'En Paneles se publica el embed, boton o menu en un canal de Discord; los botones tambien pueden abrir tickets de voz Pro.',
         'En Premium se gestionan Voz Pro, IA prioritaria, transcripciones inteligentes, Security Plus, branding propio e informes semanales por servidor.',
+        'El modo mantenimiento se controla por slash command owner-only /mantenimiento; no hay boton publico en dashboard.',
         'Security Guard incluye anti-flood, anti-links IA, XN Protect Automod, anti-bots, anti-alts y anti-nuke.',
         'En Tickets se ven tickets y transcripciones guardadas.',
         'Si el usuario pide que tu metas algo, explica que puedes rellenar campos con botones de accion, pero el usuario debe revisar y guardar/publicar.',
@@ -1200,6 +1201,7 @@ function buildDocsSections(config) {
           'Groq procesa soporte IA, vision, STT y parte de TTS; Akiomae queda como fallback final.',
           'XN Protect aporta blacklist global y Automod ofensivo/malicioso. NexaDesk acredita la fuente y no banea automaticamente por blacklist externa.',
           'Premium por servidor se decide con plan pro/premium/enterprise, voice_support_enabled o /activarpremium desde owner autorizado.',
+          'Modo mantenimiento global se activa con /mantenimiento; ralentiza solo servidores Free y avisa al abrir tickets.',
           '/docs es una zona oculta: no aparece en la UI, requiere TOTP y no debe contener secretos en claro.'
         ] }
       ]
@@ -1241,7 +1243,7 @@ function buildDocsSections(config) {
           'Privileged intents recomendados: MESSAGE CONTENT INTENT y SERVER MEMBERS INTENT.',
           'Permisos de invitacion: Manage Channels, Manage Roles, View Audit Log, Manage Messages, Moderate Members, Kick, Ban, voz y lectura de historial.',
           'El bot registra slash commands globales con npm run register.',
-          'Comandos clave: /setup, /ayuda, /desactivar ia, /activar ia, /ticket cerrar, /ticket resumen, /voz crear, /globalstats, /activarpremium, /seguridad configurar.',
+          'Comandos clave: /setup, /ayuda, /desactivar ia, /activar ia, /ticket cerrar, /ticket resumen, /voz crear, /globalstats, /activarpremium, /mantenimiento, /seguridad configurar.',
           '/seguridad configurar acepta nivel, canal_logs, edad_minima_dias, antiflood, antilinks, automod, antibots, antialts y antinuke.',
           'Si entra staff al ticket, NexaDesk deja de responder salvo mencion, reply o llamada directa.'
         ] }
@@ -1318,6 +1320,7 @@ function buildDocsSections(config) {
           'Componentes guardan preguntas previas, categoria destino, primer mensaje y modo texto/voz.',
           'Premium incluye Voz Pro, IA prioritaria, transcripciones inteligentes, Security Plus, branding propio e informes semanales.',
           'La seccion Premium usa paleta dorada y solo abre si el usuario tiene al menos un servidor con premium activo.',
+          'Premium no se ralentiza durante mantenimiento global; los servidores Free reciben aviso al abrir ticket.',
           'El antiguo modulo de musica fue retirado para centrar el producto en soporte, seguridad, voz, alianzas y transcripciones.',
           'Premium se activa con /activarpremium servidor:<ID> por el owner autorizado o manualmente en Supabase.'
         ] }
@@ -1772,20 +1775,29 @@ function renderDashboard({ session, guilds, tickets, stats }) {
   <link rel="icon" type="image/svg+xml" href="/assets/nexadesk-logo.svg">
   <link rel="apple-touch-icon" href="/assets/nexadesk-logo.svg">
   <style>
-    :root { color-scheme:dark; --bg:#050505; --panel:#101010; --panel-2:#181818; --line:#343434; --soft-line:rgba(255,255,255,.1); --text:#ffffff; --muted:#a8a8a8; --paper:#ffffff; --ink:#050505; --ok:#ffffff; --danger:#ff5f57; }
+    :root { color-scheme:dark; --bg:#050505; --panel:#101010; --panel-2:#181818; --line:#343434; --soft-line:rgba(255,255,255,.1); --text:#ffffff; --muted:#a8a8a8; --paper:#ffffff; --ink:#050505; --ok:#ffffff; --danger:#ff5f57; --glass:rgba(15,15,15,.72); --glass-strong:rgba(18,18,18,.9); --glow:rgba(255,255,255,.18); }
     * { box-sizing:border-box; }
     img,svg,video { max-width:100%; }
     html { scroll-behavior:smooth; }
-    body { position:relative; min-height:100vh; margin:0; font-family:"Segoe UI",ui-sans-serif,system-ui,sans-serif; background:radial-gradient(circle at 10% 0%, rgba(255,255,255,.12), transparent 30%), repeating-linear-gradient(90deg, rgba(255,255,255,.035) 0 1px, transparent 1px 72px), repeating-linear-gradient(0deg, rgba(255,255,255,.025) 0 1px, transparent 1px 72px), var(--bg); color:var(--text); overflow-x:hidden; }
-    body::before,body::after { content:""; position:fixed; pointer-events:none; z-index:-2; }
-    body::before { inset:-25%; background:radial-gradient(circle at 15% 20%, rgba(255,255,255,.13), transparent 22%), radial-gradient(circle at 88% 10%, rgba(255,255,255,.09), transparent 24%), radial-gradient(circle at 60% 88%, rgba(255,255,255,.07), transparent 28%); filter:blur(12px); animation:orbDrift 16s ease-in-out infinite alternate; }
-    body::after { inset:0; z-index:-1; background:linear-gradient(115deg, transparent 0 44%, rgba(255,255,255,.06) 48%, transparent 52% 100%); opacity:.36; transform:translateX(-28%); animation:gridFlow 9s ease-in-out infinite; }
+    body { position:relative; min-height:100vh; margin:0; font-family:"Segoe UI",ui-sans-serif,system-ui,sans-serif; background:#030303; color:var(--text); overflow-x:hidden; isolation:isolate; }
+    body::before,body::after { content:""; position:fixed; inset:0; pointer-events:none; z-index:0; }
+    body::before { background:radial-gradient(circle at 8% 6%, rgba(255,255,255,.18), transparent 26%), radial-gradient(circle at 84% 12%, rgba(255,255,255,.12), transparent 25%), radial-gradient(circle at 48% 100%, rgba(255,255,255,.09), transparent 32%), linear-gradient(180deg, #050505, #030303 46%, #080808); opacity:.92; }
+    body::after { background:repeating-linear-gradient(90deg, rgba(255,255,255,.04) 0 1px, transparent 1px 88px), repeating-linear-gradient(0deg, rgba(255,255,255,.028) 0 1px, transparent 1px 88px); mask-image:radial-gradient(circle at 50% 26%, #000 0 54%, transparent 82%); opacity:.62; animation:gridBreath 12s ease-in-out infinite alternate; }
+    .ambient-scene { position:fixed; inset:0; z-index:0; overflow:hidden; pointer-events:none; }
+    .ambient-scene::before { content:""; position:absolute; inset:-20%; background:conic-gradient(from 120deg at 50% 50%, transparent, rgba(255,255,255,.12), transparent 24%, rgba(255,255,255,.07), transparent 48%); filter:blur(52px); opacity:.46; animation:auroraSpin 24s linear infinite; }
+    .ambient-scene::after { content:""; position:absolute; inset:0; background:radial-gradient(circle, rgba(255,255,255,.32) 0 1px, transparent 1.6px) 0 0 / 92px 92px; opacity:.13; animation:starDrift 18s linear infinite; }
+    .ambient-orb { position:absolute; width:38vmax; aspect-ratio:1; border-radius:50%; filter:blur(44px); opacity:.22; background:radial-gradient(circle, rgba(255,255,255,.72), transparent 62%); mix-blend-mode:screen; animation:orbFloat 18s ease-in-out infinite alternate; }
+    .ambient-orb.one { left:-16vmax; top:8vh; }
+    .ambient-orb.two { right:-18vmax; top:28vh; width:32vmax; animation-duration:22s; animation-delay:-7s; }
+    .ambient-orb.three { left:36vw; bottom:-20vmax; width:30vmax; animation-duration:26s; animation-delay:-12s; }
+    .ambient-rings { position:absolute; left:50%; top:0; width:min(780px, 76vw); aspect-ratio:1; border:1px solid rgba(255,255,255,.08); border-radius:50%; transform:translate(-50%, -58%); box-shadow:0 0 0 58px rgba(255,255,255,.015), 0 0 0 118px rgba(255,255,255,.01); animation:ringPulse 9s ease-in-out infinite; }
     .app-shell { position:relative; z-index:1; width:min(1440px, calc(100% - 40px)); margin:0 auto; display:grid; grid-template-columns:220px minmax(0,1fr); gap:22px; padding:22px 0 52px; }
-    .sidebar { position:sticky; top:22px; height:calc(100vh - 44px); border:1px solid var(--line); border-radius:14px; background:rgba(7,16,20,.88); padding:16px; animation:rise .55s ease both; }
+    .sidebar { position:sticky; top:22px; height:calc(100vh - 44px); border:1px solid rgba(255,255,255,.16); border-radius:18px; background:linear-gradient(180deg, rgba(18,18,18,.82), rgba(6,6,6,.78)); backdrop-filter:blur(22px) saturate(1.18); padding:16px; animation:rise .55s ease both; box-shadow:0 24px 90px rgba(0,0,0,.34), 0 0 0 1px rgba(255,255,255,.035) inset; }
     main { min-width:0; animation:rise .55s ease .08s both; }
     .topbar { display:grid; grid-template-columns:minmax(0,1fr) 360px; gap:16px; align-items:stretch; margin-bottom:16px; }
-    header { border:1px solid var(--line); border-radius:16px; padding:24px; background:linear-gradient(135deg, rgba(24,24,24,.96), rgba(8,8,8,.82)); overflow:hidden; position:relative; }
-    header::after { content:""; position:absolute; width:260px; height:260px; right:-120px; top:-140px; border-radius:50%; background:rgba(255,255,255,.1); filter:blur(10px); }
+    header { border:1px solid rgba(255,255,255,.16); border-radius:20px; padding:24px; background:linear-gradient(135deg, rgba(24,24,24,.86), rgba(8,8,8,.66)); backdrop-filter:blur(22px) saturate(1.2); overflow:hidden; position:relative; box-shadow:0 28px 110px rgba(0,0,0,.34), 0 0 0 1px rgba(255,255,255,.035) inset; }
+    header::before { content:""; position:absolute; inset:0; pointer-events:none; background:linear-gradient(120deg, rgba(255,255,255,.16), transparent 32%, transparent 68%, rgba(255,255,255,.06)); opacity:.46; }
+    header::after { content:""; position:absolute; width:320px; height:320px; right:-150px; top:-170px; border-radius:50%; background:rgba(255,255,255,.12); filter:blur(14px); animation:headerGlow 7s ease-in-out infinite alternate; }
     h1,h2,h3 { margin:0; letter-spacing:0; }
     h1 { font-size:clamp(32px, 4.6vw, 58px); line-height:.96; max-width:760px; position:relative; z-index:1; }
     h2 { font-size:19px; margin-bottom:12px; }
@@ -1797,10 +1809,10 @@ function renderDashboard({ session, guilds, tickets, stats }) {
     .nav-brand { display:flex; align-items:center; gap:12px; margin-bottom:18px; }
     .nav-link { display:flex; align-items:center; gap:10px; color:var(--muted); text-decoration:none; border:1px solid transparent; border-radius:10px; padding:10px 11px; margin:4px 0; transition:color .22s ease, border-color .22s ease, background .22s ease, transform .22s ease; }
     .nav-icon { display:grid; place-items:center; width:24px; height:24px; border:1px solid rgba(255,255,255,.16); border-radius:8px; color:#fff; background:rgba(255,255,255,.045); font-size:13px; line-height:1; flex:0 0 auto; }
-    .nav-link:hover,.nav-link.is-active { color:var(--text); border-color:rgba(255,255,255,.44); background:#0b1216; transform:translateX(3px); }
+    .nav-link:hover,.nav-link.is-active { color:var(--text); border-color:rgba(255,255,255,.44); background:linear-gradient(135deg, rgba(255,255,255,.12), rgba(255,255,255,.035)); transform:translateX(3px); box-shadow:0 12px 34px rgba(0,0,0,.24), 0 0 28px rgba(255,255,255,.045) inset; }
     .nav-foot { position:absolute; left:16px; right:16px; bottom:16px; }
-    .hero-panel,.surface,.stat,.active-server { border:1px solid var(--line); border-radius:14px; background:rgba(11,18,22,.86); }
-    .hero-panel { padding:18px; background:linear-gradient(180deg, rgba(24,24,24,.94), rgba(5,5,5,.94)); }
+    .hero-panel,.surface,.stat,.active-server { border:1px solid rgba(255,255,255,.16); border-radius:16px; background:var(--glass); backdrop-filter:blur(20px) saturate(1.16); box-shadow:0 20px 70px rgba(0,0,0,.25), 0 0 0 1px rgba(255,255,255,.035) inset; }
+    .hero-panel { padding:18px; background:linear-gradient(180deg, rgba(26,26,26,.86), rgba(7,7,7,.78)); }
     .banner-frame { position:relative; overflow:hidden; border:1px solid var(--line); border-radius:14px; background:#050505; box-shadow:0 22px 70px rgba(0,0,0,.42), 0 0 0 1px rgba(255,255,255,.03) inset; animation:bannerIn .8s cubic-bezier(.2,.8,.2,1) both, bannerGlow 4.8s ease-in-out infinite; }
     .banner-frame::before { content:""; position:absolute; inset:-40% auto -40% -35%; width:34%; z-index:2; pointer-events:none; background:linear-gradient(90deg, transparent, rgba(255,255,255,.34), transparent); filter:blur(10px); transform:skewX(-18deg); animation:bannerScan 5.4s ease-in-out infinite; }
     .banner-frame::after { content:""; position:absolute; inset:0; z-index:1; pointer-events:none; background:radial-gradient(circle at 25% 50%, rgba(255,255,255,.16), transparent 28%), linear-gradient(90deg, rgba(255,255,255,.06), transparent 24%, transparent 76%, rgba(255,255,255,.06)); mix-blend-mode:screen; opacity:.58; }
@@ -1817,15 +1829,19 @@ function renderDashboard({ session, guilds, tickets, stats }) {
     .is-hidden { display:none !important; }
     .view-heading { display:flex; align-items:end; justify-content:space-between; gap:16px; margin:0 0 14px; }
     .view-heading p { margin:4px 0 0; }
-    .surface { padding:20px; animation:rise .55s ease both; transition:border-color .28s ease, transform .28s ease, box-shadow .28s ease; }
-    .surface:hover { border-color:rgba(255,255,255,.22); box-shadow:0 24px 80px rgba(0,0,0,.24); }
+    .surface { position:relative; padding:20px; animation:cardReveal .58s cubic-bezier(.2,.8,.2,1) both; transition:border-color .28s ease, transform .28s ease, box-shadow .28s ease; overflow:hidden; }
+    .surface::before,.control-card::before,.active-server::before { content:""; position:absolute; inset:0; pointer-events:none; background:linear-gradient(135deg, rgba(255,255,255,.12), transparent 34%, transparent 72%, rgba(255,255,255,.05)); opacity:.42; }
+    .surface:hover { border-color:rgba(255,255,255,.26); box-shadow:0 28px 100px rgba(0,0,0,.3), 0 0 42px rgba(255,255,255,.04) inset; transform:translateY(-1px); }
     .stats { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; margin-bottom:16px; }
-    .stat { padding:16px; background:linear-gradient(180deg,var(--panel-2),var(--panel)); }
+    .stat { position:relative; padding:16px; background:linear-gradient(180deg, rgba(26,26,26,.88), rgba(8,8,8,.78)); overflow:hidden; transition:transform .24s ease, border-color .24s ease; }
+    .stat::after { content:""; position:absolute; width:110px; height:110px; right:-60px; top:-60px; border-radius:50%; background:rgba(255,255,255,.1); filter:blur(10px); opacity:.7; }
+    .stat:hover { transform:translateY(-2px); border-color:rgba(255,255,255,.28); }
     .stat strong { display:block; font-size:28px; }
     .stat small { display:block; margin-top:6px; }
     .stat span, label, th, dt, small { color:var(--muted); }
     .command-center { display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px; margin-bottom:16px; }
-    .insight-card { border:1px solid var(--line); border-radius:14px; padding:16px; background:linear-gradient(145deg, rgba(255,255,255,.08), rgba(255,255,255,.025)); }
+    .insight-card { position:relative; border:1px solid rgba(255,255,255,.14); border-radius:16px; padding:16px; background:linear-gradient(145deg, rgba(255,255,255,.1), rgba(255,255,255,.025)); backdrop-filter:blur(18px); box-shadow:0 18px 64px rgba(0,0,0,.22); overflow:hidden; }
+    .insight-card::after { content:""; position:absolute; inset:auto -30% -60% 28%; height:160px; background:radial-gradient(circle, rgba(255,255,255,.15), transparent 65%); opacity:.7; }
     .insight-card strong { display:block; font-size:24px; margin-top:8px; }
     .meter { height:9px; border-radius:999px; overflow:hidden; background:#071014; border:1px solid var(--soft-line); margin-top:12px; }
     .meter span { display:block; height:100%; width:var(--value); background:#fff; }
@@ -1836,7 +1852,7 @@ function renderDashboard({ session, guilds, tickets, stats }) {
     .single-column { display:grid; gap:16px; }
     .section-heading { display:flex; align-items:end; justify-content:space-between; gap:16px; margin:6px 0 14px; }
     .section-heading p { margin:4px 0 0; }
-    .active-server { padding:18px; margin-bottom:16px; background:linear-gradient(135deg, rgba(255,255,255,.075), rgba(255,255,255,.025)); }
+    .active-server { position:relative; padding:18px; margin-bottom:16px; background:linear-gradient(135deg, rgba(255,255,255,.09), rgba(255,255,255,.025)); overflow:hidden; }
     .active-server select { margin-top:12px; }
     .server-status { display:grid; grid-template-columns:repeat(6,minmax(0,1fr)); gap:8px; margin-top:12px; }
     .server-status div { border:1px solid var(--soft-line); border-radius:10px; padding:10px; background:rgba(5,8,10,.42); }
@@ -1848,9 +1864,9 @@ function renderDashboard({ session, guilds, tickets, stats }) {
     .server-score .meter { margin:0; min-width:180px; }
     .server-score .quick-action { white-space:nowrap; justify-self:end; }
     .guild-list { display:grid; gap:8px; max-height:560px; overflow:auto; padding-right:4px; }
-    .guild-pill { display:flex; align-items:center; justify-content:space-between; gap:12px; text-align:left; border:1px solid var(--soft-line); background:#071014; color:var(--text); border-radius:12px; padding:12px; cursor:pointer; transition:transform .22s cubic-bezier(.2,.8,.2,1), border-color .22s ease, background .22s ease; }
+    .guild-pill { display:flex; align-items:center; justify-content:space-between; gap:12px; text-align:left; border:1px solid var(--soft-line); background:rgba(10,10,10,.64); color:var(--text); border-radius:14px; padding:12px; cursor:pointer; transition:transform .22s cubic-bezier(.2,.8,.2,1), border-color .22s ease, background .22s ease, box-shadow .22s ease; }
     .guild-pill:hover { transform:translateX(3px); }
-    .guild-pill:hover,.guild-pill.is-active { border-color:rgba(255,255,255,.72); background:rgba(255,255,255,.08); }
+    .guild-pill:hover,.guild-pill.is-active { border-color:rgba(255,255,255,.72); background:rgba(255,255,255,.08); box-shadow:0 16px 42px rgba(0,0,0,.28); }
     .guild-pill.is-not-installed { border-style:dashed; background:rgba(255,255,255,.035); }
     .guild-pill.is-not-installed i { color:#050505; background:#fff; padding:5px 8px; border-radius:999px; font-weight:900; }
     .guild-pill strong,.guild-pill small { display:block; }
@@ -1896,8 +1912,8 @@ function renderDashboard({ session, guilds, tickets, stats }) {
     .premium-denied p { margin:22px auto 0; max-width:560px; color:#d7c27a; font-size:clamp(17px, 2.2vw, 24px); }
     .premium-denied a { display:inline-flex; margin-top:28px; align-items:center; justify-content:center; border:1px solid rgba(244,201,93,.45); border-radius:999px; padding:12px 18px; color:#080704; background:linear-gradient(135deg, #fff6c8, #f4c95d); text-decoration:none; font-weight:950; box-shadow:0 0 42px rgba(244,201,93,.18); }
     .control-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px; }
-    .control-card { border:1px solid var(--line); border-radius:14px; padding:18px; background:linear-gradient(180deg, rgba(24,24,24,.94), rgba(8,8,8,.94)); transition:transform .28s cubic-bezier(.2,.8,.2,1), border-color .28s ease, box-shadow .28s ease; }
-    .control-card:hover { transform:translateY(-2px); border-color:rgba(255,255,255,.26); box-shadow:0 24px 80px rgba(0,0,0,.28); }
+    .control-card { position:relative; border:1px solid rgba(255,255,255,.16); border-radius:18px; padding:18px; background:linear-gradient(180deg, rgba(24,24,24,.86), rgba(8,8,8,.78)); backdrop-filter:blur(20px) saturate(1.14); transition:transform .28s cubic-bezier(.2,.8,.2,1), border-color .28s ease, box-shadow .28s ease; overflow:hidden; box-shadow:0 22px 80px rgba(0,0,0,.26), 0 0 0 1px rgba(255,255,255,.035) inset; }
+    .control-card:hover { transform:translateY(-2px); border-color:rgba(255,255,255,.28); box-shadow:0 28px 100px rgba(0,0,0,.34), 0 0 48px rgba(255,255,255,.045) inset; }
     .control-card.wide { grid-column:1 / -1; }
     .card-head { display:flex; gap:12px; align-items:flex-start; margin-bottom:14px; }
     .step { display:grid; place-items:center; width:30px; height:30px; border-radius:9px; color:#050505; background:#fff; font-weight:900; flex:0 0 auto; }
@@ -2006,15 +2022,20 @@ function renderDashboard({ session, guilds, tickets, stats }) {
     #loadingPhrase { color:var(--text); font-weight:900; letter-spacing:.01em; }
     @keyframes rise { from { opacity:0; transform:translateY(14px); } to { opacity:1; transform:translateY(0); } }
     @keyframes viewIn { from { opacity:0; transform:translateY(14px) scale(.992); filter:blur(4px); } to { opacity:1; transform:translateY(0) scale(1); filter:blur(0); } }
-    @keyframes orbDrift { from { transform:translate3d(-2%, -1%, 0) scale(1); } to { transform:translate3d(3%, 2%, 0) scale(1.05); } }
-    @keyframes gridFlow { 0%,100% { transform:translateX(-32%); opacity:.18; } 50% { transform:translateX(34%); opacity:.42; } }
+    @keyframes cardReveal { from { opacity:0; transform:translateY(18px) scale(.985); filter:blur(8px); } to { opacity:1; transform:translateY(0) scale(1); filter:blur(0); } }
+    @keyframes gridBreath { from { opacity:.36; transform:scale(1); } to { opacity:.72; transform:scale(1.025); } }
+    @keyframes auroraSpin { to { transform:rotate(360deg); } }
+    @keyframes starDrift { from { transform:translate3d(0,0,0); } to { transform:translate3d(-92px,92px,0); } }
+    @keyframes orbFloat { from { transform:translate3d(-3%, -2%, 0) scale(.96); } to { transform:translate3d(4%, 3%, 0) scale(1.08); } }
+    @keyframes ringPulse { 0%,100% { opacity:.32; transform:translate(-50%, -58%) scale(.98); } 50% { opacity:.68; transform:translate(-50%, -58%) scale(1.04); } }
+    @keyframes headerGlow { from { transform:translate3d(0,0,0) scale(.98); opacity:.64; } to { transform:translate3d(-20px,22px,0) scale(1.08); opacity:.92; } }
     @keyframes bannerIn { from { opacity:0; transform:translateY(18px) scale(.985); filter:blur(10px); } to { opacity:1; transform:translateY(0) scale(1); filter:blur(0); } }
     @keyframes bannerScan { 0%, 12% { transform:translateX(0) skewX(-18deg); opacity:0; } 30% { opacity:.85; } 58%, 100% { transform:translateX(430%) skewX(-18deg); opacity:0; } }
     @keyframes bannerGlow { 0%,100% { box-shadow:0 22px 70px rgba(0,0,0,.42), 0 0 0 1px rgba(255,255,255,.03) inset; } 50% { box-shadow:0 22px 90px rgba(255,255,255,.08), 0 0 0 1px rgba(255,255,255,.09) inset; } }
     @keyframes loaderPulse { 0%,100% { transform:scale(.96); box-shadow:0 0 0 0 rgba(255,255,255,.18); } 50% { transform:scale(1.04); box-shadow:0 0 0 18px rgba(255,255,255,0); } }
     @keyframes loaderSweep { from { transform:translateX(-55%); } to { transform:translateX(55%); } }
     @keyframes spin { to { transform:rotate(360deg); } }
-    @media (prefers-reduced-motion:reduce) { body::before,body::after,.banner-frame,.banner-frame::before,.banner-frame img,.loader::after,.pulse { animation:none; transition:none; } }
+    @media (prefers-reduced-motion:reduce) { body::before,body::after,.ambient-scene,.ambient-scene::before,.ambient-scene::after,.ambient-orb,.ambient-rings,.banner-frame,.banner-frame::before,.banner-frame img,.loader::after,.pulse { animation:none; transition:none; } }
     @media (max-width:1120px) { .app-shell,.workspace,.topbar,.command-center,.panel-builder,.premium-grid { grid-template-columns:1fr; } .sidebar { position:relative; height:auto; top:auto; } .nav-foot { position:static; margin-top:18px; } .panel-preview-wrap { position:relative; top:auto; } }
     @media (max-width:760px) {
       body { overflow-x:hidden; background-size:auto; }
@@ -2072,6 +2093,12 @@ function renderDashboard({ session, guilds, tickets, stats }) {
   </style>
 </head>
 <body>
+  <div class="ambient-scene" aria-hidden="true">
+    <span class="ambient-orb one"></span>
+    <span class="ambient-orb two"></span>
+    <span class="ambient-orb three"></span>
+    <span class="ambient-rings"></span>
+  </div>
   <div class="loading" id="loading">
     <div class="loader">
       <div class="pulse"></div>

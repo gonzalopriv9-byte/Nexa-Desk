@@ -21,6 +21,12 @@ import {
   isBlacklistEntryActive,
   parseBlacklistDuration
 } from './blacklist.js';
+import {
+  buildMaintenanceNoticeText,
+  getMaintenanceDelayMs,
+  normalizeMaintenanceState,
+  shouldApplyMaintenanceToGuild
+} from './maintenance.js';
 import { buildPanelActionRow, buildPanelEmbed, normalizePanelOptions, normalizeTicketComponent, panelWelcomeMessage } from './panel-options.js';
 import { isPremiumEntitled, normalizePremiumConfig } from './premium.js';
 import { SecurityManager, SECURITY_LEVELS, normalizeSecurityConfig, normalizeSecurityLevel, summarizeSecurityConfig } from './security.js';
@@ -248,6 +254,11 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
         return;
       }
 
+      if (interaction.commandName === 'mantenimiento') {
+        await handleMaintenanceCommand({ interaction, storage });
+        return;
+      }
+
       if (interaction.commandName === 'ayuda') {
         await handleHelpCommand({ interaction, config });
       }
@@ -276,6 +287,7 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
         'Voy a ayudarte con este ticket. Cuentame que necesitas y, si hace falta, avisare al staff con un resumen claro.'
       ].join('\n'));
       await saveTranscript(storage, welcome, 'assistant');
+      await sendMaintenanceTicketNotice({ storage, channel, guildConfig });
 
       console.log(`Ticket detected: ${ticket.channelName} (${ticket.channelId})`);
     } catch (error) {
@@ -346,7 +358,7 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
     if (!ticket && (isConfiguredTicketCategory(message.channel, guildConfig) || ticketKingDetected)) {
       ticket = await createDetectedTicketRecord({ storage, channel: message.channel, openedBy: ticketKingOpenerId });
       if (ticketKingDetected && !ticket.alreadyExists && message.author.bot) {
-        await sendTicketKingWelcomeOnce({ storage, message, ticketWelcomeChannels });
+        await sendTicketKingWelcomeOnce({ storage, message, guildConfig, ticketWelcomeChannels });
 
         ticket = await maybeAlertTicketOpenerXnProtect({
           storage,
@@ -471,6 +483,7 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
       }
 
       await message.channel.sendTyping();
+      await applyMaintenanceThrottle({ storage, message, guildConfig });
       const answer = await supportAgent.answerTicketMessage({ message, ticket, guildConfig });
       if (answer) {
         const latestTicket = await storage.getTicket(message.channel.id);
@@ -1325,6 +1338,72 @@ async function handleActivatePremiumCommand({ interaction, storage, client }) {
   await interaction.editReply({ embeds: [embed] });
 }
 
+async function handleMaintenanceCommand({ interaction, storage }) {
+  if (interaction.user.id !== PREMIUM_ADMIN_USER_ID) {
+    await interaction.reply({
+      content: 'Este comando solo puede usarlo el owner global de NexaDesk.',
+      ephemeral: true
+    });
+    return;
+  }
+
+  const subcommand = interaction.options.getSubcommand();
+  if (subcommand === 'estado') {
+    const maintenance = await storage.getMaintenanceState();
+    await interaction.reply({
+      embeds: [buildMaintenanceStatusEmbed(maintenance)],
+      ephemeral: true
+    });
+    return;
+  }
+
+  await interaction.deferReply({ ephemeral: true });
+  const now = new Date().toISOString();
+  if (subcommand === 'activar') {
+    const message = interaction.options.getString('mensaje')?.trim();
+    const delaySeconds = interaction.options.getInteger('delay_segundos');
+    const maintenance = await storage.setMaintenanceState({
+      enabled: true,
+      message: message || undefined,
+      delayMs: delaySeconds ? delaySeconds * 1000 : undefined,
+      enabledBy: interaction.user.id,
+      enabledAt: now,
+      disabledBy: null,
+      disabledAt: null
+    });
+    await interaction.editReply({
+      embeds: [buildMaintenanceStatusEmbed(maintenance).setDescription('Modo mantenimiento global activado para servidores Free.')]
+    });
+    return;
+  }
+
+  if (subcommand === 'desactivar') {
+    const maintenance = await storage.setMaintenanceState({
+      enabled: false,
+      disabledBy: interaction.user.id,
+      disabledAt: now
+    });
+    await interaction.editReply({
+      embeds: [buildMaintenanceStatusEmbed(maintenance).setDescription('Modo mantenimiento global desactivado.')]
+    });
+  }
+}
+
+function buildMaintenanceStatusEmbed(value = {}) {
+  const maintenance = normalizeMaintenanceState(value);
+  return new EmbedBuilder()
+    .setColor(maintenance.enabled ? 0xffcc00 : 0xffffff)
+    .setTitle(`${EMOJIS.wifi} Modo mantenimiento NexaDesk`)
+    .setDescription(maintenance.enabled ? 'Activo para servidores Free.' : 'Inactivo. Todos los servidores responden con velocidad normal.')
+    .addFields(
+      { name: 'Estado', value: maintenance.enabled ? 'Activo' : 'Inactivo', inline: true },
+      { name: 'Delay Free', value: `${Math.round(getMaintenanceDelayMs(maintenance) / 1000)}s`, inline: true },
+      { name: 'Premium', value: 'Sin ralentizacion', inline: true },
+      { name: 'Mensaje publico', value: buildMaintenanceNoticeText(maintenance).slice(0, 1024) }
+    )
+    .setTimestamp(new Date());
+}
+
 async function handleSecurityCommand({ interaction, storage }) {
   if (!interaction.inGuild()) {
     await interaction.reply({ content: 'Este comando solo se puede usar dentro de un servidor.', ephemeral: true });
@@ -1902,13 +1981,15 @@ function buildHelpEmbed({ view, config, guild }) {
             'IA prioritaria con respuestas menos genericas y mejores escalados.',
             'Transcripciones inteligentes para staff, dashboard y MD al usuario.',
             'Security Plus para links sospechosos, flood, blacklist y avisos reforzados.',
-            'Branding propio e informes semanales para demostrar valor al owner.'
+            'Branding propio e informes semanales para demostrar valor al owner.',
+            'Prioridad normal incluso si el modo mantenimiento global esta activo para servidores Free.'
           ].join('\n')
         },
         {
           name: 'Como se activa',
           value: [
             'El owner autorizado puede usar `/activarpremium servidor:<ID>`.',
+            'El owner global puede usar `/mantenimiento activar` para ralentizar solo servidores Free durante ajustes del servicio.',
             'Tambien puede activarse manualmente en Supabase con `plan = pro` o `voice_support_enabled = true`.',
             `Despues se gestionan los modulos desde la dashboard: ${PUBLIC_DASHBOARD_URL}`
           ].join('\n')
@@ -2103,6 +2184,7 @@ async function createTicketFromConfiguredSource({ interaction, storage, guildCon
 
   const welcome = await channel.send(buildTicketWelcomeMessage({ panel: normalizedPanel, component: normalizedComponent, answers, userMention: `${interaction.user}` }));
   await saveTranscript(storage, welcome, 'assistant');
+  await sendMaintenanceTicketNotice({ storage, channel, guildConfig });
 
   await maybeAlertXnProtectBlacklist({
     storage,
@@ -2370,7 +2452,7 @@ async function createDetectedTicketRecord({ storage, channel, openedBy = null })
   return storage.createTicket(ticket);
 }
 
-async function sendTicketKingWelcomeOnce({ storage, message, ticketWelcomeChannels }) {
+async function sendTicketKingWelcomeOnce({ storage, message, guildConfig, ticketWelcomeChannels }) {
   if (ticketWelcomeChannels.has(message.channel.id)) return null;
   ticketWelcomeChannels.add(message.channel.id);
 
@@ -2382,7 +2464,47 @@ async function sendTicketKingWelcomeOnce({ storage, message, ticketWelcomeChanne
     'He detectado este ticket de Ticket King y voy a ayudarte aqui. Cuentame que necesitas y, si hace falta, avisare al staff con un resumen claro.'
   ].join('\n'));
   await saveTranscript(storage, welcome, 'assistant');
+  await sendMaintenanceTicketNotice({ storage, channel: message.channel, guildConfig });
   return welcome;
+}
+
+async function sendMaintenanceTicketNotice({ storage, channel, guildConfig }) {
+  const maintenance = await storage.getMaintenanceState?.().catch((error) => {
+    console.error('Failed to read maintenance state:', error);
+    return null;
+  });
+  if (!shouldApplyMaintenanceToGuild({ maintenance, guildConfig })) return null;
+
+  const notice = await channel.send({
+    embeds: [
+      new EmbedBuilder()
+        .setColor(0xffcc00)
+        .setTitle(`${EMOJIS.wifi} Modo mantenimiento activo`)
+        .setDescription(buildMaintenanceNoticeText(maintenance))
+        .setFooter({ text: 'Los servidores Premium mantienen prioridad normal.' })
+        .setTimestamp(new Date())
+    ],
+    allowedMentions: { parse: [] }
+  }).catch((error) => {
+    console.error(`Failed to send maintenance notice in ${channel.id}:`, error);
+    return null;
+  });
+  if (notice) await saveTranscript(storage, notice, 'assistant');
+  return notice;
+}
+
+async function applyMaintenanceThrottle({ storage, message, guildConfig }) {
+  const maintenance = await storage.getMaintenanceState?.().catch((error) => {
+    console.error('Failed to read maintenance state before AI reply:', error);
+    return null;
+  });
+  if (!shouldApplyMaintenanceToGuild({ maintenance, guildConfig })) return false;
+
+  const delayMs = getMaintenanceDelayMs(maintenance);
+  if (delayMs <= 0) return false;
+  await sleep(delayMs);
+  await message.channel.sendTyping().catch(() => {});
+  return true;
 }
 
 function isTicketKingWelcomeContent(content) {
@@ -2736,9 +2858,10 @@ async function handleGlobalStatsCommand({ interaction, storage, client }) {
   await interaction.deferReply();
 
   const installedGuildIds = new Set(client.guilds.cache.keys());
-  const [tickets, guildConfigs] = await Promise.all([
+  const [tickets, guildConfigs, maintenance] = await Promise.all([
     storage.listTickets(),
-    storage.listGuildConfigs()
+    storage.listGuildConfigs(),
+    storage.getMaintenanceState?.().catch(() => normalizeMaintenanceState())
   ]);
   const botTickets = tickets.filter((ticket) => installedGuildIds.has(ticket.guildId));
   const activeTickets = botTickets.filter((ticket) => ticket.status !== 'closed');
@@ -2798,7 +2921,8 @@ async function handleGlobalStatsCommand({ interaction, storage, client }) {
         value: [
           `Uptime: **${formatDuration(client.uptime ?? 0)}**`,
           `RAM: **${memoryMb} MB**`,
-          `Node: **${process.version}**`
+          `Node: **${process.version}**`,
+          `Mantenimiento: **${maintenance?.enabled ? 'Activo Free' : 'Inactivo'}**`
         ].join('\n'),
         inline: true
       }
@@ -3426,7 +3550,7 @@ function buildBotPresence(client = null) {
     afk: false,
     activities: [
       {
-        name: `¿How can I help you today? | Ayudando en ${guildCount} servidores`,
+        name: `How can I help you today? | Ayudando en ${guildCount} servidores`,
         type: ActivityType.Playing
       }
     ]
@@ -4215,5 +4339,9 @@ async function waitForClientReady(client, timeoutMs = 3000) {
       resolve();
     });
   });
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
