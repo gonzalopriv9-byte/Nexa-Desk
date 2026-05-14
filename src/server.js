@@ -17,7 +17,7 @@ import { buildTranscriptFileName, buildTranscriptText } from './transcripts.js';
 const DISCORD_API = 'https://discord.com/api/v10';
 const MANAGE_GUILD = 0x20n;
 const ADMINISTRATOR = 0x8n;
-const BOT_INVITE_PERMISSIONS = '1099780189334';
+const BOT_INVITE_PERMISSIONS = '1099780451478';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ASSETS_DIR = path.resolve(__dirname, '..', 'assets');
 const docsAuthAttempts = new Map();

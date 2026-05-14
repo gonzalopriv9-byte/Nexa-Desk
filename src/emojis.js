@@ -1,8 +1,8 @@
 export const CUSTOM_EMOJIS = {
-  server: { id: '1504529355030925383', name: 'server', animated: false },
-  check: { id: '1504523637506707637', name: 'check', animated: false },
-  nexalogo: { id: '150452293167619085', name: 'nexalogo', animated: false },
-  rightArrow: { id: '1504521571036041278', name: 'rightarrow', animated: false },
+  server: { id: '1504529355030925383', name: 'server', animated: true },
+  check: { id: '1504523637506707637', name: 'check', animated: true },
+  nexalogo: { id: '1504522931697619085', name: 'nexalogo', animated: true },
+  rightArrow: { id: '1504521571036041278', name: 'rightarrow', animated: true },
   ban: { id: '1504520933853888673', name: 'ban', animated: false },
   wifi: { id: '1499732411829846116', name: 'wifi', animated: true },
   global: { id: '1499728413974593708', name: 'Global', animated: true }

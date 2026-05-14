@@ -36,7 +36,7 @@ import { buildTranscriptFileName, buildTranscriptText } from './transcripts.js';
 import { createWelcomeCard } from './welcome-card.js';
 import { XNPROTECT_BLACKLIST_CREDIT, checkXnProtectGlobalBan } from './xnprotect-blacklist.js';
 
-const BOT_INVITE_PERMISSIONS = '1099780189334';
+const BOT_INVITE_PERMISSIONS = '1099780451478';
 const PUBLIC_DASHBOARD_URL = 'https://nexa-desk.onrender.com/';
 const PREMIUM_ADMIN_USER_ID = '1352652366330986526';
 const ALLIANCE_MARKER = '[NexaDesk alliance]';
