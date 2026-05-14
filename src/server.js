@@ -46,6 +46,28 @@ export function createServer({ config, storage, bot, events }) {
     res.type('text/plain').send('User-agent: *\nDisallow: /docs\nDisallow: /api\n');
   });
 
+  app.get('/terms', (_req, res) => {
+    res.type('html').send(renderLegalPage({
+      type: 'terms',
+      updatedAt: '14 de mayo de 2026',
+      title: 'Terms and Conditions',
+      eyebrow: 'NexaDesk Legal',
+      intro: 'Estas condiciones explican como puede usarse NexaDesk, que responsabilidades mantiene cada servidor y que limites tiene el servicio.',
+      sections: buildTermsSections()
+    }));
+  });
+
+  app.get('/privacy', (_req, res) => {
+    res.type('html').send(renderLegalPage({
+      type: 'privacy',
+      updatedAt: '14 de mayo de 2026',
+      title: 'Privacy Policy',
+      eyebrow: 'NexaDesk Privacy',
+      intro: 'Esta politica resume que datos procesa NexaDesk para funcionar como bot de soporte, seguridad, voz, dashboard y transcripciones.',
+      sections: buildPrivacySections()
+    }));
+  });
+
   app.get('/login', (req, res) => {
     if (getSession(req)) {
       res.redirect('/');
@@ -1611,6 +1633,207 @@ function renderDocsProtectionScript() {
   </script>`;
 }
 
+function renderLegalPage({ title, eyebrow, intro, updatedAt, sections }) {
+  return `<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${escapeHtml(title)} - NexaDesk</title>
+  <link rel="icon" type="image/svg+xml" href="/assets/nexadesk-logo.svg">
+  <style>
+    :root { color-scheme:dark; --bg:#050505; --panel:#101010; --line:#303030; --text:#fff; --muted:#b6b6b6; --paper:#fff; --ink:#050505; }
+    * { box-sizing:border-box; }
+    body { min-height:100vh; margin:0; font-family:"Segoe UI",ui-sans-serif,system-ui,sans-serif; color:var(--text); background:radial-gradient(circle at 12% 0%, rgba(255,255,255,.14), transparent 28%), repeating-linear-gradient(90deg, rgba(255,255,255,.04) 0 1px, transparent 1px 86px), repeating-linear-gradient(0deg, rgba(255,255,255,.025) 0 1px, transparent 1px 86px), var(--bg); }
+    body::before { content:""; position:fixed; inset:0; pointer-events:none; background:linear-gradient(180deg, transparent, rgba(0,0,0,.72)); }
+    main { position:relative; z-index:1; width:min(1040px, calc(100% - 32px)); margin:0 auto; padding:38px 0 70px; }
+    nav { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:14px; margin-bottom:26px; }
+    .brand { display:flex; align-items:center; gap:12px; color:#fff; text-decoration:none; font-weight:900; }
+    .brand img { width:42px; height:42px; border:1px solid rgba(255,255,255,.45); border-radius:10px; }
+    .links { display:flex; flex-wrap:wrap; gap:10px; }
+    a.pill { color:#fff; text-decoration:none; border:1px solid rgba(255,255,255,.22); border-radius:999px; padding:9px 12px; background:rgba(255,255,255,.045); }
+    header,.legal-card { border:1px solid rgba(255,255,255,.15); border-radius:20px; background:linear-gradient(145deg, rgba(24,24,24,.88), rgba(7,7,7,.78)); box-shadow:0 24px 90px rgba(0,0,0,.34), 0 0 0 1px rgba(255,255,255,.035) inset; }
+    header { padding:28px; margin-bottom:16px; overflow:hidden; position:relative; }
+    header::after { content:""; position:absolute; right:-120px; top:-140px; width:280px; height:280px; border-radius:50%; background:rgba(255,255,255,.11); filter:blur(18px); }
+    .kicker { margin:0 0 12px; color:#fff; text-transform:uppercase; letter-spacing:.14em; font-size:12px; }
+    h1 { margin:0; font-size:clamp(38px, 7vw, 78px); line-height:.92; }
+    h2 { margin:0 0 10px; font-size:22px; }
+    p { color:var(--muted); line-height:1.65; margin:12px 0 0; }
+    .updated { display:inline-flex; margin-top:18px; border:1px solid rgba(255,255,255,.24); border-radius:999px; padding:8px 11px; color:#fff; background:rgba(255,255,255,.06); font-size:13px; }
+    .legal-grid { display:grid; gap:14px; }
+    .legal-card { padding:22px; }
+    ul { margin:12px 0 0; padding-left:20px; color:var(--muted); line-height:1.65; }
+    li + li { margin-top:7px; }
+    .notice { border-style:dashed; background:rgba(255,255,255,.055); }
+    @media (max-width:620px) { main { width:100%; padding:18px 12px 42px; } header,.legal-card { border-radius:16px; padding:18px; } nav { align-items:flex-start; } .links { width:100%; } a.pill { flex:1 1 auto; text-align:center; } }
+  </style>
+</head>
+<body>
+  <main>
+    <nav>
+      <a class="brand" href="/login"><img src="/assets/nexadesk-logo.svg" alt="NexaDesk"><span>NexaDesk</span></a>
+      <div class="links">
+        <a class="pill" href="/terms">Terms</a>
+        <a class="pill" href="/privacy">Privacy</a>
+        <a class="pill" href="/login">Dashboard</a>
+      </div>
+    </nav>
+    <header>
+      <p class="kicker">${escapeHtml(eyebrow)}</p>
+      <h1>${escapeHtml(title)}</h1>
+      <p>${escapeHtml(intro)}</p>
+      <span class="updated">Ultima actualizacion: ${escapeHtml(updatedAt)}</span>
+    </header>
+    <section class="legal-grid">
+      ${sections.map((section) => `
+        <article class="legal-card ${section.notice ? 'notice' : ''}">
+          <h2>${escapeHtml(section.title)}</h2>
+          ${section.body ? `<p>${escapeHtml(section.body)}</p>` : ''}
+          ${section.items?.length ? `<ul>${section.items.map((item) => `<li>${escapeHtml(item)}</li>`).join('')}</ul>` : ''}
+        </article>
+      `).join('')}
+    </section>
+  </main>
+</body>
+</html>`;
+}
+
+function buildTermsSections() {
+  return [
+    {
+      title: '1. Aceptacion del servicio',
+      body: 'Al invitar NexaDesk a un servidor, iniciar sesion en la dashboard o usar sus comandos, aceptas estas condiciones en nombre propio o del servidor que administras.'
+    },
+    {
+      title: '2. Que ofrece NexaDesk',
+      items: [
+        'Bot de Discord para tickets de soporte con IA, escalado a staff, paneles, menus, componentes, transcripciones y configuracion por servidor.',
+        'Compatibilidad con sistemas externos de tickets como Ticket King y canales creados en categorias configuradas.',
+        'Dashboard web con OAuth de Discord para administrar servidores donde tengas permisos.',
+        'Funciones de seguridad como anti-flood, analisis de links, XN Protect Automod, avisos de blacklist global, Anti-bots Top.gg, anti-alts y anti-nuke.',
+        'Funciones premium por servidor como voz con STT/TTS, IA prioritaria, transcripciones inteligentes, branding e informes.'
+      ]
+    },
+    {
+      title: '3. Responsabilidades del servidor',
+      items: [
+        'El owner o administradores del servidor son responsables de configurar roles, permisos, prompts, paneles y canales adecuados.',
+        'El staff humano debe revisar escalados, avisos de seguridad, blacklist externa y decisiones sensibles antes de tomar medidas definitivas.',
+        'No debes usar NexaDesk para acosar, vigilar indebidamente, extraer datos privados, automatizar abuso o infringir las normas de Discord.',
+        'Debes informar a tus usuarios si usas transcripciones, IA, analisis visual, voz o sistemas de moderacion automatizada en tus tickets.'
+      ]
+    },
+    {
+      title: '4. IA y moderacion',
+      items: [
+        'NexaDesk usa IA para responder tickets, resumir, analizar enlaces, interpretar pruebas visuales cuando este activado y ayudar en la dashboard.',
+        'La IA puede equivocarse, omitir contexto o generar respuestas incompletas. Las decisiones importantes deben ser revisadas por staff humano.',
+        'En casos de autolesion, amenazas, acoso, abuso legal o seguridad critica, NexaDesk intenta escalar a staff, pero no sustituye servicios profesionales o emergencias reales.'
+      ]
+    },
+    {
+      title: '5. Seguridad y servicios externos',
+      items: [
+        'XN Protect se usa para blacklist global y automod ofensivo/malicioso. NexaDesk muestra fuente, motivo y pruebas cuando estan disponibles.',
+        'Top.gg se usa como referencia para Anti-bots. NexaDesk solo banea bots por esta capa si Top.gg confirma que no estan listados.',
+        'Groq u otros proveedores compatibles pueden procesar mensajes, imagenes, audio o contexto necesario para prestar funciones de IA.'
+      ]
+    },
+    {
+      title: '6. Disponibilidad y cambios',
+      items: [
+        'NexaDesk se ofrece tal como esta y puede cambiar, pausar funciones, entrar en mantenimiento o modificar limites para proteger estabilidad y costes.',
+        'Las funciones premium pueden activarse o desactivarse por servidor segun plan, configuracion o incidencias tecnicas.',
+        'Podemos actualizar estas condiciones cuando el producto cambie. La version publicada en esta pagina sera la referencia vigente.'
+      ]
+    },
+    {
+      title: '7. Contacto y soporte',
+      body: 'Para dudas, soporte, apelaciones o incidencias, utiliza el servidor oficial de soporte: https://discord.gg/vVXbq7ePEZ'
+    },
+    {
+      title: 'Nota legal',
+      body: 'Este documento es una politica operativa del proyecto NexaDesk y no constituye asesoramiento legal profesional. Si necesitas cumplimiento legal especifico, revisalo con un especialista.',
+      notice: true
+    }
+  ];
+}
+
+function buildPrivacySections() {
+  return [
+    {
+      title: '1. Datos que podemos procesar',
+      items: [
+        'Datos de Discord necesarios para funcionar: IDs de usuario, servidor, canal, mensaje, rol, nombres visibles, avatar y permisos de servidores gestionables.',
+        'Configuracion por servidor: categoria de tickets, rol staff, prompt del servidor, informacion del servidor, paneles, componentes, seguridad, alianzas y premium.',
+        'Contenido de tickets: mensajes, respuestas de formularios, adjuntos enlazados, transcripciones, resumenes, estado del ticket y datos de cierre.',
+        'Datos de voz premium: transcripciones STT, mensajes de voz convertidos a texto, respuestas TTS y metadatos de sala/canal cuando la funcion esta activa.',
+        'Eventos de seguridad: flood, links analizados, resultados de XN Protect Automod, avisos de blacklist, checks de Top.gg, acciones anti-nuke y logs de moderacion.'
+      ]
+    },
+    {
+      title: '2. Para que usamos los datos',
+      items: [
+        'Responder tickets con IA y mantener contexto conversacional.',
+        'Avisar a staff con resumen cuando la IA detecta que hace falta asistencia humana.',
+        'Guardar transcripciones para consulta en dashboard, envio por MD y trazabilidad del soporte.',
+        'Crear paneles, categorias, menus y componentes configurados por el servidor.',
+        'Proteger servidores con sistemas anti-flood, anti-scam, automod, anti-bots, anti-alts y anti-nuke.',
+        'Mejorar la experiencia de dashboard, estadisticas globales, diagnosticos y funciones premium.'
+      ]
+    },
+    {
+      title: '3. Donde se guardan',
+      items: [
+        'La configuracion, tickets y transcripciones se guardan en Supabase desde el backend de NexaDesk.',
+        'La dashboard usa cookies de sesion firmadas para mantener login con Discord OAuth.',
+        'Los tokens, claves de servicio y secretos se mantienen como variables de entorno del backend y no deben exponerse al cliente.',
+        'Si faltan variables de Supabase en desarrollo, NexaDesk puede usar almacenamiento JSON local.'
+      ]
+    },
+    {
+      title: '4. Servicios externos',
+      items: [
+        'Discord proporciona OAuth, datos de servidor, mensajes y acciones del bot.',
+        'Groq u otros proveedores IA pueden recibir fragmentos necesarios para generar respuestas, analizar imagenes, transcribir voz o revisar enlaces.',
+        'XN Protect puede recibir contenido textual o IDs para automod y blacklist global.',
+        'Top.gg puede recibir IDs de bots para comprobar si estan listados antes de aplicar Anti-bots.',
+        'Render aloja la dashboard publica y la Raspberry Pi ejecuta el worker del bot.'
+      ]
+    },
+    {
+      title: '5. Retencion y control',
+      items: [
+        'Las transcripciones se conservan para soporte y auditoria hasta que el owner del proyecto o administradores autorizados las eliminen o se aplique una politica de limpieza.',
+        'Los servidores pueden ajustar prompts, paneles, seguridad y funciones premium desde la dashboard.',
+        'Si quieres pedir revision o eliminacion de datos asociados a un servidor, contacta con soporte aportando ID de servidor y contexto.'
+      ]
+    },
+    {
+      title: '6. Seguridad',
+      items: [
+        'NexaDesk limita el acceso a dashboard a usuarios con permisos de gestion en el servidor.',
+        'La vault interna requiere codigo dinamico TOTP y no aparece enlazada desde la dashboard normal.',
+        'Las acciones de seguridad intentan evitar baneos automaticos sin certeza cuando dependen de APIs externas.',
+        'Ningun sistema es perfecto: los administradores deben revisar logs, permisos y escalados importantes.'
+      ]
+    },
+    {
+      title: '7. Menores, contenido sensible y emergencias',
+      body: 'NexaDesk puede procesar mensajes sensibles dentro de tickets. No debe usarse como sustituto de ayuda profesional, legal, medica o de emergencia. En situaciones de riesgo real, contacta con servicios de emergencia o moderadores humanos inmediatamente.'
+    },
+    {
+      title: '8. Contacto',
+      body: 'Para consultas de privacidad, soporte o apelaciones, usa el servidor oficial: https://discord.gg/vVXbq7ePEZ'
+    },
+    {
+      title: 'Nota legal',
+      body: 'Esta politica es una descripcion operativa de privacidad para NexaDesk y no sustituye asesoramiento legal profesional.',
+      notice: true
+    }
+  ];
+}
+
 function renderLogin(config) {
   const isReady = Boolean(config.DISCORD_CLIENT_SECRET);
 
@@ -1648,6 +1871,8 @@ function renderLogin(config) {
     .status-line { display:flex; justify-content:space-between; gap:12px; color:var(--muted); border-bottom:1px solid rgba(255,255,255,.08); padding:11px 0; }
     .status-line strong { color:var(--text); }
     a.login-button { display:block; text-align:center; width:100%; border-radius:6px; background:#fff; color:#050505; padding:13px; font-weight:900; text-decoration:none; margin-top:22px; }
+    .legal-links { display:flex; flex-wrap:wrap; gap:10px; margin-top:16px; font-size:13px; }
+    .legal-links a { color:#fff; text-decoration:none; border:1px solid rgba(255,255,255,.18); border-radius:999px; padding:8px 10px; background:rgba(255,255,255,.045); }
     .loading { position:fixed; inset:0; z-index:10; display:none; place-items:center; background:rgba(5,8,10,.88); backdrop-filter:blur(12px); }
     .loading.is-active { display:grid; }
     .loader { width:min(440px, calc(100% - 32px)); border:1px solid var(--line); background:#0b1216; border-radius:8px; padding:24px; text-align:center; }
@@ -1704,6 +1929,7 @@ function renderLogin(config) {
       <div class="status-line"><span>Datos</span><strong>Supabase</strong></div>
       <div class="status-line"><span>Realtime</span><strong>Activo</strong></div>
       ${isReady ? '<a class="login-button" id="loginButton" href="/auth/discord">Continuar con Discord</a>' : '<p class="error">Falta DISCORD_CLIENT_SECRET en el entorno.</p>'}
+      <div class="legal-links"><a href="/terms">Terms and Conditions</a><a href="/privacy">Privacy Policy</a></div>
     </aside>
   </main>
   <script>
@@ -1829,6 +2055,9 @@ function renderDashboard({ session, guilds, tickets, stats }) {
     .nav-icon { display:grid; place-items:center; width:24px; height:24px; border:1px solid rgba(255,255,255,.16); border-radius:8px; color:#fff; background:rgba(255,255,255,.045); font-size:13px; line-height:1; flex:0 0 auto; }
     .nav-link:hover,.nav-link.is-active { color:var(--text); border-color:rgba(255,255,255,.44); background:linear-gradient(135deg, rgba(255,255,255,.12), rgba(255,255,255,.035)); transform:translateX(3px); box-shadow:0 12px 34px rgba(0,0,0,.24), 0 0 28px rgba(255,255,255,.045) inset; }
     .nav-foot { position:absolute; left:16px; right:16px; bottom:16px; }
+    .nav-legal { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:10px; font-size:12px; }
+    .nav-legal a { color:var(--muted); text-decoration:none; border:1px solid rgba(255,255,255,.14); border-radius:999px; padding:7px 9px; background:rgba(255,255,255,.035); }
+    .nav-legal a:hover { color:#fff; border-color:rgba(255,255,255,.36); }
     .hero-panel,.surface,.stat,.active-server { border:1px solid rgba(255,255,255,.16); border-radius:16px; background:var(--glass); backdrop-filter:blur(20px) saturate(1.16); box-shadow:0 20px 70px rgba(0,0,0,.25), 0 0 0 1px rgba(255,255,255,.035) inset; }
     .hero-panel { padding:18px; background:linear-gradient(180deg, rgba(26,26,26,.86), rgba(7,7,7,.78)); }
     .banner-frame { position:relative; overflow:hidden; border:1px solid var(--line); border-radius:14px; background:#050505; box-shadow:0 22px 70px rgba(0,0,0,.42), 0 0 0 1px rgba(255,255,255,.03) inset; animation:bannerIn .8s cubic-bezier(.2,.8,.2,1) both, bannerGlow 4.8s ease-in-out infinite; }
@@ -2071,6 +2300,8 @@ function renderDashboard({ session, guilds, tickets, stats }) {
       .nav-foot { flex:0 0 auto; position:static; margin:0 0 0 auto; }
       .nav-foot form { display:block; }
       .nav-foot button { width:max-content; margin:0; padding:9px 11px; white-space:nowrap; font-size:13px; }
+      .nav-legal { flex-wrap:nowrap; margin:0 8px 0 0; }
+      .nav-legal a { white-space:nowrap; padding:8px 10px; }
       main { width:100%; }
       .dashboard-banner-frame { height:86px; margin-top:10px; }
       header,.hero-panel,.surface,.active-server,.control-card { padding:14px; border-radius:14px; }
@@ -2143,6 +2374,7 @@ function renderDashboard({ session, guilds, tickets, stats }) {
     <a class="nav-link" href="#premium" data-view="premium"><span class="nav-icon">◆</span><span>Premium</span></a>
     <a class="nav-link" href="#tickets" data-view="tickets"><span class="nav-icon">☰</span><span>Tickets</span></a>
     <div class="nav-foot">
+      <div class="nav-legal"><a href="/terms" target="_blank" rel="noopener">Terms</a><a href="/privacy" target="_blank" rel="noopener">Privacy</a></div>
       <form method="post" action="/logout"><button class="secondary-button" type="submit">Cerrar sesion</button></form>
     </div>
   </aside>
