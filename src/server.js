@@ -777,7 +777,7 @@ async function buildDashboardAssistantReply({ config, message, guild, stats, act
         'En Paneles se publica el embed, boton o menu en un canal de Discord; los botones tambien pueden abrir tickets de voz Pro.',
         'En Premium se gestionan Voz Pro, IA prioritaria, transcripciones inteligentes, Security Plus, branding propio e informes semanales por servidor.',
         'El modo mantenimiento se controla por slash command owner-only /mantenimiento; no hay boton publico en dashboard.',
-        'Security Guard incluye anti-flood, anti-links IA, XN Protect Automod, anti-bots, anti-alts y anti-nuke.',
+        'Security Guard incluye anti-flood, anti-links IA, XN Protect Automod, anti-bots Top.gg, anti-alts y anti-nuke.',
         'En Tickets se ven tickets y transcripciones guardadas.',
         'Si el usuario pide que tu metas algo, explica que puedes rellenar campos con botones de accion, pero el usuario debe revisar y guardar/publicar.',
         'No pidas IDs si la dashboard ya ofrece selectores de roles, canales y categorias.',
@@ -831,7 +831,7 @@ function buildDashboardAssistantFallback({ message, guild, stats, activeView, ac
       ? 'Ve a Premium para activar o pausar Voz Pro, IA prioritaria, transcripciones inteligentes, Security Plus, branding propio e informes semanales por servidor.'
       : 'Ve a Premium para ver que desbloquea el plan. La activacion del plan se hace manualmente con /activarpremium o desde Supabase, y despues alli gestionas los modulos.';
   } else if (lower.includes('seguridad') || lower.includes('security') || lower.includes('anti') || lower.includes('raid') || lower.includes('flood') || lower.includes('nuke') || lower.includes('phishing') || lower.includes('estafa') || lower.includes('links')) {
-    reply += 'Ve a Configuracion y baja hasta Security Guard. Puedes activar nivel intermedio, Anti-links IA, XN Protect Automod, elegir un canal de logs y guardar. Si Discord bloquea acciones, actualiza permisos desde el boton superior.';
+    reply += 'Ve a Configuracion y baja hasta Security Guard. Puedes activar nivel intermedio, Anti-links IA, XN Protect Automod, Anti-bots Top.gg, elegir un canal de logs y guardar. Si Discord bloquea acciones, actualiza permisos desde el boton superior.';
   } else if (lower.includes('transcrip') || lower.includes('ticket')) {
     reply += 'En Tickets puedes abrir cada transcripcion guardada y descargarla en TXT. Si no aparecen tickets, abre uno desde un panel o una categoria configurada.';
   } else if (lower.includes('staff') || lower.includes('rol') || lower.includes('escalar')) {
@@ -1196,7 +1196,8 @@ function buildDocsSections(config) {
     ['EDGE_TTS_VOICE', secretState(config.EDGE_TTS_VOICE), 'Voz natural usada cuando Edge TTS esta disponible.'],
     ['AI_VISUAL_ANALYSIS', secretState(config.AI_VISUAL_ANALYSIS), 'Activa analisis de imagenes y videos en tickets cuando el prompt lo permite.'],
     ['ANNOUNCEMENT_SOURCE_GUILD_ID', secretState(config.ANNOUNCEMENT_SOURCE_GUILD_ID), 'Servidor central desde donde salen anuncios globales.'],
-    ['ANNOUNCEMENT_SOURCE_CHANNEL_ID', secretState(config.ANNOUNCEMENT_SOURCE_CHANNEL_ID), 'Canal central que se replica a los canales de anuncios detectados.']
+    ['ANNOUNCEMENT_SOURCE_CHANNEL_ID', secretState(config.ANNOUNCEMENT_SOURCE_CHANNEL_ID), 'Canal central que se replica a los canales de anuncios detectados.'],
+    ['TOPGG_API_TOKEN', secretState(config.TOPGG_API_TOKEN), 'Permite consultar si un bot esta listado en Top.gg antes de banearlo con Anti-bots.']
   ];
 
   return [
@@ -1211,6 +1212,7 @@ function buildDocsSections(config) {
           'Supabase guarda configuracion, paneles, componentes, tickets, transcripciones y blacklist interna.',
           'Groq procesa soporte IA, vision, STT y parte de TTS; Akiomae queda como fallback final.',
           'XN Protect aporta blacklist global y Automod ofensivo/malicioso. NexaDesk acredita la fuente y no banea automaticamente por blacklist externa.',
+          'Top.gg se usa como lista positiva para Anti-bots: si un bot esta listado, se permite; si Top.gg devuelve 404, se puede banear; si falla la API, no se banea.',
           'Premium por servidor se decide con plan pro/premium/enterprise, voice_support_enabled o /activarpremium desde owner autorizado.',
           'Modo mantenimiento global se activa con /mantenimiento; ralentiza solo servidores Free y avisa al abrir tickets.',
           'Smart Discovery recorre todos los canales de cada servidor instalado, normaliza tipografias raras y detecta anuncios, normas, FAQ, soporte y categorias candidatas.',
@@ -1347,9 +1349,10 @@ function buildDocsSections(config) {
       summary: 'Capas anti-raid, anti-scam, blacklist y crisis.',
       blocks: [
         { type: 'list', items: [
-          'Security Guard detecta flood, links sospechosos, contenido ofensivo/malicioso, alts, bots no deseados y patrones anti-nuke.',
+          'Security Guard detecta flood, links sospechosos, contenido ofensivo/malicioso, alts, bots no listados en Top.gg y patrones anti-nuke.',
           'Los links se analizan con IA cuando aparecen en mensajes; puede recomendar review, borrado o aislamiento.',
           'XN Protect Automod se consulta con contenido textual y, si response.malicioso=true, se borra el mensaje, se intenta aislar al autor y se loguea motivo/palabras.',
+          'Anti-bots consulta Top.gg con TOPGG_API_TOKEN. Solo banea bots cuando la API confirma que no estan listados; con timeout/error/token ausente solo deja aviso.',
           'Los mensajes de crisis/autolesion no se bloquean por Automod para permitir contencion y escalado humano.',
           'XN Protect se consulta al abrir tickets y deja aviso al staff sin banear automaticamente.',
           'En crisis/autolesion, NexaDesk debe escalar al staff inmediatamente y responder con contencion breve.',
@@ -2077,7 +2080,12 @@ function renderDashboard({ session, guilds, tickets, stats }) {
       .topbar,.workspace,.command-center,.panel-builder { gap:12px; margin-bottom:12px; }
       .view-heading,.section-heading,.ticket-tools,.transcript-head { display:grid; align-items:start; gap:10px; }
       .active-server { margin-bottom:12px; }
-      form,.control-grid,.stats,.server-status,.server-score,.mini-grid,.panel-fields,.form-section,.readiness-checklist,.recommendation-grid,.premium-feature-grid,.premium-toggle { grid-template-columns:1fr; }
+      form,.control-grid,.stats,.server-status,.server-score,.mini-grid,.discovery-grid,.panel-fields,.form-section,.readiness-checklist,.recommendation-grid,.premium-feature-grid,.premium-toggle { grid-template-columns:1fr; }
+      input,select,textarea { font-size:16px; min-height:44px; }
+      .sidebar { scroll-snap-type:x proximity; scrollbar-width:none; }
+      .sidebar::-webkit-scrollbar { display:none; }
+      .nav-link { scroll-snap-align:start; }
+      .control-card,.surface,.active-server { scroll-margin-top:86px; }
       label,button { margin-top:0; }
       textarea { min-height:118px; }
       .form-section { padding:10px; }
@@ -2303,7 +2311,7 @@ function renderDashboard({ session, guilds, tickets, stats }) {
               <option value="true">Activo</option>
               <option value="false">Desactivado</option>
             </select></label>
-            <label>Anti-bots<select id="securityAntiBot">
+            <label>Anti-bots Top.gg<select id="securityAntiBot">
               <option value="true">Activo</option>
               <option value="false">Desactivado</option>
             </select></label>
@@ -2315,7 +2323,7 @@ function renderDashboard({ session, guilds, tickets, stats }) {
               <option value="true">Activo</option>
               <option value="false">Desactivado</option>
             </select></label>
-            <p class="notice span-2">Para anti-nuke completo, actualiza permisos del bot con View Audit Log, Manage Messages, Moderate Members, Kick Members y Ban Members.</p>
+            <p class="notice span-2">Anti-bots solo banea bots que Top.gg confirme como no listados. Si Top.gg no responde o falta token, NexaDesk no banea a ciegas. Para anti-nuke completo, actualiza permisos con View Audit Log, Manage Messages, Moderate Members, Kick Members y Ban Members.</p>
             <button class="span-2" type="submit">Guardar Security Guard</button>
           </form>
         </article>

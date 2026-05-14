@@ -71,7 +71,7 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
   const panelCreatedChannels = new Set();
   const blacklistAlertedChannels = new Set();
   const ticketWelcomeChannels = new Set();
-  const securityManager = new SecurityManager({ storage, client, supportAgent });
+  const securityManager = new SecurityManager({ storage, client, supportAgent, config });
 
   client.once(Events.ClientReady, (readyClient) => {
     applyBotPresence(readyClient);
@@ -743,7 +743,7 @@ function buildOwnerOnboardingEmbeds({ guild }) {
         value: [
           'Pro Voice permite crear salas privadas con STT/TTS usando `/voz crear` o paneles de voz.',
           'Premium tambien prepara IA prioritaria, transcripciones inteligentes, Security Plus, branding propio e informes semanales.',
-          'Security Guard se configura con `/seguridad configurar` o desde la dashboard: anti-flood, anti-links IA, anti-bots, anti-alts y anti-nuke.',
+          'Security Guard se configura con `/seguridad configurar` o desde la dashboard: anti-flood, anti-links IA, anti-bots Top.gg, anti-alts y anti-nuke.',
           'Configuracion, paneles, tickets y transcripciones se guardan en Supabase para que la dashboard pueda consultarlos.'
         ].join('\n')
       },
@@ -1509,7 +1509,7 @@ function buildSecurityStatusEmbed({ guild, security }) {
           `Anti-flood: **${config.antiFlood ? 'on' : 'off'}** (${config.floodLimit} mensajes/${config.floodWindowSeconds}s)`,
           `Anti-links IA: **${config.antiScamLinks ? 'on' : 'off'}**`,
           `XN Protect Automod: **${config.antiOffensive ? 'on' : 'off'}**`,
-          `Anti-bots: **${config.antiBot ? 'on' : 'off'}**`,
+          `Anti-bots Top.gg: **${config.antiBot ? 'on' : 'off'}**`,
           `Anti-alts: **${config.antiAlt ? 'on' : 'off'}** (${config.minAccountAgeDays} dias)`,
           `Anti-nuke: **${config.antiNuke ? 'on' : 'off'}** (${config.nukeLimit} acciones/${config.nukeWindowSeconds}s)`
         ].join('\n')
@@ -2023,7 +2023,7 @@ function buildHelpEmbed({ view, config, guild }) {
             'Anti-flood: borra spam rapido y puede aplicar timeout.',
             'Anti-links IA: revisa enlaces con IA para bloquear phishing, estafas, malware y regalos falsos.',
             'XN Protect Automod: borra contenido ofensivo/malicioso y avisa al staff con motivo y palabras detectadas.',
-            'Anti-bots: bloquea bots no verificados.',
+            'Anti-bots Top.gg: solo banea bots que no aparezcan listados en Top.gg; si Top.gg no responde, no banea a ciegas.',
             'Anti-alts: expulsa cuentas demasiado nuevas si lo activas.',
             'Anti-nuke: mira audit logs y reacciona ante acciones masivas en canales, roles, webhooks, kicks y bans.'
           ].join('\n')

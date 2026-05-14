@@ -2,9 +2,11 @@ import {
   AuditLogEvent,
   ChannelType,
   EmbedBuilder,
-  PermissionFlagsBits,
-  UserFlagsBitField
+  PermissionFlagsBits
 } from 'discord.js';
+
+const TOPGG_CACHE_MS = 1000 * 60 * 60 * 12;
+const TOPGG_ERROR_CACHE_MS = 1000 * 60 * 15;
 
 export const SECURITY_LEVELS = {
   low: {
@@ -117,7 +119,7 @@ export function summarizeSecurityConfig(config = {}) {
     security.antiFlood ? 'Anti-flood' : null,
     security.antiScamLinks ? 'Anti-links IA' : null,
     security.antiOffensive ? 'XN Automod' : null,
-    security.antiBot ? 'Anti-bots' : null,
+    security.antiBot ? 'Anti-bots Top.gg' : null,
     security.antiAlt ? 'Anti-alts' : null,
     security.antiNuke ? 'Anti-nuke' : null
   ].filter(Boolean);
@@ -125,14 +127,16 @@ export function summarizeSecurityConfig(config = {}) {
 }
 
 export class SecurityManager {
-  constructor({ storage, client, supportAgent = null }) {
+  constructor({ storage, client, supportAgent = null, config = {} }) {
     this.storage = storage;
     this.client = client;
     this.supportAgent = supportAgent;
+    this.config = config;
     this.messageBuckets = new Map();
     this.joinBuckets = new Map();
     this.actionBuckets = new Map();
     this.lastFloodWarnings = new Map();
+    this.topGgBotCache = new Map();
   }
 
   async handleMessageCreate(message) {
@@ -337,6 +341,14 @@ export class SecurityManager {
       if (timedOut) return `Timeout aplicado ${security.timeoutMinutes} min.`;
     }
 
+    const topGgDecision = message.author.bot
+      ? await this.shouldBanBotBecauseMissingTopGg(message.author)
+      : { shouldBan: false, lookup: null };
+
+    if (message.author.bot && !topGgDecision.shouldBan) {
+      return `Timeout no aplicado. Bot no baneado: ${describeTopGgLookup(topGgDecision.lookup)}.`;
+    }
+
     if (message.author.bot && member.bannable && message.guild.members.me?.permissions.has(PermissionFlagsBits.BanMembers)) {
       const banned = await member.ban({ reason }).then(() => true).catch(() => false);
       if (banned) return 'Bot baneado preventivamente porque no se pudo aplicar timeout.';
@@ -362,16 +374,40 @@ export class SecurityManager {
 
     await this.trackJoinRaid(member.guild, security);
 
-    if (security.antiBot && member.user.bot && !isVerifiedBot(member.user)) {
+    if (security.antiBot && member.user.bot) {
+      const topGgDecision = await this.shouldBanBotBecauseMissingTopGg(member.user);
+      if (!topGgDecision.shouldBan) {
+        if (topGgDecision.lookup?.status !== 'listed') {
+          await this.sendSecurityLog({
+            guild: member.guild,
+            config: security,
+            title: 'Anti-bots sin verificacion Top.gg',
+            description: `Ha entrado el bot ${member.user.tag}, pero NexaDesk no pudo confirmar su estado en Top.gg. No se banea sin certeza.`,
+            fields: [
+              { name: 'Bot', value: `${member.user.tag} (${member.user.id})`, inline: true },
+              { name: 'Top.gg', value: describeTopGgLookup(topGgDecision.lookup) },
+              { name: 'Accion', value: 'Permitido temporalmente. Revisa manualmente si no reconoces este bot.' }
+            ],
+            important: false
+          });
+        }
+        return;
+      }
+
       await this.sendSecurityLog({
         guild: member.guild,
         config: security,
-        title: 'Bot bloqueado',
-        description: `Se detecto un bot no verificado entrando al servidor: ${member.user.tag}.`,
-        fields: [{ name: 'Accion', value: member.bannable ? 'Ban aplicado' : 'No pude banearlo por jerarquia/permisos' }]
+        title: 'Bot no listado en Top.gg bloqueado',
+        description: `Se detecto un bot que no aparece listado en Top.gg entrando al servidor: ${member.user.tag}.`,
+        fields: [
+          { name: 'Bot', value: `${member.user.tag} (${member.user.id})`, inline: true },
+          { name: 'Top.gg', value: describeTopGgLookup(topGgDecision.lookup) },
+          { name: 'Accion', value: member.bannable ? 'Ban aplicado' : 'No pude banearlo por jerarquia/permisos' }
+        ],
+        important: true
       });
       if (member.bannable) {
-        await member.ban({ reason: 'NexaDesk Security Guard: bot no verificado' }).catch(() => null);
+        await member.ban({ reason: 'NexaDesk Security Guard: bot no listado en Top.gg' }).catch(() => null);
       }
       return;
     }
@@ -452,11 +488,12 @@ export class SecurityManager {
     if (!executor || this.isTrustedExecutor(newRole.guild, executor.id) || !executor.bot) return;
 
     const botMember = await newRole.guild.members.fetch(executor.id).catch(() => null);
+    const topGgDecision = await this.shouldBanBotBecauseMissingTopGg(executor);
     const updatedPermissions = newRole.permissions.remove(PermissionFlagsBits.Administrator);
     if (newRole.editable) {
       await newRole.setPermissions(updatedPermissions, 'NexaDesk Security Guard: bot gave Administrator').catch(() => null);
     }
-    if (botMember?.bannable) {
+    if (topGgDecision.shouldBan && botMember?.bannable) {
       await botMember.ban({ reason: 'NexaDesk Security Guard: bot gave Administrator permissions' }).catch(() => null);
     }
 
@@ -467,7 +504,8 @@ export class SecurityManager {
       description: `${executor.tag} intento dar Administrator al rol ${newRole.name}.`,
       fields: [
         { name: 'Rol', value: `${newRole.name} (${newRole.id})`, inline: true },
-        { name: 'Respuesta', value: `${newRole.editable ? 'Permiso Administrator retirado' : 'No pude editar el rol'} / ${botMember?.bannable ? 'bot baneado' : 'bot no baneable'}` }
+        { name: 'Top.gg', value: describeTopGgLookup(topGgDecision.lookup) },
+        { name: 'Respuesta', value: `${newRole.editable ? 'Permiso Administrator retirado' : 'No pude editar el rol'} / ${topGgDecision.shouldBan && botMember?.bannable ? 'bot baneado' : 'bot no baneado por politica Top.gg o permisos'}` }
       ],
       important: true
     });
@@ -557,7 +595,14 @@ export class SecurityManager {
     if (bucket.length < security.nukeLimit) return true;
 
     const member = await guild.members.fetch(executor.id).catch(() => null);
-    const canBan = Boolean(member?.bannable && guild.members.me?.permissions.has(PermissionFlagsBits.BanMembers));
+    const topGgDecision = member?.user?.bot
+      ? await this.shouldBanBotBecauseMissingTopGg(member.user)
+      : { shouldBan: true, lookup: null };
+    const canBan = Boolean(
+      member?.bannable
+      && guild.members.me?.permissions.has(PermissionFlagsBits.BanMembers)
+      && (!member.user.bot || topGgDecision.shouldBan)
+    );
     if (canBan) {
       await member.ban({ reason: `NexaDesk Security Guard: ${bucket.length} acciones sensibles en ${security.nukeWindowSeconds}s` }).catch(() => null);
     }
@@ -569,7 +614,8 @@ export class SecurityManager {
       description: `${executor.tag} supero el limite de acciones sensibles.`,
       fields: [
         { name: 'Acciones', value: bucket.map((item) => `- ${item.label}`).slice(-8).join('\n') || label },
-        { name: 'Respuesta', value: canBan ? 'Ban preventivo aplicado' : 'No pude banear por permisos o jerarquia' }
+        member?.user?.bot ? { name: 'Top.gg', value: describeTopGgLookup(topGgDecision.lookup) } : null,
+        { name: 'Respuesta', value: canBan ? 'Ban preventivo aplicado' : 'No pude banear por permisos, jerarquia o politica Top.gg' }
       ],
       important: true
     });
@@ -596,6 +642,79 @@ export class SecurityManager {
     return false;
   }
 
+  async shouldBanBotBecauseMissingTopGg(user) {
+    if (!user?.bot) return { shouldBan: false, lookup: null };
+    const lookup = await this.lookupTopGgBot(user.id);
+    return {
+      shouldBan: lookup.status === 'not_listed',
+      lookup
+    };
+  }
+
+  async lookupTopGgBot(botId) {
+    const token = String(this.config.TOPGG_API_TOKEN ?? '').trim();
+    if (!token) {
+      return {
+        status: 'unknown',
+        reason: 'TOPGG_API_TOKEN no configurado. NexaDesk no banea bots sin poder comprobar Top.gg.'
+      };
+    }
+
+    const cached = this.topGgBotCache.get(botId);
+    if (cached && cached.expiresAt > Date.now()) return cached.result;
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), Number(this.config.TOPGG_LOOKUP_TIMEOUT_MS ?? 4500));
+    try {
+      const baseUrl = String(this.config.TOPGG_API_BASE_URL ?? 'https://top.gg/api').replace(/\/+$/g, '');
+      const response = await fetch(`${baseUrl}/bots/${encodeURIComponent(botId)}`, {
+        method: 'GET',
+        headers: {
+          accept: 'application/json',
+          authorization: token
+        },
+        signal: controller.signal
+      });
+
+      if (response.status === 200) {
+        const body = await response.json().catch(() => ({}));
+        return this.cacheTopGgLookup(botId, {
+          status: 'listed',
+          reason: `Listado en Top.gg${body?.username ? ` como ${String(body.username).slice(0, 80)}` : ''}.`
+        }, TOPGG_CACHE_MS);
+      }
+
+      if (response.status === 404) {
+        return this.cacheTopGgLookup(botId, {
+          status: 'not_listed',
+          reason: 'Top.gg devolvio 404: bot no listado.'
+        }, TOPGG_CACHE_MS);
+      }
+
+      return this.cacheTopGgLookup(botId, {
+        status: 'unknown',
+        reason: `Top.gg no pudo confirmar el bot. HTTP ${response.status}.`
+      }, TOPGG_ERROR_CACHE_MS);
+    } catch (error) {
+      return this.cacheTopGgLookup(botId, {
+        status: 'unknown',
+        reason: error?.name === 'AbortError'
+          ? 'Timeout consultando Top.gg.'
+          : `Error consultando Top.gg: ${error?.message ?? 'desconocido'}.`
+      }, TOPGG_ERROR_CACHE_MS);
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  cacheTopGgLookup(botId, result, ttlMs) {
+    this.topGgBotCache.set(botId, {
+      result,
+      expiresAt: Date.now() + ttlMs
+    });
+    return result;
+  }
+
   async sendSecurityLog({ guild, config, title, description, fields = [], important = false }) {
     const embed = new EmbedBuilder()
       .setColor(0xffffff)
@@ -618,11 +737,6 @@ export class SecurityManager {
   }
 }
 
-function isVerifiedBot(user) {
-  if (!user?.bot) return false;
-  return Boolean(user.flags?.has?.(UserFlagsBitField.Flags.VerifiedBot));
-}
-
 function normalizeContent(value = '') {
   return String(value)
     .toLowerCase()
@@ -638,6 +752,13 @@ function extractUrls(content = '') {
     .map(cleanUrl)
     .filter(Boolean))]
     .slice(0, 6);
+}
+
+function describeTopGgLookup(lookup) {
+  if (!lookup) return 'No aplica.';
+  if (lookup.status === 'listed') return lookup.reason || 'Bot listado en Top.gg.';
+  if (lookup.status === 'not_listed') return lookup.reason || 'Bot no listado en Top.gg.';
+  return lookup.reason || 'Estado Top.gg desconocido.';
 }
 
 function extractMessageUrls(message) {

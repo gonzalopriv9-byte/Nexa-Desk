@@ -152,6 +152,16 @@ If the Pi previously ran without Supabase vars, migrate the local JSON data afte
 npm run migrate:supabase
 ```
 
+## Top.gg Anti-Bots
+
+Security Guard can use Top.gg as a safe-list before banning new bots. Get the token from your Top.gg bot dashboard under `Integrations & API`, then set it on the Pi:
+
+```text
+TOPGG_API_TOKEN=...
+```
+
+If this variable is missing or Top.gg times out, NexaDesk does not ban bots blindly. It only bans when Top.gg confirms the bot is not listed.
+
 ## Groq AI
 
 NexaDesk is configured to use Groq by default:

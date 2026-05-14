@@ -179,7 +179,7 @@ const commands = [
         .addBooleanOption((option) =>
           option
             .setName('antibots')
-            .setDescription('Bloquear bots no verificados.')
+            .setDescription('Bloquear solo bots que no aparezcan listados en Top.gg.')
             .setRequired(false)
         )
         .addBooleanOption((option) =>
