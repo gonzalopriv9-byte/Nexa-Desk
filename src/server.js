@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { GroqClient } from './ai/groq-client.js';
 import { GLOBAL_BLACKLIST_ADMIN_USER_ID, buildGlobalBanCode, isBlacklistEntryActive, parseBlacklistDuration } from './blacklist.js';
 import { normalizeTotpSecret, verifyTotpCode } from './docs-auth.js';
+import { discordEmojiUrl } from './emojis.js';
 import { normalizeTicketComponent } from './panel-options.js';
 import { isPremiumEntitled, normalizePremiumConfig, summarizePremiumConfig } from './premium.js';
 import { normalizeSecurityConfig, summarizeSecurityConfig } from './security.js';
@@ -1925,9 +1926,9 @@ function renderLogin(config) {
       <p class="eyebrow">Acceso seguro</p>
       <h2>Entrar con Discord</h2>
       <p>Solo veras servidores donde tengas permisos de gestion.</p>
-      <div class="status-line"><span>OAuth</span><strong>Discord</strong></div>
-      <div class="status-line"><span>Datos</span><strong>Supabase</strong></div>
-      <div class="status-line"><span>Realtime</span><strong>Activo</strong></div>
+      <div class="status-line"><span>${renderDashboardEmoji('rightArrow', 'OAuth')}OAuth</span><strong>Discord</strong></div>
+      <div class="status-line"><span>${renderDashboardEmoji('server', 'Datos')}Datos</span><strong>Supabase</strong></div>
+      <div class="status-line"><span>${renderDashboardEmoji('check', 'Realtime')}Realtime</span><strong>Activo</strong></div>
       ${isReady ? '<a class="login-button" id="loginButton" href="/auth/discord">Continuar con Discord</a>' : '<p class="error">Falta DISCORD_CLIENT_SECRET en el entorno.</p>'}
       <div class="legal-links"><a href="/terms">Terms and Conditions</a><a href="/privacy">Privacy Policy</a></div>
     </aside>
@@ -1982,6 +1983,18 @@ function renderError(message) {
   </main>
 </body>
 </html>`;
+}
+
+function getDashboardEmojiUrls() {
+  return Object.fromEntries(
+    ['server', 'check', 'nexalogo', 'rightArrow', 'ban', 'wifi', 'global']
+      .map((key) => [key, discordEmojiUrl(key)])
+  );
+}
+
+function renderDashboardEmoji(name, alt = name) {
+  const src = discordEmojiUrl(name);
+  return src ? `<img class="dash-emoji" src="${src}" alt="${escapeHtml(alt)}" loading="lazy">` : '';
 }
 
 function renderDashboard({ session, guilds, tickets, stats }) {
@@ -2053,6 +2066,10 @@ function renderDashboard({ session, guilds, tickets, stats }) {
     .nav-brand { display:flex; align-items:center; gap:12px; margin-bottom:18px; }
     .nav-link { display:flex; align-items:center; gap:10px; color:var(--muted); text-decoration:none; border:1px solid transparent; border-radius:10px; padding:10px 11px; margin:4px 0; transition:color .22s ease, border-color .22s ease, background .22s ease, transform .22s ease; }
     .nav-icon { display:grid; place-items:center; width:24px; height:24px; border:1px solid rgba(255,255,255,.16); border-radius:8px; color:#fff; background:rgba(255,255,255,.045); font-size:13px; line-height:1; flex:0 0 auto; }
+    .dash-emoji { width:18px; height:18px; object-fit:contain; vertical-align:-4px; margin-right:7px; filter:drop-shadow(0 0 12px rgba(255,255,255,.2)); }
+    .nav-icon .dash-emoji { width:16px; height:16px; margin:0; vertical-align:0; }
+    .label-with-emoji,.server-status span,.stat span,.status-line span,.check-item span { display:flex; align-items:center; gap:7px; }
+    .label-with-emoji .dash-emoji,.server-status .dash-emoji,.stat .dash-emoji,.status-line .dash-emoji,.check-item .dash-emoji { margin-right:0; }
     .nav-link:hover,.nav-link.is-active { color:var(--text); border-color:rgba(255,255,255,.44); background:linear-gradient(135deg, rgba(255,255,255,.12), rgba(255,255,255,.035)); transform:translateX(3px); box-shadow:0 12px 34px rgba(0,0,0,.24), 0 0 28px rgba(255,255,255,.045) inset; }
     .nav-foot { position:absolute; left:16px; right:16px; bottom:16px; }
     .nav-legal { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:10px; font-size:12px; }
@@ -2366,13 +2383,13 @@ function renderDashboard({ session, guilds, tickets, stats }) {
   <div class="app-shell">
   <aside class="sidebar">
     <div class="nav-brand"><img class="brand-logo" src="/assets/nexadesk-logo.svg" alt="NexaDesk"><strong>NexaDesk</strong></div>
-    <a class="nav-link is-active" href="#overview" data-view="overview"><span class="nav-icon">⌂</span><span>Resumen</span></a>
-    <a class="nav-link" href="#servers" data-view="servers"><span class="nav-icon">◎</span><span>Servidores</span></a>
-    <a class="nav-link" href="#settings" data-view="settings"><span class="nav-icon">⚙</span><span>Configuracion</span></a>
-    <a class="nav-link" href="#components" data-view="components"><span class="nav-icon">▣</span><span>Componentes</span></a>
-    <a class="nav-link" href="#panels" data-view="panels"><span class="nav-icon">✦</span><span>Paneles</span></a>
-    <a class="nav-link" href="#premium" data-view="premium"><span class="nav-icon">◆</span><span>Premium</span></a>
-    <a class="nav-link" href="#tickets" data-view="tickets"><span class="nav-icon">☰</span><span>Tickets</span></a>
+    <a class="nav-link is-active" href="#overview" data-view="overview"><span class="nav-icon">${renderDashboardEmoji('nexalogo', 'Resumen')}</span><span>Resumen</span></a>
+    <a class="nav-link" href="#servers" data-view="servers"><span class="nav-icon">${renderDashboardEmoji('server', 'Servidores')}</span><span>Servidores</span></a>
+    <a class="nav-link" href="#settings" data-view="settings"><span class="nav-icon">${renderDashboardEmoji('rightArrow', 'Configuracion')}</span><span>Configuracion</span></a>
+    <a class="nav-link" href="#components" data-view="components"><span class="nav-icon">${renderDashboardEmoji('check', 'Componentes')}</span><span>Componentes</span></a>
+    <a class="nav-link" href="#panels" data-view="panels"><span class="nav-icon">${renderDashboardEmoji('global', 'Paneles')}</span><span>Paneles</span></a>
+    <a class="nav-link" href="#premium" data-view="premium"><span class="nav-icon">${renderDashboardEmoji('check', 'Premium')}</span><span>Premium</span></a>
+    <a class="nav-link" href="#tickets" data-view="tickets"><span class="nav-icon">${renderDashboardEmoji('wifi', 'Tickets')}</span><span>Tickets</span></a>
     <div class="nav-foot">
       <div class="nav-legal"><a href="/terms" target="_blank" rel="noopener">Terms</a><a href="/privacy" target="_blank" rel="noopener">Privacy</a></div>
       <form method="post" action="/logout"><button class="secondary-button" type="submit">Cerrar sesion</button></form>
@@ -2404,13 +2421,13 @@ function renderDashboard({ session, guilds, tickets, stats }) {
           <p class="kicker">Servidor activo</p>
           <select id="guildId" required>${guildOptions}</select>
           <div class="server-status">
-            <div><span>Categoria</span><strong id="activeCategory">Sin configurar</strong></div>
-            <div><span>Staff</span><strong id="activeStaff">Sin configurar</strong></div>
-            <div><span>Paneles</span><strong id="activePanels">0</strong></div>
-            <div><span>Seguridad</span><strong id="activeSecurity">Off</strong></div>
-            <div><span>Premium</span><strong id="activePremium">Free</strong></div>
-            <div><span>Transcripciones</span><strong id="activeTranscripts">0</strong></div>
-            <div><span>Anuncios</span><strong id="activeAnnouncements">No detectado</strong></div>
+            <div><span>${renderDashboardEmoji('server', 'Categoria')}Categoria</span><strong id="activeCategory">Sin configurar</strong></div>
+            <div><span>${renderDashboardEmoji('wifi', 'Staff')}Staff</span><strong id="activeStaff">Sin configurar</strong></div>
+            <div><span>${renderDashboardEmoji('global', 'Paneles')}Paneles</span><strong id="activePanels">0</strong></div>
+            <div><span>${renderDashboardEmoji('ban', 'Seguridad')}Seguridad</span><strong id="activeSecurity">Off</strong></div>
+            <div><span>${renderDashboardEmoji('check', 'Premium')}Premium</span><strong id="activePremium">Free</strong></div>
+            <div><span>${renderDashboardEmoji('nexalogo', 'Transcripciones')}Transcripciones</span><strong id="activeTranscripts">0</strong></div>
+            <div><span>${renderDashboardEmoji('global', 'Anuncios')}Anuncios</span><strong id="activeAnnouncements">No detectado</strong></div>
           </div>
           <div class="server-score">
             <div>
@@ -2428,9 +2445,9 @@ function renderDashboard({ session, guilds, tickets, stats }) {
           <div class="readiness-checklist" id="readinessChecklist" aria-label="Checklist del servidor activo"></div>
         </section>
         <div class="stats" id="overview">
-          <div class="stat"><strong id="guildCount">${stats.totalGuilds}</strong><span>Servidores gestionables</span><small id="guildInstallMeta">${stats.installedGuilds ?? 0} con bot - ${stats.notInstalledGuilds ?? 0} por invitar</small></div>
-          <div class="stat"><strong id="ticketCount">${stats.totalTickets}</strong><span>Tickets detectados</span><small>${stats.ticketsToday} hoy - ${stats.ticketsThisWeek} esta semana</small></div>
-          <div class="stat"><strong id="openCount">${stats.openTickets}</strong><span>Tickets abiertos</span><small>${stats.closedTickets} cerrados o archivados</small></div>
+          <div class="stat"><strong id="guildCount">${stats.totalGuilds}</strong><span>${renderDashboardEmoji('server', 'Servidores')}Servidores gestionables</span><small id="guildInstallMeta">${stats.installedGuilds ?? 0} con bot - ${stats.notInstalledGuilds ?? 0} por invitar</small></div>
+          <div class="stat"><strong id="ticketCount">${stats.totalTickets}</strong><span>${renderDashboardEmoji('nexalogo', 'Tickets')}Tickets detectados</span><small>${stats.ticketsToday} hoy - ${stats.ticketsThisWeek} esta semana</small></div>
+          <div class="stat"><strong id="openCount">${stats.openTickets}</strong><span>${renderDashboardEmoji('wifi', 'Abiertos')}Tickets abiertos</span><small>${stats.closedTickets} cerrados o archivados</small></div>
         </div>
         <section class="command-center">
           <article class="insight-card">
@@ -2806,6 +2823,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       activeView: 'overview'
     };
     const guildConfigs = ${JSON.stringify(guilds)};
+    const dashboardEmojis = ${JSON.stringify(getDashboardEmojiUrls())};
     let guildMeta = {};
     function setActiveView(view, { updateHash = true } = {}) {
       const nextView = document.querySelector('[data-view="' + view + '"].dashboard-view') ? view : 'overview';
@@ -2825,6 +2843,10 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
     }
     function escapeHtml(value) {
       return String(value ?? '').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll(\"'\",'&#039;');
+    }
+    function emojiIcon(name, alt) {
+      const src = dashboardEmojis[name];
+      return src ? '<img class="dash-emoji" src="' + src + '" alt="' + escapeHtml(alt || name) + '" loading="lazy">' : '';
     }
     function renderTickets() {
       document.querySelector('#ticketRows').innerHTML = state.tickets.length ? state.tickets.map(ticketRow).join('') : '<tr><td colspan="5">Aun no hay tickets detectados.</td></tr>';
@@ -3085,10 +3107,22 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       }
       target.innerHTML = getGuildReadiness(guild).map((item) => (
         '<button class="check-item ' + (item.done ? 'is-done' : '') + '" type="button" data-go-view="' + item.view + '">' +
-        '<span>' + escapeHtml(item.label) + '</span>' +
+        '<span>' + emojiIcon(item.done ? 'check' : iconForReadiness(item.key), item.label) + escapeHtml(item.label) + '</span>' +
         '</button>'
       )).join('');
       bindNavigationButtons(target);
+    }
+    function iconForReadiness(key) {
+      return {
+        installed: 'server',
+        category: 'server',
+        announcements: 'global',
+        staff: 'wifi',
+        context: 'nexalogo',
+        security: 'ban',
+        components: 'check',
+        panels: 'rightArrow'
+      }[key] || 'rightArrow';
     }
     function renderRecommendations(guild = getActiveGuild()) {
       const target = document.querySelector('#recommendations');

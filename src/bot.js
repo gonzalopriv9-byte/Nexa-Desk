@@ -28,6 +28,7 @@ import {
   shouldApplyMaintenanceToGuild
 } from './maintenance.js';
 import { buildPanelActionRow, buildPanelEmbed, normalizePanelOptions, normalizeTicketComponent, panelWelcomeMessage } from './panel-options.js';
+import { DISCORD_EMOJIS as EMOJIS } from './emojis.js';
 import { isPremiumEntitled, normalizePremiumConfig } from './premium.js';
 import { SecurityManager, SECURITY_LEVELS, normalizeSecurityConfig, normalizeSecurityLevel, summarizeSecurityConfig } from './security.js';
 import { analyzeGuildChannelsForDiscovery, hasUsefulDiscovery, normalizeDiscoveryConfig } from './server-discovery.js';
@@ -35,10 +36,6 @@ import { buildTranscriptFileName, buildTranscriptText } from './transcripts.js';
 import { createWelcomeCard } from './welcome-card.js';
 import { XNPROTECT_BLACKLIST_CREDIT, checkXnProtectGlobalBan } from './xnprotect-blacklist.js';
 
-const EMOJIS = {
-  wifi: '<a:wifi:1499732411829846116>',
-  global: '<a:Global:1499728413974593708>'
-};
 const BOT_INVITE_PERMISSIONS = '1099780189334';
 const PUBLIC_DASHBOARD_URL = 'https://nexa-desk.onrender.com/';
 const PREMIUM_ADMIN_USER_ID = '1352652366330986526';
@@ -296,7 +293,7 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
       if (ticket.alreadyExists) return;
 
       const welcome = await channel.send([
-        `${EMOJIS.global} Hola, soy **NexaDesk**.`,
+        `${EMOJIS.nexalogo} Hola, soy **NexaDesk**.`,
         'Voy a ayudarte con este ticket. Cuentame que necesitas y, si hace falta, avisare al staff con un resumen claro.'
       ].join('\n'));
       await saveTranscript(storage, welcome, 'assistant');
@@ -620,7 +617,7 @@ async function handleGuildJoin({ guild, storage, config }) {
     name: 'nexadesk-welcome.png'
   });
   const sent = await ownerUser.send({
-    content: `Gracias de verdad por confiar en **NexaDesk** para **${guild.name}**.`,
+    content: `${EMOJIS.nexalogo} Gracias de verdad por confiar en **NexaDesk** para **${guild.name}**.`,
     embeds,
     files: [welcomeCard],
     components
@@ -636,7 +633,7 @@ async function handleGuildJoin({ guild, storage, config }) {
 function buildOwnerOnboardingEmbeds({ guild }) {
   const intro = new EmbedBuilder()
     .setColor(0xffffff)
-    .setTitle(`${EMOJIS.global} Bienvenido a NexaDesk`)
+    .setTitle(`${EMOJIS.nexalogo} Bienvenido a NexaDesk`)
     .setImage('attachment://nexadesk-welcome.png')
     .setDescription([
       `Me acabo de unir a **${guild.name}**. Gracias de corazon por confiar en NexaDesk.`,
@@ -647,12 +644,12 @@ function buildOwnerOnboardingEmbeds({ guild }) {
     ].join('\n\n'))
     .addFields(
       {
-        name: 'Que hace desde el primer dia',
+        name: `${EMOJIS.check} Que hace desde el primer dia`,
         value: [
-          'Atiende tickets con IA y contexto del servidor.',
-          'Escala al rol de staff cuando detecta riesgo, reportes serios o peticiones humanas.',
-          'Guarda transcripciones y puede enviarlas por MD al cerrar.',
-          'Consulta blacklist global XN Protect en tickets y avisa al staff sin banear automaticamente.'
+          `${EMOJIS.nexalogo} Atiende tickets con IA y contexto del servidor.`,
+          `${EMOJIS.rightArrow} Escala al rol de staff cuando detecta riesgo, reportes serios o peticiones humanas.`,
+          `${EMOJIS.server} Guarda transcripciones y puede enviarlas por MD al cerrar.`,
+          `${EMOJIS.ban} Consulta blacklist global XN Protect en tickets y avisa al staff sin banear automaticamente.`
         ].join('\n')
       }
     )
@@ -661,11 +658,11 @@ function buildOwnerOnboardingEmbeds({ guild }) {
 
   const setup = new EmbedBuilder()
     .setColor(0xffffff)
-    .setTitle('Setup completo paso a paso')
+    .setTitle(`${EMOJIS.rightArrow} Setup completo paso a paso`)
     .setDescription('Sigue este orden y en pocos minutos NexaDesk quedara listo para trabajar en tu servidor.')
     .addFields(
       {
-        name: '1. Revisa permisos y rol del bot',
+        name: `${EMOJIS.server} 1. Revisa permisos y rol del bot`,
         value: [
           'Asegurate de que el rol de NexaDesk este por encima del rol de staff y de los roles que debe gestionar.',
           'Permisos recomendados: Manage Channels, Manage Roles, Manage Messages, View Audit Log, Moderate Members, Kick Members y Ban Members.',
@@ -673,7 +670,7 @@ function buildOwnerOnboardingEmbeds({ guild }) {
         ].join('\n')
       },
       {
-        name: '2. Abre la dashboard',
+        name: `${EMOJIS.rightArrow} 2. Abre la dashboard`,
         value: [
           `Entra aqui: ${PUBLIC_DASHBOARD_URL}`,
           'Inicia sesion con Discord, elige este servidor y revisa que aparezca como instalado.',
@@ -681,7 +678,7 @@ function buildOwnerOnboardingEmbeds({ guild }) {
         ].join('\n')
       },
       {
-        name: '3. Configuracion rapida por comando',
+        name: `${EMOJIS.check} 3. Configuracion rapida por comando`,
         value: [
           'Puedes dejar lo basico listo con:',
           '`/setup category:<categoria tickets> rol_staff:<rol staff>`',
@@ -691,7 +688,7 @@ function buildOwnerOnboardingEmbeds({ guild }) {
         ].join('\n')
       },
       {
-        name: '4. Contexto IA del servidor',
+        name: `${EMOJIS.global} 4. Contexto IA del servidor`,
         value: [
           'En la dashboard, escribe el prompt del servidor: normas, tono, limites, precios, FAQs, canales importantes y cuando escalar.',
           'Cuanto mejor sea ese contexto, menos preguntas repetidas hara NexaDesk.',
@@ -702,19 +699,19 @@ function buildOwnerOnboardingEmbeds({ guild }) {
 
   const operations = new EmbedBuilder()
     .setColor(0xffffff)
-    .setTitle('Como trabajar despues del setup')
+    .setTitle(`${EMOJIS.nexalogo} Como trabajar despues del setup`)
     .setDescription('Esto es lo que debes contarle a tu staff y lo que NexaDesk hara automaticamente.')
     .addFields(
       {
-        name: 'Tickets normales y bots externos',
+        name: `${EMOJIS.server} Tickets normales y bots externos`,
         value: [
           'Si usas otro bot de tickets, configura la categoria donde ese bot crea canales.',
           'Para Ticket King, NexaDesk detecta canales `ticket-123` cuando Ticket King escribe el mensaje inicial.',
-          'Cuando entre staff, NexaDesk se calla salvo que lo mencionen, le respondan o escriban su nombre.'
+          'Cuando el staff indique que se encarga, NexaDesk se queda en silencio hasta que escriban **Nexa, he terminado**.'
         ].join('\n')
       },
       {
-        name: 'Paneles propios',
+        name: `${EMOJIS.check} Paneles propios`,
         value: [
           'Desde la dashboard puedes crear paneles de boton o menus desplegables.',
           'Cada componente puede tener preguntas previas, categoria propia, mensaje inicial personalizado y modo texto o voz.',
@@ -722,7 +719,7 @@ function buildOwnerOnboardingEmbeds({ guild }) {
         ].join('\n')
       },
       {
-        name: 'Comandos para staff',
+        name: `${EMOJIS.rightArrow} Comandos para staff`,
         value: [
           '`/desactivar ia` pausa la IA cuando entra un humano.',
           '`/activar ia` devuelve el ticket a NexaDesk.',
@@ -731,7 +728,7 @@ function buildOwnerOnboardingEmbeds({ guild }) {
         ].join('\n')
       },
       {
-        name: 'Alianzas automaticas',
+        name: `${EMOJIS.global} Alianzas automaticas`,
         value: [
           'Configura canal y plantilla con `/setup canal_alianzas:<canal> plantilla_alianza:<texto>`.',
           'Cuando un usuario pide alianza, NexaDesk le pide leer normas, recibe su plantilla, entrega la tuya, solicita captura y verifica la prueba con IA visual.',
@@ -739,7 +736,7 @@ function buildOwnerOnboardingEmbeds({ guild }) {
         ].join('\n')
       },
       {
-        name: 'Voz, seguridad y datos',
+        name: `${EMOJIS.wifi} Voz, seguridad y datos`,
         value: [
           'Pro Voice permite crear salas privadas con STT/TTS usando `/voz crear` o paneles de voz.',
           'Premium tambien prepara IA prioritaria, transcripciones inteligentes, Security Plus, branding propio e informes semanales.',
@@ -748,7 +745,7 @@ function buildOwnerOnboardingEmbeds({ guild }) {
         ].join('\n')
       },
       {
-        name: 'Si necesitas ayuda',
+        name: `${EMOJIS.nexalogo} Si necesitas ayuda`,
         value: [
           'Usa `/ayuda` dentro del servidor para abrir la guia interactiva.',
           `Dashboard: ${PUBLIC_DASHBOARD_URL}`,
@@ -907,7 +904,7 @@ async function handleEnableAiCommand({ interaction, storage }) {
   });
 
   await interaction.reply({
-    content: `${EMOJIS.global} IA reactivada. NexaDesk vuelve a escuchar y responder en este ticket.`
+    content: `${EMOJIS.check} IA reactivada. NexaDesk vuelve a escuchar y responder en este ticket.`
   });
 }
 
@@ -930,7 +927,7 @@ async function handleTicketStatusCommand({ interaction, storage }) {
 
   const embed = new EmbedBuilder()
     .setColor(ticket.status === 'closed' ? 0x777777 : isAiDisabledTicket(ticket) ? 0xffcc00 : 0xffffff)
-    .setTitle(`${EMOJIS.global} Estado del ticket`)
+    .setTitle(`${EMOJIS.nexalogo} Estado del ticket`)
     .setDescription(`Vista rapida de **#${ticket.channelName ?? interaction.channel?.name ?? interaction.channelId}**.`)
     .addFields(
       { name: 'Estado', value: ticket.status ?? 'open', inline: true },
@@ -1009,7 +1006,7 @@ async function handleCloseTicketCommand({ interaction, storage, client, voiceMan
 
   await interaction.reply({
     content: [
-      `${EMOJIS.global} Ticket cerrado.`,
+      `${EMOJIS.check} Ticket cerrado.`,
       'Estoy preparando la transcripcion y eliminare este canal en unos segundos.'
     ].join('\n')
   });
@@ -1340,7 +1337,7 @@ async function handleActivatePremiumCommand({ interaction, storage, client }) {
 
   const embed = new EmbedBuilder()
     .setColor(0xffffff)
-    .setTitle(`${EMOJIS.global} Premium activado`)
+    .setTitle(`${EMOJIS.check} Premium activado`)
     .setDescription(`Todas las funciones premium quedan activas para **${updated.guildName ?? guildId}**.`)
     .addFields(
       { name: 'Servidor', value: guildId, inline: true },
@@ -1500,11 +1497,11 @@ function buildSecurityStatusEmbed({ guild, security }) {
     .setTitle(`${EMOJIS.wifi} Security Guard`)
     .setDescription(`Estado de seguridad para **${guild?.name ?? 'este servidor'}**.`)
     .addFields(
-      { name: 'Estado', value: config.enabled ? 'Activo' : 'Desactivado', inline: true },
-      { name: 'Nivel', value: level.label, inline: true },
-      { name: 'Resumen', value: summarizeSecurityConfig(config) },
+      { name: `${EMOJIS.check} Estado`, value: config.enabled ? 'Activo' : 'Desactivado', inline: true },
+      { name: `${EMOJIS.server} Nivel`, value: level.label, inline: true },
+      { name: `${EMOJIS.nexalogo} Resumen`, value: summarizeSecurityConfig(config) },
       {
-        name: 'Modulos',
+        name: `${EMOJIS.rightArrow} Modulos`,
         value: [
           `Anti-flood: **${config.antiFlood ? 'on' : 'off'}** (${config.floodLimit} mensajes/${config.floodWindowSeconds}s)`,
           `Anti-links IA: **${config.antiScamLinks ? 'on' : 'off'}**`,
@@ -1514,8 +1511,8 @@ function buildSecurityStatusEmbed({ guild, security }) {
           `Anti-nuke: **${config.antiNuke ? 'on' : 'off'}** (${config.nukeLimit} acciones/${config.nukeWindowSeconds}s)`
         ].join('\n')
       },
-      { name: 'Logs', value: config.logChannelId ? `<#${config.logChannelId}>` : 'Sin canal de logs. Se avisara al owner por MD cuando sea importante.', inline: true },
-      { name: 'Permisos recomendados', value: 'View Audit Log, Manage Messages, Moderate Members, Kick Members y Ban Members.' }
+      { name: `${EMOJIS.wifi} Logs`, value: config.logChannelId ? `<#${config.logChannelId}>` : 'Sin canal de logs. Se avisara al owner por MD cuando sea importante.', inline: true },
+      { name: `${EMOJIS.ban} Permisos recomendados`, value: 'View Audit Log, Manage Messages, Moderate Members, Kick Members y Ban Members.' }
     )
     .setFooter({ text: 'NexaDesk Security Guard' })
     .setTimestamp(new Date());
@@ -1590,7 +1587,7 @@ async function handleBlacklistCommand({ interaction, storage }) {
       embeds: [
         new EmbedBuilder()
           .setColor(0xffffff)
-          .setTitle(`${EMOJIS.wifi} Blacklist global`)
+          .setTitle(`${EMOJIS.ban} Blacklist global`)
           .setDescription(active.length
             ? active.slice(0, 15).map((entry) => `\`${entry.banCode}\` - <@${entry.userId}> - ${entry.reason}`).join('\n')
             : 'No hay usuarios activos en blacklist global.')
@@ -1660,7 +1657,7 @@ async function sendGlobalBlacklistDm({ user, guild, entry, evidence = [] }) {
   const activeEvidence = evidence.filter((item) => item.attachmentUrl || item.proxyUrl);
   const mainEmbed = new EmbedBuilder()
     .setColor(0xffffff)
-    .setTitle(`${EMOJIS.wifi} Baneo global NexaDesk`)
+    .setTitle(`${EMOJIS.ban} Baneo global NexaDesk`)
     .setDescription(`Has sido baneado automaticamente al entrar en **${guild.name}** porque estas en la blacklist global de NexaDesk.`)
     .addFields(
       { name: 'Motivo', value: entry.reason || 'Sin motivo especificado' },
@@ -1696,7 +1693,7 @@ async function sendGlobalBlacklistDm({ user, guild, entry, evidence = [] }) {
 function buildBlacklistEntryEmbed(entry, evidence = []) {
   return new EmbedBuilder()
     .setColor(0xffffff)
-    .setTitle(`${EMOJIS.wifi} ${entry.banCode}`)
+    .setTitle(`${EMOJIS.ban} ${entry.banCode}`)
     .setDescription(entry.active ? 'Entrada activa en blacklist global.' : 'Entrada desactivada.')
     .addFields(
       { name: 'Usuario', value: `<@${entry.userId}> (${entry.userId})`, inline: true },
@@ -1819,17 +1816,17 @@ function buildXnProtectBlacklistAlert({ user, guildConfig, result }) {
   const proofUrl = result.proof || '';
   const embed = new EmbedBuilder()
     .setColor(0xffffff)
-    .setTitle(`${EMOJIS.wifi} Aviso de blacklist global`)
+    .setTitle(`${EMOJIS.ban} Aviso de blacklist global`)
     .setDescription([
       `Usuario detectado: <@${user.id}> (\`${user.id}\`)`,
       'NexaDesk **no ha baneado** al usuario. Solo deja este aviso para revision manual del staff.'
     ].join('\n'))
     .addFields(
-      { name: 'Fuente', value: XNPROTECT_BLACKLIST_CREDIT },
-      { name: 'Motivo', value: result.reason || 'XN Protect no devolvio motivo.' },
-      { name: 'Desde', value: formatXnProtectTimestamp(result.since), inline: true },
-      { name: 'Expira', value: formatXnProtectTimestamp(result.expires), inline: true },
-      { name: 'Prueba', value: proofUrl ? proofUrl : 'No hay prueba publica en la respuesta de la API.' }
+      { name: `${EMOJIS.global} Fuente`, value: XNPROTECT_BLACKLIST_CREDIT },
+      { name: `${EMOJIS.ban} Motivo`, value: result.reason || 'XN Protect no devolvio motivo.' },
+      { name: `${EMOJIS.server} Desde`, value: formatXnProtectTimestamp(result.since), inline: true },
+      { name: `${EMOJIS.server} Expira`, value: formatXnProtectTimestamp(result.expires), inline: true },
+      { name: `${EMOJIS.wifi} Prueba`, value: proofUrl ? proofUrl : 'No hay prueba publica en la respuesta de la API.' }
     )
     .setFooter({ text: 'Revision manual recomendada antes de continuar el ticket.' })
     .setTimestamp(new Date());
@@ -1839,7 +1836,7 @@ function buildXnProtectBlacklistAlert({ user, guildConfig, result }) {
   }
 
   return {
-    content: `${EMOJIS.wifi} ${staffMention}Aviso para staff: este usuario aparece en la blacklist global de XN Protect. Revisad el caso antes de continuar.`,
+    content: `${EMOJIS.ban} ${staffMention}Aviso para staff: este usuario aparece en la blacklist global de XN Protect. Revisad el caso antes de continuar.`,
     embeds: [embed],
     allowedMentions: {
       roles: guildConfig?.staffRoleId ? [guildConfig.staffRoleId] : [],
@@ -1900,11 +1897,11 @@ function buildHelpEmbed({ view, config, guild }) {
 
   if (view === 'create_ticket') {
     return base
-      .setTitle(`${EMOJIS.global} Como creo un ticket?`)
+      .setTitle(`${EMOJIS.server} Como creo un ticket?`)
       .setDescription('Los tickets se crean desde los paneles publicados por el servidor. NexaDesk puede abrir tickets de texto, menus con preguntas previas y tickets de voz Pro si el servidor lo tiene activo.')
       .addFields(
         {
-          name: 'Para miembros',
+          name: `${EMOJIS.rightArrow} Para miembros`,
           value: [
             'Busca el canal de soporte del servidor.',
             'Pulsa el boton del panel o elige una opcion del menu desplegable.',
@@ -1913,7 +1910,7 @@ function buildHelpEmbed({ view, config, guild }) {
           ].join('\n')
         },
         {
-          name: 'Que hara NexaDesk',
+          name: `${EMOJIS.nexalogo} Que hara NexaDesk`,
           value: [
             'Leera el contexto configurado del servidor.',
             'Te pedira datos si falta informacion.',
@@ -1921,7 +1918,7 @@ function buildHelpEmbed({ view, config, guild }) {
           ].join('\n')
         },
         {
-          name: 'Atajo util',
+          name: `${EMOJIS.check} Atajo util`,
           value: 'Si necesitas una persona directamente, dilo claro dentro del ticket: "necesito asistencia manual".'
         }
       );
@@ -1929,11 +1926,11 @@ function buildHelpEmbed({ view, config, guild }) {
 
   if (view === 'setup') {
     return base
-      .setTitle(`${EMOJIS.wifi} Como configuro el servidor?`)
+      .setTitle(`${EMOJIS.rightArrow} Como configuro el servidor?`)
       .setDescription(`Servidor actual: **${guild?.name ?? 'tu servidor'}**. La configuracion completa vive en la dashboard.`)
       .addFields(
         {
-          name: 'Setup recomendado',
+          name: `${EMOJIS.check} Setup recomendado`,
           value: [
             `1. Abre la dashboard: ${PUBLIC_DASHBOARD_URL}`,
             '2. Inicia sesion con Discord y selecciona el servidor.',
@@ -1946,11 +1943,11 @@ function buildHelpEmbed({ view, config, guild }) {
           ].join('\n')
         },
         {
-          name: 'Si ya usas otro bot de tickets',
+          name: `${EMOJIS.server} Si ya usas otro bot de tickets`,
           value: 'No tienes que cambiar de sistema. Configura la categoria donde ese bot crea los canales y NexaDesk detectara los tickets nuevos.'
         },
         {
-          name: 'Staff',
+          name: `${EMOJIS.wifi} Staff`,
           value: [
             'Mueve el rol de NexaDesk por encima del rol de staff para poder crear tickets privados.',
             'Diles que usen `/desactivar ia` cuando entren a atender manualmente.',
@@ -1962,11 +1959,11 @@ function buildHelpEmbed({ view, config, guild }) {
 
   if (view === 'data') {
     return base
-      .setTitle('Datos, transcripciones y privacidad')
+      .setTitle(`${EMOJIS.server} Datos, transcripciones y privacidad`)
       .setDescription('NexaDesk guarda lo necesario para que el soporte sea continuo, auditable y facil de revisar desde la dashboard.')
       .addFields(
         {
-          name: 'Que se guarda',
+          name: `${EMOJIS.check} Que se guarda`,
           value: [
             'Configuracion del servidor: categoria, rol staff, prompt, contexto, paneles y componentes.',
             'Tickets detectados o creados desde paneles.',
@@ -1974,11 +1971,11 @@ function buildHelpEmbed({ view, config, guild }) {
           ].join('\n')
         },
         {
-          name: 'Donde se guarda',
+          name: `${EMOJIS.global} Donde se guarda`,
           value: 'En Supabase, para que la dashboard pueda mostrar historial, estadisticas y transcripciones por servidor.'
         },
         {
-          name: 'Quien puede verlo',
+          name: `${EMOJIS.rightArrow} Quien puede verlo`,
           value: 'La dashboard filtra servidores usando Discord OAuth. Solo aparecen servidores donde el usuario tiene permisos de owner, Administrator o Manage Server.'
         }
       );
@@ -1986,11 +1983,11 @@ function buildHelpEmbed({ view, config, guild }) {
 
   if (view === 'premium') {
     return base
-      .setTitle(`${EMOJIS.global} Premium de NexaDesk`)
+      .setTitle(`${EMOJIS.check} Premium de NexaDesk`)
       .setDescription('Premium esta pensado para servidores que quieren soporte mas rapido, mas humano y mas facil de vender como experiencia profesional.')
       .addFields(
         {
-          name: 'Funciones incluidas',
+          name: `${EMOJIS.nexalogo} Funciones incluidas`,
           value: [
             'Voz Pro con STT/TTS y salas privadas vinculadas al ticket.',
             'IA prioritaria con respuestas menos genericas y mejores escalados.',
@@ -2001,7 +1998,7 @@ function buildHelpEmbed({ view, config, guild }) {
           ].join('\n')
         },
         {
-          name: 'Como se activa',
+          name: `${EMOJIS.rightArrow} Como se activa`,
           value: [
             'El owner autorizado puede usar `/activarpremium servidor:<ID>`.',
             'El owner global puede usar `/mantenimiento activar` para ralentizar solo servidores Free durante ajustes del servicio.',
@@ -2018,7 +2015,7 @@ function buildHelpEmbed({ view, config, guild }) {
       .setDescription('NexaDesk Security Guard protege el servidor sin sustituir tu sistema de tickets. Actua como capa preventiva alrededor del soporte.')
       .addFields(
         {
-          name: 'Que protege',
+          name: `${EMOJIS.ban} Que protege`,
           value: [
             'Anti-flood: borra spam rapido y puede aplicar timeout.',
             'Anti-links IA: revisa enlaces con IA para bloquear phishing, estafas, malware y regalos falsos.',
@@ -2029,7 +2026,7 @@ function buildHelpEmbed({ view, config, guild }) {
           ].join('\n')
         },
         {
-          name: 'Como se configura',
+          name: `${EMOJIS.rightArrow} Como se configura`,
           value: [
             `1. Dashboard: ${PUBLIC_DASHBOARD_URL}`,
             '2. Ve a Configuracion > Security Guard.',
@@ -2038,7 +2035,7 @@ function buildHelpEmbed({ view, config, guild }) {
           ].join('\n')
         },
         {
-          name: 'Blacklist global XN Protect',
+          name: `${EMOJIS.ban} Blacklist global XN Protect`,
           value: [
             'Al abrirse un ticket, NexaDesk consulta si el opener tiene globalban en XN Protect.',
             'Si aparece marcado, **no lo banea**: publica un aviso con motivo, fechas y prueba para que el staff decida manualmente.',
@@ -2046,32 +2043,32 @@ function buildHelpEmbed({ view, config, guild }) {
           ].join('\n')
         },
         {
-          name: 'Comando rapido',
+          name: `${EMOJIS.check} Comando rapido`,
           value: '`/seguridad configurar nivel:intermedio canal_logs:#logs antilinks:true automod:true`\n`/seguridad estado`\n`/seguridad desactivar`'
         }
       );
   }
 
   return base
-    .setTitle(`${EMOJIS.global} Centro de ayuda NexaDesk`)
+    .setTitle(`${EMOJIS.nexalogo} Centro de ayuda NexaDesk`)
     .setDescription([
       'Elige una categoria para ver la guia exacta.',
       'NexaDesk funciona como moderador de soporte con IA: atiende tickets, pide informacion, escala al staff cuando hace falta y guarda transcripciones para revisarlas desde la dashboard.'
     ].join('\n\n'))
     .addFields(
       {
-        name: 'Categorias disponibles',
+        name: `${EMOJIS.rightArrow} Categorias disponibles`,
         value: [
-          'Como creo un ticket?',
-          'Como configuro el servidor?',
-          'Seguridad del servidor',
-          'Premium',
-          'Datos y transcripciones',
-          'Comando util: `/diagnostico` para auditar el setup actual.'
+          `${EMOJIS.server} Como creo un ticket?`,
+          `${EMOJIS.rightArrow} Como configuro el servidor?`,
+          `${EMOJIS.ban} Seguridad del servidor`,
+          `${EMOJIS.check} Premium`,
+          `${EMOJIS.global} Datos y transcripciones`,
+          `${EMOJIS.nexalogo} Comando util: \`/diagnostico\` para auditar el setup actual.`
         ].join('\n')
       },
       {
-        name: 'Soporte oficial',
+        name: `${EMOJIS.wifi} Soporte oficial`,
         value: 'Si necesitas ayuda humana con NexaDesk: https://discord.gg/vVXbq7ePEZ'
       }
     );
@@ -2475,7 +2472,7 @@ async function sendTicketKingWelcomeOnce({ storage, message, guildConfig, ticket
   if (transcript.some((item) => isTicketKingWelcomeContent(item.content))) return null;
 
   const welcome = await message.channel.send([
-    `${EMOJIS.global} Hola, soy **NexaDesk**.`,
+    `${EMOJIS.nexalogo} Hola, soy **NexaDesk**.`,
     'He detectado este ticket de Ticket King y voy a ayudarte aqui. Cuentame que necesitas y, si hace falta, avisare al staff con un resumen claro.'
   ].join('\n'));
   await saveTranscript(storage, welcome, 'assistant');
@@ -2653,7 +2650,7 @@ function buildTicketWelcomeMessage({ panel, component, answers, userMention }) {
       ].join('\n')
     : '';
 
-  return `${EMOJIS.global} ${baseMessage}${answerBlock}`;
+  return `${EMOJIS.nexalogo} ${baseMessage}${answerBlock}`;
 }
 
 function formatWelcomeTemplate(template, userMention) {
@@ -2679,7 +2676,7 @@ async function handleNaturalCloseRequest({ client, storage, message, ticket, gui
 
   const closingReply = await message.reply({
     content: [
-      `${EMOJIS.global} Ticket cerrado.`,
+      `${EMOJIS.check} Ticket cerrado.`,
       'Estoy preparando la transcripcion y eliminare este canal en unos segundos.'
     ].join('\n'),
     allowedMentions: { repliedUser: false }
@@ -2761,7 +2758,7 @@ async function closeTicketWithTranscript({ client, storage, voiceManager = null,
 
   try {
     await closingReply.edit([
-      `${EMOJIS.global} Ticket cerrado.`,
+      `${EMOJIS.check} Ticket cerrado.`,
       dmStatus,
       'Este canal se eliminara en 8 segundos.'
     ].join('\n'));
@@ -2861,7 +2858,7 @@ async function sendTranscriptDm({ targetUser, ticket, messages, guildName }) {
 
   await targetUser.send({
     content: [
-      `${EMOJIS.global} Aqui tienes la transcripcion de tu ticket en **${ticket.guildName ?? guildName ?? 'el servidor'}**.`,
+      `${EMOJIS.server} Aqui tienes la transcripcion de tu ticket en **${ticket.guildName ?? guildName ?? 'el servidor'}**.`,
       `Canal: **#${ticket.channelName ?? ticket.channelId}**`,
       'Si necesitas volver a contactar con el staff, abre un nuevo ticket.'
     ].join('\n'),
@@ -2890,6 +2887,9 @@ async function handleGlobalStatsCommand({ interaction, storage, client }) {
   }).length;
   const staffTickets = activeTickets.filter((ticket) => ['staff_waiting', 'staff_active', 'escalated'].includes(ticket.status)).length;
   const memoryMb = Math.round(process.memoryUsage().rss / 1024 / 1024);
+  const totalUsers = [...client.guilds.cache.values()].reduce((total, guild) => (
+    total + (Number.isFinite(guild.memberCount) ? guild.memberCount : guild.members.cache.size)
+  ), 0);
 
   const embed = new EmbedBuilder()
     .setColor(0xffffff)
@@ -2897,10 +2897,11 @@ async function handleGlobalStatsCommand({ interaction, storage, client }) {
     .setDescription('Estado en vivo del bot y su sistema de tickets.')
     .addFields(
       { name: `${EMOJIS.wifi} Ping`, value: `${Math.max(Math.round(client.ws.ping), 0)} ms`, inline: true },
-      { name: `${EMOJIS.global} Servers`, value: String(client.guilds.cache.size), inline: true },
-      { name: 'Canales activos', value: String(activeTickets.length), inline: true },
+      { name: `${EMOJIS.server} SERVIDORES`, value: String(client.guilds.cache.size), inline: true },
+      { name: `${EMOJIS.global} USUARIOS`, value: String(totalUsers), inline: true },
+      { name: `${EMOJIS.nexalogo} Canales activos`, value: String(activeTickets.length), inline: true },
       {
-        name: 'Tickets',
+        name: `${EMOJIS.rightArrow} Tickets`,
         value: [
           `Total: **${botTickets.length}**`,
           `Abiertos: **${botTickets.filter((ticket) => ticket.status === 'open').length}**`,
@@ -2911,7 +2912,7 @@ async function handleGlobalStatsCommand({ interaction, storage, client }) {
         inline: true
       },
       {
-        name: 'Dashboard',
+        name: `${EMOJIS.global} Dashboard`,
         value: [
           `Servidores configurados: **${guildConfigs.length}**`,
           `Servidores Premium: **${proGuilds}**`,
@@ -2923,7 +2924,7 @@ async function handleGlobalStatsCommand({ interaction, storage, client }) {
         inline: true
       },
       {
-        name: 'Atencion operativa',
+        name: `${EMOJIS.check} Atencion operativa`,
         value: [
           `Tickets esperando staff: **${staffTickets}**`,
           `Tickets +24h abiertos: **${staleTickets}**`,
@@ -2932,7 +2933,7 @@ async function handleGlobalStatsCommand({ interaction, storage, client }) {
         inline: true
       },
       {
-        name: 'Runtime',
+        name: `${EMOJIS.wifi} Runtime`,
         value: [
           `Uptime: **${formatDuration(client.uptime ?? 0)}**`,
           `RAM: **${memoryMb} MB**`,
@@ -2996,12 +2997,12 @@ async function handleDiagnosticsCommand({ interaction, storage, client }) {
     ].join('\n'))
     .addFields(
       {
-        name: 'Checklist',
-        value: operational.checks.map((item) => `${item.done ? '[OK]' : '[Falta]'} ${item.label}`).join('\n'),
+        name: `${EMOJIS.check} Checklist`,
+        value: operational.checks.map((item) => `${item.done ? EMOJIS.check : EMOJIS.rightArrow} ${item.label}`).join('\n'),
         inline: false
       },
       {
-        name: 'Tickets',
+        name: `${EMOJIS.server} Tickets`,
         value: [
           `Abiertos: **${activeTickets.length}**`,
           `Creados hoy: **${todayTickets}**`,
@@ -3011,7 +3012,7 @@ async function handleDiagnosticsCommand({ interaction, storage, client }) {
         inline: true
       },
       {
-        name: 'Modulos',
+        name: `${EMOJIS.nexalogo} Modulos`,
         value: [
           `IA: **${guildConfig?.serverPrompt || guildConfig?.serverInfo ? 'Con contexto' : 'Sin contexto'}**`,
           `Security Guard: **${security.enabled ? 'Activo' : 'Off'}**`,
@@ -3021,7 +3022,7 @@ async function handleDiagnosticsCommand({ interaction, storage, client }) {
         inline: true
       },
       {
-        name: 'Descubrimiento inteligente',
+        name: `${EMOJIS.global} Descubrimiento inteligente`,
         value: [
           `Anuncios: **${discovery.announcementChannelName ? `#${discovery.announcementChannelName}` : 'No detectado'}**`,
           `Normas: **${discovery.rulesChannelName ? `#${discovery.rulesChannelName}` : 'No detectado'}**`,
@@ -3031,7 +3032,7 @@ async function handleDiagnosticsCommand({ interaction, storage, client }) {
         inline: true
       },
       {
-        name: 'Siguiente mejor accion',
+        name: `${EMOJIS.rightArrow} Siguiente mejor accion`,
         value: nextActions.length
           ? nextActions.map((item) => `- ${item.action}`).join('\n')
           : 'El servidor esta listo. Revisa transcripciones y estadisticas para optimizar tiempos de respuesta.',
@@ -3192,7 +3193,9 @@ async function shouldStaySilentInTicket({ storage, message, ticket, guildConfig,
   }
 
   const handoffState = await getStaffHandoffState(storage, message.channel.id);
-  if (handoffState.pending || handoffState.active || handoffState.waitingFinish) {
+  if (handoffState.active) return true;
+
+  if (handoffState.pending || handoffState.waitingFinish) {
     return !isMessageAddressedToNexaDesk(message, client);
   }
 
@@ -3226,33 +3229,21 @@ async function handleStaffHandoffMessage({ storage, message, ticket, guildConfig
       return null;
     });
     const reply = await message.reply({
-      content: `${EMOJIS.global} Perfecto <@${message.author.id}>, vuelvo a atender el ticket.`,
+      content: `${EMOJIS.check} Perfecto <@${message.author.id}>, vuelvo a atender el ticket.`,
       allowedMentions: { users: [message.author.id], repliedUser: false }
     });
     await saveTranscript(storage, reply, 'assistant');
     return { handled: true, ticket: updatedTicket ?? ticket };
   }
 
+  if (isStaffTakeoverDirective(message.content)) {
+    const updatedTicket = await activateStaffTakeover({ storage, message, ticket });
+    return { handled: true, ticket: updatedTicket ?? ticket };
+  }
+
   if (handoffState.pending) {
     if (isStaffHandoffYes(message.content)) {
-      await markStaffHandoffState(storage, message, 'accepted', message.author.id);
-      const updatedTicket = await storage.updateTicket(ticket.channelId, {
-        status: 'staff_active',
-        aiDisabled: false,
-        aiDisabledBy: null,
-        aiDisabledAt: null
-      }).catch((error) => {
-        console.error(`Failed to mark staff handoff accepted in ${ticket.channelId}:`, error);
-        return null;
-      });
-      const reply = await message.reply({
-        content: [
-          `${EMOJIS.wifi} Perfecto <@${message.author.id}>, te dejo al mando de este ticket.`,
-          'Desde ahora solo respondere si me mencionan, me responden directamente o dicen **Nexa**.'
-        ].join('\n'),
-        allowedMentions: { users: [message.author.id], repliedUser: false }
-      });
-      await saveTranscript(storage, reply, 'assistant');
+      const updatedTicket = await activateStaffTakeover({ storage, message, ticket });
       return { handled: true, ticket: updatedTicket ?? ticket };
     }
 
@@ -3278,7 +3269,9 @@ async function handleStaffHandoffMessage({ storage, message, ticket, guildConfig
     return { handled: true };
   }
 
-  if (handoffState.active || handoffState.waitingFinish) {
+  if (handoffState.active) return { handled: true };
+
+  if (handoffState.waitingFinish) {
     return { handled: !isMessageAddressedToNexaDesk(message, client) };
   }
 
@@ -3347,11 +3340,46 @@ async function markStaffHandoffState(storage, message, action, staffId) {
   });
 }
 
+async function activateStaffTakeover({ storage, message, ticket }) {
+  await markStaffHandoffState(storage, message, 'accepted', message.author.id);
+  const updatedTicket = await storage.updateTicket(ticket.channelId, {
+    status: 'staff_active',
+    aiDisabled: true,
+    aiDisabledBy: message.author.id,
+    aiDisabledAt: new Date().toISOString()
+  }).catch((error) => {
+    console.error(`Failed to mark staff handoff accepted in ${ticket.channelId}:`, error);
+    return null;
+  });
+  const reply = await message.reply({
+    content: [
+      `${EMOJIS.check} Perfecto <@${message.author.id}>, me quedo en silencio y dejo el ticket en tus manos.`,
+      'Cuando termines, escribe **Nexa, he terminado** para que vuelva a atenderlo.'
+    ].join('\n'),
+    allowedMentions: { users: [message.author.id], repliedUser: false }
+  });
+  await saveTranscript(storage, reply, 'assistant');
+  return updatedTicket;
+}
+
 function isStaffHandoffYes(content) {
   const normalized = normalizeText(content);
   return [
     /^(?:si|sii|sip|yes|yep|ok|vale|dale|claro|afirmativo)\b/,
     /\b(?:me\s+encargo|me\s+hago\s+cargo|lo\s+atiendo|yo\s+lo\s+atiendo|yo\s+me\s+encargo)\b/
+  ].some((pattern) => pattern.test(normalized));
+}
+
+function isStaffTakeoverDirective(content) {
+  const normalized = normalizeText(content);
+  return [
+    /\b(?:nexa|nexadesk)\b.*\b(?:me\s+encargo|me\s+hago\s+cargo|lo\s+atiendo|yo\s+lo\s+atiendo|yo\s+me\s+encargo|yo\s+lo\s+llevo|yo\s+lo\s+gestiono)\b/,
+    /\b(?:me\s+encargo|me\s+hago\s+cargo|lo\s+atiendo|yo\s+lo\s+atiendo|yo\s+me\s+encargo|yo\s+lo\s+llevo|yo\s+lo\s+gestiono)\b.*\b(?:nexa|nexadesk|ticket|caso|usuario)\b/,
+    /\b(?:me\s+encargo|me\s+hago\s+cargo|yo\s+lo\s+llevo|yo\s+lo\s+gestiono)\b.*\b(?:no\s+necesito\s+tu\s+ayuda|no\s+hace\s+falta\s+tu\s+ayuda|deja\s+de\s+responder|no\s+respondas)\b/,
+    /\b(?:nexa|nexadesk)\b.*\b(?:no\s+necesito\s+tu\s+ayuda|no\s+hace\s+falta\s+tu\s+ayuda|deja\s+de\s+responder|quedate\s+en\s+silencio|no\s+respondas|callate)\b/,
+    /\b(?:lo\s+tomo|yo\s+sigo|yo\s+me\s+quedo|lo\s+llevo\s+yo|lo\s+gestiono\s+yo)\b.*\b(?:ticket|caso|usuario)\b/,
+    /\b(?:human|staff|moderator)\b.*\b(?:takes?\s+over|will\s+handle|is\s+handling)\b/,
+    /\b(?:i\s+got\s+this|i'll\s+take\s+it|i\s+will\s+handle\s+it|no\s+need\s+for\s+ai|stop\s+responding)\b/
   ].some((pattern) => pattern.test(normalized));
 }
 
@@ -3686,7 +3714,7 @@ async function handleCrisisRiskMessage({ storage, message, guildConfig, ticket }
   const staffMention = guildConfig.staffRoleId ? `<@&${guildConfig.staffRoleId}> ` : '';
   const reply = await message.reply({
     content: [
-      `${EMOJIS.wifi} ${staffMention}**Urgente para staff:** el usuario ha expresado riesgo de hacerse daño. Entrad al ticket ahora.`,
+      `${EMOJIS.ban} ${staffMention}**Urgente para staff:** el usuario ha expresado riesgo de hacerse daño. Entrad al ticket ahora.`,
       '',
       `${message.author}, siento mucho que estes pasando por esto. No quiero que estes solo ahora mismo.`,
       'Si estas en peligro inmediato, llama a emergencias ahora: **112** en Espana/UE, o el numero de emergencia de tu pais.',
@@ -3983,7 +4011,7 @@ async function publishAllianceTemplate({ message, guildConfig, ticket, userTempl
   const content = [
     '@everyone @here',
     '',
-    `${EMOJIS.global} **Nueva solicitud de alianza verificada**`,
+    `${EMOJIS.global} **Nueva solicitud de alianza verificada** ${EMOJIS.check}`,
     'NexaDesk verifico que el usuario envio la plantilla del servidor antes de publicar esta solicitud.',
     '',
     `**Solicitante:** ${message.author} (${message.author.id})`,

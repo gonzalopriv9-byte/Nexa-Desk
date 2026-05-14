@@ -4,6 +4,7 @@ import {
   EmbedBuilder,
   PermissionFlagsBits
 } from 'discord.js';
+import { DISCORD_EMOJIS as EMOJIS } from './emojis.js';
 
 const TOPGG_CACHE_MS = 1000 * 60 * 60 * 12;
 const TOPGG_ERROR_CACHE_MS = 1000 * 60 * 15;
@@ -718,7 +719,7 @@ export class SecurityManager {
   async sendSecurityLog({ guild, config, title, description, fields = [], important = false }) {
     const embed = new EmbedBuilder()
       .setColor(0xffffff)
-      .setTitle(`NexaDesk Security Guard - ${title}`)
+      .setTitle(`${EMOJIS.wifi} NexaDesk Security Guard - ${title}`)
       .setDescription(description)
       .addFields(fields.filter((field) => field?.name && field?.value).slice(0, 8))
       .setTimestamp(new Date());
