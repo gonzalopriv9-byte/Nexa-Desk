@@ -21,6 +21,7 @@ NexaDesk is a Discord support bot that watches ticket categories, joins newly-cr
 - Voice tickets can use Groq STT/TTS to transcribe users, answer in voice, and save the conversation in transcripts.
 - Automatic transcript delivery when another ticket bot closes a ticket by deleting the channel.
 - Global bot metrics with `/globalstats`.
+- Growth Engine with post-ticket ratings, dashboard satisfaction metrics, premium public reviews, and Churn Radar alerts.
 - Optional visual-proof analysis for images and sampled video frames when the server AI prompt asks for visual evidence.
 - Local JSON storage for fast development.
 - Ollama-compatible AI client prepared for a Raspberry Pi.
@@ -64,6 +65,7 @@ The dashboard can:
 - Publish a ticket panel in a selected text channel.
 - Track recent tickets detected or opened from panels.
 - View and download ticket transcripts as TXT files.
+- Configure Growth Engine: feedback DM, review channel, public review threshold, and low-rating alerts.
 - Receive live ticket/config updates through Server-Sent Events.
 - Open a direct Discord invite for manageable servers where the bot is not installed.
 
@@ -139,6 +141,8 @@ SUPABASE_SERVICE_ROLE_KEY=...
 ```
 
 If Supabase vars are missing, NexaDesk falls back to local JSON storage for development.
+
+The current schema includes `ticket_feedback` for Growth Engine. If ratings do not appear in dashboard, rerun `supabase/schema.sql`.
 
 The bot logs the active storage backend on startup. Production should say:
 
@@ -220,7 +224,7 @@ OPENAI_COMPAT_MODEL=local
 Invite NexaDesk with:
 
 ```text
-https://discord.com/oauth2/authorize?client_id=1497894098722492598&permissions=322030608&scope=bot%20applications.commands
+https://discord.com/oauth2/authorize?client_id=1497894098722492598&permissions=1099780451478&scope=bot%20applications.commands
 ```
 
 The invite includes Manage Channels, Manage Roles, View Channel, Send Messages, Embed Links, Attach Files, Read Message History, Connect, Speak, Move Members, and Use Voice Activity.
@@ -246,6 +250,8 @@ npm run register
 /voz cerrar
 /transcripcion enviar [usuario]
 /globalstats
+/crecimiento estado
+/crecimiento configurar [canal_reviews] [reviews_publicas] [rating_publico_min]
 /ayuda
 ```
 
@@ -256,5 +262,7 @@ npm run register
 Voice support is a Pro feature controlled manually from Supabase. For a server, set either `plan = 'pro'` or `voice_support_enabled = true` in `guild_configs`. Optional columns `voice_category_id` and `voice_category_name` let you choose where Pro voice rooms should be created. In the dashboard, set a panel button or menu component to `Voz Pro + STT/TTS` to open a normal private text ticket with a linked private voice room.
 
 When a ticket channel registered by NexaDesk is deleted by another ticket bot, NexaDesk marks the ticket as closed, keeps the transcript available in the dashboard, and tries to DM the transcript to the opener automatically.
+
+Growth Engine asks for a rating by DM when a ticket closes. Free servers get internal ratings and dashboard metrics. Premium servers can publish high ratings to a configured review channel and alert staff when low ratings indicate a user may leave.
 
 When NexaDesk joins a new server, it sends the owner a private onboarding message with setup steps, staff instructions, data/transcript details, dashboard link, and the official support server.

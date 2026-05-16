@@ -99,3 +99,23 @@ create table if not exists public.global_blacklist_evidence (
 
 create index if not exists global_blacklist_evidence_user_id_idx on public.global_blacklist_evidence (user_id);
 create index if not exists global_blacklist_evidence_ban_code_idx on public.global_blacklist_evidence (ban_code);
+
+create table if not exists public.ticket_feedback (
+  id text primary key,
+  guild_id text not null,
+  guild_name text,
+  channel_id text not null,
+  channel_name text,
+  user_id text,
+  username text,
+  rating integer not null check (rating >= 1 and rating <= 5),
+  comment text,
+  source text not null default 'dm_rating',
+  public_review_posted boolean not null default false,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists ticket_feedback_guild_id_idx on public.ticket_feedback (guild_id);
+create index if not exists ticket_feedback_channel_id_idx on public.ticket_feedback (channel_id);
+create index if not exists ticket_feedback_rating_idx on public.ticket_feedback (rating);
+create index if not exists ticket_feedback_created_at_idx on public.ticket_feedback (created_at desc);

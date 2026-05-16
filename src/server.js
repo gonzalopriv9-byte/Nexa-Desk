@@ -9,6 +9,7 @@ import { GroqClient } from './ai/groq-client.js';
 import { GLOBAL_BLACKLIST_ADMIN_USER_ID, buildGlobalBanCode, isBlacklistEntryActive, parseBlacklistDuration } from './blacklist.js';
 import { normalizeTotpSecret, verifyTotpCode } from './docs-auth.js';
 import { discordEmojiUrl } from './emojis.js';
+import { normalizeGrowthConfig } from './growth.js';
 import { normalizeTicketComponent } from './panel-options.js';
 import { isPremiumEntitled, normalizePremiumConfig, summarizePremiumConfig } from './premium.js';
 import { normalizeSecurityConfig, summarizeSecurityConfig } from './security.js';
@@ -381,6 +382,10 @@ export function createServer({ config, storage, bot, events }) {
     res.json(await bot.listGuildChannels({ guildId: req.params.guildId }));
   }));
 
+  app.get('/api/guilds/:guildId/feedback', requireGuildAccess, asyncHandler(async (req, res) => {
+    res.json(await storage.listTicketFeedback([req.params.guildId]));
+  }));
+
   app.post('/api/guilds/:guildId/discovery', requireGuildAccess, asyncHandler(async (req, res) => {
     if (typeof bot.refreshGuildDiscovery !== 'function') {
       res.status(501).json({ error: 'Smart discovery is not available in this runtime.' });
@@ -397,6 +402,7 @@ export function createServer({ config, storage, bot, events }) {
       if (Object.prototype.hasOwnProperty.call(req.body, key)) patch[key] = req.body[key];
     }
     if (req.body.security) patch.security = normalizeSecurityConfig(req.body.security);
+    if (req.body.growth) patch.growth = normalizeGrowthConfig(req.body.growth);
     if (req.session.user?.id === GLOBAL_BLACKLIST_ADMIN_USER_ID) {
       if (Object.prototype.hasOwnProperty.call(req.body, 'plan')) patch.plan = req.body.plan;
       if (Object.prototype.hasOwnProperty.call(req.body, 'voiceSupportEnabled')) patch.voiceSupportEnabled = Boolean(req.body.voiceSupportEnabled);
@@ -615,6 +621,7 @@ function enrichDashboardStats(stats, guilds) {
     escalationReadyGuilds: guilds.filter((guild) => guild.staffRoleId).length,
     aiReadyGuilds: guilds.filter((guild) => guild.serverPrompt || guild.serverInfo).length,
     securityReadyGuilds: guilds.filter((guild) => normalizeSecurityConfig(guild.security).enabled).length,
+    growthReadyGuilds: guilds.filter((guild) => normalizeGrowthConfig(guild.growth).enabled).length,
     proGuilds: guilds.filter(isPremiumEntitled).length,
     panels: guilds.reduce((total, guild) => total + (guild.panels?.length ?? 0), 0)
   };
@@ -661,8 +668,14 @@ function buildEmptyDashboardStats() {
     escalationReadyGuilds: 0,
     aiReadyGuilds: 0,
     securityReadyGuilds: 0,
+    growthReadyGuilds: 0,
     voiceRooms: 0,
-    proGuilds: 0
+    proGuilds: 0,
+    feedbackCount: 0,
+    averageRating: 0,
+    promoterRate: 0,
+    detractors: 0,
+    promoters: 0
   };
 }
 
@@ -792,19 +805,20 @@ async function buildDashboardAssistantReply({ config, message, guild, stats, act
       system: [
         'Eres el copiloto de la dashboard de NexaDesk.',
         'Responde en espanol claro, breve y accionable.',
-        'Ayuda a configurar servidores Discord para tickets con IA, paneles, componentes, staff, voz Pro con STT/TTS, transcripciones, Security Guard, Premium y mantenimiento global.',
-        'La dashboard real tiene estas secciones: Resumen, Servidores, Configuracion, Componentes, Paneles, Premium y Tickets.',
+        'Ayuda a configurar servidores Discord para tickets con IA, paneles, componentes, staff, voz Pro con STT/TTS, transcripciones, Security Guard, Growth Engine, Premium y mantenimiento global.',
+        'La dashboard real tiene estas secciones: Resumen, Servidores, Configuracion, Componentes, Paneles, Crecimiento, Premium y Tickets.',
         'En Configuracion se elige categoria, rol staff, prompt del servidor, informacion del servidor y Security Guard.',
         'Descubrimiento inteligente escanea canales y detecta anuncios, normas, FAQ, soporte y categorias aunque usen tipografias raras.',
         'En Componentes se crean opciones del menu con preguntas previas, primer mensaje y modo Texto o Voz Pro.',
         'En Paneles se publica el embed, boton o menu en un canal de Discord; los botones tambien pueden abrir tickets de voz Pro.',
-        'En Premium se gestionan Voz Pro, IA prioritaria, transcripciones inteligentes, Security Plus, branding propio e informes semanales por servidor.',
+        'En Crecimiento se gestionan valoraciones post-ticket, reviews publicas, canal de reviews y Churn Radar.',
+        'En Premium se gestionan Voz Pro, IA prioritaria, transcripciones inteligentes, Security Plus, branding propio, informes semanales, Growth Engine y conversion insights por servidor.',
         'El modo mantenimiento se controla por slash command owner-only /mantenimiento; no hay boton publico en dashboard.',
         'Security Guard incluye anti-flood, anti-links IA, XN Protect Automod, anti-bots Top.gg, anti-alts y anti-nuke.',
         'En Tickets se ven tickets y transcripciones guardadas.',
         'Si el usuario pide que tu metas algo, explica que puedes rellenar campos con botones de accion, pero el usuario debe revisar y guardar/publicar.',
         'No pidas IDs si la dashboard ya ofrece selectores de roles, canales y categorias.',
-        'Si recomiendas navegar, menciona una seccion exacta: Resumen, Servidores, Configuracion, Componentes, Paneles, Premium o Tickets.',
+        'Si recomiendas navegar, menciona una seccion exacta: Resumen, Servidores, Configuracion, Componentes, Paneles, Crecimiento, Premium o Tickets.',
         'No inventes datos fuera del contexto recibido.'
       ].join('\n'),
       messages: [
@@ -849,9 +863,13 @@ function buildDashboardAssistantFallback({ message, guild, stats, activeView, ac
       : 'Si quieres un menu desplegable, crea primero opciones en Componentes y despues publica el panel desde Paneles.';
   } else if (lower.includes('musica') || lower.includes('music') || lower.includes('cancion') || lower.includes('cola') || lower.includes('autocola') || lower.includes('dj')) {
     reply += 'El modulo de musica ya no forma parte de NexaDesk. La dashboard se centra en soporte, seguridad, voz Pro, paneles, alianzas, transcripciones y Premium.';
+  } else if (lower.includes('crecimiento') || lower.includes('growth') || lower.includes('review') || lower.includes('valoracion') || lower.includes('reseña') || lower.includes('resena') || lower.includes('churn')) {
+    reply += isPremiumEntitled(guild)
+      ? 'Ve a Crecimiento para activar feedback por MD, elegir canal de reviews y convertir valoraciones altas en prueba social. Si activas Churn Radar, el staff recibe alertas cuando alguien queda insatisfecho.'
+      : 'Ve a Crecimiento para preparar feedback post-ticket. Las reviews publicas y Churn Radar se desbloquean con Premium.';
   } else if (lower.includes('premium') || lower.includes('pro') || lower.includes('voz') || lower.includes('voice') || lower.includes('branding') || lower.includes('analitica') || lower.includes('insight')) {
     reply += isPremiumEntitled(guild)
-      ? 'Ve a Premium para activar o pausar Voz Pro, IA prioritaria, transcripciones inteligentes, Security Plus, branding propio e informes semanales por servidor.'
+      ? 'Ve a Premium para activar o pausar Voz Pro, IA prioritaria, transcripciones inteligentes, Security Plus, Growth Engine, branding propio e informes semanales por servidor.'
       : 'Ve a Premium para ver que desbloquea el plan. La activacion del plan se hace manualmente con /activarpremium o desde Supabase, y despues alli gestionas los modulos.';
   } else if (lower.includes('seguridad') || lower.includes('security') || lower.includes('anti') || lower.includes('raid') || lower.includes('flood') || lower.includes('nuke') || lower.includes('phishing') || lower.includes('estafa') || lower.includes('links')) {
     reply += 'Ve a Configuracion y baja hasta Security Guard. Puedes activar nivel intermedio, Anti-links IA, XN Protect Automod, Anti-bots Top.gg, elegir un canal de logs y guardar. Si Discord bloquea acciones, actualiza permisos desde el boton superior.';
@@ -959,6 +977,7 @@ function suggestDashboardActions(message, guild) {
     add('Abrir Configuracion', 'settings');
   }
 
+  if (lower.includes('crecimiento') || lower.includes('growth') || lower.includes('review') || lower.includes('valoracion') || lower.includes('reseña') || lower.includes('resena') || lower.includes('churn')) add('Abrir Crecimiento', 'growth');
   if (lower.includes('premium') || lower.includes('pro') || lower.includes('voz') || lower.includes('voice') || lower.includes('branding') || lower.includes('analitica') || lower.includes('insight')) add('Abrir Premium', 'premium');
   if (lower.includes('servidor') || lower.includes('invitar') || lower.includes('instalar')) add('Ir a Servidores', 'servers');
   if (lower.includes('ia') || lower.includes('prompt') || lower.includes('contexto') || lower.includes('staff') || lower.includes('rol') || lower.includes('seguridad') || lower.includes('security') || lower.includes('anti') || lower.includes('raid') || lower.includes('flood') || lower.includes('nuke') || lower.includes('phishing') || lower.includes('estafa') || lower.includes('links')) add('Abrir Configuracion', 'settings');
@@ -1058,6 +1077,7 @@ function summarizeGuildForAssistant(guild = {}) {
     hasStaffRole: Boolean(guild.staffRoleId),
     hasAiContext: Boolean(guild.serverPrompt || guild.serverInfo),
     security: summarizeSecurityConfig(normalizeSecurityConfig(guild.security)),
+    growth: normalizeGrowthConfig(guild.growth),
     premium: summarizePremiumConfig(guild),
     panels: guild.panels?.length ?? 0,
     components: guild.components?.length ?? 0
@@ -1232,11 +1252,12 @@ function buildDocsSections(config) {
         { type: 'list', items: [
           'Render sirve la dashboard publica con RUN_BOT=false y usa OAuth Discord para usuarios normales.',
           'La Raspberry Pi mantiene vivo el worker del bot con RUN_BOT=true y systemd.',
-          'Supabase guarda configuracion, paneles, componentes, tickets, transcripciones y blacklist interna.',
+          'Supabase guarda configuracion, paneles, componentes, tickets, transcripciones, feedback de tickets y blacklist interna.',
           'Groq procesa soporte IA, vision, STT y parte de TTS; Akiomae queda como fallback final.',
           'XN Protect aporta blacklist global y Automod ofensivo/malicioso. NexaDesk acredita la fuente y no banea automaticamente por blacklist externa.',
           'Top.gg se usa como lista positiva para Anti-bots: si un bot esta listado, se permite; si Top.gg devuelve 404, se puede banear; si falla la API, no se banea.',
           'Premium por servidor se decide con plan pro/premium/enterprise, voice_support_enabled o /activarpremium desde owner autorizado.',
+          'Growth Engine pide feedback al cerrar tickets; Premium permite reviews publicas y Churn Radar para recuperar usuarios insatisfechos.',
           'Modo mantenimiento global se activa con /mantenimiento; ralentiza solo servidores Free y avisa al abrir tickets.',
           'Smart Discovery recorre todos los canales de cada servidor instalado, normaliza tipografias raras y detecta anuncios, normas, FAQ, soporte y categorias candidatas.',
           'El canal de anuncios detectado es destino de broadcast: todo mensaje publicado en ANNOUNCEMENT_SOURCE_CHANNEL_ID dentro de ANNOUNCEMENT_SOURCE_GUILD_ID se replica ahi.',
@@ -1281,7 +1302,7 @@ function buildDocsSections(config) {
           'Privileged intents recomendados: MESSAGE CONTENT INTENT y SERVER MEMBERS INTENT.',
           'Permisos de invitacion: Manage Channels, Manage Roles, View Audit Log, Manage Messages, Moderate Members, Kick, Ban, voz y lectura de historial.',
           'El bot registra slash commands globales con npm run register.',
-          'Comandos clave: /setup, /ayuda, /desactivar ia, /activar ia, /ticket cerrar, /ticket resumen, /voz crear, /globalstats, /activarpremium, /mantenimiento, /seguridad configurar.',
+          'Comandos clave: /setup, /ayuda, /desactivar ia, /activar ia, /ticket cerrar, /ticket resumen, /voz crear, /globalstats, /crecimiento, /activarpremium, /mantenimiento, /seguridad configurar.',
           '/seguridad configurar acepta nivel, canal_logs, edad_minima_dias, antiflood, antilinks, automod, antibots, antialts y antinuke.',
           'Si entra staff al ticket, NexaDesk deja de responder salvo mencion, reply o llamada directa.'
         ] }
@@ -1297,8 +1318,9 @@ function buildDocsSections(config) {
           ['Ticket King', 'Canal ticket-[numero] con mensaje inicial de Ticket King.', 'Detecta opener, saluda una sola vez, revisa XN Protect, atiende hasta staff.'],
           ['Otros bots/categorias', 'Nuevo canal en categoria configurada por /setup o dashboard.', 'Registra ticket si encaja, guarda transcript y atiende segun prompt del servidor.'],
           ['Staff humano', 'Staff escribe, responde o toma el ticket.', 'NexaDesk pregunta si se encargan; si aceptan, IA queda en modo silencio salvo mencion directa.'],
-          ['Cierre propio', '/ticket cerrar o cierre por intencion clara del usuario.', 'Guarda transcripcion, intenta enviar MD al opener y actualiza dashboard.'],
-          ['Cierre de terceros', 'Canal eliminado por otro bot.', 'El bot intenta capturar transcript previo con mensajes guardados y deja registro en Supabase si la tabla esta aplicada.']
+          ['Cierre propio', '/ticket cerrar o cierre por intencion clara del usuario.', 'Guarda transcripcion, intenta enviar MD al opener, pide rating y actualiza dashboard.'],
+          ['Cierre de terceros', 'Canal eliminado por otro bot.', 'El bot intenta capturar transcript previo con mensajes guardados, manda MD con feedback y deja registro en Supabase si la tabla esta aplicada.'],
+          ['Growth Engine', 'Usuario pulsa rating en el MD post-ticket.', 'Guarda ticket_feedback, actualiza estadisticas, publica review si Premium lo permite o avisa Churn Radar si rating bajo.']
         ] },
         { type: 'list', items: [
           'Primer mensaje del usuario en un ticket nuevo siempre debe ser respondido por NexaDesk aunque haya avisos de blacklist previos.',
@@ -1317,6 +1339,7 @@ function buildDocsSections(config) {
           ['guild_configs', 'Categoria, staff, prompt, info, paneles, componentes, premium, security, alianzas.', 'Alto: contiene contexto interno del servidor.'],
           ['tickets', 'Canal, servidor, opener, voz, estado, timestamps.', 'Medio: metadatos de soporte.'],
           ['transcript_messages', 'Mensajes de tickets, voz y eventos importantes.', 'Alto: puede contener datos de usuarios.'],
+          ['ticket_feedback', 'Rating post-ticket, usuario, canal y si se publico review.', 'Medio: satisfaccion de usuarios y reputacion operativa.'],
           ['global_blacklist', 'Baneos internos y codigos.', 'Alto: moderacion sensible.'],
           ['global_blacklist_evidence', 'URLs de pruebas y adjuntos.', 'Alto: evidencias privadas.']
         ] },
@@ -1353,12 +1376,13 @@ function buildDocsSections(config) {
       summary: 'Funciones vendibles y flujo administrativo.',
       blocks: [
         { type: 'list', items: [
-          'Dashboard: Resumen, Servidores, Configuracion, Componentes, Paneles, Premium y Tickets.',
+          'Dashboard: Resumen, Servidores, Configuracion, Componentes, Paneles, Crecimiento, Premium y Tickets.',
           'Configuracion incluye Descubrimiento inteligente para reescanear canales y usar anuncios/normas/FAQ como contexto operativo.',
           'Los anuncios globales salen del canal central configurado y llegan al canal de anuncios detectado de cada servidor; por defecto no replica menciones para evitar @everyone accidental.',
           'Paneles soportan boton unico o menu desplegable con 2+ componentes.',
           'Componentes guardan preguntas previas, categoria destino, primer mensaje y modo texto/voz.',
-          'Premium incluye Voz Pro, IA prioritaria, transcripciones inteligentes, Security Plus, branding propio e informes semanales.',
+          'Crecimiento permite configurar feedback post-ticket, canal de reviews, rating publico minimo y alertas de baja satisfaccion.',
+          'Premium incluye Voz Pro, IA prioritaria, transcripciones inteligentes, Security Plus, Growth Engine, reviews publicas, Churn Radar, branding propio e informes semanales.',
           'La seccion Premium usa paleta dorada y solo abre si el usuario tiene al menos un servidor con premium activo.',
           'Premium no se ralentiza durante mantenimiento global; los servidores Free reciben aviso al abrir ticket.',
           'El antiguo modulo de musica fue retirado para centrar el producto en soporte, seguridad, voz, alianzas y transcripciones.',
@@ -1712,7 +1736,7 @@ function buildTermsSections() {
         'Compatibilidad con sistemas externos de tickets como Ticket King y canales creados en categorias configuradas.',
         'Dashboard web con OAuth de Discord para administrar servidores donde tengas permisos.',
         'Funciones de seguridad como anti-flood, analisis de links, XN Protect Automod, avisos de blacklist global, Anti-bots Top.gg, anti-alts y anti-nuke.',
-        'Funciones premium por servidor como voz con STT/TTS, IA prioritaria, transcripciones inteligentes, branding e informes.'
+        'Funciones premium por servidor como voz con STT/TTS, IA prioritaria, transcripciones inteligentes, Growth Engine, reviews, Churn Radar, branding e informes.'
       ]
     },
     {
@@ -1766,7 +1790,7 @@ function buildPrivacySections() {
       title: '1. Datos que podemos procesar',
       items: [
         'Datos de Discord necesarios para funcionar: IDs de usuario, servidor, canal, mensaje, rol, nombres visibles, avatar y permisos de servidores gestionables.',
-        'Configuracion por servidor: categoria de tickets, rol staff, prompt del servidor, informacion del servidor, paneles, componentes, seguridad, alianzas y premium.',
+        'Configuracion por servidor: categoria de tickets, rol staff, prompt del servidor, informacion del servidor, paneles, componentes, seguridad, alianzas, crecimiento y premium.',
         'Contenido de tickets: mensajes, respuestas de formularios, adjuntos enlazados, transcripciones, resumenes, estado del ticket y datos de cierre.',
         'Datos de voz premium: transcripciones STT, mensajes de voz convertidos a texto, respuestas TTS y metadatos de sala/canal cuando la funcion esta activa.',
         'Eventos de seguridad: flood, links analizados, resultados de XN Protect Automod, avisos de blacklist, checks de Top.gg, acciones anti-nuke y logs de moderacion.'
@@ -1777,7 +1801,7 @@ function buildPrivacySections() {
       items: [
         'Responder tickets con IA y mantener contexto conversacional.',
         'Avisar a staff con resumen cuando la IA detecta que hace falta asistencia humana.',
-        'Guardar transcripciones para consulta en dashboard, envio por MD y trazabilidad del soporte.',
+        'Guardar transcripciones y valoraciones post-ticket para consulta en dashboard, envio por MD, mejora del soporte y trazabilidad.',
         'Crear paneles, categorias, menus y componentes configurados por el servidor.',
         'Proteger servidores con sistemas anti-flood, anti-scam, automod, anti-bots, anti-alts y anti-nuke.',
         'Mejorar la experiencia de dashboard, estadisticas globales, diagnosticos y funciones premium.'
@@ -2171,6 +2195,10 @@ function renderDashboard({ session, guilds, tickets, stats }) {
     .premium-toggle strong,.premium-toggle span { display:block; }
     .premium-toggle span { color:var(--muted); font-size:13px; margin-top:3px; line-height:1.45; }
     .premium-locked .premium-toggle select { opacity:.54; }
+    .feedback-list { display:grid; gap:10px; margin-top:14px; max-height:360px; overflow:auto; padding-right:4px; }
+    .feedback-card { border:1px solid var(--soft-line); border-radius:14px; padding:12px; background:linear-gradient(135deg, rgba(255,255,255,.065), rgba(255,255,255,.025)); }
+    .feedback-card strong,.feedback-card span { display:block; }
+    .feedback-card span { color:var(--muted); font-size:13px; margin-top:4px; }
     .premium-denied { position:relative; min-height:min(580px, calc(100vh - 250px)); display:grid; place-items:center; border:1px solid rgba(244,201,93,.24); border-radius:22px; overflow:hidden; background:radial-gradient(circle at 50% 22%, rgba(244,201,93,.16), transparent 26%), linear-gradient(145deg, #020202, #080704 58%, #000); box-shadow:0 36px 140px rgba(0,0,0,.62), 0 0 0 1px rgba(244,201,93,.08) inset; }
     .premium-denied::before { content:""; position:absolute; inset:26px; border:1px solid rgba(244,201,93,.22); border-radius:18px; pointer-events:none; }
     .premium-denied::after { content:"PREMIUM"; position:absolute; inset:auto 0 18px; text-align:center; color:rgba(244,201,93,.07); font-size:clamp(48px, 13vw, 160px); font-weight:950; letter-spacing:.18em; pointer-events:none; }
@@ -2388,6 +2416,7 @@ function renderDashboard({ session, guilds, tickets, stats }) {
     <a class="nav-link" href="#settings" data-view="settings"><span class="nav-icon">${renderDashboardEmoji('rightArrow', 'Configuracion')}</span><span>Configuracion</span></a>
     <a class="nav-link" href="#components" data-view="components"><span class="nav-icon">${renderDashboardEmoji('check', 'Componentes')}</span><span>Componentes</span></a>
     <a class="nav-link" href="#panels" data-view="panels"><span class="nav-icon">${renderDashboardEmoji('global', 'Paneles')}</span><span>Paneles</span></a>
+    <a class="nav-link" href="#growth" data-view="growth"><span class="nav-icon">${renderDashboardEmoji('rightArrow', 'Crecimiento')}</span><span>Crecimiento</span></a>
     <a class="nav-link" href="#premium" data-view="premium"><span class="nav-icon">${renderDashboardEmoji('check', 'Premium')}</span><span>Premium</span></a>
     <a class="nav-link" href="#tickets" data-view="tickets"><span class="nav-icon">${renderDashboardEmoji('wifi', 'Tickets')}</span><span>Tickets</span></a>
     <div class="nav-foot">
@@ -2448,6 +2477,7 @@ function renderDashboard({ session, guilds, tickets, stats }) {
           <div class="stat"><strong id="guildCount">${stats.totalGuilds}</strong><span>${renderDashboardEmoji('server', 'Servidores')}Servidores gestionables</span><small id="guildInstallMeta">${stats.installedGuilds ?? 0} con bot - ${stats.notInstalledGuilds ?? 0} por invitar</small></div>
           <div class="stat"><strong id="ticketCount">${stats.totalTickets}</strong><span>${renderDashboardEmoji('nexalogo', 'Tickets')}Tickets detectados</span><small>${stats.ticketsToday} hoy - ${stats.ticketsThisWeek} esta semana</small></div>
           <div class="stat"><strong id="openCount">${stats.openTickets}</strong><span>${renderDashboardEmoji('wifi', 'Abiertos')}Tickets abiertos</span><small>${stats.closedTickets} cerrados o archivados</small></div>
+          <div class="stat"><strong id="ratingAverage">${stats.averageRating ?? 0}/5</strong><span>${renderDashboardEmoji('check', 'Growth')}Rating soporte</span><small id="feedbackMeta">${stats.feedbackCount ?? 0} valoraciones - ${stats.promoterRate ?? 0}% promotores</small></div>
         </div>
         <section class="command-center">
           <article class="insight-card">
@@ -2471,6 +2501,7 @@ function renderDashboard({ session, guilds, tickets, stats }) {
               <div><strong id="transcriptCount">${stats.transcriptMessages}</strong><small>Mensajes guardados</small></div>
               <div><strong id="staffReadyCount">${stats.escalationReadyGuilds}</strong><small>Escalado con staff</small></div>
               <div><strong id="voiceRoomCount">${stats.voiceRooms ?? 0}</strong><small>Salas de voz activas</small></div>
+              <div><strong id="growthReadyCount">${stats.growthReadyGuilds ?? 0}</strong><small>Growth Engine listo</small></div>
             </div>
           </article>
         </section>
@@ -2479,6 +2510,7 @@ function renderDashboard({ session, guilds, tickets, stats }) {
           <button class="quick-action" type="button" data-go-view="settings">Activar seguridad</button>
           <button class="quick-action" type="button" data-go-view="components">Crear menu de tickets</button>
           <button class="quick-action" type="button" data-go-view="panels">Publicar panel</button>
+          <button class="quick-action" type="button" data-go-view="growth">Activar Growth Engine</button>
           <button class="quick-action" type="button" data-go-view="premium">Gestionar Premium</button>
           <button class="quick-action" type="button" data-go-view="tickets">Ver transcripciones</button>
         </div>
@@ -2704,6 +2736,38 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
         </article>
       </section>
       </section>
+      <section class="dashboard-view" id="view-growth" data-view="growth">
+        <div class="view-heading">
+          <div><h2>Crecimiento</h2><p>Convierte cada ticket bien atendido en confianza, reviews y senales para mejorar tu comunidad.</p></div>
+        </div>
+        <section class="control-grid" id="growth">
+          <article class="control-card wide">
+            <div class="card-head"><span class="step">G</span><div><h2>Growth Engine</h2><p>Feedback por MD al cerrar tickets, canal de reviews y alertas de baja satisfaccion.</p></div></div>
+            <form onsubmit="return saveGrowth(event)">
+              <select id="growthGuildId" hidden required>${guildOptions}</select>
+              <label>Estado<select id="growthEnabled"><option value="true">Activo</option><option value="false">Pausado</option></select></label>
+              <label>Pedir feedback por MD<select id="growthFeedbackDm"><option value="true">Activo</option><option value="false">Pausado</option></select></label>
+              <label>Reviews publicas Premium<select id="growthPublicReviews"><option value="false">No publicar</option><option value="true">Publicar reviews altas</option></select></label>
+              <label>Canal de reviews y alertas<select id="growthReviewChannelId"></select></label>
+              <label>Rating minimo publico<input id="growthTestimonialMinRating" type="number" min="4" max="5" value="5"></label>
+              <label>Churn Radar<select id="growthLowRatingAlerts"><option value="true">Avisar ratings bajos</option><option value="false">Pausado</option></select></label>
+              <label>CTA de invitacion<select id="growthInviteCta"><option value="true">Preparar conversion</option><option value="false">No usar CTA</option></select></label>
+              <p class="notice span-2">Las valoraciones internas funcionan para todos. Publicar reviews y Churn Radar avanzado requieren Premium activo en el servidor.</p>
+              <button class="span-2" type="submit">Guardar Growth Engine</button>
+            </form>
+          </article>
+          <article class="control-card">
+            <div class="card-head"><span class="step">R</span><div><h2>Metricas de confianza</h2><p>Lo que el owner necesita ver para saber que el soporte esta funcionando.</p></div></div>
+            <div class="mini-grid">
+              <div><strong id="growthFeedbackCount">0</strong><small>Valoraciones</small></div>
+              <div><strong id="growthAverageRating">0/5</strong><small>Rating medio</small></div>
+              <div><strong id="growthPromoterRate">0%</strong><small>Promotores</small></div>
+              <div><strong id="growthDetractors">0</strong><small>Riesgos</small></div>
+            </div>
+            <div class="feedback-list" id="growthFeedbackList"><p class="notice">Aun no hay valoraciones para este servidor.</p></div>
+          </article>
+        </section>
+      </section>
       <section class="dashboard-view" id="view-premium" data-view="premium">
         <div class="view-heading">
           <div><h2>Premium</h2><p>Gestiona las funciones de alto valor por servidor. La activacion del plan se hace con /activarpremium o Supabase.</p></div>
@@ -2732,6 +2796,8 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
               <div class="premium-feature"><strong>Security Plus</strong><span>Anti-scam IA, senales de riesgo y alertas mas visibles para staff.</span></div>
               <div class="premium-feature"><strong>Branding propio</strong><span>Paneles y mensajes mas personalizables para comunidades serias.</span></div>
               <div class="premium-feature"><strong>Informes semanales</strong><span>Ideas de mejora: motivos frecuentes, volumen y necesidades de staff.</span></div>
+              <div class="premium-feature"><strong>Growth Engine</strong><span>Feedback post-ticket, reviews publicas y conversion de soporte en prueba social.</span></div>
+              <div class="premium-feature"><strong>Churn Radar</strong><span>Alertas cuando un usuario queda insatisfecho para recuperarlo antes de perderlo.</span></div>
             </div>
           </article>
           <article class="control-card" id="premiumSettingsCard">
@@ -2744,6 +2810,10 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
               <label class="premium-toggle"><span><strong>Security Plus</strong><span>Refuerza links sospechosos, blacklist, flood y avisos para staff.</span></span><select id="premiumSecurityPlus"><option value="true">Activo</option><option value="false">Pausado</option></select></label>
               <label class="premium-toggle"><span><strong>Branding propio</strong><span>Permite preparar una experiencia mas white-label para el servidor.</span></span><select id="premiumCustomBranding"><option value="false">Desactivado</option><option value="true">Activo</option></select></label>
               <label class="premium-toggle"><span><strong>Informes semanales</strong><span>Activa el futuro reporte de tendencias para vender valor continuo.</span></span><select id="premiumWeeklyInsights"><option value="true">Activo</option><option value="false">Pausado</option></select></label>
+              <label class="premium-toggle"><span><strong>Growth Engine</strong><span>Desbloquea reviews, feedback accionable y metricas de satisfaccion.</span></span><select id="premiumGrowthEngine"><option value="true">Activo</option><option value="false">Pausado</option></select></label>
+              <label class="premium-toggle"><span><strong>Reviews publicas</strong><span>Convierte valoraciones altas en mensajes visibles en el canal elegido.</span></span><select id="premiumPublicReviews"><option value="true">Activo</option><option value="false">Pausado</option></select></label>
+              <label class="premium-toggle"><span><strong>Churn Radar</strong><span>Avisa al staff cuando hay valoraciones bajas o riesgo de perdida.</span></span><select id="premiumChurnRadar"><option value="true">Activo</option><option value="false">Pausado</option></select></label>
+              <label class="premium-toggle"><span><strong>Conversion insights</strong><span>Prepara senales para detectar donde los tickets ayudan a crecer.</span></span><select id="premiumConversionInsights"><option value="true">Activo</option><option value="false">Pausado</option></select></label>
               <button type="submit">Guardar modulos premium</button>
             </form>
           </article>
@@ -2787,6 +2857,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       <button class="assistant-chip" type="button" data-assistant-prompt="Como creo un panel con menu desplegable?">Panel con menu</button>
       <button class="assistant-chip" type="button" data-assistant-prompt="Como hago que la IA escale al staff?">Escalado staff</button>
       <button class="assistant-chip" type="button" data-assistant-prompt="Mete una configuracion de seguridad recomendada">Seguridad</button>
+      <button class="assistant-chip" type="button" data-assistant-prompt="Como activo Growth Engine y reviews publicas?">Crecimiento</button>
       <button class="assistant-chip" type="button" data-assistant-prompt="Que funciones premium puedo activar aqui?">Premium</button>
       <button class="assistant-chip" type="button" data-assistant-prompt="Donde veo las transcripciones?">Transcripciones</button>
     </div>
@@ -2896,6 +2967,8 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       document.querySelector('#guildInstallMeta').textContent = (stats.installedGuilds || 0) + ' con bot - ' + (stats.notInstalledGuilds || 0) + ' por invitar';
       document.querySelector('#ticketCount').textContent = stats.totalTickets;
       document.querySelector('#openCount').textContent = stats.openTickets;
+      document.querySelector('#ratingAverage').textContent = (stats.averageRating || 0) + '/5';
+      document.querySelector('#feedbackMeta').textContent = (stats.feedbackCount || 0) + ' valoraciones - ' + (stats.promoterRate || 0) + '% promotores';
       document.querySelector('#healthScore').textContent = health + '%';
       document.querySelector('.meter')?.style.setProperty('--value', health + '%');
       document.querySelector('#panelCount').textContent = stats.panels;
@@ -2905,6 +2978,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       document.querySelector('#proGuildCount').textContent = stats.proGuilds || 0;
       document.querySelector('#securityReadyCount').textContent = stats.securityReadyGuilds || 0;
       document.querySelector('#voiceRoomCount').textContent = stats.voiceRooms || 0;
+      document.querySelector('#growthReadyCount').textContent = stats.growthReadyGuilds || 0;
     }
     async function refreshStats() {
       state.stats = await getJson('/api/stats');
@@ -2919,6 +2993,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
         renderComponentHistory(activeGuild || {});
         renderPanelHistory(activeGuild || {});
         renderPremiumPanel(activeGuild || {});
+        renderGrowthPanel(activeGuild || {});
         renderGuildSelectors(activeGuildId);
       }
     }
@@ -2960,12 +3035,13 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
         { key: 'staff', label: 'Rol staff', done: Boolean(guild.staffRoleId), view: 'settings' },
         { key: 'context', label: 'Contexto IA', done: Boolean(guild.serverPrompt || guild.serverInfo), view: 'settings' },
         { key: 'security', label: 'Security Guard', done: Boolean(guild.security?.enabled), view: 'settings' },
+        { key: 'growth', label: 'Growth Engine', done: Boolean(normalizeGrowth(guild).enabled), view: 'growth' },
         { key: 'components', label: 'Componentes', done: Boolean(guild.components?.length), view: 'components' },
         { key: 'panels', label: 'Panel publicado', done: Boolean(guild.panels?.length), view: 'panels' }
       ];
     }
     function getGuildScore(guild = {}) {
-      const weights = { installed:10, category:15, announcements:5, staff:15, context:20, security:15, components:10, panels:15 };
+      const weights = { installed:10, category:15, announcements:5, staff:15, context:20, security:15, growth:8, components:10, panels:15 };
       const readiness = getGuildReadiness(guild).map((item) => ({ ...item, weight: weights[item.key] || 10 }));
       const total = readiness.reduce((sum, item) => sum + item.weight, 0);
       const done = readiness.reduce((sum, item) => sum + (item.done ? item.weight : 0), 0);
@@ -3016,7 +3092,24 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
         smartTranscripts: raw.smartTranscripts !== false,
         securityPlus: raw.securityPlus !== false,
         customBranding: raw.customBranding === true,
-        weeklyInsights: raw.weeklyInsights !== false
+        weeklyInsights: raw.weeklyInsights !== false,
+        growthEngine: raw.growthEngine !== false,
+        publicReviews: raw.publicReviews !== false,
+        churnRadar: raw.churnRadar !== false,
+        conversionInsights: raw.conversionInsights !== false
+      };
+    }
+    function normalizeGrowth(guild = {}) {
+      const raw = guild.growth || {};
+      return {
+        enabled: raw.enabled !== false,
+        feedbackDm: raw.feedbackDm !== false,
+        publicReviews: raw.publicReviews === true,
+        lowRatingAlerts: raw.lowRatingAlerts !== false,
+        inviteCta: raw.inviteCta !== false,
+        testimonialMinRating: Math.min(Math.max(Number.parseInt(raw.testimonialMinRating || 5, 10) || 5, 4), 5),
+        reviewChannelId: raw.reviewChannelId || '',
+        reviewChannelName: raw.reviewChannelName || ''
       };
     }
     function formatPremiumState(guild = {}) {
@@ -3151,6 +3244,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
         staff: { title: 'Asigna rol de staff', text: 'NexaDesk necesita saber a quien avisar cuando haya escalado humano o asistencia manual.', view: 'settings', action: 'Elegir staff' },
         context: { title: 'Dale contexto a la IA', text: 'Anade reglas, FAQ, tono, limites y si debe pedir pruebas visuales. Esto mejora mucho las respuestas.', view: 'settings', action: 'Escribir prompt' },
         security: { title: 'Activa Security Guard', text: 'Protege el servidor con anti-flood, anti-links IA, anti-bots, anti-alts y anti-nuke antes de abrirlo al publico.', view: 'settings', action: 'Configurar seguridad' },
+        growth: { title: 'Activa Growth Engine', text: 'Pide valoraciones al cerrar tickets y convierte el buen soporte en reviews, prueba social y oportunidades de crecimiento.', view: 'growth', action: 'Abrir crecimiento' },
         components: { title: 'Crea opciones de menu', text: 'Los componentes separan tipos de ticket, preguntas previas y mensajes iniciales personalizados.', view: 'components', action: 'Crear componente' },
         panels: { title: 'Publica un panel', text: 'Ya puedes publicar un panel en un canal visible para que los usuarios abran tickets desde Discord.', view: 'panels', action: 'Publicar panel' }
       };
@@ -3162,11 +3256,11 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       });
     }
     function setConfigurationDisabled(disabled) {
-      for (const selector of ['#ticketCategoryId', '#staffRoleId', '#serverPrompt', '#serverInfo', '#categoryName', '#securityEnabled', '#securityLevel', '#securityLogChannelId', '#securityMinAccountAgeDays', '#securityAntiFlood', '#securityAntiScamLinks', '#securityAntiOffensive', '#securityAntiBot', '#securityAntiAlt', '#securityAntiNuke', '#componentLabel', '#componentEmoji', '#componentDescription', '#componentTicketCategoryId', '#componentTicketMode', '#componentQuestions', '#componentWelcomeMessage', '#panelType', '#panelSelectPlaceholder', '#panelComponentIds', '#panelChannelId', '#panelTicketCategoryId', '#panelTicketMode', '#panelButtonLabel', '#panelButtonStyle', '#panelButtonEmoji', '#panelTitle', '#panelEmbedColor', '#panelAuthorName', '#panelAuthorIconUrl', '#panelDescription', '#panelThumbnailUrl', '#panelImageUrl', '#panelFooterText', '#panelWelcomeMessage', '#premiumVoiceSupport', '#premiumPriorityAi', '#premiumSmartTranscripts', '#premiumSecurityPlus', '#premiumCustomBranding', '#premiumWeeklyInsights']) {
+      for (const selector of ['#ticketCategoryId', '#staffRoleId', '#serverPrompt', '#serverInfo', '#categoryName', '#securityEnabled', '#securityLevel', '#securityLogChannelId', '#securityMinAccountAgeDays', '#securityAntiFlood', '#securityAntiScamLinks', '#securityAntiOffensive', '#securityAntiBot', '#securityAntiAlt', '#securityAntiNuke', '#componentLabel', '#componentEmoji', '#componentDescription', '#componentTicketCategoryId', '#componentTicketMode', '#componentQuestions', '#componentWelcomeMessage', '#panelType', '#panelSelectPlaceholder', '#panelComponentIds', '#panelChannelId', '#panelTicketCategoryId', '#panelTicketMode', '#panelButtonLabel', '#panelButtonStyle', '#panelButtonEmoji', '#panelTitle', '#panelEmbedColor', '#panelAuthorName', '#panelAuthorIconUrl', '#panelDescription', '#panelThumbnailUrl', '#panelImageUrl', '#panelFooterText', '#panelWelcomeMessage', '#growthEnabled', '#growthFeedbackDm', '#growthPublicReviews', '#growthReviewChannelId', '#growthTestimonialMinRating', '#growthLowRatingAlerts', '#growthInviteCta', '#premiumVoiceSupport', '#premiumPriorityAi', '#premiumSmartTranscripts', '#premiumSecurityPlus', '#premiumCustomBranding', '#premiumWeeklyInsights', '#premiumGrowthEngine', '#premiumPublicReviews', '#premiumChurnRadar', '#premiumConversionInsights']) {
         const element = document.querySelector(selector);
         if (element) element.disabled = disabled;
       }
-      document.querySelectorAll('#settings button, #components button, #panels button, #view-premium button').forEach((button) => {
+      document.querySelectorAll('#settings button, #components button, #panels button, #view-growth button, #view-premium button').forEach((button) => {
         button.disabled = disabled;
       });
     }
@@ -3185,6 +3279,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       document.querySelector('#panelChannelId').innerHTML = '<option>Instala NexaDesk para cargar canales</option>';
       document.querySelector('#panelTicketCategoryId').innerHTML = '<option>Instala NexaDesk para cargar categorias</option>';
       document.querySelector('#panelComponentIds').innerHTML = '<option>Crea componentes primero</option>';
+      document.querySelector('#growthReviewChannelId').innerHTML = '<option>Instala NexaDesk para cargar canales</option>';
       document.querySelector('#activeCategory').textContent = 'Bot no instalado';
       document.querySelector('#activeStaff').textContent = 'Bot no instalado';
       document.querySelector('#activePanels').textContent = String(guild.panels?.length ?? 0);
@@ -3195,6 +3290,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       renderComponentHistory(guild);
       renderPanelHistory(guild);
       renderPremiumPanel(guild);
+      renderGrowthPanel(guild);
       renderDiscoverySummary(guild);
       renderReadinessChecklist(guild);
       renderRecommendations(guild);
@@ -3216,6 +3312,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       document.querySelector('#panelChannelId').innerHTML = '<option>No se pudieron cargar canales</option>';
       document.querySelector('#panelTicketCategoryId').innerHTML = '<option>No se pudieron cargar categorias</option>';
       document.querySelector('#panelComponentIds').innerHTML = '<option>No se pudieron cargar componentes</option>';
+      document.querySelector('#growthReviewChannelId').innerHTML = '<option>No se pudieron cargar canales</option>';
       document.querySelector('#activeCategory').textContent = 'Token requerido';
       document.querySelector('#activeStaff').textContent = 'Token requerido';
       document.querySelector('#activePanels').textContent = String(guild.panels?.length ?? 0);
@@ -3226,6 +3323,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       renderComponentHistory(guild);
       renderPanelHistory(guild);
       renderPremiumPanel(guild);
+      renderGrowthPanel(guild);
       renderDiscoverySummary(guild);
       renderReadinessChecklist(guild);
       renderRecommendations(guild);
@@ -3264,6 +3362,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       document.querySelector('#panelChannelId').innerHTML = textChannels.map((channel) => '<option value="' + channel.id + '">#' + escapeHtml(channel.name) + '</option>').join('');
       document.querySelector('#panelTicketCategoryId').innerHTML = '<option value="">Usar categoria principal</option>' + categories.map((channel) => '<option value="' + channel.id + '">' + escapeHtml(channel.name) + '</option>').join('');
       document.querySelector('#securityLogChannelId').innerHTML = '<option value="">Sin canal de logs</option>' + textChannels.map((channel) => '<option value="' + channel.id + '">#' + escapeHtml(channel.name) + '</option>').join('');
+      document.querySelector('#growthReviewChannelId').innerHTML = '<option value="">Sin canal de reviews</option>' + textChannels.map((channel) => '<option value="' + channel.id + '">#' + escapeHtml(channel.name) + '</option>').join('');
       document.querySelector('#panelComponentIds').innerHTML = (config.components || []).length
         ? config.components.map((component) => '<option value="' + escapeHtml(component.id) + '">' + escapeHtml(component.label + (component.ticketMode === 'voice' ? ' - Voz Pro' : ' - Texto')) + '</option>').join('')
         : '<option value="">Crea componentes primero</option>';
@@ -3286,6 +3385,14 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       document.querySelector('#securityAntiBot').value = security.antiBot ? 'true' : 'false';
       document.querySelector('#securityAntiAlt').value = security.antiAlt ? 'true' : 'false';
       document.querySelector('#securityAntiNuke').value = security.antiNuke ? 'true' : 'false';
+      const growth = normalizeGrowth(config);
+      document.querySelector('#growthEnabled').value = growth.enabled ? 'true' : 'false';
+      document.querySelector('#growthFeedbackDm').value = growth.feedbackDm ? 'true' : 'false';
+      document.querySelector('#growthPublicReviews').value = growth.publicReviews ? 'true' : 'false';
+      document.querySelector('#growthReviewChannelId').value = growth.reviewChannelId || '';
+      document.querySelector('#growthTestimonialMinRating').value = growth.testimonialMinRating;
+      document.querySelector('#growthLowRatingAlerts').value = growth.lowRatingAlerts ? 'true' : 'false';
+      document.querySelector('#growthInviteCta').value = growth.inviteCta ? 'true' : 'false';
       document.querySelector('#activeCategory').textContent = config.ticketCategoryName || selectedOptionText('#ticketCategoryId') || 'Sin configurar';
       const staffOption = document.querySelector('#staffRoleId')?.selectedOptions?.[0];
       document.querySelector('#activeStaff').textContent = staffOption?.value ? staffOption.textContent : 'Sin configurar';
@@ -3297,6 +3404,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       renderComponentHistory(config);
       renderPanelHistory(config);
       renderPremiumPanel(config);
+      renderGrowthPanel(config);
       renderDiscoverySummary(config);
       renderReadinessChecklist(config);
       renderRecommendations(config);
@@ -3312,7 +3420,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       const guildId = document.querySelector(sourceId).value;
       const guild = getGuildConfig(guildId);
       resetPanelEditor({ keepFields: true });
-      for (const selector of ['#guildId', '#categoryGuildId', '#componentGuildId', '#panelGuildId', '#premiumGuildId']) {
+      for (const selector of ['#guildId', '#categoryGuildId', '#componentGuildId', '#panelGuildId', '#growthGuildId', '#premiumGuildId']) {
         const element = document.querySelector(selector);
         if (element && element.value !== guildId) element.value = guildId;
       }
@@ -3382,7 +3490,11 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
           smartTranscripts: document.querySelector('#premiumSmartTranscripts').value === 'true',
           securityPlus: document.querySelector('#premiumSecurityPlus').value === 'true',
           customBranding: document.querySelector('#premiumCustomBranding').value === 'true',
-          weeklyInsights: document.querySelector('#premiumWeeklyInsights').value === 'true'
+          weeklyInsights: document.querySelector('#premiumWeeklyInsights').value === 'true',
+          growthEngine: document.querySelector('#premiumGrowthEngine').value === 'true',
+          publicReviews: document.querySelector('#premiumPublicReviews').value === 'true',
+          churnRadar: document.querySelector('#premiumChurnRadar').value === 'true',
+          conversionInsights: document.querySelector('#premiumConversionInsights').value === 'true'
         }
       }).catch((error) => showToast(error.message));
       if (updated) {
@@ -3391,6 +3503,30 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
         renderGuildSelectors(guildId);
         refreshStats().catch(() => {});
         showToast('Modulos premium guardados para este servidor.');
+      }
+      return false;
+    }
+    async function saveGrowth(event) {
+      event.preventDefault();
+      const guildId = document.querySelector('#growthGuildId')?.value || document.querySelector('#guildId').value;
+      const updated = await postJson('/api/guilds/' + guildId, {
+        growth: {
+          enabled: document.querySelector('#growthEnabled').value === 'true',
+          feedbackDm: document.querySelector('#growthFeedbackDm').value === 'true',
+          publicReviews: document.querySelector('#growthPublicReviews').value === 'true',
+          reviewChannelId: document.querySelector('#growthReviewChannelId').value,
+          reviewChannelName: selectedOptionText('#growthReviewChannelId'),
+          testimonialMinRating: document.querySelector('#growthTestimonialMinRating').value,
+          lowRatingAlerts: document.querySelector('#growthLowRatingAlerts').value === 'true',
+          inviteCta: document.querySelector('#growthInviteCta').value === 'true'
+        }
+      }).catch((error) => showToast(error.message));
+      if (updated) {
+        const index = guildConfigs.findIndex((guild) => guild.guildId === guildId);
+        if (index >= 0) guildConfigs[index] = { ...guildConfigs[index], ...updated };
+        renderGuildSelectors(guildId);
+        refreshStats().catch(() => {});
+        showToast('Growth Engine guardado.');
       }
       return false;
     }
@@ -3450,7 +3586,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
         ? 'Premium activo en este servidor.'
         : 'Prepara el upgrade antes de venderlo.';
       document.querySelector('#premiumHeroText').textContent = premium.entitled
-        ? 'Configura que modulos quieres dejar activos: voz, IA prioritaria, smart transcripts, seguridad avanzada, branding e informes.'
+        ? 'Configura que modulos quieres dejar activos: voz, IA prioritaria, smart transcripts, seguridad avanzada, Growth Engine, branding e informes.'
         : 'Puedes dejar estos modulos preparados. Cuando el owner active Premium, NexaDesk desbloqueara las funciones de mayor valor sin rehacer la configuracion.';
       const values = {
         premiumVoiceSupport: premium.voiceSupport,
@@ -3458,12 +3594,60 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
         premiumSmartTranscripts: premium.smartTranscripts,
         premiumSecurityPlus: premium.securityPlus,
         premiumCustomBranding: premium.customBranding,
-        premiumWeeklyInsights: premium.weeklyInsights
+        premiumWeeklyInsights: premium.weeklyInsights,
+        premiumGrowthEngine: premium.growthEngine,
+        premiumPublicReviews: premium.publicReviews,
+        premiumChurnRadar: premium.churnRadar,
+        premiumConversionInsights: premium.conversionInsights
       };
       for (const [id, value] of Object.entries(values)) {
         const element = document.querySelector('#' + id);
         if (element) element.value = value ? 'true' : 'false';
       }
+    }
+    async function renderGrowthPanel(guild = getActiveGuild()) {
+      const growth = normalizeGrowth(guild || {});
+      const values = {
+        growthEnabled: growth.enabled,
+        growthFeedbackDm: growth.feedbackDm,
+        growthPublicReviews: growth.publicReviews,
+        growthLowRatingAlerts: growth.lowRatingAlerts,
+        growthInviteCta: growth.inviteCta
+      };
+      for (const [id, value] of Object.entries(values)) {
+        const element = document.querySelector('#' + id);
+        if (element) element.value = value ? 'true' : 'false';
+      }
+      document.querySelector('#growthReviewChannelId').value = growth.reviewChannelId || '';
+      document.querySelector('#growthTestimonialMinRating').value = growth.testimonialMinRating;
+      if (guild?.guildId) {
+        loadGrowthFeedback(guild.guildId).catch(() => renderGrowthFeedback([]));
+      } else {
+        renderGrowthFeedback([]);
+      }
+    }
+    async function loadGrowthFeedback(guildId) {
+      const feedback = await getJson('/api/guilds/' + guildId + '/feedback');
+      renderGrowthFeedback(feedback);
+    }
+    function renderGrowthFeedback(feedback = []) {
+      const ratings = feedback.map((item) => Number(item.rating)).filter((rating) => rating >= 1 && rating <= 5);
+      const average = ratings.length ? Math.round((ratings.reduce((sum, item) => sum + item, 0) / ratings.length) * 10) / 10 : 0;
+      const promoters = ratings.filter((rating) => rating >= 4).length;
+      const detractors = ratings.filter((rating) => rating <= 2).length;
+      document.querySelector('#growthFeedbackCount').textContent = String(ratings.length);
+      document.querySelector('#growthAverageRating').textContent = average + '/5';
+      document.querySelector('#growthPromoterRate').textContent = (ratings.length ? Math.round((promoters / ratings.length) * 100) : 0) + '%';
+      document.querySelector('#growthDetractors').textContent = String(detractors);
+      const target = document.querySelector('#growthFeedbackList');
+      if (!target) return;
+      target.innerHTML = feedback.length
+        ? feedback.slice(0, 12).map((item) => '<article class="feedback-card"><strong>' + escapeHtml(formatRating(item.rating)) + '</strong><span>#' + escapeHtml(item.channelName || item.channelId || 'ticket') + ' - ' + escapeHtml(item.username || item.userId || 'usuario') + '</span><span>' + escapeHtml(new Date(item.createdAt).toLocaleString()) + '</span></article>').join('')
+        : '<p class="notice">Aun no hay valoraciones para este servidor.</p>';
+    }
+    function formatRating(rating) {
+      const safe = Math.min(Math.max(Number.parseInt(rating || 0, 10) || 0, 0), 5);
+      return '[' + '+'.repeat(safe) + '-'.repeat(5 - safe) + '] ' + safe + '/5';
     }
     function renderPanelComponentPicker(guild = getActiveGuild()) {
       const picker = document.querySelector('#panelComponentPicker');
@@ -3778,11 +3962,16 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       refreshStats().catch(() => {});
       if (state.activeTranscriptChannelId) openTranscript(state.activeTranscriptChannelId).catch(() => {});
     });
+    source.addEventListener('ticket.feedback', () => {
+      document.querySelector('#lastSync').textContent = new Date().toLocaleTimeString();
+      refreshStats().catch(() => {});
+      renderGrowthPanel(getActiveGuild());
+    });
     source.onerror = () => {
       document.querySelector('#liveState').textContent = 'Reconectando';
       document.querySelector('#liveState').className = '';
     };
-    for (const selector of ['#guildId', '#categoryGuildId', '#componentGuildId', '#panelGuildId', '#premiumGuildId']) {
+    for (const selector of ['#guildId', '#categoryGuildId', '#componentGuildId', '#panelGuildId', '#growthGuildId', '#premiumGuildId']) {
       document.querySelector(selector)?.addEventListener('change', () => syncGuildForm(selector));
     }
     document.querySelectorAll('.nav-link[data-view]').forEach((link) => {
@@ -3828,6 +4017,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
     bindTranscriptButtons();
     updatePanelPreview();
     renderPremiumPanel(getActiveGuild());
+    renderGrowthPanel(getActiveGuild());
     renderReadinessChecklist(getActiveGuild());
     renderRecommendations(getActiveGuild());
     setActiveView((location.hash || '#overview').slice(1), { updateHash: false });

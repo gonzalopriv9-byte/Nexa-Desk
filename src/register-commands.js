@@ -121,6 +121,65 @@ const commands = [
     .setDescription('Audita si NexaDesk esta listo para operar en este servidor.')
     .toJSON(),
   new SlashCommandBuilder()
+    .setName('crecimiento')
+    .setDescription('Gestiona Growth Engine: feedback, reviews y alertas premium.')
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName('estado')
+        .setDescription('Muestra metricas y configuracion de crecimiento del servidor.')
+    )
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName('configurar')
+        .setDescription('Configura feedback post-ticket, reviews publicas y Churn Radar.')
+        .addChannelOption((option) =>
+          option
+            .setName('canal_reviews')
+            .setDescription('Canal donde publicar reviews y alertas de Growth Engine.')
+            .addChannelTypes(ChannelType.GuildText)
+            .setRequired(false)
+        )
+        .addBooleanOption((option) =>
+          option
+            .setName('activo')
+            .setDescription('Activa o pausa Growth Engine.')
+            .setRequired(false)
+        )
+        .addBooleanOption((option) =>
+          option
+            .setName('pedir_feedback')
+            .setDescription('Pedir valoracion por MD al cerrar tickets.')
+            .setRequired(false)
+        )
+        .addBooleanOption((option) =>
+          option
+            .setName('reviews_publicas')
+            .setDescription('Publicar automaticamente reviews positivas en el canal configurado. Premium.')
+            .setRequired(false)
+        )
+        .addIntegerOption((option) =>
+          option
+            .setName('rating_publico_min')
+            .setDescription('Rating minimo para publicar review publica.')
+            .setMinValue(4)
+            .setMaxValue(5)
+            .setRequired(false)
+        )
+        .addBooleanOption((option) =>
+          option
+            .setName('alertas_bajas')
+            .setDescription('Avisar al staff cuando un ticket reciba baja valoracion. Premium.')
+            .setRequired(false)
+        )
+        .addBooleanOption((option) =>
+          option
+            .setName('cta_invitar')
+            .setDescription('Preparar llamadas a la accion para convertir buen soporte en crecimiento.')
+            .setRequired(false)
+        )
+    )
+    .toJSON(),
+  new SlashCommandBuilder()
     .setName('seguridad')
     .setDescription('Configura NexaDesk Security Guard para anti-raid y moderacion preventiva.')
     .addSubcommand((subcommand) =>

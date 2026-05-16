@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createClient } from '@supabase/supabase-js';
 import { normalizeBlacklistEntry, normalizeBlacklistEvidence, normalizeBlacklistLookup } from './blacklist.js';
+import { buildFeedbackStats, normalizeGrowthConfig, normalizeTicketFeedback } from './growth.js';
 import { normalizeMaintenanceState } from './maintenance.js';
 import { isPremiumEntitled, normalizePremiumConfig } from './premium.js';
 import { normalizeSecurityConfig } from './security.js';
@@ -19,6 +20,7 @@ export class JsonStorage {
     this.globalSettingsFile = path.join(dataDir, 'global-settings.json');
     this.blacklistFile = path.join(dataDir, 'global-blacklist.json');
     this.blacklistEvidenceFile = path.join(dataDir, 'global-blacklist-evidence.json');
+    this.feedbackFile = path.join(dataDir, 'ticket-feedback.json');
   }
 
   async init() {
@@ -29,6 +31,7 @@ export class JsonStorage {
     await this.#ensureJson(this.globalSettingsFile, {});
     await this.#ensureJson(this.blacklistFile, {});
     await this.#ensureJson(this.blacklistEvidenceFile, {});
+    await this.#ensureJson(this.feedbackFile, {});
   }
 
   async getGuildConfig(guildId) {
@@ -134,7 +137,28 @@ export class JsonStorage {
       .filter(([channelId]) => ticketIds.has(channelId))
       .reduce((total, [, messages]) => total + messages.length, 0);
 
-    return buildStats({ guilds, tickets, transcriptMessages });
+    const feedback = Object.values(await this.#readJson(this.feedbackFile))
+      .filter((item) => guildIdSet.has(item.guildId))
+      .map(normalizeTicketFeedback);
+
+    return buildStats({ guilds, tickets, transcriptMessages, feedback });
+  }
+
+  async addTicketFeedback(feedback) {
+    const feedbackById = await this.#readJson(this.feedbackFile);
+    const normalized = normalizeTicketFeedback(feedback);
+    feedbackById[normalized.id] = normalized;
+    await this.#writeJson(this.feedbackFile, feedbackById);
+    this.events?.publish('ticket.feedback', normalized);
+    return normalized;
+  }
+
+  async listTicketFeedback(guildIds = []) {
+    const guildIdSet = new Set(guildIds);
+    const feedback = Object.values(await this.#readJson(this.feedbackFile)).map(normalizeTicketFeedback);
+    return feedback
+      .filter((item) => !guildIdSet.size || guildIdSet.has(item.guildId))
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   }
 
   async getGlobalSettings() {
@@ -493,7 +517,7 @@ export class SupabaseStorage {
 
   async getDashboardStats(guildIds = []) {
     if (!guildIds.length) {
-      return buildStats({ guilds: [], tickets: [], transcriptMessages: 0 });
+      return buildStats({ guilds: [], tickets: [], transcriptMessages: 0, feedback: [] });
     }
 
     const [{ data: guilds, error: guildsError }, { data: tickets, error: ticketsError }] = await Promise.all([
@@ -520,11 +544,44 @@ export class SupabaseStorage {
       transcriptMessages = count ?? 0;
     }
 
+    const feedback = await this.listTicketFeedback(guildIds);
+
     return buildStats({
       guilds: guilds.map((row) => this.#mergeGuildCompatibility(fromGuildRow(row))),
       tickets: tickets.map((row) => this.#mergeTicketCompatibility(fromTicketRow(row))),
-      transcriptMessages
+      transcriptMessages,
+      feedback
     });
+  }
+
+  async addTicketFeedback(feedback) {
+    const normalized = normalizeTicketFeedback(feedback);
+    const { data, error } = await this.client
+      .from('ticket_feedback')
+      .upsert(toFeedbackRow(normalized), { onConflict: 'id' })
+      .select()
+      .single();
+    if (isMissingFeedbackTableError(error)) {
+      console.warn('ticket_feedback table missing; feedback not persisted. Run supabase/schema.sql.');
+      return { ...normalized, notPersisted: true };
+    }
+    if (error) throw error;
+    const saved = fromFeedbackRow(data);
+    this.events?.publish('ticket.feedback', saved);
+    return saved;
+  }
+
+  async listTicketFeedback(guildIds = []) {
+    let query = this.client
+      .from('ticket_feedback')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(250);
+    if (guildIds.length) query = query.in('guild_id', guildIds);
+    const { data, error } = await query;
+    if (isMissingFeedbackTableError(error)) return [];
+    if (error) throw error;
+    return data.map(fromFeedbackRow);
   }
 
   async getBlacklistEntry(value) {
@@ -702,6 +759,7 @@ function fromGuildRow(row) {
     allianceChannelId: panelStore.alliance.channelId,
     allianceChannelName: panelStore.alliance.channelName,
     allianceTemplate: panelStore.alliance.template,
+    growth: panelStore.growth,
     premium: normalizePremiumConfig(panelStore.premium, {
       plan: row.plan ?? 'free',
       voiceSupportEnabled: row.voice_support_enabled ?? false
@@ -722,6 +780,7 @@ function toGuildPanelStore(guild) {
     components: guild.components ?? [],
     security: normalizeSecurityConfig(guild.security),
     premium: normalizePremiumConfig(guild.premium, guild),
+    growth: normalizeGrowthConfig(guild.growth),
     alliance: normalizeAllianceConfig(guild),
     discovery: normalizeDiscoveryConfig(guild.discovery ?? guild)
   };
@@ -734,6 +793,7 @@ function fromGuildPanelStore(value) {
       components: [],
       security: normalizeSecurityConfig(),
       premium: normalizePremiumConfig(),
+      growth: normalizeGrowthConfig(),
       alliance: normalizeAllianceConfig(),
       discovery: normalizeDiscoveryConfig()
     };
@@ -745,6 +805,7 @@ function fromGuildPanelStore(value) {
       components: Array.isArray(value.components) ? value.components : [],
       security: normalizeSecurityConfig(value.security),
       premium: normalizePremiumConfig(value.premium),
+      growth: normalizeGrowthConfig(value.growth),
       alliance: normalizeAllianceConfig(value.alliance),
       discovery: normalizeDiscoveryConfig(value.discovery)
     };
@@ -755,6 +816,7 @@ function fromGuildPanelStore(value) {
     components: [],
     security: normalizeSecurityConfig(),
     premium: normalizePremiumConfig(),
+    growth: normalizeGrowthConfig(),
     alliance: normalizeAllianceConfig(),
     discovery: normalizeDiscoveryConfig()
   };
@@ -872,6 +934,41 @@ function fromTranscriptRow(row) {
   };
 }
 
+function toFeedbackRow(feedback) {
+  const normalized = normalizeTicketFeedback(feedback);
+  return {
+    id: normalized.id,
+    guild_id: normalized.guildId,
+    guild_name: normalized.guildName,
+    channel_id: normalized.channelId,
+    channel_name: normalized.channelName,
+    user_id: normalized.userId,
+    username: normalized.username,
+    rating: normalized.rating,
+    comment: normalized.comment,
+    source: normalized.source,
+    public_review_posted: normalized.publicReviewPosted,
+    created_at: normalized.createdAt
+  };
+}
+
+function fromFeedbackRow(row) {
+  return normalizeTicketFeedback({
+    id: row.id,
+    guildId: row.guild_id,
+    guildName: row.guild_name,
+    channelId: row.channel_id,
+    channelName: row.channel_name,
+    userId: row.user_id,
+    username: row.username,
+    rating: row.rating,
+    comment: row.comment,
+    source: row.source,
+    publicReviewPosted: row.public_review_posted,
+    createdAt: row.created_at
+  });
+}
+
 function toBlacklistRow(entry) {
   const normalized = normalizeBlacklistEntry(entry);
   return {
@@ -935,7 +1032,11 @@ function isMissingBlacklistTableError(error) {
   return Boolean(error && /global_blacklist|global_blacklist_evidence|relation .* does not exist|schema cache/i.test(String(error.message ?? '')));
 }
 
-function buildStats({ guilds, tickets, transcriptMessages }) {
+function isMissingFeedbackTableError(error) {
+  return Boolean(error && /ticket_feedback|relation .* does not exist|schema cache/i.test(String(error.message ?? '')));
+}
+
+function buildStats({ guilds, tickets, transcriptMessages, feedback = [] }) {
   const now = Date.now();
   const dayMs = 24 * 60 * 60 * 1000;
   const weekMs = 7 * dayMs;
@@ -947,8 +1048,10 @@ function buildStats({ guilds, tickets, transcriptMessages }) {
   const escalationReadyGuilds = guilds.filter((guild) => guild.staffRoleId).length;
   const aiReadyGuilds = guilds.filter((guild) => guild.serverPrompt || guild.serverInfo).length;
   const securityReadyGuilds = guilds.filter((guild) => normalizeSecurityConfig(guild.security).enabled).length;
+  const growthReadyGuilds = guilds.filter((guild) => normalizeGrowthConfig(guild.growth).enabled).length;
   const voiceRooms = tickets.filter((ticket) => ticket.status !== 'closed' && ticket.voiceChannelId).length;
   const proGuilds = guilds.filter(isPremiumEntitled).length;
+  const feedbackStats = buildFeedbackStats(feedback);
 
   return {
     totalGuilds: guilds.length,
@@ -964,7 +1067,9 @@ function buildStats({ guilds, tickets, transcriptMessages }) {
     escalationReadyGuilds,
     aiReadyGuilds,
     securityReadyGuilds,
+    growthReadyGuilds,
     voiceRooms,
-    proGuilds
+    proGuilds,
+    ...feedbackStats
   };
 }

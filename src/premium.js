@@ -16,7 +16,11 @@ export function normalizePremiumConfig(value = {}, guildConfig = {}) {
     smartTranscripts: source.smartTranscripts !== false,
     securityPlus: source.securityPlus !== false,
     customBranding: Boolean(source.customBranding),
-    weeklyInsights: source.weeklyInsights !== false
+    weeklyInsights: source.weeklyInsights !== false,
+    growthEngine: source.growthEngine !== false,
+    publicReviews: source.publicReviews !== false,
+    churnRadar: source.churnRadar !== false,
+    conversionInsights: source.conversionInsights !== false
   };
 }
 
@@ -29,7 +33,11 @@ export function summarizePremiumConfig(guildConfig = {}) {
     premium.smartTranscripts ? 'Transcripciones inteligentes' : null,
     premium.securityPlus ? 'Security Plus' : null,
     premium.customBranding ? 'Branding propio' : null,
-    premium.weeklyInsights ? 'Informes semanales' : null
+    premium.weeklyInsights ? 'Informes semanales' : null,
+    premium.growthEngine ? 'Growth Engine' : null,
+    premium.publicReviews ? 'Reviews publicas' : null,
+    premium.churnRadar ? 'Churn radar' : null,
+    premium.conversionInsights ? 'Conversion insights' : null
   ].filter(Boolean);
 
   return {

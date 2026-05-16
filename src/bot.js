@@ -29,6 +29,7 @@ import {
 } from './maintenance.js';
 import { buildPanelActionRow, buildPanelEmbed, normalizePanelOptions, normalizeTicketComponent, panelWelcomeMessage } from './panel-options.js';
 import { DISCORD_EMOJIS as EMOJIS } from './emojis.js';
+import { buildFeedbackStats, formatRatingStars, normalizeGrowthConfig } from './growth.js';
 import { isPremiumEntitled, normalizePremiumConfig } from './premium.js';
 import { SecurityManager, SECURITY_LEVELS, normalizeSecurityConfig, normalizeSecurityLevel, summarizeSecurityConfig } from './security.js';
 import { analyzeGuildChannelsForDiscovery, hasUsefulDiscovery, normalizeDiscoveryConfig } from './server-discovery.js';
@@ -113,6 +114,11 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
 
       if (interaction.isButton() && interaction.customId.startsWith('nexadesk:help:')) {
         await handleHelpButton({ interaction, config });
+        return;
+      }
+
+      if (interaction.isButton() && interaction.customId.startsWith('nexadesk:feedback:')) {
+        await handleTicketFeedbackButton({ interaction, storage, client });
         return;
       }
 
@@ -251,6 +257,11 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
 
       if (interaction.commandName === 'diagnostico') {
         await handleDiagnosticsCommand({ interaction, storage, client });
+        return;
+      }
+
+      if (interaction.commandName === 'crecimiento') {
+        await handleGrowthCommand({ interaction, storage, client });
         return;
       }
 
@@ -736,10 +747,18 @@ function buildOwnerOnboardingEmbeds({ guild }) {
         ].join('\n')
       },
       {
+        name: `${EMOJIS.check} Growth Engine`,
+        value: [
+          'Cuando se cierre un ticket, NexaDesk puede mandar por MD la transcripcion y pedir una valoracion.',
+          'Desde la dashboard, seccion Crecimiento, eliges canal de reviews y activas feedback.',
+          'Con Premium, las valoraciones altas se publican como prueba social y las bajas activan Churn Radar para que el staff recupere confianza.'
+        ].join('\n')
+      },
+      {
         name: `${EMOJIS.wifi} Voz, seguridad y datos`,
         value: [
           'Pro Voice permite crear salas privadas con STT/TTS usando `/voz crear` o paneles de voz.',
-          'Premium tambien prepara IA prioritaria, transcripciones inteligentes, Security Plus, branding propio e informes semanales.',
+          'Premium tambien prepara IA prioritaria, transcripciones inteligentes, Security Plus, Growth Engine, branding propio e informes semanales.',
           'Security Guard se configura con `/seguridad configurar` o desde la dashboard: anti-flood, anti-links IA, anti-bots Top.gg, anti-alts y anti-nuke.',
           'Configuracion, paneles, tickets y transcripciones se guardan en Supabase para que la dashboard pueda consultarlos.'
         ].join('\n')
@@ -1331,7 +1350,11 @@ async function handleActivatePremiumCommand({ interaction, storage, client }) {
       smartTranscripts: true,
       securityPlus: true,
       customBranding: true,
-      weeklyInsights: true
+      weeklyInsights: true,
+      growthEngine: true,
+      publicReviews: true,
+      churnRadar: true,
+      conversionInsights: true
     }, { plan: 'pro', voiceSupportEnabled: true })
   });
 
@@ -1343,7 +1366,7 @@ async function handleActivatePremiumCommand({ interaction, storage, client }) {
       { name: 'Servidor', value: guildId, inline: true },
       { name: 'Plan', value: updated.plan ?? 'pro', inline: true },
       { name: 'Voz Pro', value: updated.voiceSupportEnabled ? 'Activa' : 'Pendiente', inline: true },
-      { name: 'Incluye', value: 'Voz Pro, IA prioritaria, transcripciones inteligentes, Security Plus, branding propio e informes semanales.' }
+      { name: 'Incluye', value: 'Voz Pro, IA prioritaria, transcripciones inteligentes, Security Plus, branding propio, informes semanales, Growth Engine, reviews publicas y Churn Radar.' }
     )
     .setTimestamp(new Date());
 
@@ -1939,7 +1962,8 @@ function buildHelpEmbed({ view, config, guild }) {
             '5. Escribe el prompt/contexto del servidor para que la IA responda con criterio.',
             '6. Crea componentes y publica paneles de boton o menu.',
             '7. Ejecuta `/diagnostico` para ver el NexaScore y lo que falta.',
-            '8. Si el servidor tiene Pro, entra en Premium y activa los modulos que quieras ofrecer.'
+            '8. Entra en Crecimiento para activar valoraciones post-ticket y preparar reviews publicas.',
+            '9. Si el servidor tiene Pro, entra en Premium y activa los modulos que quieras ofrecer.'
           ].join('\n')
         },
         {
@@ -1993,7 +2017,8 @@ function buildHelpEmbed({ view, config, guild }) {
             'IA prioritaria con respuestas menos genericas y mejores escalados.',
             'Transcripciones inteligentes para staff, dashboard y MD al usuario.',
             'Security Plus para links sospechosos, flood, blacklist y avisos reforzados.',
-            'Branding propio e informes semanales para demostrar valor al owner.',
+            'Growth Engine con feedback post-ticket, reviews publicas y Churn Radar.',
+            'Branding propio, conversion insights e informes semanales para demostrar valor al owner.',
             'Prioridad normal incluso si el modo mantenimiento global esta activo para servidores Free.'
           ].join('\n')
         },
@@ -2049,6 +2074,33 @@ function buildHelpEmbed({ view, config, guild }) {
       );
   }
 
+  if (view === 'growth') {
+    return base
+      .setTitle(`${EMOJIS.global} Crecimiento y reviews`)
+      .setDescription('Growth Engine transforma tickets bien atendidos en confianza publica, metricas y oportunidades para que el servidor crezca.')
+      .addFields(
+        {
+          name: `${EMOJIS.check} Que desbloquea`,
+          value: [
+            'Feedback por MD al cerrar tickets.',
+            'Rating medio y promotores visibles en dashboard.',
+            'Reviews publicas en un canal elegido cuando el rating es alto.',
+            'Churn Radar: alerta al staff si alguien queda insatisfecho.'
+          ].join('\n')
+        },
+        {
+          name: `${EMOJIS.rightArrow} Como se configura`,
+          value: [
+            `1. Dashboard: ${PUBLIC_DASHBOARD_URL}`,
+            '2. Ve a Crecimiento y elige canal de reviews.',
+            '3. Activa pedir feedback por MD.',
+            '4. Si el servidor tiene Premium, activa Reviews publicas y Churn Radar.',
+            '5. Alternativa por Discord: `/crecimiento configurar canal_reviews:#reviews reviews_publicas:true`.'
+          ].join('\n')
+        }
+      );
+  }
+
   return base
     .setTitle(`${EMOJIS.nexalogo} Centro de ayuda NexaDesk`)
     .setDescription([
@@ -2062,6 +2114,7 @@ function buildHelpEmbed({ view, config, guild }) {
           `${EMOJIS.server} Como creo un ticket?`,
           `${EMOJIS.rightArrow} Como configuro el servidor?`,
           `${EMOJIS.ban} Seguridad del servidor`,
+          `${EMOJIS.global} Crecimiento y reviews`,
           `${EMOJIS.check} Premium`,
           `${EMOJIS.global} Datos y transcripciones`,
           `${EMOJIS.nexalogo} Comando util: \`/diagnostico\` para auditar el setup actual.`
@@ -2091,15 +2144,19 @@ function buildHelpComponents({ view, config }) {
         .setLabel('Seguridad')
         .setStyle(current === 'security' ? ButtonStyle.Success : ButtonStyle.Secondary),
       new ButtonBuilder()
+        .setCustomId('nexadesk:help:growth')
+        .setLabel('Crecimiento')
+        .setStyle(current === 'growth' ? ButtonStyle.Success : ButtonStyle.Secondary),
+      new ButtonBuilder()
         .setCustomId('nexadesk:help:premium')
         .setLabel('Premium')
-        .setStyle(current === 'premium' ? ButtonStyle.Success : ButtonStyle.Secondary),
+        .setStyle(current === 'premium' ? ButtonStyle.Success : ButtonStyle.Secondary)
+    ),
+    new ActionRowBuilder().addComponents(
       new ButtonBuilder()
         .setCustomId('nexadesk:help:data')
         .setLabel('Datos')
-        .setStyle(current === 'data' ? ButtonStyle.Success : ButtonStyle.Secondary)
-    ),
-    new ActionRowBuilder().addComponents(
+        .setStyle(current === 'data' ? ButtonStyle.Success : ButtonStyle.Secondary),
       new ButtonBuilder()
         .setStyle(ButtonStyle.Link)
         .setLabel('Dashboard')
@@ -2720,6 +2777,7 @@ async function closeTicketWithTranscript({ client, storage, voiceManager = null,
     updatedAt: closedAt
   };
   const messages = await storage.listTranscriptMessages(channel.id);
+  const guildConfig = await storage.getGuildConfig(guild.id).catch(() => null);
   const targetUser = await resolveTranscriptRecipient(client, ticket, messages) ?? fallbackUser;
   let dmStatus = 'No se pudo detectar usuario para enviar la transcripcion por MD.';
 
@@ -2729,7 +2787,8 @@ async function closeTicketWithTranscript({ client, storage, voiceManager = null,
         targetUser,
         ticket: closedTicket,
         messages,
-        guildName: guild.name
+        guildName: guild.name,
+        guildConfig
       });
       dmStatus = `Transcripcion enviada automaticamente por MD a ${targetUser.tag}.`;
     } catch (error) {
@@ -2801,6 +2860,7 @@ async function finalizeDeletedTicket({ client, storage, channel, ticket, voiceMa
   });
 
   const messages = await storage.listTranscriptMessages(ticket.channelId);
+  const guildConfig = await storage.getGuildConfig(ticket.guildId).catch(() => null);
   const targetUser = await resolveTranscriptRecipient(client, ticket, messages);
   let dmStatus = 'No se pudo detectar usuario para enviar la transcripcion por MD.';
 
@@ -2810,7 +2870,8 @@ async function finalizeDeletedTicket({ client, storage, channel, ticket, voiceMa
         targetUser,
         ticket: closedTicket,
         messages,
-        guildName: channel.guild?.name
+        guildName: channel.guild?.name,
+        guildConfig
       });
       dmStatus = `Transcripcion enviada automaticamente por MD a ${targetUser.tag}.`;
     } catch (error) {
@@ -2851,29 +2912,279 @@ async function closeLinkedVoiceRoom({ guild, ticket, voiceManager = null, reason
   }
 }
 
-async function sendTranscriptDm({ targetUser, ticket, messages, guildName }) {
+async function sendTranscriptDm({ targetUser, ticket, messages, guildName, guildConfig = null }) {
   const transcriptText = buildTranscriptText({ ticket, messages });
   const fileName = buildTranscriptFileName(ticket);
   const attachment = new AttachmentBuilder(Buffer.from(transcriptText, 'utf8'), { name: fileName });
+  const growth = normalizeGrowthConfig(guildConfig?.growth);
+  const premium = normalizePremiumConfig(guildConfig?.premium, guildConfig ?? {});
+  const shouldAskFeedback = growth.enabled && growth.feedbackDm;
+  const content = [
+    `${EMOJIS.server} Aqui tienes la transcripcion de tu ticket en **${ticket.guildName ?? guildName ?? 'el servidor'}**.`,
+    `Canal: **#${ticket.channelName ?? ticket.channelId}**`,
+    'Si necesitas volver a contactar con el staff, abre un nuevo ticket.'
+  ];
+  if (shouldAskFeedback) {
+    content.push('');
+    content.push(`${EMOJIS.check} Tu opinion ayuda a este servidor a mejorar. Valora la atencion de este ticket:`);
+    if (!isPremiumEntitled(guildConfig ?? {}) || !premium.growthEngine) {
+      content.push('La valoracion se guarda internamente. Con Premium, el servidor puede activar Growth Engine para reviews publicas y alertas de riesgo.');
+    }
+  }
 
   await targetUser.send({
-    content: [
-      `${EMOJIS.server} Aqui tienes la transcripcion de tu ticket en **${ticket.guildName ?? guildName ?? 'el servidor'}**.`,
-      `Canal: **#${ticket.channelName ?? ticket.channelId}**`,
-      'Si necesitas volver a contactar con el staff, abre un nuevo ticket.'
-    ].join('\n'),
-    files: [attachment]
+    content: content.join('\n'),
+    files: [attachment],
+    components: shouldAskFeedback ? buildFeedbackComponents(ticket.channelId) : []
   });
+}
+
+function buildFeedbackComponents(channelId) {
+  return [
+    new ActionRowBuilder().addComponents(
+      [1, 2, 3, 4, 5].map((rating) =>
+        new ButtonBuilder()
+          .setCustomId(`nexadesk:feedback:${channelId}:${rating}`)
+          .setLabel(String(rating))
+          .setStyle(rating >= 4 ? ButtonStyle.Success : rating <= 2 ? ButtonStyle.Danger : ButtonStyle.Secondary)
+      )
+    )
+  ];
+}
+
+async function handleTicketFeedbackButton({ interaction, storage, client }) {
+  const [, , channelId, ratingValue] = interaction.customId.split(':');
+  const rating = Number.parseInt(ratingValue, 10);
+  const ticket = await storage.getTicket(channelId).catch(() => null);
+  if (!ticket) {
+    await replyToFeedbackInteraction(interaction, 'No encuentro el ticket asociado a esta valoracion.');
+    return;
+  }
+
+  if (ticket.openedBy && interaction.user.id !== ticket.openedBy) {
+    await replyToFeedbackInteraction(interaction, 'Solo la persona que abrio el ticket puede valorar esta atencion.');
+    return;
+  }
+
+  const guildConfig = await storage.getGuildConfig(ticket.guildId).catch(() => null);
+  const feedback = await storage.addTicketFeedback({
+    id: `feedback-${channelId}-${interaction.user.id}`,
+    guildId: ticket.guildId,
+    guildName: ticket.guildName ?? guildConfig?.guildName,
+    channelId,
+    channelName: ticket.channelName,
+    userId: interaction.user.id,
+    username: interaction.user.username,
+    rating,
+    source: 'dm_rating'
+  });
+
+  await replyToFeedbackInteraction(interaction, `${EMOJIS.check} Gracias. Valoracion guardada: ${formatRatingStars(feedback.rating)}.`);
+  await maybePublishFeedbackReview({ client, storage, feedback, ticket, guildConfig });
+}
+
+async function replyToFeedbackInteraction(interaction, content) {
+  const payload = interaction.inGuild?.() ? { content, ephemeral: true } : { content };
+  if (interaction.deferred || interaction.replied) {
+    await interaction.followUp(payload);
+    return;
+  }
+  await interaction.reply(payload);
+}
+
+async function maybePublishFeedbackReview({ client, storage, feedback, ticket, guildConfig }) {
+  const growth = normalizeGrowthConfig(guildConfig?.growth);
+  const premium = normalizePremiumConfig(guildConfig?.premium, guildConfig ?? {});
+  const entitled = isPremiumEntitled(guildConfig ?? {});
+  if (!growth.enabled) return;
+
+  if (feedback.rating <= 2 && growth.lowRatingAlerts && entitled && premium.churnRadar) {
+    await sendLowRatingGrowthAlert({ client, feedback, ticket, guildConfig }).catch((error) => {
+      console.error('Failed to publish low rating growth alert:', error);
+    });
+  }
+
+  const canPublishReview = entitled
+    && premium.growthEngine
+    && premium.publicReviews
+    && growth.publicReviews
+    && growth.reviewChannelId
+    && feedback.rating >= growth.testimonialMinRating
+    && !feedback.publicReviewPosted;
+  if (!canPublishReview) return;
+
+  const guild = await client.guilds.fetch(ticket.guildId).catch(() => null);
+  const channel = guild ? await guild.channels.fetch(growth.reviewChannelId).catch(() => null) : null;
+  if (!channel?.isTextBased?.()) return;
+
+  await channel.send({
+    embeds: [
+      new EmbedBuilder()
+        .setColor(0xffffff)
+        .setTitle(`${EMOJIS.check} Nueva review de soporte`)
+        .setDescription([
+          `${formatRatingStars(feedback.rating)}`,
+          `Un usuario valoro positivamente un ticket atendido con **NexaDesk**.`,
+          '',
+          'Review automatica: muestra confianza sin exponer datos privados del ticket.'
+        ].join('\n'))
+        .addFields(
+          { name: 'Servidor', value: feedback.guildName ?? guild?.name ?? ticket.guildName ?? 'Servidor', inline: true },
+          { name: 'Ticket', value: `#${ticket.channelName ?? ticket.channelId}`, inline: true }
+        )
+        .setFooter({ text: 'NexaDesk Growth Engine' })
+        .setTimestamp(new Date())
+    ],
+    allowedMentions: { roles: [], users: [] }
+  });
+
+  await storage.addTicketFeedback({ ...feedback, publicReviewPosted: true }).catch((error) => {
+    console.error('Failed to mark feedback review as posted:', error);
+  });
+}
+
+async function sendLowRatingGrowthAlert({ client, feedback, ticket, guildConfig }) {
+  const growth = normalizeGrowthConfig(guildConfig?.growth);
+  const guild = await client.guilds.fetch(ticket.guildId).catch(() => null);
+  const channel = guild && growth.reviewChannelId
+    ? await guild.channels.fetch(growth.reviewChannelId).catch(() => null)
+    : null;
+  if (!channel?.isTextBased?.()) return;
+
+  const staffMention = guildConfig?.staffRoleId ? `<@&${guildConfig.staffRoleId}> ` : '';
+  await channel.send({
+    content: `${EMOJIS.ban} ${staffMention}Churn Radar: una valoracion baja necesita revision humana.`,
+    embeds: [
+      new EmbedBuilder()
+        .setColor(0xffcc00)
+        .setTitle(`${EMOJIS.ban} Riesgo de perdida detectado`)
+        .setDescription('Un usuario valoro bajo el soporte. Revisad la transcripcion y, si procede, contactad para recuperar confianza.')
+        .addFields(
+          { name: 'Rating', value: formatRatingStars(feedback.rating), inline: true },
+          { name: 'Ticket', value: `#${ticket.channelName ?? ticket.channelId}`, inline: true },
+          { name: 'Usuario', value: feedback.userId ? `<@${feedback.userId}>` : feedback.username ?? 'No detectado', inline: true }
+        )
+        .setFooter({ text: 'NexaDesk Growth Engine - Churn Radar' })
+        .setTimestamp(new Date())
+    ],
+    allowedMentions: {
+      roles: guildConfig?.staffRoleId ? [guildConfig.staffRoleId] : [],
+      users: feedback.userId ? [feedback.userId] : []
+    }
+  });
+}
+
+async function handleGrowthCommand({ interaction, storage, client }) {
+  if (!interaction.inGuild()) {
+    await interaction.reply({ content: 'Este comando solo funciona dentro de un servidor.', ephemeral: true });
+    return;
+  }
+
+  if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+    await interaction.reply({ content: 'Necesitas permiso **Manage Server** para gestionar Growth Engine.', ephemeral: true });
+    return;
+  }
+
+  const subcommand = interaction.options.getSubcommand();
+  if (subcommand === 'configurar') {
+    await interaction.deferReply({ ephemeral: true });
+    const existing = await storage.getGuildConfig(interaction.guildId);
+    const current = normalizeGrowthConfig(existing?.growth);
+    const reviewChannel = interaction.options.getChannel('canal_reviews');
+    if (reviewChannel && reviewChannel.type !== ChannelType.GuildText) {
+      await interaction.editReply('El canal de reviews debe ser un canal de texto.');
+      return;
+    }
+
+    const next = normalizeGrowthConfig({
+      ...current,
+      enabled: interaction.options.getBoolean('activo') ?? current.enabled,
+      feedbackDm: interaction.options.getBoolean('pedir_feedback') ?? current.feedbackDm,
+      publicReviews: interaction.options.getBoolean('reviews_publicas') ?? current.publicReviews,
+      lowRatingAlerts: interaction.options.getBoolean('alertas_bajas') ?? current.lowRatingAlerts,
+      inviteCta: interaction.options.getBoolean('cta_invitar') ?? current.inviteCta,
+      testimonialMinRating: interaction.options.getInteger('rating_publico_min') ?? current.testimonialMinRating,
+      reviewChannelId: reviewChannel?.id ?? current.reviewChannelId,
+      reviewChannelName: reviewChannel?.name ?? current.reviewChannelName
+    });
+
+    const updated = await storage.upsertGuildConfig(interaction.guildId, {
+      guildName: interaction.guild.name,
+      growth: next
+    });
+    const premium = normalizePremiumConfig(updated.premium, updated);
+    await interaction.editReply({
+      embeds: [
+        buildGrowthStatusEmbed({
+          guild: interaction.guild,
+          guildConfig: updated,
+          growth: next,
+          premium,
+          feedback: await storage.listTicketFeedback([interaction.guildId]).catch(() => [])
+        })
+      ]
+    });
+    return;
+  }
+
+  const [guildConfig, feedback] = await Promise.all([
+    storage.getGuildConfig(interaction.guildId),
+    storage.listTicketFeedback([interaction.guildId]).catch(() => [])
+  ]);
+  await interaction.reply({
+    embeds: [
+      buildGrowthStatusEmbed({
+        guild: interaction.guild,
+        guildConfig,
+        growth: normalizeGrowthConfig(guildConfig?.growth),
+        premium: normalizePremiumConfig(guildConfig?.premium, guildConfig ?? {}),
+        feedback
+      })
+    ],
+    ephemeral: true
+  });
+}
+
+function buildGrowthStatusEmbed({ guild, guildConfig, growth, premium, feedback }) {
+  const stats = buildFeedbackStats(feedback);
+  const entitled = isPremiumEntitled(guildConfig ?? {});
+  return new EmbedBuilder()
+    .setColor(entitled ? 0xf4c95d : 0xffffff)
+    .setTitle(`${EMOJIS.global} Growth Engine`)
+    .setDescription(entitled && premium.growthEngine
+      ? 'Sistema de crecimiento activo: feedback post-ticket, reviews publicas y radar de perdida.'
+      : 'Puedes preparar la configuracion. Las reviews publicas y Churn Radar requieren Premium activo.')
+    .addFields(
+      { name: 'Servidor', value: guild?.name ?? guildConfig?.guildName ?? 'Servidor', inline: true },
+      { name: 'Plan', value: entitled ? String(guildConfig?.plan ?? 'pro').toUpperCase() : 'FREE', inline: true },
+      { name: 'Feedback DM', value: growth.feedbackDm ? 'Activo' : 'Pausado', inline: true },
+      { name: 'Reviews publicas', value: growth.publicReviews && premium.publicReviews && entitled ? 'Activas' : 'No activas', inline: true },
+      { name: 'Canal reviews', value: growth.reviewChannelId ? `<#${growth.reviewChannelId}>` : 'Sin configurar', inline: true },
+      { name: 'Churn Radar', value: growth.lowRatingAlerts && premium.churnRadar && entitled ? 'Activo' : 'No activo', inline: true },
+      {
+        name: `${EMOJIS.check} Metricas`,
+        value: [
+          `Valoraciones: **${stats.feedbackCount}**`,
+          `Rating medio: **${stats.averageRating}/5**`,
+          `Promotores: **${stats.promoterRate}%**`,
+          `Detractores: **${stats.detractors}**`
+        ].join('\n'),
+        inline: false
+      }
+    )
+    .setFooter({ text: 'Tip: canal_reviews puede ser #reviews, #vouches o #opiniones para convertir buen soporte en prueba social.' })
+    .setTimestamp(new Date());
 }
 
 async function handleGlobalStatsCommand({ interaction, storage, client }) {
   await interaction.deferReply();
 
   const installedGuildIds = new Set(client.guilds.cache.keys());
-  const [tickets, guildConfigs, maintenance] = await Promise.all([
+  const [tickets, guildConfigs, maintenance, feedback] = await Promise.all([
     storage.listTickets(),
     storage.listGuildConfigs(),
-    storage.getMaintenanceState?.().catch(() => normalizeMaintenanceState())
+    storage.getMaintenanceState?.().catch(() => normalizeMaintenanceState()),
+    storage.listTicketFeedback?.().catch(() => [])
   ]);
   const botTickets = tickets.filter((ticket) => installedGuildIds.has(ticket.guildId));
   const activeTickets = botTickets.filter((ticket) => ticket.status !== 'closed');
@@ -2890,6 +3201,7 @@ async function handleGlobalStatsCommand({ interaction, storage, client }) {
   const totalUsers = [...client.guilds.cache.values()].reduce((total, guild) => (
     total + (Number.isFinite(guild.memberCount) ? guild.memberCount : guild.members.cache.size)
   ), 0);
+  const feedbackStats = buildFeedbackStats((feedback ?? []).filter((item) => installedGuildIds.has(item.guildId)));
 
   const embed = new EmbedBuilder()
     .setColor(0xffffff)
@@ -2928,7 +3240,9 @@ async function handleGlobalStatsCommand({ interaction, storage, client }) {
         value: [
           `Tickets esperando staff: **${staffTickets}**`,
           `Tickets +24h abiertos: **${staleTickets}**`,
-          `Cobertura Security: **${client.guilds.cache.size ? Math.round((protectedGuilds / client.guilds.cache.size) * 100) : 0}%**`
+          `Cobertura Security: **${client.guilds.cache.size ? Math.round((protectedGuilds / client.guilds.cache.size) * 100) : 0}%**`,
+          `Rating soporte: **${feedbackStats.averageRating}/5**`,
+          `Promotores: **${feedbackStats.promoterRate}%**`
         ].join('\n'),
         inline: true
       },
