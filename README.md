@@ -91,7 +91,13 @@ Open the private internal docs manually at:
 https://your-render-service.onrender.com/docs
 ```
 
-It is intentionally not linked from the dashboard. The route requires a Google Authenticator compatible TOTP secret.
+Open the hidden admin command room manually at:
+
+```text
+https://your-render-service.onrender.com/admin
+```
+
+Both routes are intentionally not linked from the dashboard. `/docs` contains the internal vault and `/admin` shows global live data plus maintenance controls. Both require the same Google Authenticator compatible TOTP secret, but use separate signed cookies.
 
 Generate a secret:
 
@@ -99,7 +105,7 @@ Generate a secret:
 npm run docs:totp-secret
 ```
 
-Set the printed `DOCS_TOTP_SECRET` in Render and in the Raspberry Pi `.env`, then add the printed `otpauth_uri` manually to Google Authenticator. Docs uses no-cache headers, noindex, a short signed session, anti-copy/print guards, and persistent watermarks. Browser code cannot fully prevent operating-system screenshots, so treat the watermark and TOTP as defense-in-depth, not magic DRM.
+Set the printed `DOCS_TOTP_SECRET` in Render and in the Raspberry Pi `.env`, then add the printed `otpauth_uri` manually to Google Authenticator. Docs and admin use no-cache headers, noindex, short signed sessions, anti-copy/print guards, and persistent watermarks. Browser code cannot fully prevent operating-system screenshots, so treat the watermark and TOTP as defense-in-depth, not magic DRM.
 
 ## Discord OAuth
 

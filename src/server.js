@@ -10,6 +10,7 @@ import { GLOBAL_BLACKLIST_ADMIN_USER_ID, buildGlobalBanCode, isBlacklistEntryAct
 import { normalizeTotpSecret, verifyTotpCode } from './docs-auth.js';
 import { discordEmojiUrl } from './emojis.js';
 import { normalizeGrowthConfig } from './growth.js';
+import { normalizeMaintenanceState } from './maintenance.js';
 import { normalizeTicketComponent } from './panel-options.js';
 import { isPremiumEntitled, normalizePremiumConfig, summarizePremiumConfig } from './premium.js';
 import { normalizeSecurityConfig, summarizeSecurityConfig } from './security.js';
@@ -45,7 +46,7 @@ export function createServer({ config, storage, bot, events }) {
   });
 
   app.get('/robots.txt', (_req, res) => {
-    res.type('text/plain').send('User-agent: *\nDisallow: /docs\nDisallow: /api\n');
+    res.type('text/plain').send('User-agent: *\nDisallow: /docs\nDisallow: /admin\nDisallow: /api\n');
   });
 
   app.get('/terms', (_req, res) => {
@@ -215,6 +216,119 @@ export function createServer({ config, storage, bot, events }) {
       maxAge
     });
     res.redirect('/docs');
+  });
+
+  app.get('/admin/logout', (_req, res) => {
+    setDocsSecurityHeaders(res);
+    res.clearCookie('nexadesk_admin');
+    res.redirect('/admin');
+  });
+
+  app.get('/admin', asyncHandler(async (req, res) => {
+    setDocsSecurityHeaders(res);
+    if (!normalizeTotpSecret(config.DOCS_TOTP_SECRET)) {
+      res.status(503).type('html').send(renderAdminDisabled(config));
+      return;
+    }
+
+    const adminSession = getAdminSession(req);
+    if (!adminSession) {
+      res.type('html').send(renderAdminGate({ config }));
+      return;
+    }
+
+    res.type('html').send(renderAdminPanel({
+      config,
+      session: adminSession,
+      snapshot: await buildAdminSnapshot({ storage, bot })
+    }));
+  }));
+
+  app.post('/admin', (req, res) => {
+    setDocsSecurityHeaders(res);
+    const ip = getRequestIp(req);
+    if (isDocsRateLimited(ip)) {
+      res.status(429).type('html').send(renderAdminGate({
+        config,
+        error: 'Demasiados intentos. Espera un minuto antes de probar otro codigo.'
+      }));
+      return;
+    }
+
+    const secret = normalizeTotpSecret(config.DOCS_TOTP_SECRET);
+    if (!secret) {
+      res.status(503).type('html').send(renderAdminDisabled(config));
+      return;
+    }
+
+    if (!verifyTotpCode({ code: req.body.code, secret })) {
+      recordDocsFailure(ip);
+      res.status(401).type('html').send(renderAdminGate({
+        config,
+        error: 'Codigo dinamico incorrecto o caducado.'
+      }));
+      return;
+    }
+
+    clearDocsFailures(ip);
+    const now = Date.now();
+    const maxAge = config.DOCS_SESSION_MINUTES * 60 * 1000;
+    res.cookie('nexadesk_admin', signSession(config, {
+      scope: 'admin',
+      nonce: crypto.randomBytes(12).toString('hex'),
+      iat: now,
+      exp: now + maxAge
+    }), {
+      httpOnly: true,
+      sameSite: 'strict',
+      secure: process.env.NODE_ENV === 'production',
+      signed: true,
+      maxAge
+    });
+    res.redirect('/admin');
+  });
+
+  app.get('/admin/api/snapshot', requireAdminSession, asyncHandler(async (_req, res) => {
+    res.json(await buildAdminSnapshot({ storage, bot }));
+  }));
+
+  app.post('/admin/api/maintenance', requireAdminSession, asyncHandler(async (req, res) => {
+    const enabled = Boolean(req.body.enabled);
+    const delaySeconds = Number(req.body.delaySeconds);
+    const patch = enabled
+      ? {
+          enabled: true,
+          message: String(req.body.message ?? '').trim().slice(0, 500),
+          delayMs: Number.isFinite(delaySeconds) ? Math.round(delaySeconds * 1000) : undefined,
+          enabledBy: 'admin-vault',
+          enabledAt: new Date().toISOString(),
+          disabledBy: null,
+          disabledAt: null
+        }
+      : {
+          enabled: false,
+          disabledBy: 'admin-vault',
+          disabledAt: new Date().toISOString()
+        };
+    res.json({ maintenance: await storage.setMaintenanceState(patch) });
+  }));
+
+  app.get('/admin/events', requireAdminSession, (req, res) => {
+    res.writeHead(200, {
+      'content-type': 'text/event-stream',
+      'cache-control': 'no-cache, no-transform',
+      connection: 'keep-alive'
+    });
+    res.write(`event: ready\ndata: ${JSON.stringify({ ok: true })}\n\n`);
+
+    const send = (event) => {
+      res.write(`event: admin.event\ndata: ${JSON.stringify(event)}\n\n`);
+    };
+
+    events?.on?.('event', send);
+    req.on('close', () => {
+      events?.off?.('event', send);
+    });
   });
 
   app.use((req, res, next) => {
@@ -521,6 +635,17 @@ function requireGlobalAdmin(req, res, next) {
   next();
 }
 
+function requireAdminSession(req, res, next) {
+  setDocsSecurityHeaders(res);
+  const session = getAdminSession(req);
+  if (!session) {
+    res.status(401).json({ error: 'Admin TOTP required.' });
+    return;
+  }
+  req.adminSession = session;
+  next();
+}
+
 function requireGuildAccess(req, res, next) {
   if (!canAccessGuild(req.session, req.params.guildId)) {
     res.status(403).json({ error: 'You cannot manage this guild.' });
@@ -627,6 +752,128 @@ function enrichDashboardStats(stats, guilds) {
   };
 }
 
+async function buildAdminSnapshot({ storage, bot }) {
+  const [
+    configs,
+    tickets,
+    feedback,
+    blacklistEntries,
+    maintenance
+  ] = await Promise.all([
+    storage.listGuildConfigs().catch((error) => {
+      console.warn('Admin snapshot guilds failed:', normalizeError(error));
+      return [];
+    }),
+    storage.listTickets().catch((error) => {
+      console.warn('Admin snapshot tickets failed:', normalizeError(error));
+      return [];
+    }),
+    typeof storage.listTicketFeedback === 'function'
+      ? storage.listTicketFeedback().catch((error) => {
+          console.warn('Admin snapshot feedback failed:', normalizeError(error));
+          return [];
+        })
+      : Promise.resolve([]),
+    typeof storage.listBlacklistEntries === 'function'
+      ? storage.listBlacklistEntries().catch((error) => {
+          console.warn('Admin snapshot blacklist failed:', normalizeError(error));
+          return [];
+        })
+      : Promise.resolve([]),
+    typeof storage.getMaintenanceState === 'function'
+      ? storage.getMaintenanceState().catch((error) => {
+          console.warn('Admin snapshot maintenance failed:', normalizeError(error));
+          return normalizeMaintenanceState();
+        })
+      : Promise.resolve(normalizeMaintenanceState())
+  ]);
+
+  const guildIds = configs.map((guild) => guild.guildId).filter(Boolean);
+  const installedGuildIds = await getInstalledGuildIds(bot, configs);
+  let stats = buildEmptyDashboardStats();
+  if (guildIds.length) {
+    try {
+      stats = await storage.getDashboardStats(guildIds);
+    } catch (error) {
+      console.warn('Admin snapshot stats failed:', normalizeError(error));
+    }
+  }
+
+  const guilds = configs
+    .map((guild) => ({
+      ...guild,
+      installed: installedGuildIds.has(guild.guildId),
+      configured: Boolean(guild.ticketCategoryId),
+      premiumSummary: summarizePremiumConfig(guild),
+      premiumEntitled: isPremiumEntitled(guild),
+      securitySummary: summarizeSecurityConfig(normalizeSecurityConfig(guild.security)),
+      growth: normalizeGrowthConfig(guild.growth),
+      componentsCount: guild.components?.length ?? 0,
+      panelsCount: guild.panels?.length ?? 0
+    }))
+    .sort((a, b) => String(a.guildName ?? '').localeCompare(String(b.guildName ?? '')));
+
+  return {
+    generatedAt: new Date().toISOString(),
+    runtime: buildAdminRuntime(),
+    maintenance: normalizeMaintenanceState(maintenance),
+    stats: enrichAdminStats(stats, {
+      guilds,
+      tickets,
+      feedback,
+      blacklistEntries,
+      installedGuildIds
+    }),
+    guilds,
+    tickets,
+    feedback,
+    blacklistEntries
+  };
+}
+
+function enrichAdminStats(stats, { guilds, tickets, feedback, blacklistEntries, installedGuildIds }) {
+  const configuredGuilds = guilds.filter((guild) => guild.configured).length;
+  const openTickets = tickets.filter((ticket) => isOpenTicketStatus(ticket.status)).length;
+  const premiumGuilds = guilds.filter((guild) => guild.premiumEntitled).length;
+  const averageRating = feedback.length
+    ? feedback.reduce((total, item) => total + Number(item.rating ?? 0), 0) / feedback.length
+    : 0;
+  return {
+    ...stats,
+    totalGuilds: guilds.length,
+    installedGuilds: installedGuildIds.size,
+    configuredGuilds,
+    unconfiguredGuilds: Math.max(guilds.length - configuredGuilds, 0),
+    totalTickets: tickets.length,
+    openTickets,
+    closedTickets: Math.max(tickets.length - openTickets, 0),
+    feedbackCount: feedback.length,
+    averageRating: Number(averageRating.toFixed(2)),
+    activeBlacklistEntries: blacklistEntries.filter(isBlacklistEntryActive).length,
+    premiumGuilds,
+    freeGuilds: Math.max(guilds.length - premiumGuilds, 0),
+    panels: guilds.reduce((total, guild) => total + (guild.panelsCount ?? 0), 0),
+    components: guilds.reduce((total, guild) => total + (guild.componentsCount ?? 0), 0)
+  };
+}
+
+function isOpenTicketStatus(status) {
+  return !['closed', 'cerrado', 'resolved', 'archived', 'deleted'].includes(String(status ?? 'open').toLowerCase());
+}
+
+function buildAdminRuntime() {
+  const memory = process.memoryUsage();
+  return {
+    pid: process.pid,
+    node: process.version,
+    uptimeSeconds: Math.round(process.uptime()),
+    rssMb: Math.round(memory.rss / 1024 / 1024),
+    heapUsedMb: Math.round(memory.heapUsed / 1024 / 1024),
+    env: process.env.NODE_ENV || 'development',
+    runBot: String(process.env.RUN_BOT ?? 'true')
+  };
+}
+
 function buildPanelRequestPayload(req) {
   return {
     guildId: req.params.guildId,
@@ -705,6 +952,13 @@ function getSession(req) {
 function getDocsSession(req) {
   const session = getSignedCookiePayload(req, 'nexadesk_docs');
   if (!session || session.scope !== 'docs') return null;
+  if (!session.exp || Date.now() > session.exp) return null;
+  return session;
+}
+
+function getAdminSession(req) {
+  const session = getSignedCookiePayload(req, 'nexadesk_admin');
+  if (!session || session.scope !== 'admin') return null;
   if (!session.exp || Date.now() > session.exp) return null;
   return session;
 }
@@ -813,7 +1067,7 @@ async function buildDashboardAssistantReply({ config, message, guild, stats, act
         'En Paneles se publica el embed, boton o menu en un canal de Discord; los botones tambien pueden abrir tickets de voz Pro.',
         'En Crecimiento se gestionan valoraciones post-ticket, reviews publicas, canal de reviews y Churn Radar.',
         'En Premium se gestionan Voz Pro, IA prioritaria, transcripciones inteligentes, Security Plus, branding propio, informes semanales, Growth Engine y conversion insights por servidor.',
-        'El modo mantenimiento se controla por slash command owner-only /mantenimiento; no hay boton publico en dashboard.',
+        'El modo mantenimiento se controla por slash command owner-only /mantenimiento o desde el panel oculto /admin; no hay boton publico en dashboard.',
         'Security Guard incluye anti-flood, anti-links IA, XN Protect Automod, anti-bots Top.gg, anti-alts y anti-nuke.',
         'En Tickets se ven tickets y transcripciones guardadas.',
         'Si el usuario pide que tu metas algo, explica que puedes rellenar campos con botones de accion, pero el usuario debe revisar y guardar/publicar.',
@@ -1136,6 +1390,252 @@ function renderDocsGate({ config, error = '' }) {
   });
 }
 
+function renderAdminDisabled(config) {
+  return renderDocsShell({
+    title: 'NexaDesk Admin bloqueado',
+    body: `
+      <main class="gate">
+        <img src="/assets/nexadesk-logo.svg" alt="NexaDesk" class="gate-logo">
+        <p class="kicker">NexaDesk command room</p>
+        <h1>Admin aun no esta configurado.</h1>
+        <p>Define <code>DOCS_TOTP_SECRET</code> para activar el panel oculto con el mismo codigo de Google Authenticator que protege la vault.</p>
+        <div class="notice">
+          <strong>Ruta oculta</strong>
+          <span>El panel vive en <code>/admin</code>, no aparece en la dashboard principal y sus APIs requieren sesion TOTP firmada.</span>
+        </div>
+      </main>
+    `
+  });
+}
+
+function renderAdminGate({ config, error = '' }) {
+  return renderDocsShell({
+    title: 'NexaDesk Admin',
+    body: `
+      <main class="gate">
+        <img src="/assets/nexadesk-logo.svg" alt="NexaDesk" class="gate-logo">
+        <p class="kicker">Panel oculto</p>
+        <h1>Introduce el codigo Dinamico</h1>
+        <p>Usa el mismo codigo de Google Authenticator que la vault. Esta ruta no esta enlazada desde la dashboard y la sesion caduca en ${escapeHtml(String(config.DOCS_SESSION_MINUTES))} minutos.</p>
+        ${error ? `<div class="error">${escapeHtml(error)}</div>` : ''}
+        <form method="post" action="/admin" class="totp-form" autocomplete="off">
+          <label>
+            Codigo dinamico
+            <input name="code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" minlength="6" autocomplete="one-time-code" autofocus required>
+          </label>
+          <button type="submit">Entrar al admin</button>
+        </form>
+        <div class="notice">
+          <strong>Sin acceso publico</strong>
+          <span>Este panel usa cookies separadas, noindex, no-cache y endpoints internos bajo <code>/admin/api</code>.</span>
+        </div>
+      </main>
+    `
+  });
+}
+
+function renderAdminPanel({ config, session, snapshot }) {
+  const issuedAt = session.iat ? new Date(session.iat).toLocaleString('es-ES') : 'sesion actual';
+  const expiresAt = session.exp ? new Date(session.exp).toLocaleString('es-ES') : 'pronto';
+  const initialSnapshot = toInlineJson(snapshot);
+
+  return renderDocsShell({
+    title: 'NexaDesk Admin',
+    body: `
+      <main class="vault admin-vault" id="adminPanel">
+        <style>
+          .admin-vault { width:min(1500px, calc(100% - 26px)); }
+          .admin-vault h1 { max-width:900px; }
+          .admin-topline { display:flex; flex-wrap:wrap; gap:10px; margin-top:16px; }
+          .admin-pill { border:1px solid rgba(255,255,255,.18); border-radius:999px; padding:8px 11px; color:#fff; background:rgba(255,255,255,.055); font-weight:850; }
+          .admin-grid { display:grid; grid-template-columns:repeat(4, minmax(0,1fr)); gap:12px; margin:16px 0; }
+          .admin-card,.admin-control,.admin-table-card { border:1px solid var(--line); border-radius:20px; background:linear-gradient(145deg, rgba(255,255,255,.075), rgba(255,255,255,.025)); box-shadow:0 24px 90px rgba(0,0,0,.26); }
+          .admin-card { padding:16px; min-height:112px; position:relative; overflow:hidden; }
+          .admin-card::after { content:""; position:absolute; right:-24px; bottom:-24px; width:96px; height:96px; border:1px solid rgba(255,255,255,.16); border-radius:28px; transform:rotate(18deg); }
+          .admin-card span { display:block; font-size:12px; text-transform:uppercase; letter-spacing:.12em; color:#bdbdbd; }
+          .admin-card strong { display:block; margin-top:10px; font-size:clamp(26px, 4vw, 42px); color:#fff; line-height:1; }
+          .admin-card small { display:block; margin-top:8px; color:#aaa; }
+          .admin-control { display:grid; grid-template-columns:minmax(0,1.4fr) minmax(320px,.8fr); gap:16px; padding:18px; margin-bottom:16px; }
+          .admin-vault input,.admin-vault textarea,.admin-vault select { width:100%; border-radius:14px; border:1px solid rgba(255,255,255,.18); padding:12px 13px; background:#060606; color:#fff; font:inherit; letter-spacing:normal; text-align:left; }
+          .admin-vault textarea { min-height:116px; resize:vertical; }
+          .admin-form-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
+          .admin-buttons { display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin-top:12px; }
+          .admin-buttons button,.admin-action { border-radius:999px; padding:11px 14px; border:1px solid rgba(255,255,255,.2); }
+          .admin-buttons .danger { background:#1b0505; color:#fff; border-color:rgba(255,95,87,.42); }
+          .admin-layout { display:grid; grid-template-columns:minmax(0,.9fr) minmax(0,1.45fr); gap:16px; }
+          .admin-stack { display:grid; gap:16px; }
+          .admin-table-card { overflow:hidden; }
+          .admin-table-head { display:flex; justify-content:space-between; align-items:center; gap:12px; padding:16px; border-bottom:1px solid rgba(255,255,255,.1); }
+          .admin-table-head h2 { font-size:21px; }
+          .admin-table-head span { font-size:13px; }
+          .admin-table-scroll { overflow:auto; max-height:430px; }
+          .admin-table-card table { min-width:760px; }
+          .admin-feed { display:grid; gap:8px; padding:14px; max-height:430px; overflow:auto; }
+          .admin-feed-item { border:1px solid rgba(255,255,255,.12); border-radius:14px; padding:11px; background:rgba(0,0,0,.32); }
+          .admin-feed-item strong { display:block; color:#fff; }
+          .admin-feed-item span { font-size:12px; }
+          .admin-status { display:inline-flex; align-items:center; gap:8px; color:#fff; }
+          .admin-status::before { content:""; width:9px; height:9px; border-radius:50%; background:#7cff6b; box-shadow:0 0 18px rgba(124,255,107,.7); }
+          .admin-status.is-off::before { background:#ff5f57; box-shadow:0 0 18px rgba(255,95,87,.7); }
+          .admin-toast { position:fixed; right:18px; bottom:18px; z-index:10001; max-width:420px; border:1px solid rgba(255,255,255,.18); border-radius:18px; padding:14px 16px; background:rgba(8,8,8,.94); color:#fff; box-shadow:0 24px 90px rgba(0,0,0,.44); opacity:0; transform:translateY(12px); pointer-events:none; transition:.18s ease; }
+          .admin-toast.is-visible { opacity:1; transform:translateY(0); }
+          @media (max-width:1050px) {
+            .admin-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
+            .admin-control,.admin-layout { grid-template-columns:1fr; }
+          }
+          @media (max-width:640px) {
+            .admin-grid,.admin-form-grid { grid-template-columns:1fr; }
+            .admin-table-head { align-items:flex-start; flex-direction:column; }
+          }
+        </style>
+        <section class="vault-hero">
+          <div>
+            <p class="kicker">NexaDesk command room</p>
+            <h1>Panel admin global</h1>
+            <p>Vista oculta para operar NexaDesk en tiempo real: servidores, tickets, feedback, blacklist, runtime y modo mantenimiento.</p>
+            <div class="admin-topline">
+              <span class="admin-pill" id="adminLiveState">Live conectado</span>
+              <span class="admin-pill">Ruta no enlazada</span>
+              <span class="admin-pill">TOTP: ${escapeHtml(config.DOCS_TOTP_ISSUER)}</span>
+            </div>
+          </div>
+          <aside>
+            <strong>Sesion admin</strong>
+            <span>Inicio: ${escapeHtml(issuedAt)}</span>
+            <span>Caduca: ${escapeHtml(expiresAt)}</span>
+            <a href="/admin/logout">Cerrar admin</a>
+          </aside>
+        </section>
+
+        <section class="vault-warning">
+          <strong>Operacion sensible</strong>
+          <span>No compartas capturas de esta pantalla. El panel no revela secretos de entorno, pero si muestra datos operativos globales del bot.</span>
+        </section>
+
+        <section class="admin-grid" id="adminStats"></section>
+
+        <section class="admin-control">
+          <div>
+            <p class="kicker">Mantenimiento global</p>
+            <h2>Control de velocidad Free</h2>
+            <p>Cuando esta activo, NexaDesk avisa al abrir tickets y ralentiza solo servidores sin Premium. Premium mantiene prioridad normal.</p>
+            <div class="admin-form-grid">
+              <label>
+                Estado
+                <select id="maintenanceEnabled">
+                  <option value="false">Desactivado</option>
+                  <option value="true">Activado</option>
+                </select>
+              </label>
+              <label>
+                Delay para Free (segundos)
+                <input id="maintenanceDelay" type="number" min="0.5" max="15" step="0.5" value="3.5">
+              </label>
+            </div>
+            <label style="margin-top:12px">
+              Mensaje para servidores Free
+              <textarea id="maintenanceMessage" placeholder="NexaDesk esta en mantenimiento global..."></textarea>
+            </label>
+            <div class="admin-buttons">
+              <button type="button" id="activateMaintenance">Activar mantenimiento</button>
+              <button type="button" class="danger" id="disableMaintenance">Desactivar</button>
+              <span id="maintenanceMeta">Sin cambios recientes.</span>
+            </div>
+          </div>
+          <div class="admin-card">
+            <span>Estado actual</span>
+            <strong id="maintenanceLabel">...</strong>
+            <small id="maintenanceDetails">Cargando estado.</small>
+          </div>
+        </section>
+
+        <section class="admin-layout">
+          <div class="admin-stack">
+            <article class="admin-table-card">
+              <div class="admin-table-head">
+                <div>
+                  <p class="kicker">Realtime</p>
+                  <h2>Eventos recientes</h2>
+                </div>
+                <span id="lastUpdate">Esperando snapshot...</span>
+              </div>
+              <div class="admin-feed" id="adminFeed"></div>
+            </article>
+
+            <article class="admin-table-card">
+              <div class="admin-table-head">
+                <div>
+                  <p class="kicker">Trust</p>
+                  <h2>Blacklist interna</h2>
+                </div>
+                <span id="blacklistCount">0 entradas</span>
+              </div>
+              <div class="admin-table-scroll">
+                <table>
+                  <thead><tr><th>Usuario</th><th>Estado</th><th>Motivo</th><th>Expira</th></tr></thead>
+                  <tbody id="blacklistRows"></tbody>
+                </table>
+              </div>
+            </article>
+          </div>
+
+          <div class="admin-stack">
+            <article class="admin-table-card">
+              <div class="admin-table-head">
+                <div>
+                  <p class="kicker">Servidores</p>
+                  <h2>Configuracion global</h2>
+                </div>
+                <span id="guildCount">0 servidores</span>
+              </div>
+              <div class="admin-table-scroll">
+                <table>
+                  <thead><tr><th>Servidor</th><th>Estado</th><th>Premium</th><th>Security</th><th>Paneles</th></tr></thead>
+                  <tbody id="guildRows"></tbody>
+                </table>
+              </div>
+            </article>
+
+            <article class="admin-table-card">
+              <div class="admin-table-head">
+                <div>
+                  <p class="kicker">Tickets</p>
+                  <h2>Ultimos tickets</h2>
+                </div>
+                <span id="ticketCount">0 tickets</span>
+              </div>
+              <div class="admin-table-scroll">
+                <table>
+                  <thead><tr><th>Canal</th><th>Servidor</th><th>Estado</th><th>Usuario</th><th>Creado</th></tr></thead>
+                  <tbody id="ticketRows"></tbody>
+                </table>
+              </div>
+            </article>
+
+            <article class="admin-table-card">
+              <div class="admin-table-head">
+                <div>
+                  <p class="kicker">Growth</p>
+                  <h2>Feedback reciente</h2>
+                </div>
+                <span id="feedbackCount">0 ratings</span>
+              </div>
+              <div class="admin-table-scroll">
+                <table>
+                  <thead><tr><th>Rating</th><th>Servidor</th><th>Ticket</th><th>Comentario</th><th>Fecha</th></tr></thead>
+                  <tbody id="feedbackRows"></tbody>
+                </table>
+              </div>
+            </article>
+          </div>
+        </section>
+        <div class="admin-toast" id="adminToast"></div>
+      </main>
+    `,
+    script: renderAdminPanelScript(initialSnapshot)
+  });
+}
+
 function renderDocsVault({ config, session }) {
   const docs = buildDocsSections(config);
   const issuedAt = session.iat ? new Date(session.iat).toLocaleString('es-ES') : 'sesion actual';
@@ -1258,10 +1758,11 @@ function buildDocsSections(config) {
           'Top.gg se usa como lista positiva para Anti-bots: si un bot esta listado, se permite; si Top.gg devuelve 404, se puede banear; si falla la API, no se banea.',
           'Premium por servidor se decide con plan pro/premium/enterprise, voice_support_enabled o /activarpremium desde owner autorizado.',
           'Growth Engine pide feedback al cerrar tickets; Premium permite reviews publicas y Churn Radar para recuperar usuarios insatisfechos.',
-          'Modo mantenimiento global se activa con /mantenimiento; ralentiza solo servidores Free y avisa al abrir tickets.',
+          'Modo mantenimiento global se activa con /mantenimiento o desde /admin; ralentiza solo servidores Free y avisa al abrir tickets.',
           'Smart Discovery recorre todos los canales de cada servidor instalado, normaliza tipografias raras y detecta anuncios, normas, FAQ, soporte y categorias candidatas.',
           'El canal de anuncios detectado es destino de broadcast: todo mensaje publicado en ANNOUNCEMENT_SOURCE_CHANNEL_ID dentro de ANNOUNCEMENT_SOURCE_GUILD_ID se replica ahi.',
-          '/docs es una zona oculta: no aparece en la UI, requiere TOTP y no debe contener secretos en claro.'
+          '/docs es una zona oculta: no aparece en la UI, requiere TOTP y no debe contener secretos en claro.',
+          '/admin es el command room oculto: comparte TOTP con docs, usa cookie separada y permite ver datos globales live y activar/desactivar mantenimiento.'
         ] }
       ]
     },
@@ -1655,6 +2156,188 @@ function renderDocsProtectionScript() {
       const devtoolsLikelyOpen = (window.outerWidth - window.innerWidth > 160) || (window.outerHeight - window.innerHeight > 180);
       if (devtoolsLikelyOpen) flashShield('Vista bloqueada: consola o panel externo detectado.');
     }, 900);
+  </script>`;
+}
+
+function renderAdminPanelScript(initialSnapshot) {
+  return `<script>
+    const state = {
+      snapshot: ${initialSnapshot},
+      events: []
+    };
+    const byId = (id) => document.getElementById(id);
+    const html = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({
+      '&': '&amp;',
+      '<': '&lt;',
+      '>': '&gt;',
+      '"': '&quot;',
+      "'": '&#039;'
+    })[char]);
+    const fmtDate = (value) => {
+      if (!value) return 'No indicado';
+      const date = new Date(value);
+      return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString('es-ES');
+    };
+    const short = (value, length = 110) => {
+      const text = String(value ?? '').replace(/\\s+/g, ' ').trim();
+      return text.length > length ? text.slice(0, length - 1) + '...' : text || '-';
+    };
+    const uptime = (seconds = 0) => {
+      const total = Number(seconds) || 0;
+      const h = Math.floor(total / 3600);
+      const m = Math.floor((total % 3600) / 60);
+      return h ? h + 'h ' + m + 'm' : m + 'm';
+    };
+    const setToast = (message) => {
+      const toast = byId('adminToast');
+      if (!toast) return;
+      toast.textContent = message;
+      toast.classList.add('is-visible');
+      clearTimeout(window.__adminToastTimer);
+      window.__adminToastTimer = setTimeout(() => toast.classList.remove('is-visible'), 2600);
+    };
+    const renderStats = () => {
+      const snapshot = state.snapshot || {};
+      const stats = snapshot.stats || {};
+      const runtime = snapshot.runtime || {};
+      const maintenance = snapshot.maintenance || {};
+      const cards = [
+        ['Servidores', String(stats.installedGuilds ?? 0) + ' / ' + String(stats.totalGuilds ?? 0), 'instalados / configurados'],
+        ['Tickets', String(stats.openTickets ?? 0) + ' abiertos', String(stats.totalTickets ?? 0) + ' totales'],
+        ['Premium', String(stats.premiumGuilds ?? stats.proGuilds ?? 0), String(stats.freeGuilds ?? 0) + ' Free'],
+        ['Feedback', String(stats.averageRating ?? 0) + ' / 5', String(stats.feedbackCount ?? 0) + ' valoraciones'],
+        ['Blacklist', String(stats.activeBlacklistEntries ?? 0), 'entradas activas'],
+        ['Paneles', String(stats.panels ?? 0), String(stats.components ?? 0) + ' componentes'],
+        ['Runtime', String(runtime.rssMb ?? 0) + ' MB', 'uptime ' + uptime(runtime.uptimeSeconds)],
+        ['Mantenimiento', maintenance.enabled ? 'ACTIVO' : 'OFF', maintenance.enabled ? 'Free con delay' : 'sin ralentizar']
+      ];
+      byId('adminStats').innerHTML = cards.map((card) => '<article class="admin-card"><span>' + html(card[0]) + '</span><strong>' + html(card[1]) + '</strong><small>' + html(card[2]) + '</small></article>').join('');
+    };
+    const renderMaintenance = () => {
+      const maintenance = state.snapshot.maintenance || {};
+      byId('maintenanceEnabled').value = maintenance.enabled ? 'true' : 'false';
+      byId('maintenanceDelay').value = String(((maintenance.delayMs ?? 3500) / 1000).toFixed(1)).replace('.0', '');
+      byId('maintenanceMessage').value = maintenance.message || '';
+      byId('maintenanceLabel').textContent = maintenance.enabled ? 'Activo' : 'Desactivado';
+      byId('maintenanceDetails').textContent = maintenance.enabled
+        ? 'Delay Free: ' + ((maintenance.delayMs ?? 3500) / 1000) + 's. Actualizado: ' + fmtDate(maintenance.updatedAt)
+        : 'Los servidores Free y Premium responden a velocidad normal.';
+      byId('maintenanceMeta').textContent = maintenance.enabled
+        ? 'Activado por ' + (maintenance.enabledBy || 'admin') + ' - ' + fmtDate(maintenance.enabledAt || maintenance.updatedAt)
+        : 'Desactivado - ' + fmtDate(maintenance.disabledAt || maintenance.updatedAt);
+    };
+    const renderGuilds = () => {
+      const guilds = state.snapshot.guilds || [];
+      byId('guildCount').textContent = guilds.length + ' servidores';
+      byId('guildRows').innerHTML = guilds.map((guild) => {
+        const status = [
+          guild.installed ? 'Bot instalado' : 'No instalado',
+          guild.configured ? 'Configurado' : 'Sin setup',
+          guild.staffRoleId ? 'Staff OK' : 'Staff falta'
+        ].join(' · ');
+        const premium = guild.premiumSummary?.label || (guild.premiumEntitled ? 'Premium' : 'Free');
+        const security = guild.securitySummary?.label || (guild.security?.enabled ? 'Activo' : 'Off');
+        return '<tr><td><strong>' + html(guild.guildName || guild.guildId) + '</strong><br><span>' + html(guild.guildId) + '</span></td><td>' + html(status) + '</td><td>' + html(premium) + '</td><td>' + html(security) + '</td><td>' + html(String(guild.panelsCount || 0)) + ' paneles<br><span>' + html(String(guild.componentsCount || 0)) + ' componentes</span></td></tr>';
+      }).join('') || '<tr><td colspan="5">No hay servidores configurados todavia.</td></tr>';
+    };
+    const renderTickets = () => {
+      const tickets = state.snapshot.tickets || [];
+      byId('ticketCount').textContent = tickets.length + ' tickets recientes';
+      byId('ticketRows').innerHTML = tickets.map((ticket) => (
+        '<tr><td><strong>#' + html(ticket.channelName || ticket.channelId) + '</strong><br><span>' + html(ticket.channelId) + '</span></td><td>' + html(ticket.guildName || ticket.guildId) + '</td><td>' + html(ticket.status || 'open') + '</td><td>' + html(ticket.openerUserId || ticket.userId || '-') + '</td><td>' + html(fmtDate(ticket.createdAt)) + '</td></tr>'
+      )).join('') || '<tr><td colspan="5">No hay tickets todavia.</td></tr>';
+    };
+    const renderFeedback = () => {
+      const feedback = state.snapshot.feedback || [];
+      byId('feedbackCount').textContent = feedback.length + ' ratings recientes';
+      byId('feedbackRows').innerHTML = feedback.map((item) => (
+        '<tr><td><strong>' + html(item.rating ?? '-') + '/5</strong></td><td>' + html(item.guildName || item.guildId || '-') + '</td><td>' + html(item.channelName || item.channelId || '-') + '</td><td>' + html(short(item.comment || item.reason || '', 150)) + '</td><td>' + html(fmtDate(item.createdAt)) + '</td></tr>'
+      )).join('') || '<tr><td colspan="5">No hay feedback guardado.</td></tr>';
+    };
+    const renderBlacklist = () => {
+      const entries = state.snapshot.blacklistEntries || [];
+      byId('blacklistCount').textContent = entries.length + ' entradas';
+      byId('blacklistRows').innerHTML = entries.map((entry) => (
+        '<tr><td><strong>' + html(entry.userId || '-') + '</strong><br><span>' + html(entry.banCode || '') + '</span></td><td>' + html(entry.active ? 'Activa' : 'Inactiva') + '</td><td>' + html(short(entry.reason, 170)) + '</td><td>' + html(fmtDate(entry.expiresAt)) + '</td></tr>'
+      )).join('') || '<tr><td colspan="4">No hay blacklist interna.</td></tr>';
+    };
+    const renderFeed = () => {
+      const feed = byId('adminFeed');
+      feed.innerHTML = state.events.slice(0, 40).map((event) => (
+        '<div class="admin-feed-item"><strong>' + html(event.type || 'event') + '</strong><span>' + html(fmtDate(event.at || event.receivedAt)) + '</span><p>' + html(short(JSON.stringify(event.payload || event), 220)) + '</p></div>'
+      )).join('') || '<div class="admin-feed-item"><strong>Esperando eventos</strong><span>La conexion live esta preparada.</span></div>';
+    };
+    const renderAll = () => {
+      renderStats();
+      renderMaintenance();
+      renderGuilds();
+      renderTickets();
+      renderFeedback();
+      renderBlacklist();
+      renderFeed();
+      byId('lastUpdate').textContent = 'Actualizado: ' + fmtDate(state.snapshot.generatedAt);
+    };
+    const loadSnapshot = async (silent = false) => {
+      try {
+        const response = await fetch('/admin/api/snapshot', { credentials: 'same-origin' });
+        if (!response.ok) throw new Error('HTTP ' + response.status);
+        state.snapshot = await response.json();
+        renderAll();
+        if (!silent) setToast('Snapshot admin actualizado.');
+      } catch (error) {
+        byId('adminLiveState').textContent = 'Live con errores';
+        byId('adminLiveState').classList.add('is-off');
+        setToast('No pude cargar snapshot admin: ' + error.message);
+      }
+    };
+    const setMaintenance = async (enabled) => {
+      try {
+        const response = await fetch('/admin/api/maintenance', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            enabled,
+            delaySeconds: Number(byId('maintenanceDelay').value || 3.5),
+            message: byId('maintenanceMessage').value
+          })
+        });
+        const body = await response.json();
+        if (!response.ok) throw new Error(body.error || 'HTTP ' + response.status);
+        state.snapshot.maintenance = body.maintenance;
+        renderAll();
+        await loadSnapshot(true);
+        setToast(enabled ? 'Modo mantenimiento activado.' : 'Modo mantenimiento desactivado.');
+      } catch (error) {
+        setToast('No pude cambiar mantenimiento: ' + error.message);
+      }
+    };
+    byId('activateMaintenance').addEventListener('click', () => setMaintenance(true));
+    byId('disableMaintenance').addEventListener('click', () => setMaintenance(false));
+    renderAll();
+    setInterval(() => loadSnapshot(true), 20000);
+    if (window.EventSource) {
+      const source = new EventSource('/admin/events');
+      source.addEventListener('ready', () => {
+        byId('adminLiveState').textContent = 'Live conectado';
+        byId('adminLiveState').classList.remove('is-off');
+      });
+      source.addEventListener('admin.event', (message) => {
+        try {
+          const event = JSON.parse(message.data);
+          state.events.unshift({ ...event, receivedAt: new Date().toISOString() });
+          renderFeed();
+          loadSnapshot(true);
+        } catch {
+          state.events.unshift({ type: 'raw.event', payload: message.data, receivedAt: new Date().toISOString() });
+          renderFeed();
+        }
+      });
+      source.onerror = () => {
+        byId('adminLiveState').textContent = 'Reconectando live';
+        byId('adminLiveState').classList.add('is-off');
+      };
+    }
   </script>`;
 }
 
@@ -4029,6 +4712,15 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
 
 function renderTicketRow(ticket) {
   return `<tr><td>#${escapeHtml(ticket.channelName)}</td><td>${escapeHtml(ticket.guildName)}</td><td>${escapeHtml(ticket.status)}</td><td>${escapeHtml(new Date(ticket.createdAt).toLocaleString())}</td><td><button class="table-action secondary-button" type="button" data-transcript-channel="${escapeHtml(ticket.channelId)}">Ver</button></td></tr>`;
+}
+
+function toInlineJson(value) {
+  return JSON.stringify(value)
+    .replaceAll('<', '\\u003c')
+    .replaceAll('>', '\\u003e')
+    .replaceAll('&', '\\u0026')
+    .replaceAll('\u2028', '\\u2028')
+    .replaceAll('\u2029', '\\u2029');
 }
 
 function escapeHtml(value = '') {
