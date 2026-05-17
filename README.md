@@ -148,7 +148,7 @@ SUPABASE_SERVICE_ROLE_KEY=...
 
 If Supabase vars are missing, NexaDesk falls back to local JSON storage for development.
 
-The current schema includes `ticket_feedback` for Growth Engine. If ratings do not appear in dashboard, rerun `supabase/schema.sql`.
+The current schema includes `ticket_feedback` for Growth Engine and `ai_quality_signals` for Quality Radar complaints/frustration detected during AI conversations. If ratings or AI quality signals do not appear in Supabase/admin, rerun `supabase/schema.sql`.
 
 The bot logs the active storage backend on startup. Production should say:
 

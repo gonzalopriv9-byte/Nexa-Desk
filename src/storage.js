@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createClient } from '@supabase/supabase-js';
+import { normalizeAiQualitySignal } from './ai-quality.js';
 import { normalizeBlacklistEntry, normalizeBlacklistEvidence, normalizeBlacklistLookup } from './blacklist.js';
 import { buildFeedbackStats, normalizeGrowthConfig, normalizeTicketFeedback } from './growth.js';
 import { normalizeMaintenanceState } from './maintenance.js';
@@ -21,6 +22,7 @@ export class JsonStorage {
     this.blacklistFile = path.join(dataDir, 'global-blacklist.json');
     this.blacklistEvidenceFile = path.join(dataDir, 'global-blacklist-evidence.json');
     this.feedbackFile = path.join(dataDir, 'ticket-feedback.json');
+    this.aiQualitySignalsFile = path.join(dataDir, 'ai-quality-signals.json');
   }
 
   async init() {
@@ -32,6 +34,7 @@ export class JsonStorage {
     await this.#ensureJson(this.blacklistFile, {});
     await this.#ensureJson(this.blacklistEvidenceFile, {});
     await this.#ensureJson(this.feedbackFile, {});
+    await this.#ensureJson(this.aiQualitySignalsFile, {});
   }
 
   async getGuildConfig(guildId) {
@@ -157,6 +160,23 @@ export class JsonStorage {
     const guildIdSet = new Set(guildIds);
     const feedback = Object.values(await this.#readJson(this.feedbackFile)).map(normalizeTicketFeedback);
     return feedback
+      .filter((item) => !guildIdSet.size || guildIdSet.has(item.guildId))
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+
+  async addAiQualitySignal(signal) {
+    const signals = await this.#readJson(this.aiQualitySignalsFile);
+    const normalized = normalizeAiQualitySignal(signal);
+    signals[normalized.id] = normalized;
+    await this.#writeJson(this.aiQualitySignalsFile, signals);
+    this.events?.publish('ai.quality.signal', normalized);
+    return normalized;
+  }
+
+  async listAiQualitySignals(guildIds = []) {
+    const guildIdSet = new Set(guildIds);
+    const signals = Object.values(await this.#readJson(this.aiQualitySignalsFile)).map(normalizeAiQualitySignal);
+    return signals
       .filter((item) => !guildIdSet.size || guildIdSet.has(item.guildId))
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   }
@@ -584,6 +604,36 @@ export class SupabaseStorage {
     return data.map(fromFeedbackRow);
   }
 
+  async addAiQualitySignal(signal) {
+    const normalized = normalizeAiQualitySignal(signal);
+    const { data, error } = await this.client
+      .from('ai_quality_signals')
+      .upsert(toAiQualitySignalRow(normalized), { onConflict: 'id' })
+      .select()
+      .single();
+    if (isMissingAiQualitySignalTableError(error)) {
+      console.warn('ai_quality_signals table missing; quality signal not persisted. Run supabase/schema.sql.');
+      return { ...normalized, notPersisted: true };
+    }
+    if (error) throw error;
+    const saved = fromAiQualitySignalRow(data);
+    this.events?.publish('ai.quality.signal', saved);
+    return saved;
+  }
+
+  async listAiQualitySignals(guildIds = []) {
+    let query = this.client
+      .from('ai_quality_signals')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(500);
+    if (guildIds.length) query = query.in('guild_id', guildIds);
+    const { data, error } = await query;
+    if (isMissingAiQualitySignalTableError(error)) return [];
+    if (error) throw error;
+    return data.map(fromAiQualitySignalRow);
+  }
+
   async getBlacklistEntry(value) {
     const { userId, banCode } = normalizeBlacklistLookup(value);
     const { data, error } = await this.client
@@ -969,6 +1019,53 @@ function fromFeedbackRow(row) {
   });
 }
 
+function toAiQualitySignalRow(signal) {
+  const normalized = normalizeAiQualitySignal(signal);
+  return {
+    id: normalized.id,
+    guild_id: normalized.guildId,
+    guild_name: normalized.guildName,
+    channel_id: normalized.channelId,
+    channel_name: normalized.channelName,
+    message_id: normalized.messageId,
+    user_id: normalized.userId,
+    username: normalized.username,
+    category: normalized.category,
+    severity: normalized.severity,
+    sentiment: normalized.sentiment,
+    confidence: normalized.confidence,
+    reason: normalized.reason,
+    user_message: normalized.userMessage,
+    previous_ai_message: normalized.previousAiMessage,
+    detected_by: normalized.detectedBy,
+    resolved: normalized.resolved,
+    created_at: normalized.createdAt
+  };
+}
+
+function fromAiQualitySignalRow(row) {
+  return normalizeAiQualitySignal({
+    id: row.id,
+    guildId: row.guild_id,
+    guildName: row.guild_name,
+    channelId: row.channel_id,
+    channelName: row.channel_name,
+    messageId: row.message_id,
+    userId: row.user_id,
+    username: row.username,
+    category: row.category,
+    severity: row.severity,
+    sentiment: row.sentiment,
+    confidence: row.confidence,
+    reason: row.reason,
+    userMessage: row.user_message,
+    previousAiMessage: row.previous_ai_message,
+    detectedBy: row.detected_by,
+    resolved: row.resolved,
+    createdAt: row.created_at
+  });
+}
+
 function toBlacklistRow(entry) {
   const normalized = normalizeBlacklistEntry(entry);
   return {
@@ -1034,6 +1131,10 @@ function isMissingBlacklistTableError(error) {
 
 function isMissingFeedbackTableError(error) {
   return Boolean(error && /ticket_feedback|relation .* does not exist|schema cache/i.test(String(error.message ?? '')));
+}
+
+function isMissingAiQualitySignalTableError(error) {
+  return Boolean(error && /ai_quality_signals|relation .* does not exist|schema cache/i.test(String(error.message ?? '')));
 }
 
 function buildStats({ guilds, tickets, transcriptMessages, feedback = [] }) {

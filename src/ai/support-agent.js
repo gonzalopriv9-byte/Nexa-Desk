@@ -1,5 +1,6 @@
 import { isPremiumEntitled, normalizePremiumConfig } from '../premium.js';
 import { buildDiscoveryContext } from '../server-discovery.js';
+import { detectAiQualitySignalHeuristic, parseAiQualitySignalJson } from '../ai-quality.js';
 import { hasVisualAttachments } from './visual-analyzer.js';
 
 export class SupportAgent {
@@ -96,6 +97,44 @@ export class SupportAgent {
     } catch (error) {
       console.error('Ticket summary failed:', error);
       return buildFallbackSummary(ticket, messages);
+    }
+  }
+
+  async detectAiQualitySignal({ message, ticket, guildConfig, previousAiMessage = null }) {
+    const heuristic = detectAiQualitySignalHeuristic(message.content);
+    if (!heuristic.shouldAnalyze) return { detected: false };
+
+    try {
+      const answer = await this.aiClient.generate({
+        system: [
+          'Eres NexaDesk Quality Radar.',
+          'Tu tarea es detectar si el usuario esta quejandose de que la IA/bot funciona mal, no entiende, inventa, responde repetido, responde en mal idioma, no lee imagenes, falla en voz/audio, tarda mucho o si el usuario se enfada directamente con la IA.',
+          'NO marques como queja si el usuario solo reporta un problema externo del servidor, del juego, de otro bot o de tickets en general.',
+          'Marca detected=true solo si el mensaje va claramente sobre NexaDesk, la IA, el bot/asistente o una respuesta anterior del bot.',
+          'Responde SOLO JSON valido, sin markdown, con este esquema exacto:',
+          '{"detected":true|false,"category":"malfunction|wrong_answer|repetition|language|vision|voice|latency|tone|anger|general","severity":"low|medium|high|critical","sentiment":"confused|frustrated|angry","confidence":0-100,"reason":"frase breve"}'
+        ].join('\n'),
+        messages: [
+          {
+            role: 'user',
+            content: [
+              `Servidor: ${guildConfig?.guildName ?? message.guild?.name ?? ticket?.guildName ?? ticket?.guildId}`,
+              `Canal: #${ticket?.channelName ?? message.channel?.name ?? message.channelId}`,
+              `Autor: ${message.author?.tag ?? message.author?.id}`,
+              '',
+              'Ultima respuesta conocida de NexaDesk antes de este mensaje:',
+              previousAiMessage?.content ? String(previousAiMessage.content).slice(0, 1200) : 'No disponible.',
+              '',
+              'Mensaje del usuario a clasificar:',
+              String(message.content ?? '').slice(0, 1800)
+            ].join('\n').slice(0, 4200)
+          }
+        ]
+      });
+      return parseAiQualitySignalJson(answer, heuristic);
+    } catch (error) {
+      console.warn('AI quality classifier fallback:', error?.message ?? error);
+      return heuristic.detected ? heuristic : { detected: false };
     }
   }
 

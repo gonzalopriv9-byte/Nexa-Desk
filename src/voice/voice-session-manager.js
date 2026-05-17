@@ -17,6 +17,7 @@ import {
   VoiceConnectionStatus
 } from '@discordjs/voice';
 import prism from 'prism-media';
+import { detectAiQualitySignalHeuristic, parseAiQualitySignalJson } from '../ai-quality.js';
 
 const SAMPLE_RATE = 48_000;
 const STT_SAMPLE_RATE = 16_000;
@@ -206,6 +207,10 @@ export class VoiceSessionManager {
         createdAt: new Date().toISOString()
       });
 
+      void this.#recordVoiceAiQualitySignal(session, member, transcript).catch((error) => {
+        console.warn(`Voice AI quality signal capture failed for ${session.ticketChannelId}:`, error?.message ?? error);
+      });
+
       await session.textChannel.send(`**${member.displayName} por voz:** ${transcript.slice(0, 1_800)}`).catch(() => {});
       const answer = await this.#answerVoiceTicket(session, transcript, member);
       if (!answer) return;
@@ -279,6 +284,68 @@ export class VoiceSessionManager {
       ...parsed,
       mentionStaff: parsed.shouldEscalate && Boolean(session.guildConfig.staffRoleId)
     };
+  }
+
+  async #recordVoiceAiQualitySignal(session, member, transcript) {
+    if (typeof this.storage.addAiQualitySignal !== 'function') return;
+
+    const heuristic = detectAiQualitySignalHeuristic(transcript);
+    if (!heuristic.shouldAnalyze) return;
+
+    const history = await this.storage.listTranscriptMessages(session.ticketChannelId).catch(() => []);
+    const previousAiMessage = [...history].reverse().find((entry) => entry.role === 'assistant' || entry.authorBot);
+    let detection = heuristic;
+    try {
+      const answer = await this.aiClient.generate({
+        system: [
+          'Eres NexaDesk Quality Radar para tickets por voz.',
+          'Detecta si el usuario se queja de que NexaDesk/IA funciona mal, no entiende, inventa, repite, falla en voz/audio, tarda mucho o si el usuario se enfada con el bot.',
+          'No marques detected=true si solo esta reportando un problema externo.',
+          'Responde SOLO JSON valido:',
+          '{"detected":true|false,"category":"malfunction|wrong_answer|repetition|language|vision|voice|latency|tone|anger|general","severity":"low|medium|high|critical","sentiment":"confused|frustrated|angry","confidence":0-100,"reason":"frase breve"}'
+        ].join('\n'),
+        messages: [
+          {
+            role: 'user',
+            content: [
+              `Servidor: ${session.guildName}`,
+              `Canal: #${session.ticket?.channelName ?? session.ticketChannelId}`,
+              `Usuario: ${member.user.tag ?? member.user.id}`,
+              '',
+              'Ultima respuesta conocida de NexaDesk:',
+              previousAiMessage?.content ? String(previousAiMessage.content).slice(0, 1200) : 'No disponible.',
+              '',
+              'Transcripcion de voz del usuario:',
+              transcript.slice(0, 1800)
+            ].join('\n').slice(0, 4200)
+          }
+        ]
+      });
+      detection = parseAiQualitySignalJson(answer, heuristic);
+    } catch (error) {
+      console.warn('Voice AI quality classifier fallback:', error?.message ?? error);
+    }
+
+    if (!detection?.detected) return;
+    await this.storage.addAiQualitySignal({
+      id: `ai-quality-voice-${session.ticketChannelId}-${randomUUID()}`,
+      guildId: session.guildId,
+      guildName: session.guildName,
+      channelId: session.ticketChannelId,
+      channelName: session.ticket?.channelName,
+      messageId: null,
+      userId: member.user.id,
+      username: member.user.username,
+      category: detection.category,
+      severity: detection.severity,
+      sentiment: detection.sentiment,
+      confidence: detection.confidence,
+      reason: detection.reason,
+      userMessage: `[Voz] ${transcript}`.slice(0, 2400),
+      previousAiMessage: previousAiMessage?.content?.slice(0, 2400),
+      detectedBy: `voice-${detection.detectedBy ?? 'ai'}`,
+      createdAt: new Date().toISOString()
+    });
   }
 
   async #speak(session, text) {

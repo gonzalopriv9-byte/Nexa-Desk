@@ -757,6 +757,7 @@ async function buildAdminSnapshot({ storage, bot }) {
     configs,
     tickets,
     feedback,
+    aiQualitySignals,
     blacklistEntries,
     maintenance
   ] = await Promise.all([
@@ -771,6 +772,12 @@ async function buildAdminSnapshot({ storage, bot }) {
     typeof storage.listTicketFeedback === 'function'
       ? storage.listTicketFeedback().catch((error) => {
           console.warn('Admin snapshot feedback failed:', normalizeError(error));
+          return [];
+        })
+      : Promise.resolve([]),
+    typeof storage.listAiQualitySignals === 'function'
+      ? storage.listAiQualitySignals().catch((error) => {
+          console.warn('Admin snapshot AI quality failed:', normalizeError(error));
           return [];
         })
       : Promise.resolve([]),
@@ -821,17 +828,19 @@ async function buildAdminSnapshot({ storage, bot }) {
       guilds,
       tickets,
       feedback,
+      aiQualitySignals,
       blacklistEntries,
       installedGuildIds
     }),
     guilds,
     tickets,
     feedback,
+    aiQualitySignals,
     blacklistEntries
   };
 }
 
-function enrichAdminStats(stats, { guilds, tickets, feedback, blacklistEntries, installedGuildIds }) {
+function enrichAdminStats(stats, { guilds, tickets, feedback, aiQualitySignals, blacklistEntries, installedGuildIds }) {
   const configuredGuilds = guilds.filter((guild) => guild.configured).length;
   const openTickets = tickets.filter((ticket) => isOpenTicketStatus(ticket.status)).length;
   const premiumGuilds = guilds.filter((guild) => guild.premiumEntitled).length;
@@ -849,6 +858,8 @@ function enrichAdminStats(stats, { guilds, tickets, feedback, blacklistEntries, 
     closedTickets: Math.max(tickets.length - openTickets, 0),
     feedbackCount: feedback.length,
     averageRating: Number(averageRating.toFixed(2)),
+    aiQualitySignals: aiQualitySignals.length,
+    unresolvedAiQualitySignals: aiQualitySignals.filter((signal) => !signal.resolved).length,
     activeBlacklistEntries: blacklistEntries.filter(isBlacklistEntryActive).length,
     premiumGuilds,
     freeGuilds: Math.max(guilds.length - premiumGuilds, 0),
@@ -1627,6 +1638,22 @@ function renderAdminPanel({ config, session, snapshot }) {
                 </table>
               </div>
             </article>
+
+            <article class="admin-table-card">
+              <div class="admin-table-head">
+                <div>
+                  <p class="kicker">Quality Radar</p>
+                  <h2>Quejas sobre la IA</h2>
+                </div>
+                <span id="aiQualityCount">0 senales</span>
+              </div>
+              <div class="admin-table-scroll">
+                <table>
+                  <thead><tr><th>Severidad</th><th>Categoria</th><th>Usuario</th><th>Mensaje</th><th>Motivo</th><th>Fecha</th></tr></thead>
+                  <tbody id="aiQualityRows"></tbody>
+                </table>
+              </div>
+            </article>
           </div>
         </section>
         <div class="admin-toast" id="adminToast"></div>
@@ -1753,6 +1780,7 @@ function buildDocsSections(config) {
           'Render sirve la dashboard publica con RUN_BOT=false y usa OAuth Discord para usuarios normales.',
           'La Raspberry Pi mantiene vivo el worker del bot con RUN_BOT=true y systemd.',
           'Supabase guarda configuracion, paneles, componentes, tickets, transcripciones, feedback de tickets y blacklist interna.',
+          'Quality Radar guarda senales en ai_quality_signals cuando el usuario se queja de que NexaDesk/IA funciona mal, se equivoca, repite, no ve imagenes, falla en voz o genera enfado.',
           'Groq procesa soporte IA, vision, STT y parte de TTS; Akiomae queda como fallback final.',
           'XN Protect aporta blacklist global y Automod ofensivo/malicioso. NexaDesk acredita la fuente y no banea automaticamente por blacklist externa.',
           'Top.gg se usa como lista positiva para Anti-bots: si un bot esta listado, se permite; si Top.gg devuelve 404, se puede banear; si falla la API, no se banea.',
@@ -1841,6 +1869,7 @@ function buildDocsSections(config) {
           ['tickets', 'Canal, servidor, opener, voz, estado, timestamps.', 'Medio: metadatos de soporte.'],
           ['transcript_messages', 'Mensajes de tickets, voz y eventos importantes.', 'Alto: puede contener datos de usuarios.'],
           ['ticket_feedback', 'Rating post-ticket, usuario, canal y si se publico review.', 'Medio: satisfaccion de usuarios y reputacion operativa.'],
+          ['ai_quality_signals', 'Quejas espontaneas sobre errores de IA, frustracion, voz, vision, idioma, repeticion o respuestas malas.', 'Alto: contiene mensajes de usuario y ultima respuesta IA relacionada.'],
           ['global_blacklist', 'Baneos internos y codigos.', 'Alto: moderacion sensible.'],
           ['global_blacklist_evidence', 'URLs de pruebas y adjuntos.', 'Alto: evidencias privadas.']
         ] },
@@ -2206,6 +2235,7 @@ function renderAdminPanelScript(initialSnapshot) {
         ['Tickets', String(stats.openTickets ?? 0) + ' abiertos', String(stats.totalTickets ?? 0) + ' totales'],
         ['Premium', String(stats.premiumGuilds ?? stats.proGuilds ?? 0), String(stats.freeGuilds ?? 0) + ' Free'],
         ['Feedback', String(stats.averageRating ?? 0) + ' / 5', String(stats.feedbackCount ?? 0) + ' valoraciones'],
+        ['Quality IA', String(stats.unresolvedAiQualitySignals ?? 0), String(stats.aiQualitySignals ?? 0) + ' senales'],
         ['Blacklist', String(stats.activeBlacklistEntries ?? 0), 'entradas activas'],
         ['Paneles', String(stats.panels ?? 0), String(stats.components ?? 0) + ' componentes'],
         ['Runtime', String(runtime.rssMb ?? 0) + ' MB', 'uptime ' + uptime(runtime.uptimeSeconds)],
@@ -2254,6 +2284,14 @@ function renderAdminPanelScript(initialSnapshot) {
         '<tr><td><strong>' + html(item.rating ?? '-') + '/5</strong></td><td>' + html(item.guildName || item.guildId || '-') + '</td><td>' + html(item.channelName || item.channelId || '-') + '</td><td>' + html(short(item.comment || item.reason || '', 150)) + '</td><td>' + html(fmtDate(item.createdAt)) + '</td></tr>'
       )).join('') || '<tr><td colspan="5">No hay feedback guardado.</td></tr>';
     };
+    const renderAiQuality = () => {
+      const signals = state.snapshot.aiQualitySignals || [];
+      const unresolved = signals.filter((signal) => !signal.resolved).length;
+      byId('aiQualityCount').textContent = unresolved + ' pendientes / ' + signals.length + ' totales';
+      byId('aiQualityRows').innerHTML = signals.slice(0, 80).map((item) => (
+        '<tr><td><strong>' + html(item.severity || '-') + '</strong><br><span>' + html(String(item.confidence ?? 0)) + '%</span></td><td>' + html(item.category || 'general') + '</td><td>' + html(item.username || item.userId || '-') + '<br><span>#' + html(item.channelName || item.channelId || '-') + '</span></td><td>' + html(short(item.userMessage, 180)) + '</td><td>' + html(short(item.reason, 150)) + '</td><td>' + html(fmtDate(item.createdAt)) + '</td></tr>'
+      )).join('') || '<tr><td colspan="6">No hay quejas de IA detectadas.</td></tr>';
+    };
     const renderBlacklist = () => {
       const entries = state.snapshot.blacklistEntries || [];
       byId('blacklistCount').textContent = entries.length + ' entradas';
@@ -2273,6 +2311,7 @@ function renderAdminPanelScript(initialSnapshot) {
       renderGuilds();
       renderTickets();
       renderFeedback();
+      renderAiQuality();
       renderBlacklist();
       renderFeed();
       byId('lastUpdate').textContent = 'Actualizado: ' + fmtDate(state.snapshot.generatedAt);

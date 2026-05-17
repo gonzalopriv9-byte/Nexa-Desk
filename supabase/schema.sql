@@ -119,3 +119,32 @@ create index if not exists ticket_feedback_guild_id_idx on public.ticket_feedbac
 create index if not exists ticket_feedback_channel_id_idx on public.ticket_feedback (channel_id);
 create index if not exists ticket_feedback_rating_idx on public.ticket_feedback (rating);
 create index if not exists ticket_feedback_created_at_idx on public.ticket_feedback (created_at desc);
+
+create table if not exists public.ai_quality_signals (
+  id text primary key,
+  guild_id text not null,
+  guild_name text,
+  channel_id text not null,
+  channel_name text,
+  message_id text,
+  user_id text,
+  username text,
+  category text not null default 'general',
+  severity text not null default 'medium',
+  sentiment text,
+  confidence integer not null default 70 check (confidence >= 0 and confidence <= 100),
+  reason text,
+  user_message text not null,
+  previous_ai_message text,
+  detected_by text not null default 'ai',
+  resolved boolean not null default false,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists ai_quality_signals_guild_id_idx on public.ai_quality_signals (guild_id);
+create index if not exists ai_quality_signals_channel_id_idx on public.ai_quality_signals (channel_id);
+create index if not exists ai_quality_signals_user_id_idx on public.ai_quality_signals (user_id);
+create index if not exists ai_quality_signals_category_idx on public.ai_quality_signals (category);
+create index if not exists ai_quality_signals_severity_idx on public.ai_quality_signals (severity);
+create index if not exists ai_quality_signals_resolved_idx on public.ai_quality_signals (resolved);
+create index if not exists ai_quality_signals_created_at_idx on public.ai_quality_signals (created_at desc);

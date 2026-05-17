@@ -415,6 +415,9 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
     if (!ticket) return;
 
     await saveTranscript(storage, message, 'user');
+    void maybeRecordAiQualitySignal({ storage, supportAgent, message, ticket, guildConfig }).catch((error) => {
+      console.warn(`AI quality signal capture failed in ${message.channel.id}:`, error?.message ?? error);
+    });
     if (isClosedTicket(ticket)) return;
 
     // Always reload the latest server context before asking the AI.
@@ -4670,6 +4673,47 @@ async function notifyStaffRole(message, guildConfig, ticket, reason) {
   } catch (error) {
     console.error('Failed to notify staff role:', error);
   }
+}
+
+async function maybeRecordAiQualitySignal({ storage, supportAgent, message, ticket, guildConfig }) {
+  if (typeof storage.addAiQualitySignal !== 'function') return;
+  if (typeof supportAgent.detectAiQualitySignal !== 'function') return;
+
+  const transcript = await storage.listTranscriptMessages(message.channel.id).catch(() => []);
+  const previousAiMessage = findPreviousAssistantTranscriptMessage(transcript, message.id);
+  const detection = await supportAgent.detectAiQualitySignal({
+    message,
+    ticket,
+    guildConfig,
+    previousAiMessage
+  });
+  if (!detection?.detected) return;
+
+  await storage.addAiQualitySignal({
+    id: `ai-quality-${message.id}`,
+    guildId: message.guild.id,
+    guildName: guildConfig?.guildName ?? ticket.guildName ?? message.guild.name,
+    channelId: message.channel.id,
+    channelName: message.channel.name ?? ticket.channelName,
+    messageId: message.id,
+    userId: message.author.id,
+    username: message.author.username,
+    category: detection.category,
+    severity: detection.severity,
+    sentiment: detection.sentiment,
+    confidence: detection.confidence,
+    reason: detection.reason,
+    userMessage: buildTranscriptMessageContent(message).slice(0, 2400),
+    previousAiMessage: previousAiMessage?.content?.slice(0, 2400),
+    detectedBy: detection.detectedBy ?? 'ai',
+    createdAt: message.createdAt?.toISOString?.() ?? new Date().toISOString()
+  });
+}
+
+function findPreviousAssistantTranscriptMessage(transcript = [], currentMessageId = null) {
+  return [...transcript]
+    .reverse()
+    .find((entry) => entry.messageId !== currentMessageId && (entry.role === 'assistant' || entry.authorBot));
 }
 
 async function saveTranscript(storage, message, role) {
