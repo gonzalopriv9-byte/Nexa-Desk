@@ -809,6 +809,11 @@ function fromGuildRow(row) {
     allianceChannelId: panelStore.alliance.channelId,
     allianceChannelName: panelStore.alliance.channelName,
     allianceTemplate: panelStore.alliance.template,
+    allianceDetection: panelStore.allianceDetection,
+    addedByUserId: panelStore.install.addedByUserId,
+    addedByUsername: panelStore.install.addedByUsername,
+    addedAt: panelStore.install.addedAt,
+    addedByDetectedAt: panelStore.install.detectedAt,
     growth: panelStore.growth,
     premium: normalizePremiumConfig(panelStore.premium, {
       plan: row.plan ?? 'free',
@@ -832,6 +837,8 @@ function toGuildPanelStore(guild) {
     premium: normalizePremiumConfig(guild.premium, guild),
     growth: normalizeGrowthConfig(guild.growth),
     alliance: normalizeAllianceConfig(guild),
+    allianceDetection: normalizeAllianceDetection(guild.allianceDetection),
+    install: normalizeInstallMetadata(guild),
     discovery: normalizeDiscoveryConfig(guild.discovery ?? guild)
   };
 }
@@ -845,6 +852,8 @@ function fromGuildPanelStore(value) {
       premium: normalizePremiumConfig(),
       growth: normalizeGrowthConfig(),
       alliance: normalizeAllianceConfig(),
+      allianceDetection: normalizeAllianceDetection(),
+      install: normalizeInstallMetadata(),
       discovery: normalizeDiscoveryConfig()
     };
   }
@@ -857,6 +866,8 @@ function fromGuildPanelStore(value) {
       premium: normalizePremiumConfig(value.premium),
       growth: normalizeGrowthConfig(value.growth),
       alliance: normalizeAllianceConfig(value.alliance),
+      allianceDetection: normalizeAllianceDetection(value.allianceDetection),
+      install: normalizeInstallMetadata(value.install),
       discovery: normalizeDiscoveryConfig(value.discovery)
     };
   }
@@ -868,6 +879,8 @@ function fromGuildPanelStore(value) {
     premium: normalizePremiumConfig(),
     growth: normalizeGrowthConfig(),
     alliance: normalizeAllianceConfig(),
+    allianceDetection: normalizeAllianceDetection(),
+    install: normalizeInstallMetadata(),
     discovery: normalizeDiscoveryConfig()
   };
 }
@@ -878,6 +891,30 @@ function normalizeAllianceConfig(value = {}) {
     channelId: source?.channelId ?? source?.allianceChannelId,
     channelName: source?.channelName ?? source?.allianceChannelName,
     template: source?.template ?? source?.allianceTemplate
+  });
+}
+
+function normalizeAllianceDetection(value = {}) {
+  const source = value?.allianceDetection && typeof value.allianceDetection === 'object' ? value.allianceDetection : value;
+  return pickDefined({
+    status: source?.status ? String(source.status).slice(0, 40) : undefined,
+    channelId: source?.channelId ? String(source.channelId) : undefined,
+    channelName: source?.channelName ? String(source.channelName).slice(0, 100) : undefined,
+    confidence: Number.isFinite(Number(source?.confidence)) ? Math.round(Number(source.confidence)) : undefined,
+    reason: source?.reason ? String(source.reason).slice(0, 500) : undefined,
+    askedAt: source?.askedAt ? String(source.askedAt) : undefined,
+    scannedAt: source?.scannedAt ? String(source.scannedAt) : undefined
+  });
+}
+
+function normalizeInstallMetadata(value = {}) {
+  const source = value?.install && typeof value.install === 'object' ? value.install : value;
+  const detectedAt = source?.detectedAt ?? source?.addedByDetectedAt;
+  return pickDefined({
+    addedByUserId: source?.addedByUserId ? String(source.addedByUserId) : undefined,
+    addedByUsername: source?.addedByUsername ? String(source.addedByUsername).slice(0, 120) : undefined,
+    addedAt: source?.addedAt ? String(source.addedAt) : undefined,
+    detectedAt: detectedAt ? String(detectedAt) : undefined
   });
 }
 

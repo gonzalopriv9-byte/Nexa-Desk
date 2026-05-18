@@ -23,7 +23,7 @@ const commands = [
       option
         .setName('canal_alianzas')
         .setDescription('Canal donde NexaDesk enviara plantillas de alianzas verificadas.')
-        .addChannelTypes(ChannelType.GuildText)
+        .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)
         .setRequired(false)
     )
     .addStringOption((option) =>
@@ -267,6 +267,16 @@ const commands = [
       option
         .setName('servidor')
         .setDescription('ID del servidor donde se activara premium.')
+        .setRequired(true)
+    )
+    .toJSON(),
+  new SlashCommandBuilder()
+    .setName('dmowner')
+    .setDescription('Reenvia el MD de bienvenida al owner y al usuario que agrego NexaDesk.')
+    .addStringOption((option) =>
+      option
+        .setName('servidor')
+        .setDescription('ID del servidor al que se enviara el onboarding.')
         .setRequired(true)
     )
     .toJSON(),

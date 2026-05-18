@@ -138,6 +138,41 @@ export class SupportAgent {
     }
   }
 
+  async detectAllianceChannel({ guildName, candidates = [] }) {
+    if (!candidates.length) {
+      return { detected: false, confidence: 0, shouldAskInstaller: false, reason: 'No hay candidatos.' };
+    }
+
+    const answer = await this.aiClient.generate({
+      system: [
+        'Eres NexaDesk Smart Discovery.',
+        'Debes detectar que canal de Discord parece ser el canal donde se publican alianzas, partners o plantillas de colaboracion.',
+        'Usa nombre del canal y mensajes recientes. Una plantilla de alianza normalmente habla de servidor/proyecto, invitacion, miembros, tematica, que ofrece, partners, alianzas o publicidad.',
+        'Devuelve detected=true solo si hay un canal claramente mejor que los demas.',
+        'Si hay dudas entre varios canales, devuelve detected=false y shouldAskInstaller=true.',
+        'Responde SOLO JSON valido:',
+        '{"detected":true|false,"channelId":"id o null","confidence":0-100,"reason":"frase breve","shouldAskInstaller":true|false}'
+      ].join('\n'),
+      messages: [
+        {
+          role: 'user',
+          content: [
+            `Servidor: ${guildName}`,
+            'Candidatos:',
+            JSON.stringify(candidates.map((candidate) => ({
+              id: candidate.id,
+              name: candidate.name,
+              heuristicScore: candidate.score,
+              sample: candidate.sample
+            })), null, 2).slice(0, 12000)
+          ].join('\n')
+        }
+      ]
+    });
+
+    return parseAllianceChannelDetection(answer, candidates);
+  }
+
   async verifyAllianceProof({ message, guildConfig, serverAllianceTemplate }) {
     if (!this.visualAnalyzer) {
       return {
@@ -412,6 +447,34 @@ function parseLinkThreatJson(answer = '') {
       reason: raw.slice(0, 700) || 'La IA no devolvio JSON valido.',
       riskSignals: [],
       recommendedAction: verdict === 'malicious' ? 'delete_and_isolate' : verdict === 'suspicious' ? 'review' : 'allow'
+    };
+  }
+}
+
+function parseAllianceChannelDetection(answer = '', candidates = []) {
+  const raw = String(answer ?? '').trim();
+  const jsonText = raw.match(/\{[\s\S]*\}/)?.[0] ?? raw;
+  try {
+    const parsed = JSON.parse(jsonText);
+    const channelId = String(parsed.channelId ?? '').trim();
+    const candidate = candidates.find((item) => item.id === channelId);
+    const confidence = clampNumber(parsed.confidence, 0, 100, 0);
+    return {
+      detected: Boolean(parsed.detected && candidate && confidence >= 70),
+      channelId: candidate?.id ?? null,
+      channelName: candidate?.name ?? null,
+      confidence,
+      reason: String(parsed.reason ?? '').trim().slice(0, 500) || 'Canal detectado por IA.',
+      shouldAskInstaller: Boolean(parsed.shouldAskInstaller || !candidate || confidence < 88)
+    };
+  } catch {
+    return {
+      detected: false,
+      channelId: null,
+      channelName: null,
+      confidence: 0,
+      reason: raw.slice(0, 500) || 'La IA no devolvio JSON valido.',
+      shouldAskInstaller: true
     };
   }
 }

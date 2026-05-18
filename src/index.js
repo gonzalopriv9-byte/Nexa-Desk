@@ -44,7 +44,7 @@ const botActions = config.RUN_BOT
       updateTicketPanel: (input) => updateTicketPanel(bot, storage, input),
       listGuildRoles: (input) => listGuildRoles(bot, input),
       listGuildChannels: (input) => listGuildChannels(bot, input),
-      refreshGuildDiscovery: (input) => refreshGuildDiscovery(bot, storage, input),
+      refreshGuildDiscovery: (input) => refreshGuildDiscovery(bot, storage, input, supportAgent),
       listInstalledGuildIds: () => listInstalledGuildIds(bot)
     }
   : createDiscordRestActions({ config, storage });

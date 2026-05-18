@@ -2,6 +2,7 @@ import {
   ActionRowBuilder,
   ActivityType,
   AttachmentBuilder,
+  AuditLogEvent,
   ButtonBuilder,
   ButtonStyle,
   ChannelType,
@@ -76,12 +77,12 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
     const presenceInterval = setInterval(() => applyBotPresence(readyClient), 1000 * 60 * 5);
     presenceInterval.unref?.();
     setTimeout(() => {
-      scanInstalledGuildsForDiscovery({ client: readyClient, storage }).catch((error) => {
+      scanInstalledGuildsForDiscovery({ client: readyClient, storage, supportAgent }).catch((error) => {
         console.error('Initial smart discovery failed:', error);
       });
     }, 12_000).unref?.();
     const discoveryInterval = setInterval(() => {
-      scanInstalledGuildsForDiscovery({ client: readyClient, storage }).catch((error) => {
+      scanInstalledGuildsForDiscovery({ client: readyClient, storage, supportAgent }).catch((error) => {
         console.error('Scheduled smart discovery failed:', error);
       });
     }, 1000 * 60 * 60 * 6);
@@ -93,7 +94,7 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
     try {
       applyBotPresence(client);
       await handleGuildJoin({ guild, storage, config });
-      await refreshGuildDiscovery(client, storage, { guildId: guild.id, reason: 'guild_join' });
+      await refreshGuildDiscovery(client, storage, { guildId: guild.id, reason: 'guild_join' }, supportAgent);
     } catch (error) {
       console.error(`Failed to send NexaDesk onboarding for guild ${guild.id}:`, error);
     }
@@ -114,6 +115,11 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
 
       if (interaction.isButton() && interaction.customId.startsWith('nexadesk:help:')) {
         await handleHelpButton({ interaction, config });
+        return;
+      }
+
+      if (interaction.isButton() && interaction.customId.startsWith('nexadesk:alliance_autoset:')) {
+        await handleAllianceAutosetButton({ interaction, storage });
         return;
       }
 
@@ -182,8 +188,8 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
         };
         if (staffRole) patch.staffRoleId = staffRole.id;
         if (allianceChannel) {
-          if (allianceChannel.type !== ChannelType.GuildText) {
-            await interaction.reply({ content: 'El canal de alianzas debe ser un canal de texto.', ephemeral: true });
+          if (!isAlliancePublishChannel(allianceChannel)) {
+            await interaction.reply({ content: 'El canal de alianzas debe ser un canal de texto o anuncios.', ephemeral: true });
             return;
           }
           patch.allianceChannelId = allianceChannel.id;
@@ -256,7 +262,7 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
       }
 
       if (interaction.commandName === 'diagnostico') {
-        await handleDiagnosticsCommand({ interaction, storage, client });
+        await handleDiagnosticsCommand({ interaction, storage, client, supportAgent });
         return;
       }
 
@@ -272,6 +278,11 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
 
       if (interaction.commandName === 'activarpremium') {
         await handleActivatePremiumCommand({ interaction, storage, client });
+        return;
+      }
+
+      if (interaction.commandName === 'dmowner') {
+        await handleDmOwnerCommand({ interaction, storage, client, config });
         return;
       }
 
@@ -612,8 +623,18 @@ async function replyOrEditEphemeral(interaction, payload) {
 }
 
 async function handleGuildJoin({ guild, storage, config }) {
+  const installer = await fetchBotInstallerInfo(guild).catch((error) => {
+    console.warn(`Could not resolve installer for ${guild.name} (${guild.id}):`, error?.message ?? error);
+    return null;
+  });
   await storage.upsertGuildConfig(guild.id, {
-    guildName: guild.name
+    guildName: guild.name,
+    ...(installer ? {
+      addedByUserId: installer.userId,
+      addedByUsername: installer.username,
+      addedAt: installer.addedAt,
+      addedByDetectedAt: new Date().toISOString()
+    } : {})
   }).catch((error) => {
     console.error(`Failed to persist joined guild ${guild.id}:`, error);
   });
@@ -625,16 +646,11 @@ async function handleGuildJoin({ guild, storage, config }) {
     return;
   }
 
-  const embeds = buildOwnerOnboardingEmbeds({ guild });
-  const components = buildOwnerOnboardingComponents(config);
-  const welcomeCard = new AttachmentBuilder(createWelcomeCard({ guildName: guild.name }), {
-    name: 'nexadesk-welcome.png'
-  });
-  const sent = await ownerUser.send({
-    content: `${EMOJIS.nexalogo} Gracias de verdad por confiar en **NexaDesk** para **${guild.name}**.`,
-    embeds,
-    files: [welcomeCard],
-    components
+  const sent = await sendOwnerOnboardingDm({
+    user: ownerUser,
+    guild,
+    config,
+    prefix: `${EMOJIS.nexalogo} Gracias de verdad por confiar en **NexaDesk** para **${guild.name}**.`
   }).then(() => true).catch((error) => {
     console.warn(`Could not send NexaDesk onboarding DM to ${ownerUser.tag} for ${guild.name} (${guild.id}): ${error?.code ?? ''} ${error?.message ?? error}`);
     return false;
@@ -642,6 +658,48 @@ async function handleGuildJoin({ guild, storage, config }) {
   if (sent) {
     console.log(`Sent NexaDesk onboarding DM to owner ${ownerUser.tag} for ${guild.name} (${guild.id}).`);
   }
+
+  if (installer?.userId && installer.userId !== ownerUser.id) {
+    const installerUser = await guild.client.users.fetch(installer.userId).catch(() => null);
+    if (installerUser) {
+      await sendOwnerOnboardingDm({ user: installerUser, guild, config, prefix: `${EMOJIS.check} Detecte que tu agregaste NexaDesk a **${guild.name}**.` })
+        .catch((error) => console.warn(`Could not send installer onboarding DM to ${installerUser.tag}:`, error?.message ?? error));
+    }
+  }
+}
+
+async function sendOwnerOnboardingDm({ user, guild, config, prefix }) {
+  const embeds = buildOwnerOnboardingEmbeds({ guild });
+  const components = buildOwnerOnboardingComponents(config);
+  const welcomeCard = new AttachmentBuilder(createWelcomeCard({ guildName: guild.name }), {
+    name: 'nexadesk-welcome.png'
+  });
+  return user.send({
+    content: prefix,
+    embeds,
+    files: [welcomeCard],
+    components
+  });
+}
+
+async function fetchBotInstallerInfo(guild) {
+  const me = guild.members.me ?? await guild.members.fetchMe().catch(() => null);
+  if (!me?.permissions?.has(PermissionFlagsBits.ViewAuditLog)) return null;
+
+  const logs = await guild.fetchAuditLogs({
+    type: AuditLogEvent.BotAdd,
+    limit: 8
+  });
+  const entry = logs.entries.find((item) => {
+    const targetId = item.targetId ?? item.target?.id;
+    return targetId === guild.client.user?.id;
+  });
+  if (!entry?.executor) return null;
+  return {
+    userId: entry.executor.id,
+    username: entry.executor.tag ?? entry.executor.username,
+    addedAt: entry.createdAt?.toISOString?.() ?? new Date().toISOString()
+  };
 }
 
 function buildOwnerOnboardingEmbeds({ guild }) {
@@ -1376,6 +1434,74 @@ async function handleActivatePremiumCommand({ interaction, storage, client }) {
   await interaction.editReply({ embeds: [embed] });
 }
 
+async function handleDmOwnerCommand({ interaction, storage, client, config }) {
+  if (interaction.user.id !== PREMIUM_ADMIN_USER_ID) {
+    await interaction.reply({
+      content: 'Este comando solo puede usarlo el owner autorizado de NexaDesk.',
+      ephemeral: true
+    });
+    return;
+  }
+
+  const guildId = interaction.options.getString('servidor', true).trim();
+  if (!/^\d{17,20}$/.test(guildId)) {
+    await interaction.reply({ content: 'Pon un ID de servidor valido.', ephemeral: true });
+    return;
+  }
+
+  await interaction.deferReply({ ephemeral: true });
+  const guild = await client.guilds.fetch(guildId).catch(() => null);
+  if (!guild) {
+    await interaction.editReply('No encuentro ese servidor. Comprueba que NexaDesk siga dentro y que el ID sea correcto.');
+    return;
+  }
+
+  const existing = await storage.getGuildConfig(guildId).catch(() => null);
+  const installer = await fetchBotInstallerInfo(guild).catch(() => null);
+  if (installer) {
+    await storage.upsertGuildConfig(guildId, {
+      guildName: guild.name,
+      addedByUserId: installer.userId,
+      addedByUsername: installer.username,
+      addedAt: installer.addedAt,
+      addedByDetectedAt: new Date().toISOString()
+    }).catch(() => {});
+  }
+
+  const ownerMember = await guild.fetchOwner().catch(() => null);
+  const targets = new Map();
+  if (ownerMember?.user) targets.set(ownerMember.user.id, { user: ownerMember.user, label: 'owner' });
+  const installerId = installer?.userId ?? existing?.addedByUserId;
+  if (installerId && !targets.has(installerId)) {
+    const installerUser = await client.users.fetch(installerId).catch(() => null);
+    if (installerUser) targets.set(installerUser.id, { user: installerUser, label: 'instalador' });
+  }
+
+  if (!targets.size) {
+    await interaction.editReply('No pude resolver ni owner ni instalador para mandar el MD.');
+    return;
+  }
+
+  const results = [];
+  for (const { user, label } of targets.values()) {
+    const sent = await sendOwnerOnboardingDm({
+      user,
+      guild,
+      config,
+      prefix: `${EMOJIS.nexalogo} Reenvio manual del setup de **NexaDesk** para **${guild.name}**. Rol detectado: **${label}**.`
+    }).then(() => true).catch((error) => {
+      results.push(`${label}: fallo (${error?.code ?? error?.message ?? 'DM cerrado'})`);
+      return false;
+    });
+    if (sent) results.push(`${label}: enviado a ${user.tag ?? user.username}`);
+  }
+
+  await interaction.editReply([
+    `${EMOJIS.check} Onboarding reenviado para **${guild.name}**.`,
+    ...results.map((line) => `- ${line}`)
+  ].join('\n'));
+}
+
 async function handleMaintenanceCommand({ interaction, storage }) {
   if (interaction.user.id !== PREMIUM_ADMIN_USER_ID) {
     await interaction.reply({
@@ -1912,6 +2038,50 @@ async function handleHelpButton({ interaction, config }) {
   await interaction.update({
     embeds: [buildHelpEmbed({ view, config, guild: interaction.guild })],
     components: buildHelpComponents({ view, config })
+  });
+}
+
+async function handleAllianceAutosetButton({ interaction, storage }) {
+  const [, , guildId, channelId] = interaction.customId.split(':');
+  if (!/^\d{17,20}$/.test(guildId) || !/^\d{17,20}$/.test(channelId)) {
+    await interaction.reply({ content: 'No puedo leer esta confirmacion. Repite el diagnostico desde NexaDesk.', ephemeral: true });
+    return;
+  }
+
+  const guild = await interaction.client.guilds.fetch(guildId).catch(() => null);
+  const channel = guild ? await guild.channels.fetch(channelId).catch(() => null) : null;
+  if (!guild || !channel || !isAlliancePublishChannel(channel)) {
+    await interaction.reply({ content: 'Ese canal ya no existe o no es de texto/anuncios.', ephemeral: true });
+    return;
+  }
+
+  const config = await storage.getGuildConfig(guildId).catch(() => null);
+  const allowed = interaction.user.id === PREMIUM_ADMIN_USER_ID
+    || interaction.user.id === config?.addedByUserId
+    || interaction.user.id === guild.ownerId;
+  if (!allowed) {
+    await interaction.reply({ content: 'Solo el owner del servidor, quien agrego NexaDesk o el owner global puede confirmar esto.', ephemeral: true });
+    return;
+  }
+
+  await storage.upsertGuildConfig(guildId, {
+    guildName: guild.name,
+    allianceChannelId: channel.id,
+    allianceChannelName: channel.name,
+    allianceDetection: {
+      status: 'confirmed_by_dm',
+      channelId: channel.id,
+      channelName: channel.name,
+      confidence: 100,
+      reason: `Confirmado por ${interaction.user.tag ?? interaction.user.username}`,
+      scannedAt: new Date().toISOString()
+    }
+  });
+
+  await interaction.update({
+    content: `${EMOJIS.check} Canal de alianzas confirmado para **${guild.name}**: ${channel}.`,
+    embeds: [],
+    components: []
   });
 }
 
@@ -3266,7 +3436,7 @@ async function handleGlobalStatsCommand({ interaction, storage, client }) {
   await interaction.editReply({ embeds: [embed] });
 }
 
-async function handleDiagnosticsCommand({ interaction, storage, client }) {
+async function handleDiagnosticsCommand({ interaction, storage, client, supportAgent = null }) {
   if (!interaction.inGuild()) {
     await interaction.reply({ content: 'Este diagnostico solo funciona dentro de un servidor.', ephemeral: true });
     return;
@@ -3281,7 +3451,7 @@ async function handleDiagnosticsCommand({ interaction, storage, client }) {
   }
 
   await interaction.deferReply({ ephemeral: true });
-  await refreshGuildDiscovery(client, storage, { guildId: interaction.guildId, reason: 'diagnostics' }).catch((error) => {
+  await refreshGuildDiscovery(client, storage, { guildId: interaction.guildId, reason: 'diagnostics' }, supportAgent).catch((error) => {
     console.error(`Diagnostics smart discovery failed in ${interaction.guildId}:`, error);
   });
 
@@ -4321,8 +4491,8 @@ async function markAllianceState(storage, channel, action, details = '') {
 
 async function publishAllianceTemplate({ message, guildConfig, ticket, userTemplate }) {
   const channel = await message.guild.channels.fetch(guildConfig.allianceChannelId).catch(() => null);
-  if (!channel || channel.type !== ChannelType.GuildText) {
-    throw new Error('El canal de alianzas configurado no existe o no es de texto.');
+  if (!channel || !isAlliancePublishChannel(channel)) {
+    throw new Error('El canal de alianzas configurado no existe o no permite publicar mensajes.');
   }
 
   const content = [
@@ -4353,6 +4523,14 @@ async function publishAllianceTemplate({ message, guildConfig, ticket, userTempl
     channelMention: `${channel}`,
     messageId: firstMessage?.id
   };
+}
+
+function isAlliancePublishChannel(channel) {
+  return Boolean(channel && (
+    channel.type === ChannelType.GuildText
+    || channel.type === ChannelType.GuildAnnouncement
+    || (channel.isTextBased?.() && channel.send)
+  ));
 }
 
 function isAllianceRulesReadAck(content) {
@@ -4758,11 +4936,11 @@ export async function createTicketCategory(client, storage, { guildId, name }) {
   });
 }
 
-async function scanInstalledGuildsForDiscovery({ client, storage }) {
+async function scanInstalledGuildsForDiscovery({ client, storage, supportAgent = null }) {
   const guilds = [...client.guilds.cache.values()];
   let detected = 0;
   for (const guild of guilds) {
-    const result = await refreshGuildDiscovery(client, storage, { guildId: guild.id, reason: 'scheduled_scan' }).catch((error) => {
+    const result = await refreshGuildDiscovery(client, storage, { guildId: guild.id, reason: 'scheduled_scan' }, supportAgent).catch((error) => {
       console.warn(`Smart discovery failed for ${guild.name} (${guild.id}):`, error?.message ?? error);
       return null;
     });
@@ -4771,20 +4949,263 @@ async function scanInstalledGuildsForDiscovery({ client, storage }) {
   console.log(`NexaDesk smart discovery scanned ${guilds.length} guilds; useful channels found in ${detected}.`);
 }
 
-export async function refreshGuildDiscovery(client, storage, { guildId, reason = 'manual' }) {
+export async function refreshGuildDiscovery(client, storage, { guildId, reason = 'manual' }, supportAgent = null) {
   const guild = await client.guilds.fetch(guildId);
   const channels = await guild.channels.fetch();
   const discovery = analyzeGuildChannelsForDiscovery(channels.values());
   const existing = await storage.getGuildConfig(guildId).catch(() => null);
-  const updated = await storage.upsertGuildConfig(guildId, {
+  const patch = {
     guildName: guild.name,
     discovery: {
       ...(existing?.discovery ?? {}),
       ...discovery,
       reason
     }
-  });
+  };
+
+  let allianceQuestion = null;
+  if (!existing?.allianceChannelId) {
+    const allianceDetection = await detectAllianceChannelForGuild({
+      guild,
+      channels: [...channels.values()],
+      supportAgent
+    }).catch((error) => {
+      console.warn(`Alliance channel detection failed for ${guild.name} (${guild.id}):`, error?.message ?? error);
+      return null;
+    });
+
+    if (allianceDetection?.autoAssign) {
+      patch.allianceChannelId = allianceDetection.channelId;
+      patch.allianceChannelName = allianceDetection.channelName;
+      patch.allianceDetection = {
+        status: 'auto_assigned',
+        channelId: allianceDetection.channelId,
+        channelName: allianceDetection.channelName,
+        confidence: allianceDetection.confidence,
+        reason: allianceDetection.reason,
+        scannedAt: new Date().toISOString()
+      };
+    } else if (allianceDetection?.shouldAskInstaller && shouldAskAllianceInstaller(existing?.allianceDetection)) {
+      patch.allianceDetection = {
+        status: 'needs_confirmation',
+        channelId: allianceDetection.channelId,
+        channelName: allianceDetection.channelName,
+        confidence: allianceDetection.confidence,
+        reason: allianceDetection.reason,
+        askedAt: new Date().toISOString(),
+        scannedAt: new Date().toISOString()
+      };
+      allianceQuestion = allianceDetection;
+    }
+  }
+
+  const updated = await storage.upsertGuildConfig(guildId, patch);
+  if (allianceQuestion) {
+    await askAllianceChannelConfirmationByDm({
+      guild,
+      storage,
+      guildConfig: updated,
+      candidates: allianceQuestion.candidates ?? []
+    }).catch((error) => {
+      console.warn(`Could not DM alliance detection question for ${guild.name}:`, error?.message ?? error);
+    });
+  }
   return updated;
+}
+
+async function detectAllianceChannelForGuild({ guild, channels, supportAgent }) {
+  const candidates = await buildAllianceChannelCandidates(channels);
+  if (!candidates.length) return null;
+
+  const strongest = candidates[0];
+  const runnerUp = candidates[1];
+  if (strongest.score >= 150 && (!runnerUp || strongest.score - runnerUp.score >= 35)) {
+    return {
+      autoAssign: true,
+      shouldAskInstaller: false,
+      channelId: strongest.id,
+      channelName: strongest.name,
+        confidence: Math.min(98, strongest.score),
+      reason: strongest.reason,
+      candidates
+    };
+  }
+
+  if (supportAgent?.detectAllianceChannel) {
+    const aiResult = await supportAgent.detectAllianceChannel({
+      guildName: guild.name,
+      candidates: candidates.slice(0, 8)
+    }).catch((error) => {
+      console.warn(`Alliance channel AI classifier failed in ${guild.name}:`, error?.message ?? error);
+      return null;
+    });
+    if (aiResult?.detected && aiResult.confidence >= 88 && !aiResult.shouldAskInstaller) {
+      return {
+        autoAssign: true,
+        shouldAskInstaller: false,
+        channelId: aiResult.channelId,
+        channelName: aiResult.channelName,
+        confidence: aiResult.confidence,
+        reason: aiResult.reason,
+        candidates
+      };
+    }
+    if (aiResult?.shouldAskInstaller || aiResult?.detected) {
+      return {
+        autoAssign: false,
+        shouldAskInstaller: true,
+        channelId: aiResult.channelId ?? strongest.id,
+        channelName: aiResult.channelName ?? strongest.name,
+        confidence: aiResult.confidence ?? strongest.score,
+        reason: aiResult.reason ?? strongest.reason,
+        candidates
+      };
+    }
+  }
+
+  if (strongest.score >= 78) {
+    return {
+      autoAssign: false,
+      shouldAskInstaller: true,
+      channelId: strongest.id,
+      channelName: strongest.name,
+      confidence: Math.min(85, strongest.score),
+      reason: strongest.reason,
+      candidates
+    };
+  }
+
+  return null;
+}
+
+async function buildAllianceChannelCandidates(channels) {
+  const textChannels = channels
+    .filter((channel) => channel && [ChannelType.GuildText, ChannelType.GuildAnnouncement].includes(channel.type))
+    .sort((a, b) => a.position - b.position)
+    .slice(0, 40);
+  const scored = [];
+  for (const channel of textChannels) {
+    const nameScore = scoreAllianceChannelName(channel.name);
+    if (nameScore < 20 && scored.length > 18) continue;
+    const sample = await fetchAllianceChannelSample(channel);
+    const messageScore = scoreAllianceMessageSample(sample);
+    const score = nameScore + messageScore;
+    if (score >= 35) {
+      scored.push({
+        id: channel.id,
+        name: channel.name,
+        score,
+        confidence: Math.min(99, score),
+        reason: buildAllianceDetectionReason(nameScore, messageScore),
+        sample: sample.slice(0, 1600)
+      });
+    }
+  }
+  return scored
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 8);
+}
+
+async function fetchAllianceChannelSample(channel) {
+  if (!channel?.messages?.fetch) return '';
+  const messages = await channel.messages.fetch({ limit: 12 }).catch(() => null);
+  if (!messages) return '';
+  return [...messages.values()]
+    .sort((a, b) => b.createdTimestamp - a.createdTimestamp)
+    .map((message) => [
+      message.content,
+      ...message.embeds.flatMap((embed) => [
+        embed.title,
+        embed.description,
+        ...(embed.fields ?? []).map((field) => `${field.name}: ${field.value}`)
+      ]),
+      ...[...message.attachments.values()].map((attachment) => attachment.name)
+    ].filter(Boolean).join('\n'))
+    .filter(Boolean)
+    .join('\n---\n')
+    .slice(0, 2600);
+}
+
+function scoreAllianceChannelName(name = '') {
+  const normalized = normalizeText(name);
+  const compact = normalized.replace(/\s+/g, '');
+  let score = 0;
+  for (const keyword of ['alianzas', 'alianza', 'partners', 'partnership', 'colaboraciones', 'colaboracion', 'socios', 'afiliados', 'publicidad', 'ads', 'promo']) {
+    const key = normalizeText(keyword);
+    if (normalized === key || compact === key.replace(/\s+/g, '')) score = Math.max(score, 95);
+    if (normalized.includes(key) || compact.includes(key.replace(/\s+/g, ''))) score = Math.max(score, 70);
+  }
+  return score;
+}
+
+function scoreAllianceMessageSample(sample = '') {
+  const normalized = normalizeText(sample);
+  if (!normalized) return 0;
+  let score = 0;
+  if (/(discord\.gg|discord\.com\/invite|https?:\/\/)/i.test(sample)) score += 24;
+  if (/\b(?:alianza|alianzas|partner|partners|partnership|colaboracion|afiliad|publicidad)\b/.test(normalized)) score += 35;
+  if (/\b(?:plantilla|template|formato)\b/.test(normalized)) score += 24;
+  if (/\b(?:servidor|server|proyecto|comunidad)\b/.test(normalized)) score += 16;
+  if (/\b(?:miembros|members|usuarios|users)\b/.test(normalized)) score += 16;
+  if (/\b(?:tematica|roleplay|rp|gaming|roblox|minecraft|anime|social)\b/.test(normalized)) score += 13;
+  if (/\b(?:ofrecemos|ofrece|buscamos|beneficios|requisitos|normas)\b/.test(normalized)) score += 13;
+  if (sample.length > 500) score += 10;
+  return score;
+}
+
+function buildAllianceDetectionReason(nameScore, messageScore) {
+  if (nameScore >= 70 && messageScore >= 55) return 'El nombre y los mensajes recientes parecen de alianzas.';
+  if (messageScore >= 80) return 'Los mensajes recientes parecen plantillas de alianza.';
+  if (nameScore >= 70) return 'El nombre del canal parece de alianzas.';
+  return 'Hay senales parciales de alianzas.';
+}
+
+function shouldAskAllianceInstaller(allianceDetection = {}) {
+  if (!allianceDetection?.askedAt) return true;
+  const elapsed = Date.now() - new Date(allianceDetection.askedAt).getTime();
+  return !Number.isFinite(elapsed) || elapsed > 1000 * 60 * 60 * 24 * 3;
+}
+
+async function askAllianceChannelConfirmationByDm({ guild, storage, guildConfig, candidates }) {
+  const targetId = guildConfig.addedByUserId || (await fetchBotInstallerInfo(guild).catch(() => null))?.userId || guild.ownerId;
+  if (!targetId) return false;
+  const user = await guild.client.users.fetch(targetId).catch(() => null);
+  if (!user) return false;
+  const topCandidates = candidates.slice(0, 5);
+  if (!topCandidates.length) return false;
+
+  const embed = new EmbedBuilder()
+    .setColor(0xffffff)
+    .setTitle(`${EMOJIS.global} Confirmar canal de alianzas`)
+    .setDescription([
+      `He revisado **${guild.name}** y he visto posibles canales de alianzas, pero prefiero confirmarlo contigo antes de asignarlo.`,
+      '',
+      'Pulsa el canal correcto. Si ninguno sirve, configura manualmente con `/setup canal_alianzas:#canal plantilla_alianza:<texto>`.'
+    ].join('\n'))
+    .addFields(
+      ...topCandidates.slice(0, 3).map((candidate, index) => ({
+        name: `${index + 1}. #${candidate.name} (${candidate.confidence ?? Math.min(99, candidate.score)}%)`,
+        value: candidate.reason,
+        inline: false
+      }))
+    )
+    .setTimestamp(new Date());
+  const row = new ActionRowBuilder().addComponents(
+    ...topCandidates.map((candidate, index) => new ButtonBuilder()
+      .setCustomId(`nexadesk:alliance_autoset:${guild.id}:${candidate.id}`)
+      .setLabel(`#${candidate.name}`.slice(0, 80))
+      .setStyle(index === 0 ? ButtonStyle.Primary : ButtonStyle.Secondary))
+  );
+  await user.send({ embeds: [embed], components: [row] });
+  await storage.upsertGuildConfig(guild.id, {
+    guildName: guild.name,
+    allianceDetection: {
+      ...(guildConfig.allianceDetection ?? {}),
+      status: 'asked_installer',
+      askedAt: new Date().toISOString()
+    }
+  }).catch(() => {});
+  return true;
 }
 
 export async function createTicketPanel(client, storage, { guildId, channelId, ...panelInput }) {
