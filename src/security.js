@@ -158,6 +158,11 @@ export class SecurityManager {
       if (handledOffensiveContent) return true;
     }
 
+    if (security.antiFlood && isMassMentionMessage(message)) {
+      const handledMentionSpam = await this.handleMentionSpam({ message, security });
+      if (handledMentionSpam) return true;
+    }
+
     if (!security.antiFlood) return false;
 
     const key = `${message.guild.id}:${message.author.id}`;
@@ -285,6 +290,35 @@ export class SecurityManager {
         { name: 'Mensaje borrado', value: deleted ? 'Si' : 'No pude borrarlo por permisos o antiguedad', inline: true },
         { name: 'Aislamiento', value: isolation },
         { name: 'Fuente', value: 'XN Protect Automod API. Derechos reservados por XN Protect.' }
+      ],
+      important: true
+    });
+
+    return true;
+  }
+
+  async handleMentionSpam({ message, security }) {
+    const deleted = await message.delete().then(() => true).catch(() => false);
+    const isolation = await this.isolateFloodActor(message, security, {
+      repeated: true,
+      flooding: true,
+      repeatWarning: true,
+      reasonOverride: 'NexaDesk Security Guard: mention spam o ping masivo'
+    });
+
+    const mentionStats = getMentionStats(message);
+    await this.sendSecurityLog({
+      guild: message.guild,
+      config: security,
+      title: 'Mention spam bloqueado',
+      description: `${message.author} envio una rafaga de menciones sospechosa. NexaDesk elimino el mensaje y aislo al autor si tenia permisos suficientes.`,
+      fields: [
+        { name: 'Usuario', value: `${message.author.tag} (${message.author.id})`, inline: true },
+        { name: 'Tipo', value: message.author.bot ? 'Bot' : 'Usuario', inline: true },
+        { name: 'Canal', value: `${message.channel}`, inline: true },
+        { name: 'Menciones', value: `everyone/here: ${mentionStats.everyone ? 'si' : 'no'} | roles: ${mentionStats.roles} | usuarios: ${mentionStats.users}` },
+        { name: 'Mensaje borrado', value: deleted ? 'Si' : 'No pude borrarlo por permisos o antiguedad', inline: true },
+        { name: 'Aislamiento', value: isolation }
       ],
       important: true
     });
@@ -571,8 +605,13 @@ export class SecurityManager {
     const entry = await this.findRecentAuditEntry(guild, auditType, targetId);
     const executor = entry?.executor;
     if (!executor || this.isTrustedExecutor(guild, executor.id)) return false;
-    // Ticket systems often create channels legitimately; do not punish helper bots for that.
-    if (auditType === AuditLogEvent.ChannelCreate && executor.bot) return false;
+    const botTopGgDecision = executor.bot
+      ? await this.shouldBanBotBecauseMissingTopGg(executor)
+      : null;
+
+    // Ticket systems often create channels legitimately. Only treat bot channel creation
+    // as nuke-like when Top.gg confirms the bot is not listed.
+    if (auditType === AuditLogEvent.ChannelCreate && executor.bot && !botTopGgDecision?.shouldBan) return false;
 
     const now = Date.now();
     const key = `${guild.id}:${executor.id}`;
@@ -597,7 +636,7 @@ export class SecurityManager {
 
     const member = await guild.members.fetch(executor.id).catch(() => null);
     const topGgDecision = member?.user?.bot
-      ? await this.shouldBanBotBecauseMissingTopGg(member.user)
+      ? (botTopGgDecision ?? await this.shouldBanBotBecauseMissingTopGg(member.user))
       : { shouldBan: true, lookup: null };
     const canBan = Boolean(
       member?.bannable
@@ -760,6 +799,22 @@ function describeTopGgLookup(lookup) {
   if (lookup.status === 'listed') return lookup.reason || 'Bot listado en Top.gg.';
   if (lookup.status === 'not_listed') return lookup.reason || 'Bot no listado en Top.gg.';
   return lookup.reason || 'Estado Top.gg desconocido.';
+}
+
+function getMentionStats(message) {
+  return {
+    everyone: Boolean(message.mentions?.everyone || /@(?:everyone|here)\b/i.test(message.content ?? '')),
+    roles: message.mentions?.roles?.size ?? 0,
+    users: message.mentions?.users?.size ?? 0
+  };
+}
+
+function isMassMentionMessage(message) {
+  const stats = getMentionStats(message);
+  const total = stats.roles + stats.users + (stats.everyone ? 2 : 0);
+  if (message.author?.bot && (stats.everyone || stats.roles >= 3 || total >= 5)) return true;
+  if (stats.everyone && total >= 8) return true;
+  return total >= 10;
 }
 
 function extractMessageUrls(message) {
