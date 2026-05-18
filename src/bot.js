@@ -427,7 +427,7 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
 
     await saveTranscript(storage, message, 'user');
     void maybeRecordAiQualitySignal({ storage, supportAgent, message, ticket, guildConfig }).catch((error) => {
-      console.warn(`AI quality signal capture failed in ${message.channel.id}:`, error?.message ?? error);
+      console.warn(`AI quality signal capture failed in ${message.channelId}:`, error?.message ?? error);
     });
     if (isClosedTicket(ticket)) return;
 
@@ -466,11 +466,12 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
     if (staffHandoff.handled) return;
 
     if (!config.AI_AUTO_REPLY) return;
-    if (activeResponses.has(message.channel.id)) return;
+    const activeResponseKey = message.channelId;
+    if (activeResponses.has(activeResponseKey)) return;
     if (isAiDisabledTicket(ticket)) return;
     if (await shouldStaySilentInTicket({ storage, message, ticket, guildConfig, client })) return;
 
-    activeResponses.add(message.channel.id);
+    activeResponses.add(activeResponseKey);
     try {
       const allianceFlow = await resolveAllianceTicketFlow({ message, storage, guildConfig, ticket, supportAgent });
       if (allianceFlow.type === 'reply' || allianceFlow.type === 'ask_template') {
@@ -541,7 +542,7 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
       console.error('AI response failed:', error);
       await sendAiFailureNotice(message);
     } finally {
-      activeResponses.delete(message.channel.id);
+      activeResponses.delete(activeResponseKey);
     }
   });
 
