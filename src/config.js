@@ -59,6 +59,7 @@ const schema = z.object({
   TOPGG_API_TOKEN: z.string().optional().default(''),
   TOPGG_API_BASE_URL: z.string().url().default('https://top.gg/api'),
   TOPGG_LOOKUP_TIMEOUT_MS: z.coerce.number().int().min(800).max(15000).default(4500),
+  SECURITY_LAB_BOT_IDS: z.string().optional().default(''),
   VOICE_STT_ENABLED: envBoolean.default(true),
   VOICE_TTS_ENABLED: envBoolean.default(true),
   VOICE_TTS_PROVIDER: z.enum(['auto', 'groq', 'edge', 'piper', 'espeak']).default('auto'),

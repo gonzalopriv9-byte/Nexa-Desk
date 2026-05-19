@@ -138,6 +138,7 @@ export class SecurityManager {
     this.actionBuckets = new Map();
     this.lastFloodWarnings = new Map();
     this.topGgBotCache = new Map();
+    this.securityLabBotIds = parseIdList(config.SECURITY_LAB_BOT_IDS);
   }
 
   async handleMessageCreate(message) {
@@ -371,6 +372,10 @@ export class SecurityManager {
 
     if (!member) return 'No pude obtener el miembro para aislarlo.';
 
+    if (this.isSecurityLabBot(message.author.id)) {
+      return 'Simulacion detectada: bot de laboratorio autorizado. Mensaje gestionado sin ban/kick/timeout para que pueda seguir probando.';
+    }
+
     if (member.moderatable && message.guild.members.me?.permissions.has(PermissionFlagsBits.ModerateMembers)) {
       const timedOut = await member.timeout(timeoutMs, reason).then(() => true).catch(() => false);
       if (timedOut) return `Timeout aplicado ${security.timeoutMinutes} min.`;
@@ -410,6 +415,21 @@ export class SecurityManager {
     await this.trackJoinRaid(member.guild, security);
 
     if (security.antiBot && member.user.bot) {
+      if (this.isSecurityLabBot(member.user.id)) {
+        await this.sendSecurityLog({
+          guild: member.guild,
+          config: security,
+          title: 'Security Lab autorizado',
+          description: `${member.user.tag} esta en SECURITY_LAB_BOT_IDS. NexaDesk lo permite para pruebas controladas sin desactivar la proteccion real.`,
+          fields: [
+            { name: 'Bot', value: `${member.user.tag} (${member.user.id})`, inline: true },
+            { name: 'Accion', value: 'Permitido por allowlist de laboratorio.' }
+          ],
+          important: false
+        });
+        return;
+      }
+
       const topGgDecision = await this.shouldBanBotBecauseMissingTopGg(member.user);
       if (!topGgDecision.shouldBan) {
         if (topGgDecision.lookup?.status !== 'listed') {
@@ -611,7 +631,12 @@ export class SecurityManager {
 
     // Ticket systems often create channels legitimately. Only treat bot channel creation
     // as nuke-like when Top.gg confirms the bot is not listed.
-    if (auditType === AuditLogEvent.ChannelCreate && executor.bot && !botTopGgDecision?.shouldBan) return false;
+    if (
+      auditType === AuditLogEvent.ChannelCreate
+      && executor.bot
+      && !botTopGgDecision?.shouldBan
+      && !this.isSecurityLabBot(executor.id)
+    ) return false;
 
     const now = Date.now();
     const key = `${guild.id}:${executor.id}`;
@@ -642,6 +667,7 @@ export class SecurityManager {
       member?.bannable
       && guild.members.me?.permissions.has(PermissionFlagsBits.BanMembers)
       && (!member.user.bot || topGgDecision.shouldBan)
+      && !this.isSecurityLabBot(member.user.id)
     );
     if (canBan) {
       await member.ban({ reason: `NexaDesk Security Guard: ${bucket.length} acciones sensibles en ${security.nukeWindowSeconds}s` }).catch(() => null);
@@ -655,7 +681,7 @@ export class SecurityManager {
       fields: [
         { name: 'Acciones', value: bucket.map((item) => `- ${item.label}`).slice(-8).join('\n') || label },
         member?.user?.bot ? { name: 'Top.gg', value: describeTopGgLookup(topGgDecision.lookup) } : null,
-        { name: 'Respuesta', value: canBan ? 'Ban preventivo aplicado' : 'No pude banear por permisos, jerarquia o politica Top.gg' }
+        { name: 'Respuesta', value: this.isSecurityLabBot(member?.user?.id) ? 'Simulacion registrada. Bot de laboratorio no aislado.' : canBan ? 'Ban preventivo aplicado' : 'No pude banear por permisos, jerarquia o politica Top.gg' }
       ],
       important: true
     });
@@ -684,11 +710,24 @@ export class SecurityManager {
 
   async shouldBanBotBecauseMissingTopGg(user) {
     if (!user?.bot) return { shouldBan: false, lookup: null };
+    if (this.isSecurityLabBot(user.id)) {
+      return {
+        shouldBan: false,
+        lookup: {
+          status: 'lab_allowlisted',
+          reason: 'Bot incluido en SECURITY_LAB_BOT_IDS para simulaciones controladas.'
+        }
+      };
+    }
     const lookup = await this.lookupTopGgBot(user.id);
     return {
       shouldBan: lookup.status === 'not_listed',
       lookup
     };
+  }
+
+  isSecurityLabBot(userId) {
+    return Boolean(userId && this.securityLabBotIds.has(String(userId)));
   }
 
   async lookupTopGgBot(botId) {
@@ -798,7 +837,15 @@ function describeTopGgLookup(lookup) {
   if (!lookup) return 'No aplica.';
   if (lookup.status === 'listed') return lookup.reason || 'Bot listado en Top.gg.';
   if (lookup.status === 'not_listed') return lookup.reason || 'Bot no listado en Top.gg.';
+  if (lookup.status === 'lab_allowlisted') return lookup.reason || 'Bot de laboratorio autorizado.';
   return lookup.reason || 'Estado Top.gg desconocido.';
+}
+
+function parseIdList(value = '') {
+  return new Set(String(value ?? '')
+    .split(/[,\s]+/g)
+    .map((entry) => entry.trim())
+    .filter((entry) => /^\d{17,20}$/.test(entry)));
 }
 
 function getMentionStats(message) {
