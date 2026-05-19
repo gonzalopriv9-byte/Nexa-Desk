@@ -173,6 +173,41 @@ export class SupportAgent {
     return parseAllianceChannelDetection(answer, candidates);
   }
 
+  async detectAutoConfiguration({ guildName, categories = [], staffRoles = [], currentConfig = {} }) {
+    const answer = await this.aiClient.generate({
+      system: [
+        'Eres NexaDesk Auto-Setup configurando un servidor Discord sin molestar al owner salvo que haya dudas.',
+        'Debes elegir categoria de tickets y rol staff a partir de nombres/candidatos. No inventes IDs.',
+        'Usa action="auto" solo si el candidato es claramente correcto. Usa action="ask" si hay varias opciones plausibles o la confianza es media. Usa action="skip" si no hay datos suficientes.',
+        'No cambies valores que ya estan configurados en currentConfig.',
+        'Responde SOLO JSON valido con este esquema exacto:',
+        '{"summary":"frase breve","ticketCategory":{"action":"auto|ask|skip","id":"id o null","confidence":0-100,"reason":"frase breve"},"staffRole":{"action":"auto|ask|skip","id":"id o null","confidence":0-100,"reason":"frase breve"}}'
+      ].join('\n'),
+      messages: [
+        {
+          role: 'user',
+          content: [
+            `Servidor: ${guildName}`,
+            'Configuracion actual:',
+            JSON.stringify({
+              ticketCategoryId: currentConfig?.ticketCategoryId ?? null,
+              staffRoleId: currentConfig?.staffRoleId ?? null,
+              allianceChannelId: currentConfig?.allianceChannelId ?? null
+            }, null, 2),
+            '',
+            'Categorias candidatas:',
+            JSON.stringify(categories.slice(0, 8), null, 2),
+            '',
+            'Roles staff candidatos:',
+            JSON.stringify(staffRoles.slice(0, 8), null, 2)
+          ].join('\n').slice(0, 9000)
+        }
+      ]
+    });
+
+    return parseAutoConfigurationJson(answer, { categories, staffRoles });
+  }
+
   async verifyAllianceProof({ message, guildConfig, serverAllianceTemplate }) {
     if (!this.visualAnalyzer) {
       return {
@@ -540,6 +575,41 @@ function parseAllianceChannelDetection(answer = '', candidates = []) {
       shouldAskInstaller: true
     };
   }
+}
+
+function parseAutoConfigurationJson(answer = '', { categories = [], staffRoles = [] } = {}) {
+  const raw = String(answer ?? '').trim();
+  const jsonText = raw.match(/\{[\s\S]*\}/)?.[0] ?? raw;
+  try {
+    const parsed = JSON.parse(jsonText);
+    return {
+      summary: String(parsed.summary ?? 'Autoconfiguracion analizada por IA.').slice(0, 700),
+      ticketCategory: normalizeAutoConfigDecision(parsed.ticketCategory, categories),
+      staffRole: normalizeAutoConfigDecision(parsed.staffRole, staffRoles)
+    };
+  } catch {
+    return {
+      summary: raw.slice(0, 700) || 'La IA no devolvio JSON valido.',
+      ticketCategory: { action: 'skip', id: null, confidence: 0, reason: 'Sin decision IA valida.' },
+      staffRole: { action: 'skip', id: null, confidence: 0, reason: 'Sin decision IA valida.' }
+    };
+  }
+}
+
+function normalizeAutoConfigDecision(value = {}, candidates = []) {
+  const action = ['auto', 'ask', 'skip'].includes(String(value?.action ?? '').toLowerCase())
+    ? String(value.action).toLowerCase()
+    : 'skip';
+  const id = String(value?.id ?? '').trim();
+  const candidate = candidates.find((item) => item.id === id);
+  const confidence = clampNumber(value?.confidence, 0, 100, 0);
+  return {
+    action: candidate ? action : action === 'skip' ? 'skip' : 'ask',
+    id: candidate?.id ?? null,
+    name: candidate?.name ?? null,
+    confidence,
+    reason: String(value?.reason ?? '').trim().slice(0, 500) || 'Decision de autoconfiguracion.'
+  };
 }
 
 function hasAllianceTemplatePrefixMatch({ visualContext, serverAllianceTemplate }) {

@@ -11,6 +11,7 @@ import {
   Events,
   GatewayIntentBits,
   ModalBuilder,
+  Partials,
   PermissionFlagsBits,
   TextInputBuilder,
   TextInputStyle
@@ -33,9 +34,9 @@ import { DISCORD_EMOJIS as EMOJIS } from './emojis.js';
 import { buildFeedbackStats, formatRatingStars, normalizeGrowthConfig } from './growth.js';
 import { isPremiumEntitled, normalizePremiumConfig } from './premium.js';
 import { SecurityManager, SECURITY_LEVELS, normalizeSecurityConfig, normalizeSecurityLevel, summarizeSecurityConfig } from './security.js';
-import { analyzeGuildChannelsForDiscovery, hasUsefulDiscovery, normalizeDiscoveryConfig } from './server-discovery.js';
+import { analyzeGuildChannelsForDiscovery, hasUsefulDiscovery, normalizeChannelNameForDiscovery, normalizeDiscoveryConfig } from './server-discovery.js';
 import { buildTranscriptFileName, buildTranscriptText } from './transcripts.js';
-import { createWelcomeCard } from './welcome-card.js';
+import { createTicketFlowCard } from './welcome-card.js';
 import { XNPROTECT_BLACKLIST_CREDIT, checkXnProtectGlobalBan } from './xnprotect-blacklist.js';
 
 const BOT_INVITE_PERMISSIONS = '1099780451478';
@@ -49,6 +50,7 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
   const intents = [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.DirectMessages,
     GatewayIntentBits.GuildVoiceStates
   ];
 
@@ -63,7 +65,8 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
   const presence = buildBotPresence();
   const client = new Client({
     intents,
-    presence
+    presence,
+    partials: [Partials.Channel]
   });
 
   const activeResponses = new Set();
@@ -120,6 +123,11 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
 
       if (interaction.isButton() && interaction.customId.startsWith('nexadesk:alliance_autoset:')) {
         await handleAllianceAutosetButton({ interaction, storage });
+        return;
+      }
+
+      if (interaction.isButton() && interaction.customId.startsWith('nexadesk:autoconfig:')) {
+        await handleAutoConfigButton({ interaction, storage });
         return;
       }
 
@@ -651,7 +659,7 @@ async function handleGuildJoin({ guild, storage, config }) {
     user: ownerUser,
     guild,
     config,
-    prefix: `${EMOJIS.nexalogo} Gracias de verdad por confiar en **NexaDesk** para **${guild.name}**.`
+    prefix: `${EMOJIS.nexalogo} Gracias por confiar en **NexaDesk** para **${guild.name}**.`
   }).then(() => true).catch((error) => {
     console.warn(`Could not send NexaDesk onboarding DM to ${ownerUser.tag} for ${guild.name} (${guild.id}): ${error?.code ?? ''} ${error?.message ?? error}`);
     return false;
@@ -663,7 +671,7 @@ async function handleGuildJoin({ guild, storage, config }) {
   if (installer?.userId && installer.userId !== ownerUser.id) {
     const installerUser = await guild.client.users.fetch(installer.userId).catch(() => null);
     if (installerUser) {
-      await sendOwnerOnboardingDm({ user: installerUser, guild, config, prefix: `${EMOJIS.check} Detecte que tu agregaste NexaDesk a **${guild.name}**.` })
+      await sendOwnerOnboardingDm({ user: installerUser, guild, config, prefix: `${EMOJIS.check} Gracias por agregar **NexaDesk** a **${guild.name}**.` })
         .catch((error) => console.warn(`Could not send installer onboarding DM to ${installerUser.tag}:`, error?.message ?? error));
     }
   }
@@ -672,13 +680,13 @@ async function handleGuildJoin({ guild, storage, config }) {
 async function sendOwnerOnboardingDm({ user, guild, config, prefix }) {
   const embeds = buildOwnerOnboardingEmbeds({ guild });
   const components = buildOwnerOnboardingComponents(config);
-  const welcomeCard = new AttachmentBuilder(createWelcomeCard({ guildName: guild.name }), {
-    name: 'nexadesk-welcome.png'
+  const flowCard = new AttachmentBuilder(createTicketFlowCard({ guildName: guild.name }), {
+    name: 'nexadesk-ticket-flow.png'
   });
   return user.send({
     content: prefix,
     embeds,
-    files: [welcomeCard],
+    files: [flowCard],
     components
   });
 }
@@ -706,138 +714,43 @@ async function fetchBotInstallerInfo(guild) {
 function buildOwnerOnboardingEmbeds({ guild }) {
   const intro = new EmbedBuilder()
     .setColor(0xffffff)
-    .setTitle(`${EMOJIS.nexalogo} Bienvenido a NexaDesk`)
-    .setImage('attachment://nexadesk-welcome.png')
+    .setTitle(`${EMOJIS.nexalogo} Gracias por confiar en NexaDesk`)
+    .setImage('attachment://nexadesk-ticket-flow.png')
     .setDescription([
-      `Me acabo de unir a **${guild.name}**. Gracias de corazon por confiar en NexaDesk.`,
+      `Ya estoy dentro de **${guild.name}**. Gracias de verdad por dejar que NexaDesk cuide tus tickets.`,
       '',
-      'NexaDesk esta pensado para que no tengas que cambiar tu sistema de tickets. Puede trabajar con Ticket King, otros bots de tickets o paneles propios creados desde la dashboard.',
-      '',
-      'La idea es simple: NexaDesk recibe al usuario, entiende el caso con IA, pide la informacion que falta, revisa pruebas visuales cuando haga falta, guarda transcripcion y escala al staff humano cuando toca.'
+      'Estoy revisando canales y roles para autoconfigurar lo maximo posible. Si algo no esta claro, te preguntare por MD a ti y a quien haya agregado el bot.'
     ].join('\n\n'))
     .addFields(
       {
-        name: `${EMOJIS.check} Que hace desde el primer dia`,
+        name: `${EMOJIS.check} Haz esto ahora`,
         value: [
-          `${EMOJIS.nexalogo} Atiende tickets con IA y contexto del servidor.`,
-          `${EMOJIS.rightArrow} Escala al rol de staff cuando detecta riesgo, reportes serios o peticiones humanas.`,
-          `${EMOJIS.server} Guarda transcripciones y puede enviarlas por MD al cerrar.`,
-          `${EMOJIS.ban} Consulta blacklist global XN Protect en tickets y avisa al staff sin banear automaticamente.`
+          `1. Abre la dashboard: ${PUBLIC_DASHBOARD_URL}`,
+          '2. Revisa categoria de tickets, rol staff y prompt IA del servidor.',
+          '3. Asegurate de que el rol de NexaDesk este por encima del staff y tenga Manage Channels, Manage Roles, Manage Messages, View Audit Log y Moderate Members.'
+        ].join('\n')
+      },
+      {
+        name: `${EMOJIS.server} Dile esto a tu staff`,
+        value: [
+          'NexaDesk responde al usuario hasta que un staff entre claramente al ticket.',
+          'Si un humano se encarga, puede escribir algo como "Nexa, me encargo yo" o usar `/desactivar ia`.',
+          'Cuando termine, puede decir "Nexa, he terminado" o usar `/activar ia` para devolver el ticket a la IA.'
+        ].join('\n')
+      },
+      {
+        name: `${EMOJIS.global} Lo esencial que hace`,
+        value: [
+          'Funciona con paneles propios o con otros bots de tickets.',
+          'Usa IA con contexto del servidor, lee capturas cuando haga falta, escala a staff y guarda transcripciones.',
+          'Security Guard protege contra spam, links sospechosos, bots no verificados, alts y acciones peligrosas.'
         ].join('\n')
       }
     )
-    .setFooter({ text: 'NexaDesk - AI support for every ticket' })
+    .setFooter({ text: 'Si necesitas ayuda: /ayuda o https://discord.gg/vVXbq7ePEZ' })
     .setTimestamp(new Date());
 
-  const setup = new EmbedBuilder()
-    .setColor(0xffffff)
-    .setTitle(`${EMOJIS.rightArrow} Setup completo paso a paso`)
-    .setDescription('Sigue este orden y en pocos minutos NexaDesk quedara listo para trabajar en tu servidor.')
-    .addFields(
-      {
-        name: `${EMOJIS.server} 1. Revisa permisos y rol del bot`,
-        value: [
-          'Asegurate de que el rol de NexaDesk este por encima del rol de staff y de los roles que debe gestionar.',
-          'Permisos recomendados: Manage Channels, Manage Roles, Manage Messages, View Audit Log, Moderate Members, Kick Members y Ban Members.',
-          'Si Discord bloquea algo, vuelve a invitarlo desde la dashboard para actualizar permisos.'
-        ].join('\n')
-      },
-      {
-        name: `${EMOJIS.rightArrow} 2. Abre la dashboard`,
-        value: [
-          `Entra aqui: ${PUBLIC_DASHBOARD_URL}`,
-          'Inicia sesion con Discord, elige este servidor y revisa que aparezca como instalado.',
-          'Desde ahi puedes crear paneles, componentes, menus, prompts, staff, transcripciones, seguridad, voz y modulos Premium.'
-        ].join('\n')
-      },
-      {
-        name: `${EMOJIS.check} 3. Configuracion rapida por comando`,
-        value: [
-          'Puedes dejar lo basico listo con:',
-          '`/setup category:<categoria tickets> rol_staff:<rol staff>`',
-          'Si tienes alianzas:',
-          '`/setup canal_alianzas:<canal> plantilla_alianza:<tu plantilla>`',
-          'NexaDesk conservara cualquier valor que no rellenes.'
-        ].join('\n')
-      },
-      {
-        name: `${EMOJIS.global} 4. Contexto IA del servidor`,
-        value: [
-          'En la dashboard, escribe el prompt del servidor: normas, tono, limites, precios, FAQs, canales importantes y cuando escalar.',
-          'Cuanto mejor sea ese contexto, menos preguntas repetidas hara NexaDesk.',
-          'Si quieres que pida capturas o pruebas visuales, indicalo claramente en el prompt.'
-        ].join('\n')
-      }
-    );
-
-  const operations = new EmbedBuilder()
-    .setColor(0xffffff)
-    .setTitle(`${EMOJIS.nexalogo} Como trabajar despues del setup`)
-    .setDescription('Esto es lo que debes contarle a tu staff y lo que NexaDesk hara automaticamente.')
-    .addFields(
-      {
-        name: `${EMOJIS.server} Tickets normales y bots externos`,
-        value: [
-          'Si usas otro bot de tickets, configura la categoria donde ese bot crea canales.',
-          'Para Ticket King, NexaDesk detecta canales `ticket-123` cuando Ticket King escribe el mensaje inicial.',
-          'Cuando el staff indique que se encarga, NexaDesk se queda en silencio hasta que escriban **Nexa, he terminado**.'
-        ].join('\n')
-      },
-      {
-        name: `${EMOJIS.check} Paneles propios`,
-        value: [
-          'Desde la dashboard puedes crear paneles de boton o menus desplegables.',
-          'Cada componente puede tener preguntas previas, categoria propia, mensaje inicial personalizado y modo texto o voz.',
-          'Las respuestas previas se guardan en la transcripcion para que la IA y el staff tengan contexto.'
-        ].join('\n')
-      },
-      {
-        name: `${EMOJIS.rightArrow} Comandos para staff`,
-        value: [
-          '`/desactivar ia` pausa la IA cuando entra un humano.',
-          '`/activar ia` devuelve el ticket a NexaDesk.',
-          '`/ticket resumen` genera un briefing rapido.',
-          '`/ticket cerrar` cierra el ticket, envia transcripcion por MD y elimina el canal.'
-        ].join('\n')
-      },
-      {
-        name: `${EMOJIS.global} Alianzas automaticas`,
-        value: [
-          'Configura canal y plantilla con `/setup canal_alianzas:<canal> plantilla_alianza:<texto>`.',
-          'Cuando un usuario pide alianza, NexaDesk le pide leer normas, recibe su plantilla, entrega la tuya, solicita captura y verifica la prueba con IA visual.',
-          'Si la captura es valida, publica la plantilla del usuario en el canal de alianzas.'
-        ].join('\n')
-      },
-      {
-        name: `${EMOJIS.check} Growth Engine`,
-        value: [
-          'Cuando se cierre un ticket, NexaDesk puede mandar por MD la transcripcion y pedir una valoracion.',
-          'Desde la dashboard, seccion Crecimiento, eliges canal de reviews y activas feedback.',
-          'Con Premium, las valoraciones altas se publican como prueba social y las bajas activan Churn Radar para que el staff recupere confianza.'
-        ].join('\n')
-      },
-      {
-        name: `${EMOJIS.wifi} Voz, seguridad y datos`,
-        value: [
-          'Pro Voice permite crear salas privadas con STT/TTS usando `/voz crear` o paneles de voz.',
-          'Premium tambien prepara IA prioritaria, transcripciones inteligentes, Security Plus, Growth Engine, branding propio e informes semanales.',
-          'Security Guard se configura con `/seguridad configurar` o desde la dashboard: anti-flood, anti-links IA, anti-bots Top.gg, anti-alts y anti-nuke.',
-          'Configuracion, paneles, tickets y transcripciones se guardan en Supabase para que la dashboard pueda consultarlos.'
-        ].join('\n')
-      },
-      {
-        name: `${EMOJIS.nexalogo} Si necesitas ayuda`,
-        value: [
-          'Usa `/ayuda` dentro del servidor para abrir la guia interactiva.',
-          `Dashboard: ${PUBLIC_DASHBOARD_URL}`,
-          'Soporte oficial: https://discord.gg/vVXbq7ePEZ'
-        ].join('\n')
-      }
-    )
-    .setFooter({ text: 'Consejo: configura primero staff, categoria y prompt IA antes de abrirlo al publico.' })
-    .setTimestamp(new Date());
-
-  return [intro, setup, operations];
+  return [intro];
 }
 
 function buildOwnerOnboardingComponents(config) {
@@ -2079,11 +1992,82 @@ async function handleAllianceAutosetButton({ interaction, storage }) {
     }
   });
 
+  await notifyOtherSetupContacts({
+    guild,
+    guildConfig: config,
+    resolver: interaction.user,
+    topic: `el canal de alianzas (${channel})`
+  });
+
   await interaction.update({
     content: `${EMOJIS.check} Canal de alianzas confirmado para **${guild.name}**: ${channel}.`,
     embeds: [],
     components: []
   });
+}
+
+async function handleAutoConfigButton({ interaction, storage }) {
+  const [, , guildId, type, targetId] = interaction.customId.split(':');
+  if (!/^\d{17,20}$/.test(guildId) || !/^\d{17,20}$/.test(targetId)) {
+    await interaction.reply({ content: 'No puedo leer esta respuesta. Ejecuta `/diagnostico` o reescanea desde la dashboard.', ephemeral: true });
+    return;
+  }
+
+  const guild = await interaction.client.guilds.fetch(guildId).catch(() => null);
+  if (!guild) {
+    await interaction.reply({ content: 'Ya no puedo acceder a ese servidor.', ephemeral: true });
+    return;
+  }
+
+  const config = await storage.getGuildConfig(guildId).catch(() => null);
+  const allowed = interaction.user.id === PREMIUM_ADMIN_USER_ID
+    || interaction.user.id === config?.addedByUserId
+    || interaction.user.id === guild.ownerId;
+  if (!allowed) {
+    await interaction.reply({ content: 'Solo el owner del servidor, quien agrego NexaDesk o el owner global puede responder esta duda.', ephemeral: true });
+    return;
+  }
+
+  const patch = {
+    guildName: guild.name,
+    autoConfig: {
+      ...(config?.autoConfig ?? {}),
+      status: 'resolved_by_dm',
+      resolvedAt: new Date().toISOString(),
+      resolvedByUserId: interaction.user.id,
+      resolvedByUsername: interaction.user.tag ?? interaction.user.username
+    }
+  };
+  let topic = '';
+  let response = '';
+
+  if (type === 'ticket_category') {
+    const channel = await guild.channels.fetch(targetId).catch(() => null);
+    if (!channel || channel.type !== ChannelType.GuildCategory) {
+      await interaction.reply({ content: 'Esa categoria ya no existe.', ephemeral: true });
+      return;
+    }
+    patch.ticketCategoryId = channel.id;
+    patch.ticketCategoryName = channel.name;
+    topic = `la categoria de tickets (${channel.name})`;
+    response = `${EMOJIS.check} Perfecto. Categoria de tickets configurada en **${guild.name}**: **${channel.name}**.`;
+  } else if (type === 'staff_role') {
+    const role = await guild.roles.fetch(targetId).catch(() => null);
+    if (!role || role.managed || role.name === '@everyone') {
+      await interaction.reply({ content: 'Ese rol ya no existe o no se puede usar como staff.', ephemeral: true });
+      return;
+    }
+    patch.staffRoleId = role.id;
+    topic = `el rol staff (${role.name})`;
+    response = `${EMOJIS.check} Perfecto. Rol staff configurado en **${guild.name}**: **${role.name}**.`;
+  } else {
+    await interaction.reply({ content: 'No reconozco este tipo de autoconfiguracion.', ephemeral: true });
+    return;
+  }
+
+  await storage.upsertGuildConfig(guildId, patch);
+  await notifyOtherSetupContacts({ guild, guildConfig: config, resolver: interaction.user, topic });
+  await interaction.update({ content: response, embeds: [], components: [] });
 }
 
 function buildHelpEmbed({ view, config, guild }) {
@@ -4953,6 +4937,7 @@ async function scanInstalledGuildsForDiscovery({ client, storage, supportAgent =
 export async function refreshGuildDiscovery(client, storage, { guildId, reason = 'manual' }, supportAgent = null) {
   const guild = await client.guilds.fetch(guildId);
   const channels = await guild.channels.fetch();
+  const roles = await guild.roles.fetch().catch(() => null);
   const discovery = analyzeGuildChannelsForDiscovery(channels.values());
   const existing = await storage.getGuildConfig(guildId).catch(() => null);
   const patch = {
@@ -4965,6 +4950,53 @@ export async function refreshGuildDiscovery(client, storage, { guildId, reason =
   };
 
   let allianceQuestion = null;
+  const autoConfigQuestions = [];
+  const autoConfigDetection = await detectAutoConfigurationForGuild({
+    guild,
+    channels: [...channels.values()],
+    roles: roles ? [...roles.values()] : [],
+    existing,
+    discovery,
+    supportAgent
+  }).catch((error) => {
+    console.warn(`Auto-configuration failed for ${guild.name} (${guild.id}):`, error?.message ?? error);
+    return null;
+  });
+
+  if (autoConfigDetection) {
+    const canAskAutoConfig = shouldAskAutoConfigContacts(existing?.autoConfig);
+    if (!existing?.ticketCategoryId && autoConfigDetection.ticketCategory?.autoAssign) {
+      patch.ticketCategoryId = autoConfigDetection.ticketCategory.id;
+      patch.ticketCategoryName = autoConfigDetection.ticketCategory.name;
+    } else if (!existing?.ticketCategoryId && autoConfigDetection.ticketCategory?.shouldAsk && canAskAutoConfig) {
+      autoConfigQuestions.push(autoConfigDetection.ticketCategory);
+    }
+
+    if (!existing?.staffRoleId && autoConfigDetection.staffRole?.autoAssign) {
+      patch.staffRoleId = autoConfigDetection.staffRole.id;
+    } else if (!existing?.staffRoleId && autoConfigDetection.staffRole?.shouldAsk && canAskAutoConfig) {
+      autoConfigQuestions.push(autoConfigDetection.staffRole);
+    }
+
+    patch.autoConfig = {
+      ...(existing?.autoConfig ?? {}),
+      status: autoConfigQuestions.length
+        ? 'needs_confirmation'
+        : (patch.ticketCategoryId || patch.staffRoleId)
+          ? 'auto_configured'
+          : 'waiting_confirmation',
+      scannedAt: new Date().toISOString(),
+      summary: autoConfigDetection.summary,
+      pending: autoConfigQuestions.map((question) => ({
+        type: question.type,
+        label: question.label,
+        reason: question.reason,
+        askedAt: new Date().toISOString(),
+        candidates: question.candidates
+      }))
+    };
+  }
+
   if (!existing?.allianceChannelId) {
     const allianceDetection = await detectAllianceChannelForGuild({
       guild,
@@ -5011,7 +5043,193 @@ export async function refreshGuildDiscovery(client, storage, { guildId, reason =
       console.warn(`Could not DM alliance detection question for ${guild.name}:`, error?.message ?? error);
     });
   }
+  if (autoConfigQuestions.length) {
+    await askAutoConfigQuestionsByDm({
+      guild,
+      storage,
+      guildConfig: updated,
+      questions: autoConfigQuestions
+    }).catch((error) => {
+      console.warn(`Could not DM auto-configuration question for ${guild.name}:`, error?.message ?? error);
+    });
+  }
   return updated;
+}
+
+async function detectAutoConfigurationForGuild({ guild, channels, roles, existing, discovery, supportAgent }) {
+  if (existing?.ticketCategoryId && existing?.staffRoleId) return null;
+
+  const categoryCandidates = buildTicketCategoryCandidates(channels, discovery);
+  const staffRoleCandidates = buildStaffRoleCandidates(roles);
+  const summaryParts = [];
+  let aiDecision = null;
+
+  if (supportAgent?.detectAutoConfiguration && (categoryCandidates.length || staffRoleCandidates.length)) {
+    aiDecision = await supportAgent.detectAutoConfiguration({
+      guildName: guild.name,
+      categories: categoryCandidates,
+      staffRoles: staffRoleCandidates,
+      currentConfig: existing ?? {}
+    }).catch((error) => {
+      console.warn(`Auto-setup AI classifier failed in ${guild.name}:`, error?.message ?? error);
+      return null;
+    });
+  }
+
+  const ticketCategory = existing?.ticketCategoryId
+    ? null
+    : buildAutoConfigChoice({
+      type: 'ticket_category',
+      label: 'categoria de tickets',
+      aiDecision: aiDecision?.ticketCategory,
+      candidates: categoryCandidates,
+      autoThreshold: 90,
+      askThreshold: 45
+    });
+  const staffRole = existing?.staffRoleId
+    ? null
+    : buildAutoConfigChoice({
+      type: 'staff_role',
+      label: 'rol staff',
+      aiDecision: aiDecision?.staffRole,
+      candidates: staffRoleCandidates,
+      autoThreshold: 88,
+      askThreshold: 42
+    });
+
+  if (ticketCategory?.autoAssign) summaryParts.push(`Categoria detectada: ${ticketCategory.name}.`);
+  if (ticketCategory?.shouldAsk) summaryParts.push('Necesito confirmar la categoria de tickets.');
+  if (staffRole?.autoAssign) summaryParts.push(`Rol staff detectado: ${staffRole.name}.`);
+  if (staffRole?.shouldAsk) summaryParts.push('Necesito confirmar el rol staff.');
+
+  if (!ticketCategory && !staffRole) return null;
+  return {
+    summary: aiDecision?.summary || summaryParts.join(' ') || 'Autoconfiguracion revisada.',
+    ticketCategory,
+    staffRole
+  };
+}
+
+function buildAutoConfigChoice({ type, label, aiDecision, candidates, autoThreshold, askThreshold }) {
+  if (!candidates.length) return null;
+  const strongest = candidates[0];
+  const selected = aiDecision?.id
+    ? candidates.find((candidate) => candidate.id === aiDecision.id) ?? strongest
+    : strongest;
+  const confidence = Math.max(Number(selected.confidence ?? 0), Number(aiDecision?.confidence ?? 0));
+  const runnerUp = candidates.find((candidate) => candidate.id !== selected.id);
+  const gap = confidence - Number(runnerUp?.confidence ?? 0);
+  const aiAction = String(aiDecision?.action ?? '').toLowerCase();
+  const reason = aiDecision?.reason || selected.reason;
+
+  if ((aiAction === 'auto' && confidence >= autoThreshold) || (confidence >= autoThreshold && gap >= 14)) {
+    return {
+      type,
+      label,
+      autoAssign: true,
+      id: selected.id,
+      name: selected.name,
+      confidence,
+      reason,
+      candidates
+    };
+  }
+
+  if (aiAction === 'ask' || confidence >= askThreshold) {
+    return {
+      type,
+      label,
+      shouldAsk: true,
+      id: selected.id,
+      name: selected.name,
+      confidence,
+      reason,
+      candidates
+    };
+  }
+
+  return null;
+}
+
+function buildTicketCategoryCandidates(channels, discovery = {}) {
+  const categories = channels
+    .filter((channel) => channel?.type === ChannelType.GuildCategory && channel.id)
+    .map((channel) => {
+      const score = scoreAutoConfigName(channel.name, [
+        ['ticket', 45],
+        ['tickets', 45],
+        ['soporte', 42],
+        ['support', 42],
+        ['ayuda', 34],
+        ['asistencia', 34],
+        ['atencion', 28],
+        ['help', 28],
+        ['reclamos', 22],
+        ['reportes', 20]
+      ]);
+      const discoveryBonus = channel.id === discovery?.suggestedTicketCategoryId ? 35 : 0;
+      const confidence = Math.min(99, score + discoveryBonus);
+      return {
+        id: channel.id,
+        name: channel.name,
+        confidence,
+        reason: discoveryBonus
+          ? 'Coincide con la categoria sugerida por smart discovery.'
+          : 'El nombre parece una categoria de tickets o soporte.'
+      };
+    })
+    .filter((candidate) => candidate.confidence >= 28)
+    .sort((a, b) => b.confidence - a.confidence)
+    .slice(0, 5);
+
+  return categories;
+}
+
+function buildStaffRoleCandidates(roles) {
+  return roles
+    .filter((role) => role && role.id && !role.managed && role.name !== '@everyone')
+    .map((role) => {
+      const score = scoreAutoConfigName(role.name, [
+        ['staff', 52],
+        ['soporte', 48],
+        ['support', 48],
+        ['moderador', 42],
+        ['moderadores', 42],
+        ['mod', 36],
+        ['admin', 34],
+        ['administrador', 34],
+        ['helper', 30],
+        ['equipo', 28],
+        ['atencion', 24],
+        ['tickets', 22],
+        ['ticket', 22]
+      ]);
+      const positionBonus = Math.min(16, Math.max(0, Number(role.position ?? 0) / 10));
+      const confidence = Math.min(99, Math.round(score + positionBonus));
+      return {
+        id: role.id,
+        name: role.name,
+        confidence,
+        reason: 'El nombre y posicion del rol parecen corresponder al equipo de staff.'
+      };
+    })
+    .filter((candidate) => candidate.confidence >= 26)
+    .sort((a, b) => b.confidence - a.confidence)
+    .slice(0, 5);
+}
+
+function scoreAutoConfigName(name = '', weightedKeywords = []) {
+  const normalized = normalizeChannelNameForDiscovery(name);
+  const compact = normalized.replace(/\s+/g, '');
+  let score = 0;
+  for (const [keyword, weight] of weightedKeywords) {
+    const key = normalizeChannelNameForDiscovery(keyword);
+    const compactKey = key.replace(/\s+/g, '');
+    if (normalized === key || compact === compactKey) score = Math.max(score, weight + 42);
+    else if (normalized.split(/\s+/).includes(key)) score = Math.max(score, weight + 28);
+    else if (normalized.includes(key) || compact.includes(compactKey)) score = Math.max(score, weight);
+  }
+  return score;
 }
 
 async function detectAllianceChannelForGuild({ guild, channels, supportAgent }) {
@@ -5167,11 +5385,15 @@ function shouldAskAllianceInstaller(allianceDetection = {}) {
   return !Number.isFinite(elapsed) || elapsed > 1000 * 60 * 60 * 24 * 3;
 }
 
+function shouldAskAutoConfigContacts(autoConfig = {}) {
+  if (!autoConfig?.askedAt) return true;
+  const elapsed = Date.now() - new Date(autoConfig.askedAt).getTime();
+  return !Number.isFinite(elapsed) || elapsed > 1000 * 60 * 60 * 24 * 3;
+}
+
 async function askAllianceChannelConfirmationByDm({ guild, storage, guildConfig, candidates }) {
-  const targetId = guildConfig.addedByUserId || (await fetchBotInstallerInfo(guild).catch(() => null))?.userId || guild.ownerId;
-  if (!targetId) return false;
-  const user = await guild.client.users.fetch(targetId).catch(() => null);
-  if (!user) return false;
+  const contacts = await getGuildSetupContacts(guild, guildConfig);
+  if (!contacts.length) return false;
   const topCandidates = candidates.slice(0, 5);
   if (!topCandidates.length) return false;
 
@@ -5197,16 +5419,90 @@ async function askAllianceChannelConfirmationByDm({ guild, storage, guildConfig,
       .setLabel(`#${candidate.name}`.slice(0, 80))
       .setStyle(index === 0 ? ButtonStyle.Primary : ButtonStyle.Secondary))
   );
-  await user.send({ embeds: [embed], components: [row] });
+  const results = await Promise.allSettled(contacts.map(({ user }) => user.send({ embeds: [embed], components: [row] })));
   await storage.upsertGuildConfig(guild.id, {
     guildName: guild.name,
     allianceDetection: {
       ...(guildConfig.allianceDetection ?? {}),
-      status: 'asked_installer',
+      status: 'asked_contacts',
       askedAt: new Date().toISOString()
     }
   }).catch(() => {});
-  return true;
+  return results.some((result) => result.status === 'fulfilled');
+}
+
+async function askAutoConfigQuestionsByDm({ guild, storage, guildConfig, questions }) {
+  const contacts = await getGuildSetupContacts(guild, guildConfig);
+  if (!contacts.length || !questions.length) return false;
+
+  const jobs = [];
+  for (const question of questions) {
+    const topCandidates = question.candidates.slice(0, 5);
+    if (!topCandidates.length) continue;
+    const embed = new EmbedBuilder()
+      .setColor(0xffffff)
+      .setTitle(`${EMOJIS.nexalogo} Duda de autoconfiguracion`)
+      .setDescription([
+        `Estoy configurando **${guild.name}** automaticamente, pero prefiero confirmar **${question.label}** antes de guardarlo.`,
+        '',
+        question.reason || 'Hay varias opciones posibles.',
+        '',
+        'Pulsa la opcion correcta. Si otro responsable responde primero, te avisare por MD.'
+      ].join('\n'))
+      .addFields(
+        ...topCandidates.slice(0, 3).map((candidate, index) => ({
+          name: `${index + 1}. ${candidate.name} (${candidate.confidence ?? 0}%)`,
+          value: candidate.reason || 'Candidato detectado por NexaDesk.',
+          inline: false
+        }))
+      )
+      .setTimestamp(new Date());
+    const row = new ActionRowBuilder().addComponents(
+      ...topCandidates.map((candidate, index) => new ButtonBuilder()
+        .setCustomId(`nexadesk:autoconfig:${guild.id}:${question.type}:${candidate.id}`)
+        .setLabel(candidate.name.slice(0, 80))
+        .setStyle(index === 0 ? ButtonStyle.Primary : ButtonStyle.Secondary))
+    );
+    for (const { user } of contacts) {
+      jobs.push(user.send({ embeds: [embed], components: [row] }));
+    }
+  }
+
+  const results = await Promise.allSettled(jobs);
+  await storage.upsertGuildConfig(guild.id, {
+    guildName: guild.name,
+    autoConfig: {
+      ...(guildConfig.autoConfig ?? {}),
+      status: 'asked_contacts',
+      askedAt: new Date().toISOString()
+    }
+  }).catch(() => {});
+  return results.some((result) => result.status === 'fulfilled');
+}
+
+async function getGuildSetupContacts(guild, guildConfig = {}) {
+  const contacts = new Map();
+  const owner = await guild.fetchOwner().catch(() => null);
+  if (owner?.user) contacts.set(owner.user.id, { user: owner.user, label: 'owner' });
+
+  const installerId = guildConfig?.addedByUserId || (await fetchBotInstallerInfo(guild).catch(() => null))?.userId;
+  if (installerId && !contacts.has(installerId)) {
+    const installerUser = await guild.client.users.fetch(installerId).catch(() => null);
+    if (installerUser) contacts.set(installerUser.id, { user: installerUser, label: 'instalador' });
+  }
+
+  return [...contacts.values()];
+}
+
+async function notifyOtherSetupContacts({ guild, guildConfig = {}, resolver, topic }) {
+  const contacts = await getGuildSetupContacts(guild, guildConfig);
+  const others = contacts.filter(({ user }) => user.id !== resolver.id);
+  if (!others.length) return;
+  const body = [
+    `${EMOJIS.check} <@${resolver.id}> ya me ha resuelto la duda sobre **${topic}** en **${guild.name}**.`,
+    'No tienes que hacer nada mas para esa parte.'
+  ].join('\n');
+  await Promise.allSettled(others.map(({ user }) => user.send({ content: body, allowedMentions: { users: [resolver.id] } })));
 }
 
 export async function createTicketPanel(client, storage, { guildId, channelId, ...panelInput }) {

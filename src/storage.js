@@ -819,6 +819,7 @@ function fromGuildRow(row) {
       plan: row.plan ?? 'free',
       voiceSupportEnabled: row.voice_support_enabled ?? false
     }),
+    autoConfig: panelStore.autoConfig,
     discovery: panelStore.discovery,
     announcementChannelId: panelStore.discovery.announcementChannelId,
     announcementChannelName: panelStore.discovery.announcementChannelName,
@@ -835,6 +836,7 @@ function toGuildPanelStore(guild) {
     components: guild.components ?? [],
     security: normalizeSecurityConfig(guild.security),
     premium: normalizePremiumConfig(guild.premium, guild),
+    autoConfig: normalizeAutoConfig(guild.autoConfig),
     growth: normalizeGrowthConfig(guild.growth),
     alliance: normalizeAllianceConfig(guild),
     allianceDetection: normalizeAllianceDetection(guild.allianceDetection),
@@ -850,6 +852,7 @@ function fromGuildPanelStore(value) {
       components: [],
       security: normalizeSecurityConfig(),
       premium: normalizePremiumConfig(),
+      autoConfig: normalizeAutoConfig(),
       growth: normalizeGrowthConfig(),
       alliance: normalizeAllianceConfig(),
       allianceDetection: normalizeAllianceDetection(),
@@ -864,6 +867,7 @@ function fromGuildPanelStore(value) {
       components: Array.isArray(value.components) ? value.components : [],
       security: normalizeSecurityConfig(value.security),
       premium: normalizePremiumConfig(value.premium),
+      autoConfig: normalizeAutoConfig(value.autoConfig),
       growth: normalizeGrowthConfig(value.growth),
       alliance: normalizeAllianceConfig(value.alliance),
       allianceDetection: normalizeAllianceDetection(value.allianceDetection),
@@ -877,12 +881,44 @@ function fromGuildPanelStore(value) {
     components: [],
     security: normalizeSecurityConfig(),
     premium: normalizePremiumConfig(),
+    autoConfig: normalizeAutoConfig(),
     growth: normalizeGrowthConfig(),
     alliance: normalizeAllianceConfig(),
     allianceDetection: normalizeAllianceDetection(),
     install: normalizeInstallMetadata(),
     discovery: normalizeDiscoveryConfig()
   };
+}
+
+function normalizeAutoConfig(value = {}) {
+  const source = value?.autoConfig && typeof value.autoConfig === 'object' ? value.autoConfig : value;
+  const pending = Array.isArray(source?.pending)
+    ? source.pending.map((item) => ({
+      type: item?.type ? String(item.type).slice(0, 40) : undefined,
+      label: item?.label ? String(item.label).slice(0, 120) : undefined,
+      reason: item?.reason ? String(item.reason).slice(0, 500) : undefined,
+      askedAt: item?.askedAt ? String(item.askedAt) : undefined,
+      candidates: Array.isArray(item?.candidates)
+        ? item.candidates.slice(0, 5).map((candidate) => ({
+          id: candidate?.id ? String(candidate.id) : undefined,
+          name: candidate?.name ? String(candidate.name).slice(0, 100) : undefined,
+          confidence: Number.isFinite(Number(candidate?.confidence)) ? Math.round(Number(candidate.confidence)) : undefined,
+          reason: candidate?.reason ? String(candidate.reason).slice(0, 300) : undefined
+        })).filter((candidate) => candidate.id && candidate.name)
+        : []
+    })).filter((item) => item.type && item.candidates.length)
+    : [];
+
+  return pickDefined({
+    status: source?.status ? String(source.status).slice(0, 40) : undefined,
+    scannedAt: source?.scannedAt ? String(source.scannedAt) : undefined,
+    askedAt: source?.askedAt ? String(source.askedAt) : undefined,
+    resolvedAt: source?.resolvedAt ? String(source.resolvedAt) : undefined,
+    resolvedByUserId: source?.resolvedByUserId ? String(source.resolvedByUserId) : undefined,
+    resolvedByUsername: source?.resolvedByUsername ? String(source.resolvedByUsername).slice(0, 120) : undefined,
+    summary: source?.summary ? String(source.summary).slice(0, 700) : undefined,
+    pending
+  });
 }
 
 function normalizeAllianceConfig(value = {}) {
