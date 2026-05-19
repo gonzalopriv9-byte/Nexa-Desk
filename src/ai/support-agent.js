@@ -277,6 +277,37 @@ export class SupportAgent {
     return parseLinkThreatJson(answer);
   }
 
+  async analyzeSpamMessage({ message, guildConfig, heuristic = null }) {
+    const answer = await this.aiClient.generate({
+      system: [
+        'Eres NexaDesk Security Guard analizando mensajes de Discord para detectar spam, flood, raid, publicidad fraudulenta y automatizacion maliciosa.',
+        'Marca spam=true si el mensaje parece parte de una rafaga, promocion falsa, prueba de raid, phishing textual, invitaciones repetitivas, mensajes generados por bot para saturar canales o contenido con patron claramente automatizado.',
+        'NO marques como spam una pregunta normal, una queja real, una solicitud de soporte o una plantilla de alianza legitima dentro de un ticket.',
+        'Si el mensaje tiene etiqueta [NEXADESK LAB ...], tratala como prueba controlada y recomienda delete_and_isolate sin inventar riesgo real.',
+        'Responde SOLO JSON valido, sin markdown, con este esquema exacto:',
+        '{"spam":true|false,"confidence":0-100,"reason":"frase breve","signals":["senal 1"],"recommendedAction":"allow|review|delete|delete_and_isolate"}'
+      ].join('\n'),
+      messages: [
+        {
+          role: 'user',
+          content: [
+            `Servidor: ${guildConfig?.guildName ?? message.guild?.name ?? message.guildId}`,
+            `Canal: #${message.channel?.name ?? message.channelId}`,
+            `Autor: ${message.author?.tag ?? message.author?.id} (${message.author?.bot ? 'bot' : 'usuario'})`,
+            '',
+            'Resultado del filtro rapido previo:',
+            heuristic ? JSON.stringify(heuristic).slice(0, 900) : 'No disponible.',
+            '',
+            'Mensaje a clasificar:',
+            String(message.content ?? '').slice(0, 2200)
+          ].join('\n').slice(0, 5000)
+        }
+      ]
+    });
+
+    return parseSpamThreatJson(answer, heuristic);
+  }
+
   #buildSystemPrompt({ ticket, guildConfig, userLanguage, intakeContext, visualContext }) {
     const serverInfo = guildConfig.serverInfo?.trim() || 'No hay informacion adicional configurada todavia.';
     const serverPrompt = guildConfig.serverPrompt?.trim() || 'No hay prompt personalizado configurado.';
@@ -447,6 +478,38 @@ function parseLinkThreatJson(answer = '') {
       reason: raw.slice(0, 700) || 'La IA no devolvio JSON valido.',
       riskSignals: [],
       recommendedAction: verdict === 'malicious' ? 'delete_and_isolate' : verdict === 'suspicious' ? 'review' : 'allow'
+    };
+  }
+}
+
+function parseSpamThreatJson(answer = '', fallback = null) {
+  const raw = String(answer ?? '').trim();
+  const jsonText = raw.match(/\{[\s\S]*\}/)?.[0] ?? raw;
+  try {
+    const parsed = JSON.parse(jsonText);
+    return {
+      spam: Boolean(parsed.spam),
+      confidence: clampNumber(parsed.confidence, 0, 100, parsed.spam ? 85 : 55),
+      reason: String(parsed.reason ?? 'Analisis IA sin razon especifica.').slice(0, 700),
+      signals: Array.isArray(parsed.signals) ? parsed.signals.map((item) => String(item).slice(0, 140)).slice(0, 5) : [],
+      recommendedAction: String(parsed.recommendedAction ?? (parsed.spam ? 'delete' : 'allow')).toLowerCase()
+    };
+  } catch {
+    if (fallback && typeof fallback === 'object') {
+      return {
+        ...fallback,
+        source: fallback.source ?? 'heuristic'
+      };
+    }
+
+    const lower = raw.toLowerCase();
+    const spam = /\b(spam|flood|raid|delete|isolate|phishing|scam)\b/i.test(lower);
+    return {
+      spam,
+      confidence: spam ? 78 : 45,
+      reason: raw.slice(0, 700) || 'La IA no devolvio JSON valido.',
+      signals: [],
+      recommendedAction: spam ? 'review' : 'allow'
     };
   }
 }

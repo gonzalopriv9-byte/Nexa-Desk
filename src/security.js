@@ -164,6 +164,11 @@ export class SecurityManager {
       if (handledMentionSpam) return true;
     }
 
+    if (security.antiFlood && shouldReviewSpamContent(message)) {
+      const handledSpamContent = await this.handleSpamContent({ message, guildConfig, security });
+      if (handledSpamContent) return true;
+    }
+
     if (!security.antiFlood) return false;
 
     const key = `${message.guild.id}:${message.author.id}`;
@@ -263,6 +268,61 @@ export class SecurityManager {
     }
 
     return heuristicLinkThreatAnalysis({ content: message.content, urls });
+  }
+
+  async handleSpamContent({ message, guildConfig, security }) {
+    const analysis = await this.reviewSpamContent({ message, guildConfig });
+    if (!shouldBlockSpamThreat(analysis)) return false;
+
+    const now = Date.now();
+    const key = `${message.guild.id}:${message.author.id}`;
+    const bucket = (this.messageBuckets.get(key) ?? [])
+      .filter((entry) => now - entry.at <= Math.max(security.floodWindowSeconds * 1000, 8000));
+    const content = normalizeContent(message.content);
+    bucket.push({ at: now, content, messageId: message.id, channelId: message.channelId });
+    this.messageBuckets.set(key, bucket);
+
+    const deleted = await this.deleteFloodBurstMessages(message, bucket, security);
+    const isolation = await this.isolateFloodActor(message, security, {
+      repeated: true,
+      flooding: true,
+      repeatWarning: true,
+      reasonOverride: `NexaDesk Security Guard: ${analysis.reason || 'spam detectado por IA'}`
+    });
+
+    await this.sendSecurityLog({
+      guild: message.guild,
+      config: security,
+      title: 'Spam IA bloqueado',
+      description: `${message.author} envio contenido clasificado como spam, raid o promocion fraudulenta. NexaDesk limpio la rafaga reciente del autor.`,
+      fields: [
+        ...buildSpamThreatFields({ message, analysis }),
+        { name: 'Mensajes borrados', value: String(deleted), inline: true },
+        { name: 'Aislamiento', value: isolation }
+      ],
+      important: true
+    });
+
+    return true;
+  }
+
+  async reviewSpamContent({ message, guildConfig }) {
+    const heuristic = heuristicSpamThreatAnalysis({ content: message.content, message });
+    if (heuristic.spam && heuristic.confidence >= 94) return heuristic;
+
+    if (this.supportAgent?.analyzeSpamMessage) {
+      try {
+        return normalizeSpamThreatAnalysis(await this.supportAgent.analyzeSpamMessage({
+          message,
+          guildConfig,
+          heuristic
+        }));
+      } catch (error) {
+        console.error(`AI spam analysis failed in ${message.guild.id}:`, error);
+      }
+    }
+
+    return heuristic;
   }
 
   async handleOffensiveContent({ message, security }) {
@@ -929,6 +989,120 @@ function buildLinkThreatFields({ message, urls, analysis }) {
       ? { name: 'Senales', value: analysis.riskSignals.map((item) => `- ${item}`).join('\n').slice(0, 900) }
       : null
   ].filter(Boolean);
+}
+
+function normalizeSpamThreatAnalysis(input) {
+  const source = input && typeof input === 'object' ? input : {};
+  const rawAction = String(source.recommendedAction ?? source.action ?? '').toLowerCase().trim();
+  const signals = Array.isArray(source.signals)
+    ? source.signals.map((item) => String(item).slice(0, 140)).filter(Boolean).slice(0, 5)
+    : [];
+
+  return {
+    spam: Boolean(source.spam),
+    confidence: clampInt(source.confidence, source.spam ? 85 : 55, 0, 100),
+    reason: String(source.reason ?? 'La IA no devolvio una razon clara.').slice(0, 700),
+    recommendedAction: rawAction || (source.spam ? 'delete' : 'allow'),
+    signals,
+    source: source.source ?? 'ai'
+  };
+}
+
+function shouldBlockSpamThreat(analysis) {
+  if (!analysis?.spam) return false;
+  const confidence = Number(analysis.confidence ?? 0);
+  const action = String(analysis.recommendedAction ?? '').toLowerCase();
+  return confidence >= 82
+    || action.includes('delete')
+    || action.includes('isolate')
+    || action.includes('block');
+}
+
+function buildSpamThreatFields({ message, analysis }) {
+  return [
+    { name: 'Usuario', value: `${message.author.tag} (${message.author.id})`, inline: true },
+    { name: 'Tipo', value: message.author.bot ? 'Bot' : 'Usuario', inline: true },
+    { name: 'Canal', value: `${message.channel}`, inline: true },
+    { name: 'Confianza', value: `${analysis.confidence}%`, inline: true },
+    { name: 'Accion sugerida', value: analysis.recommendedAction || 'delete/review', inline: true },
+    { name: 'Fuente', value: analysis.source === 'heuristic' ? 'Filtro rapido de laboratorio/fallback' : 'IA Security Guard', inline: true },
+    { name: 'Motivo', value: analysis.reason || 'Sin motivo.' },
+    analysis.signals?.length
+      ? { name: 'Senales', value: analysis.signals.map((item) => `- ${item}`).join('\n').slice(0, 900) }
+      : null
+  ].filter(Boolean);
+}
+
+function shouldReviewSpamContent(message) {
+  const text = String(message.content ?? '').trim();
+  if (!text) return false;
+  if (/\[NEXADESK LAB (?:FLOOD|JOIN|CHANNEL RAID|SCAM LINK|MENTIONS)/i.test(text)) return true;
+  if (text.length > 500) return true;
+
+  const normalized = normalizeContent(text);
+  return [
+    /\b(?:free|gratis|nitro|robux|claim|giveaway|premio|regalo|airdrop|crypto|wallet)\b/i,
+    /\b(?:raid|spam|flood|join fast|mass dm|server nuker|token grabber)\b/i,
+    /\b(?:buy now|click here|verify now|verifica ahora|entra ya|unete ya)\b/i,
+    /(.)\1{9,}/,
+    /(?:https?:\/\/|discord\.gg\/).*(?:https?:\/\/|discord\.gg\/)/i
+  ].some((pattern) => pattern.test(normalized));
+}
+
+function heuristicSpamThreatAnalysis({ content, message }) {
+  const text = String(content ?? '');
+  const normalized = normalizeContent(text);
+  const signals = [];
+
+  if (/\[NEXADESK LAB (?:FLOOD|JOIN|CHANNEL RAID|SCAM LINK|MENTIONS)/i.test(text)) {
+    signals.push('Mensaje generado por el laboratorio de seguridad de NexaDesk.');
+  }
+  if (message?.author?.bot && /\b(?:free|gratis|nitro|robux|claim|giveaway|premio|regalo)\b/i.test(text)) {
+    signals.push('Bot promocionando regalos o recompensas falsas.');
+  }
+  if (/\b(?:claim now|verify now|click here|buy now|free nitro|nitro gratis|robux gratis|premio gratis|verifica ahora|entra ya)\b/i.test(text)) {
+    signals.push('Llamada a la accion tipica de spam o estafa.');
+  }
+  if (/\b(?:raid|spam|flood|mass dm|server nuker|token grabber)\b/i.test(text)) {
+    signals.push('Terminologia asociada a raid, flood o robo de tokens.');
+  }
+  if (/(.)\1{9,}/.test(normalized)) {
+    signals.push('Caracteres repetidos de forma anormal.');
+  }
+  if ((text.match(/(?:https?:\/\/|discord\.gg\/)/gi) ?? []).length >= 2) {
+    signals.push('Multiples enlaces en un unico mensaje sospechoso.');
+  }
+
+  if (signals.length >= 2 || signals.some((signal) => signal.includes('laboratorio'))) {
+    return {
+      spam: true,
+      confidence: signals.some((signal) => signal.includes('laboratorio')) ? 96 : 88,
+      reason: 'Contenido con patrones de spam, raid o prueba controlada de Security Guard.',
+      recommendedAction: 'delete_and_isolate',
+      signals,
+      source: 'heuristic'
+    };
+  }
+
+  if (signals.length === 1) {
+    return {
+      spam: true,
+      confidence: 72,
+      reason: 'Hay una senal de spam, pero no suficiente para bloqueo automatico sin IA.',
+      recommendedAction: 'review',
+      signals,
+      source: 'heuristic'
+    };
+  }
+
+  return {
+    spam: false,
+    confidence: 45,
+    reason: 'No se detectaron senales claras de spam en el filtro rapido.',
+    recommendedAction: 'allow',
+    signals: [],
+    source: 'heuristic'
+  };
 }
 
 function heuristicLinkThreatAnalysis({ content, urls }) {
