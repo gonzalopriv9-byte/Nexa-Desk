@@ -16,6 +16,10 @@ services:
         sync: false
       - key: DISCORD_GUILD_ID
         sync: false
+      - key: DISCORD_MESSAGE_CONTENT_INTENT
+        value: true
+      - key: DISCORD_GUILD_MEMBERS_INTENT
+        value: true
       - key: DASHBOARD_PUBLIC_URL
         sync: false
       - key: SESSION_SECRET
@@ -27,7 +31,17 @@ services:
       - key: DOCS_TOTP_ACCOUNT
         sync: false
       - key: RUN_BOT
-        value: false
+        value: true
+      - key: BOT_HA_ENABLED
+        value: true
+      - key: BOT_INSTANCE_ID
+        value: render-dashboard-standby
+      - key: BOT_LEASE_TTL_MS
+        value: 12000
+      - key: BOT_LEASE_RENEW_MS
+        value: 4000
+      - key: BOT_FAILOVER_POLL_MS
+        value: 2500
       - key: SUPABASE_URL
         sync: false
       - key: SUPABASE_SERVICE_ROLE_KEY

@@ -75,7 +75,7 @@ Visual analysis uses Groq vision models for images. Video support samples frames
 
 Voice support uses Groq speech-to-text and text-to-speech, plus `ffmpeg` to play generated audio in Discord voice channels. Install `ffmpeg` on the worker machine and keep only one AI voice room active per Discord server at a time.
 
-If the bot is running on the Raspberry Pi, set this in Render so the web service only serves the dashboard:
+If you only want Render to serve the dashboard, set:
 
 ```text
 RUN_BOT=false
@@ -85,7 +85,7 @@ Render still needs `DISCORD_TOKEN` even with `RUN_BOT=false`, because the dashbo
 
 ## High availability worker
 
-NexaDesk can run a safe active/standby worker pair. Keep one instance on the Raspberry Pi and a second instance on a cloud VM with the same Discord/Supabase environment. Enable the lease so only one gateway session responds at a time:
+NexaDesk can run a safe active/standby worker pair. Keep one instance on the Raspberry Pi and a second instance in Render with the same Discord/Supabase environment. Enable the lease so only one gateway session responds at a time:
 
 ```text
 RUN_BOT=true
@@ -98,7 +98,7 @@ BOT_FAILOVER_POLL_MS=2500
 
 Use a different `BOT_INSTANCE_ID` on the standby, for example `oci-standby`. The lease is stored in Supabase global settings. This avoids active-active duplicate Discord replies while allowing a standby worker to take over within seconds if the Pi loses power.
 
-Recommended free standby target: Oracle Cloud Always Free Ampere A1 VM. Install Node.js 22, clone this repo, copy the same production `.env`, change only `BOT_INSTANCE_ID=oci-standby`, keep `RUN_BOT=true` and `BOT_HA_ENABLED=true`, then run it with PM2. Render should remain dashboard-only with `RUN_BOT=false`.
+Preferred standby target for this repo: the Render dashboard service. Set `RUN_BOT=true`, `BOT_HA_ENABLED=true`, and `BOT_INSTANCE_ID=render-dashboard-standby` there. Keep the Raspberry Pi as `BOT_INSTANCE_ID=pi-main`.
 
 ## Private docs vault
 
