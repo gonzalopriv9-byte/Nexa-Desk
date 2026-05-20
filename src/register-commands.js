@@ -281,6 +281,10 @@ const commands = [
     )
     .toJSON(),
   new SlashCommandBuilder()
+    .setName('code')
+    .setDescription('Genera un codigo temporal de un solo uso para entrar a /admin.')
+    .toJSON(),
+  new SlashCommandBuilder()
     .setName('mantenimiento')
     .setDescription('Controla el modo mantenimiento global de NexaDesk.')
     .addSubcommand((subcommand) =>

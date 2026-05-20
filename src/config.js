@@ -28,6 +28,7 @@ const schema = z.object({
   DOCS_TOTP_ISSUER: z.string().default('NexaDesk'),
   DOCS_TOTP_ACCOUNT: z.string().default('owner@nexadesk'),
   DOCS_SESSION_MINUTES: z.coerce.number().int().min(5).max(240).default(20),
+  ADMIN_CODE_ROLE_ID: z.string().default('1499803857042280488'),
   DATA_DIR: z.string().default('./data'),
   SUPABASE_URL: z.string().url().optional().or(z.literal('')),
   SUPABASE_SERVICE_ROLE_KEY: z.string().optional(),

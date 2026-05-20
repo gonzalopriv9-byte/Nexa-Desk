@@ -23,6 +23,7 @@ import {
   isBlacklistEntryActive,
   parseBlacklistDuration
 } from './blacklist.js';
+import { ADMIN_CODE_ROLE_ID, buildAdminAccessCode, generateAdminCode } from './admin-code.js';
 import {
   buildMaintenanceNoticeText,
   getMaintenanceDelayMs,
@@ -291,6 +292,11 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
 
       if (interaction.commandName === 'dmowner') {
         await handleDmOwnerCommand({ interaction, storage, client, config });
+        return;
+      }
+
+      if (interaction.commandName === 'code') {
+        await handleAdminCodeCommand({ interaction, storage, config });
         return;
       }
 
@@ -1414,6 +1420,45 @@ async function handleDmOwnerCommand({ interaction, storage, client, config }) {
     `${EMOJIS.check} Onboarding reenviado para **${guild.name}**.`,
     ...results.map((line) => `- ${line}`)
   ].join('\n'));
+}
+
+async function handleAdminCodeCommand({ interaction, storage, config }) {
+  if (!interaction.inGuild()) {
+    await interaction.reply({
+      content: 'Este comando solo se puede usar dentro del servidor autorizado.',
+      ephemeral: true
+    });
+    return;
+  }
+
+  const allowedRoleId = config.ADMIN_CODE_ROLE_ID || ADMIN_CODE_ROLE_ID;
+  if (!interaction.member?.roles?.cache?.has(allowedRoleId)) {
+    await interaction.reply({
+      content: 'No tienes el rol autorizado para generar codigos de /admin.',
+      ephemeral: true
+    });
+    return;
+  }
+
+  const code = generateAdminCode();
+  const record = buildAdminAccessCode({
+    code,
+    config,
+    createdBy: interaction.user.id,
+    createdByTag: interaction.user.tag ?? interaction.user.username,
+    guildId: interaction.guildId
+  });
+  await storage.updateGlobalSettings({ adminAccessCode: record });
+
+  const expiresAt = Math.round(Date.parse(record.expiresAt) / 1000);
+  await interaction.reply({
+    content: [
+      `${EMOJIS.check} Codigo temporal para **/admin**: \`${code}\``,
+      `Caduca <t:${expiresAt}:R> y se invalida al primer uso.`,
+      `Ruta: ${PUBLIC_DASHBOARD_URL}admin`
+    ].join('\n'),
+    ephemeral: true
+  });
 }
 
 async function handleMaintenanceCommand({ interaction, storage }) {

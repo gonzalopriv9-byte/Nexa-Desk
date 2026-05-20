@@ -5,6 +5,7 @@ import cookieParser from 'cookie-parser';
 import crypto from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { verifyAdminAccessCode } from './admin-code.js';
 import { GroqClient } from './ai/groq-client.js';
 import { GLOBAL_BLACKLIST_ADMIN_USER_ID, buildGlobalBanCode, isBlacklistEntryActive, parseBlacklistDuration } from './blacklist.js';
 import { normalizeTotpSecret, verifyTotpCode } from './docs-auth.js';
@@ -226,11 +227,6 @@ export function createServer({ config, storage, bot, events }) {
 
   app.get('/admin', asyncHandler(async (req, res) => {
     setDocsSecurityHeaders(res);
-    if (!normalizeTotpSecret(config.DOCS_TOTP_SECRET)) {
-      res.status(503).type('html').send(renderAdminDisabled(config));
-      return;
-    }
-
     const adminSession = getAdminSession(req);
     if (!adminSession) {
       res.type('html').send(renderAdminGate({ config }));
@@ -244,7 +240,7 @@ export function createServer({ config, storage, bot, events }) {
     }));
   }));
 
-  app.post('/admin', (req, res) => {
+  app.post('/admin', asyncHandler(async (req, res) => {
     setDocsSecurityHeaders(res);
     const ip = getRequestIp(req);
     if (isDocsRateLimited(ip)) {
@@ -255,17 +251,13 @@ export function createServer({ config, storage, bot, events }) {
       return;
     }
 
-    const secret = normalizeTotpSecret(config.DOCS_TOTP_SECRET);
-    if (!secret) {
-      res.status(503).type('html').send(renderAdminDisabled(config));
-      return;
-    }
-
-    if (!verifyTotpCode({ code: req.body.code, secret })) {
+    const settings = await storage.getGlobalSettings();
+    const record = settings?.adminAccessCode;
+    if (!verifyAdminAccessCode({ record, code: req.body.code, config })) {
       recordDocsFailure(ip);
       res.status(401).type('html').send(renderAdminGate({
         config,
-        error: 'Codigo dinamico incorrecto o caducado.'
+        error: 'Codigo incorrecto, caducado o ya utilizado. Genera otro con /code en Discord.'
       }));
       return;
     }
@@ -273,8 +265,17 @@ export function createServer({ config, storage, bot, events }) {
     clearDocsFailures(ip);
     const now = Date.now();
     const maxAge = config.DOCS_SESSION_MINUTES * 60 * 1000;
+    await storage.updateGlobalSettings({
+      adminAccessCode: {
+        ...record,
+        usedAt: new Date(now).toISOString(),
+        usedByIp: ip
+      }
+    });
     res.cookie('nexadesk_admin', signSession(config, {
       scope: 'admin',
+      authMethod: 'discord-rotating-code',
+      issuedBy: record.createdBy,
       nonce: crypto.randomBytes(12).toString('hex'),
       iat: now,
       exp: now + maxAge
@@ -286,7 +287,7 @@ export function createServer({ config, storage, bot, events }) {
       maxAge
     });
     res.redirect('/admin');
-  });
+  }));
 
   app.get('/admin/api/snapshot', requireAdminSession, asyncHandler(async (_req, res) => {
     res.json(await buildAdminSnapshot({ storage, bot }));
@@ -1078,7 +1079,7 @@ async function buildDashboardAssistantReply({ config, message, guild, stats, act
         'En Paneles se publica el embed, boton o menu en un canal de Discord; los botones tambien pueden abrir tickets de voz Pro.',
         'En Crecimiento se gestionan valoraciones post-ticket, reviews publicas, canal de reviews y Churn Radar.',
         'En Premium se gestionan Voz Pro, IA prioritaria, transcripciones inteligentes, Security Plus, branding propio, informes semanales, Growth Engine y conversion insights por servidor.',
-        'El modo mantenimiento se controla por slash command owner-only /mantenimiento o desde el panel oculto /admin; no hay boton publico en dashboard.',
+        'El modo mantenimiento se controla por slash command owner-only /mantenimiento o desde el panel oculto /admin; /admin se abre con codigo temporal emitido por /code a roles autorizados.',
         'Security Guard incluye anti-flood, anti-links IA, XN Protect Automod, anti-bots Top.gg, anti-alts y anti-nuke.',
         'En Tickets se ven tickets y transcripciones guardadas.',
         'Si el usuario pide que tu metas algo, explica que puedes rellenar campos con botones de accion, pero el usuario debe revisar y guardar/publicar.',
@@ -1409,10 +1410,10 @@ function renderAdminDisabled(config) {
         <img src="/assets/nexadesk-logo.svg" alt="NexaDesk" class="gate-logo">
         <p class="kicker">NexaDesk command room</p>
         <h1>Admin aun no esta configurado.</h1>
-        <p>Define <code>DOCS_TOTP_SECRET</code> para activar el panel oculto con el mismo codigo de Google Authenticator que protege la vault.</p>
+        <p>Usa <code>/code</code> en Discord con el rol autorizado para generar un codigo temporal de acceso.</p>
         <div class="notice">
           <strong>Ruta oculta</strong>
-          <span>El panel vive en <code>/admin</code>, no aparece en la dashboard principal y sus APIs requieren sesion TOTP firmada.</span>
+          <span>El panel vive en <code>/admin</code>, no aparece en la dashboard principal y sus APIs requieren sesion firmada.</span>
         </div>
       </main>
     `
@@ -1426,19 +1427,19 @@ function renderAdminGate({ config, error = '' }) {
       <main class="gate">
         <img src="/assets/nexadesk-logo.svg" alt="NexaDesk" class="gate-logo">
         <p class="kicker">Panel oculto</p>
-        <h1>Introduce el codigo Dinamico</h1>
-        <p>Usa el mismo codigo de Google Authenticator que la vault. Esta ruta no esta enlazada desde la dashboard y la sesion caduca en ${escapeHtml(String(config.DOCS_SESSION_MINUTES))} minutos.</p>
+        <h1>Introduce el codigo de rotacion</h1>
+        <p>Genera un codigo temporal con <code>/code</code> en Discord. Solo los usuarios con el rol autorizado pueden emitirlo. Esta ruta no esta enlazada desde la dashboard y la sesion caduca en ${escapeHtml(String(config.DOCS_SESSION_MINUTES))} minutos.</p>
         ${error ? `<div class="error">${escapeHtml(error)}</div>` : ''}
         <form method="post" action="/admin" class="totp-form" autocomplete="off">
           <label>
-            Codigo dinamico
+            Codigo de rotacion
             <input name="code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" minlength="6" autocomplete="one-time-code" autofocus required>
           </label>
           <button type="submit">Entrar al admin</button>
         </form>
         <div class="notice">
           <strong>Sin acceso publico</strong>
-          <span>Este panel usa cookies separadas, noindex, no-cache y endpoints internos bajo <code>/admin/api</code>.</span>
+          <span>El codigo caduca en pocos minutos, se guarda hasheado, se invalida al primer uso y protege endpoints internos bajo <code>/admin/api</code>.</span>
         </div>
       </main>
     `
@@ -1507,7 +1508,7 @@ function renderAdminPanel({ config, session, snapshot }) {
             <div class="admin-topline">
               <span class="admin-pill" id="adminLiveState">Live conectado</span>
               <span class="admin-pill">Ruta no enlazada</span>
-              <span class="admin-pill">TOTP: ${escapeHtml(config.DOCS_TOTP_ISSUER)}</span>
+              <span class="admin-pill">Codigo /code</span>
             </div>
           </div>
           <aside>
@@ -1777,8 +1778,8 @@ function buildDocsSections(config) {
       summary: 'Vision global de como esta dividido NexaDesk y que piezas no deben filtrarse.',
       blocks: [
         { type: 'list', items: [
-          'Render sirve la dashboard publica con RUN_BOT=false y usa OAuth Discord para usuarios normales.',
-          'La Raspberry Pi mantiene vivo el worker del bot con RUN_BOT=true y systemd.',
+          'Render sirve la dashboard publica y puede actuar como standby HA con RUN_BOT=true + BOT_HA_ENABLED=true.',
+          'La Raspberry Pi mantiene el liderazgo principal del bot con BOT_INSTANCE_ID=pi-main.',
           'Supabase guarda configuracion, paneles, componentes, tickets, transcripciones, feedback de tickets y blacklist interna.',
           'Quality Radar guarda senales en ai_quality_signals cuando el usuario se queja de que NexaDesk/IA funciona mal, se equivoca, repite, no ve imagenes, falla en voz o genera enfado.',
           'Groq procesa soporte IA, vision, STT y parte de TTS; Akiomae queda como fallback final.',
@@ -1790,7 +1791,7 @@ function buildDocsSections(config) {
           'Smart Discovery recorre todos los canales de cada servidor instalado, normaliza tipografias raras y detecta anuncios, normas, FAQ, soporte y categorias candidatas.',
           'El canal de anuncios detectado es destino de broadcast: todo mensaje publicado en ANNOUNCEMENT_SOURCE_CHANNEL_ID dentro de ANNOUNCEMENT_SOURCE_GUILD_ID se replica ahi.',
           '/docs es una zona oculta: no aparece en la UI, requiere TOTP y no debe contener secretos en claro.',
-          '/admin es el command room oculto: comparte TOTP con docs, usa cookie separada y permite ver datos globales live y activar/desactivar mantenimiento.'
+          `/admin es el command room oculto: se entra con codigo temporal generado por /code, limitado al rol ${config.ADMIN_CODE_ROLE_ID}, usa cookie separada y permite ver datos globales live y activar/desactivar mantenimiento.`
         ] }
       ]
     },
@@ -1814,8 +1815,8 @@ function buildDocsSections(config) {
       summary: 'Donde corre cada parte y como recuperarla si se cae.',
       blocks: [
         { type: 'table', headers: ['Pieza', 'Ubicacion', 'Notas'], rows: [
-          ['Dashboard web', 'Render Web Service', 'RUN_BOT=false; necesita token para roles/canales/paneles via REST.'],
-          ['Bot worker', 'Raspberry Pi pi@192.168.1.52 /home/pi/nexadesk', 'Servicio systemd nexadesk; health local en puerto 3010. Password no documentada aqui.'],
+          ['Dashboard web + standby', 'Render Web Service', 'Puede correr RUN_BOT=true con BOT_HA_ENABLED=true como backup del worker.'],
+          ['Bot worker principal', 'Raspberry Pi /home/pi/nexadesk', 'PM2 NexaDesk con BOT_INSTANCE_ID=pi-main; health local en puerto 3010.'],
           ['Repositorio', 'github.com/gonzalopriv9-byte/Nexa-Desk', 'main despliega Render si auto-deploy esta activo.'],
           ['Dominio dashboard', 'https://nexa-desk.onrender.com/', 'OAuth redirect debe apuntar a /auth/discord/callback.']
         ] },
@@ -1945,7 +1946,7 @@ function buildDocsSections(config) {
         { type: 'table', headers: ['Incidente', 'Accion inmediata', 'Despues'], rows: [
           ['Token Discord reseteado', 'Actualizar DISCORD_TOKEN en Pi y Render; reiniciar nexadesk.', 'Revisar logs de reconnect y evitar loops.'],
           ['Bot offline', 'systemctl restart nexadesk; revisar journalctl.', 'Verificar intents, token y conectividad.'],
-          ['Render dashboard falla', 'Revisar env vars y logs de Render.', 'Confirmar RUN_BOT=false y token valido.'],
+          ['Render dashboard falla', 'Revisar env vars y logs de Render.', 'Confirmar token, Supabase y estado del lease HA si RUN_BOT=true.'],
           ['Supabase missing column/table', 'Ejecutar supabase/schema.sql actualizado.', 'Verificar tablas y RLS si aplica.'],
           ['Groq sin creditos', 'Confirmar GROQ_FALLBACK_API_KEYS y AKIOMAE_API_KEY.', 'Reducir modelo o limits si hay costes.'],
           ['Leak de secreto', 'Rotar secreto inmediatamente.', 'Actualizar Pi, Render y revocar claves antiguas.']
