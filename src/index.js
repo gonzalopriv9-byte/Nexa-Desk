@@ -1,6 +1,7 @@
 import { config } from './config.js';
 import { createStorage } from './storage.js';
 import { AppEvents } from './events.js';
+import os from 'node:os';
 import { AkiomaeClient } from './ai/akiomae-client.js';
 import { FallbackAiClient, createAiProvider } from './ai/fallback-ai-client.js';
 import { GroqClient } from './ai/groq-client.js';
@@ -37,7 +38,7 @@ const supportAgent = new SupportAgent({
 });
 
 const bot = createBot({ config, storage, supportAgent, voiceManager });
-const botActions = config.RUN_BOT
+const botActions = config.RUN_BOT && !config.BOT_HA_ENABLED
   ? {
       createTicketCategory: (input) => createTicketCategory(bot, storage, input),
       createTicketPanel: (input) => createTicketPanel(bot, storage, input),
@@ -59,7 +60,11 @@ app.listen(config.PORT, () => {
   console.log(`NexaDesk dashboard listening on http://localhost:${config.PORT}`);
 });
 
-if (config.RUN_BOT) {
+if (config.RUN_BOT && config.BOT_HA_ENABLED) {
+  startHighAvailabilityBot({ bot, storage, config }).catch((error) => {
+    console.error('NexaDesk HA startup failed. Dashboard remains online.', error);
+  });
+} else if (config.RUN_BOT) {
   try {
     await bot.login(config.DISCORD_TOKEN);
   } catch (error) {
@@ -149,4 +154,153 @@ function parseFallbackKeys(value) {
 
 function hasGroqProvider() {
   return Boolean(config.GROQ_API_KEY || parseFallbackKeys(config.GROQ_FALLBACK_API_KEYS).length);
+}
+
+async function startHighAvailabilityBot({ bot, storage, config }) {
+  const instanceId = config.BOT_INSTANCE_ID?.trim() || `${os.hostname()}-${process.pid}`;
+  let loggedIn = false;
+  let loginPromise = null;
+  let renewTimer = null;
+  let pollTimer = null;
+  let lastStandbyLogAt = 0;
+
+  async function readLease() {
+    const settings = await storage.getGlobalSettings();
+    const lease = settings?.botLease && typeof settings.botLease === 'object' ? settings.botLease : {};
+    const expiresAt = Date.parse(lease.expiresAt ?? '');
+    return {
+      ownerId: lease.ownerId ? String(lease.ownerId) : '',
+      updatedAt: lease.updatedAt ?? null,
+      expiresAt: Number.isFinite(expiresAt) ? expiresAt : 0,
+      raw: lease
+    };
+  }
+
+  async function writeLease(previous = {}) {
+    const now = Date.now();
+    return storage.updateGlobalSettings({
+      botLease: {
+        ...previous,
+        ownerId: instanceId,
+        hostname: os.hostname(),
+        pid: process.pid,
+        updatedAt: new Date(now).toISOString(),
+        expiresAt: new Date(now + config.BOT_LEASE_TTL_MS).toISOString()
+      }
+    });
+  }
+
+  async function claimLease(previous = {}) {
+    await writeLease(previous);
+    const confirmed = await readLease();
+    return confirmed.ownerId === instanceId ? confirmed : null;
+  }
+
+  async function ensureLoggedIn() {
+    if (loggedIn || bot.isReady?.()) return;
+    if (!loginPromise) {
+      loginPromise = bot.login(config.DISCORD_TOKEN)
+        .then(() => {
+          loggedIn = true;
+          console.log(`NexaDesk HA leader active on ${instanceId}.`);
+        })
+        .finally(() => {
+          loginPromise = null;
+        });
+    }
+    await loginPromise;
+  }
+
+  async function releaseLocalBot(reason) {
+    if (!loggedIn && !bot.isReady?.()) return;
+    console.warn(`NexaDesk HA instance ${instanceId} lost leadership: ${reason}. Disconnecting bot gateway.`);
+    loggedIn = false;
+    await bot.destroy();
+  }
+
+  async function renewLeadership() {
+    const lease = await readLease();
+    if (lease.ownerId && lease.ownerId !== instanceId && lease.expiresAt > Date.now()) {
+      await releaseLocalBot(`lease owned by ${lease.ownerId}`);
+      return;
+    }
+    const confirmed = await claimLease(lease.raw);
+    if (!confirmed) {
+      await releaseLocalBot(`lease claim was taken by another instance`);
+      return;
+    }
+    try {
+      await ensureLoggedIn();
+    } catch (error) {
+      await releaseLeaseAfterFailedLogin(lease.raw, error);
+      throw error;
+    }
+  }
+
+  async function tryBecomeLeader() {
+    const lease = await readLease();
+    const expired = !lease.ownerId || lease.expiresAt <= Date.now();
+    const ownsLease = lease.ownerId === instanceId;
+    if (ownsLease || expired) {
+      const confirmed = await claimLease(lease.raw);
+      if (!confirmed) return;
+      try {
+        await ensureLoggedIn();
+      } catch (error) {
+        await releaseLeaseAfterFailedLogin(lease.raw, error);
+        throw error;
+      }
+      if (!renewTimer) {
+        renewTimer = setInterval(() => {
+          renewLeadership().catch((error) => console.error('NexaDesk HA lease renewal failed:', error));
+        }, config.BOT_LEASE_RENEW_MS);
+        renewTimer.unref?.();
+      }
+      return;
+    }
+
+    if (Date.now() - lastStandbyLogAt > 30000) {
+      console.log(`NexaDesk HA standby on ${instanceId}. Current leader: ${lease.ownerId}, expires ${new Date(lease.expiresAt).toISOString()}.`);
+      lastStandbyLogAt = Date.now();
+    }
+  }
+
+  async function releaseLeaseAfterFailedLogin(previous, error) {
+    await storage.updateGlobalSettings({
+      botLease: {
+        ...previous,
+        ownerId: '',
+        releasedBy: instanceId,
+        releasedAt: new Date().toISOString(),
+        releaseReason: `login_failed:${error?.message ?? 'unknown'}`,
+        expiresAt: new Date().toISOString()
+      }
+    }).catch(() => {});
+  }
+
+  await tryBecomeLeader();
+  pollTimer = setInterval(() => {
+    tryBecomeLeader().catch((error) => console.error('NexaDesk HA failover poll failed:', error));
+  }, config.BOT_FAILOVER_POLL_MS);
+  pollTimer.unref?.();
+
+  async function shutdown() {
+    if (renewTimer) clearInterval(renewTimer);
+    if (pollTimer) clearInterval(pollTimer);
+    const lease = await readLease().catch(() => null);
+    if (lease?.ownerId === instanceId) {
+      await storage.updateGlobalSettings({
+        botLease: {
+          ...lease.raw,
+          ownerId: '',
+          releasedBy: instanceId,
+          releasedAt: new Date().toISOString(),
+          expiresAt: new Date().toISOString()
+        }
+      }).catch(() => {});
+    }
+  }
+
+  process.once('SIGINT', () => { void shutdown().finally(() => process.exit(0)); });
+  process.once('SIGTERM', () => { void shutdown().finally(() => process.exit(0)); });
 }

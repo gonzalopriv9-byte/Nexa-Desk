@@ -83,6 +83,21 @@ RUN_BOT=false
 
 Render still needs `DISCORD_TOKEN` even with `RUN_BOT=false`, because the dashboard uses the bot token to read roles/channels and create categories or panels. If Discord resets the token, update it both on the Pi and in Render.
 
+## High availability worker
+
+NexaDesk can run a safe active/standby worker pair. Keep one instance on the Raspberry Pi and a second instance on a cloud VM with the same Discord/Supabase environment. Enable the lease so only one gateway session responds at a time:
+
+```text
+RUN_BOT=true
+BOT_HA_ENABLED=true
+BOT_INSTANCE_ID=pi-main
+BOT_LEASE_TTL_MS=12000
+BOT_LEASE_RENEW_MS=4000
+BOT_FAILOVER_POLL_MS=2500
+```
+
+Use a different `BOT_INSTANCE_ID` on the standby, for example `oci-standby`. The lease is stored in Supabase global settings. This avoids active-active duplicate Discord replies while allowing a standby worker to take over within seconds if the Pi loses power.
+
 ## Private docs vault
 
 Open the private internal docs manually at:
