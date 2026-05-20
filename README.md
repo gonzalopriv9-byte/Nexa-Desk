@@ -98,6 +98,8 @@ BOT_FAILOVER_POLL_MS=2500
 
 Use a different `BOT_INSTANCE_ID` on the standby, for example `oci-standby`. The lease is stored in Supabase global settings. This avoids active-active duplicate Discord replies while allowing a standby worker to take over within seconds if the Pi loses power.
 
+Recommended free standby target: Oracle Cloud Always Free Ampere A1 VM. Install Node.js 22, clone this repo, copy the same production `.env`, change only `BOT_INSTANCE_ID=oci-standby`, keep `RUN_BOT=true` and `BOT_HA_ENABLED=true`, then run it with PM2. Render should remain dashboard-only with `RUN_BOT=false`.
+
 ## Private docs vault
 
 Open the private internal docs manually at:
