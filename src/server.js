@@ -3117,6 +3117,31 @@ function renderLogin(config) {
     * { box-sizing: border-box; }
     body { min-height:100vh; margin:0; font-family:"Segoe UI",ui-sans-serif,system-ui,sans-serif; background:radial-gradient(circle at 16% 0%, rgba(255,255,255,.13), transparent 28%), repeating-linear-gradient(90deg, rgba(255,255,255,.04) 0 1px, transparent 1px 72px), repeating-linear-gradient(0deg, rgba(255,255,255,.025) 0 1px, transparent 1px 72px), var(--bg); color:var(--text); overflow-x:hidden; }
     body::before { content:""; position:fixed; inset:0; pointer-events:none; background:linear-gradient(180deg, transparent, rgba(5,8,10,.78)); }
+    .access-gate { position:fixed; inset:0; z-index:50; display:grid; place-items:center; overflow:hidden; background:#030303; transition:opacity .8s ease, visibility .8s ease; }
+    .access-gate.is-hidden { opacity:0; visibility:hidden; pointer-events:none; }
+    .gate-rain,.gate-rain::before,.gate-rain::after { content:""; position:absolute; inset:-45% 0; pointer-events:none; background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='1440' height='720' viewBox='0 0 1440 720'%3E%3Cg stroke='%23fff' stroke-linecap='round'%3E%3Cline x1='46' y1='28' x2='46' y2='86' opacity='.46'/%3E%3Cline x1='128' y1='202' x2='128' y2='264' opacity='.28'/%3E%3Cline x1='219' y1='92' x2='219' y2='172' opacity='.56'/%3E%3Cline x1='314' y1='318' x2='314' y2='366' opacity='.34'/%3E%3Cline x1='428' y1='10' x2='428' y2='78' opacity='.5'/%3E%3Cline x1='536' y1='154' x2='536' y2='222' opacity='.36'/%3E%3Cline x1='672' y1='424' x2='672' y2='482' opacity='.42'/%3E%3Cline x1='790' y1='62' x2='790' y2='146' opacity='.58'/%3E%3Cline x1='938' y1='246' x2='938' y2='306' opacity='.32'/%3E%3Cline x1='1088' y1='132' x2='1088' y2='212' opacity='.5'/%3E%3Cline x1='1226' y1='462' x2='1226' y2='516' opacity='.34'/%3E%3Cline x1='1368' y1='42' x2='1368' y2='124' opacity='.54'/%3E%3Ccircle cx='74' cy='612' r='1' opacity='.6'/%3E%3Ccircle cx='884' cy='584' r='1' opacity='.54'/%3E%3Ccircle cx='1194' cy='62' r='1' opacity='.5'/%3E%3C/g%3E%3C/svg%3E"); background-size:1440px 720px; animation:gateRain 2.8s linear infinite; opacity:.8; }
+    .gate-rain::before { inset:-55% -8% -35% 4%; animation-duration:2.1s; opacity:.48; transform:scaleX(-1); }
+    .gate-rain::after { inset:-65% 2% -30% -10%; animation-duration:3.4s; opacity:.36; transform:scale(1.12); }
+    .gate-grid { position:absolute; inset:0; background:radial-gradient(circle at 50% 46%, rgba(255,255,255,.12), transparent 24%), repeating-linear-gradient(90deg, rgba(255,255,255,.045) 0 1px, transparent 1px 96px); mask-image:linear-gradient(180deg, transparent, #000 18%, #000 74%, transparent); opacity:.34; }
+    .gate-shell { position:relative; z-index:2; width:min(410px, calc(100% - 34px)); min-height:250px; border:1px solid rgba(255,255,255,.13); border-radius:12px; background:linear-gradient(180deg, rgba(12,12,12,.94), rgba(2,2,2,.92)); box-shadow:0 30px 120px rgba(0,0,0,.72), 0 0 80px rgba(255,255,255,.06); display:grid; place-items:center; padding:28px; overflow:hidden; }
+    .gate-shell::before { content:""; position:absolute; inset:-1px; background:linear-gradient(115deg, transparent 0 28%, rgba(255,255,255,.24) 48%, transparent 68%); transform:translateX(-125%); animation:gateScan 2.7s ease-in-out .45s both; }
+    .gate-verify,.gate-brand { position:absolute; inset:26px; display:grid; place-items:center; text-align:center; transition:opacity .45s ease, transform .55s cubic-bezier(.2,.8,.2,1), filter .55s ease; }
+    .gate-brand { opacity:0; transform:translateY(18px) scale(.96); filter:blur(12px); }
+    .access-gate.is-brand .gate-verify { opacity:0; transform:translateY(-18px) scale(.96); filter:blur(10px); }
+    .access-gate.is-brand .gate-brand { opacity:1; transform:translateY(0) scale(1); filter:blur(0); }
+    .gate-orbit { width:62px; height:62px; border-radius:50%; border:1px solid rgba(255,255,255,.18); display:grid; place-items:center; margin:0 auto 20px; position:relative; box-shadow:0 0 42px rgba(255,255,255,.12); }
+    .gate-orbit::before { content:""; position:absolute; inset:-7px; border-radius:inherit; border:1px solid rgba(255,255,255,.1); border-top-color:#fff; animation:spin 1s linear infinite; }
+    .gate-check { width:24px; height:24px; border-radius:50%; border:1px solid rgba(255,255,255,.28); display:grid; place-items:center; color:#030303; background:#fff; transform:scale(.7); opacity:0; transition:opacity .25s ease, transform .25s ease; font-weight:950; }
+    .access-gate.is-complete .gate-orbit::before { animation:none; border-color:rgba(255,255,255,.18); }
+    .access-gate.is-complete .gate-check { opacity:1; transform:scale(1); }
+    .gate-title { margin:0; font-size:18px; font-weight:950; letter-spacing:-.03em; }
+    .gate-copy { margin:8px auto 0; max-width:310px; font-size:13px; line-height:1.55; color:#a9a9a9; }
+    .gate-proof { width:100%; border:1px solid rgba(255,255,255,.11); border-radius:8px; margin-top:18px; padding:10px 12px; display:flex; justify-content:space-between; gap:12px; color:#cfcfcf; background:rgba(255,255,255,.035); font-size:12px; }
+    .gate-brand img { width:72px; height:72px; border-radius:16px; border:1px solid rgba(255,255,255,.24); box-shadow:0 0 58px rgba(255,255,255,.18); margin-bottom:20px; }
+    .gate-brand strong { display:block; font-size:22px; letter-spacing:.18em; margin-bottom:8px; }
+    .gate-progress { position:absolute; left:24px; right:24px; bottom:20px; height:2px; background:rgba(255,255,255,.12); overflow:hidden; border-radius:999px; }
+    .gate-progress span { display:block; width:100%; height:100%; background:#fff; transform-origin:left; animation:gateProgress 4.9s cubic-bezier(.2,.8,.2,1) both; }
+    .gate-skip { position:absolute; z-index:3; right:18px; bottom:18px; border:1px solid rgba(255,255,255,.16); color:#fff; background:rgba(255,255,255,.045); border-radius:999px; padding:9px 12px; font-weight:800; cursor:pointer; }
     main { position:relative; z-index:1; width:min(1180px, calc(100% - 32px)); min-height:100vh; margin:0 auto; display:grid; grid-template-columns:1.25fr .75fr; gap:32px; align-items:center; padding:44px 0; }
     .intro { animation:rise .7s ease both; }
     .brand { display:flex; gap:14px; align-items:center; margin-bottom:32px; }
@@ -3137,6 +3162,7 @@ function renderLogin(config) {
     .brand-banner-frame { margin-bottom:18px; }
     .status-line { display:flex; justify-content:space-between; gap:12px; color:var(--muted); border-bottom:1px solid rgba(255,255,255,.08); padding:11px 0; }
     .status-line strong { color:var(--text); }
+    .dash-emoji { width:18px; height:18px; object-fit:contain; margin-right:7px; vertical-align:-4px; }
     a.login-button { display:block; text-align:center; width:100%; border-radius:6px; background:#fff; color:#050505; padding:13px; font-weight:900; text-decoration:none; margin-top:22px; }
     .legal-links { display:flex; flex-wrap:wrap; gap:10px; margin-top:16px; font-size:13px; }
     .legal-links a { color:#fff; text-decoration:none; border:1px solid rgba(255,255,255,.18); border-radius:999px; padding:8px 10px; background:rgba(255,255,255,.045); }
@@ -3150,8 +3176,11 @@ function renderLogin(config) {
     @keyframes bannerIn { from { opacity:0; transform:translateY(18px) scale(.985); filter:blur(10px); } to { opacity:1; transform:translateY(0) scale(1); filter:blur(0); } }
     @keyframes bannerScan { 0%, 12% { transform:translateX(0) skewX(-18deg); opacity:0; } 30% { opacity:.85; } 58%, 100% { transform:translateX(430%) skewX(-18deg); opacity:0; } }
     @keyframes bannerGlow { 0%,100% { box-shadow:0 22px 70px rgba(0,0,0,.42), 0 0 0 1px rgba(255,255,255,.03) inset; } 50% { box-shadow:0 22px 90px rgba(255,255,255,.08), 0 0 0 1px rgba(255,255,255,.09) inset; } }
+    @keyframes gateRain { from { transform:translate3d(0,-240px,0); } to { transform:translate3d(0,110vh,0); } }
+    @keyframes gateScan { 0%,22% { transform:translateX(-125%); opacity:0; } 44% { opacity:.75; } 100% { transform:translateX(125%); opacity:0; } }
+    @keyframes gateProgress { from { transform:scaleX(0); } to { transform:scaleX(1); } }
     @keyframes spin { to { transform:rotate(360deg); } }
-    @media (prefers-reduced-motion:reduce) { .banner-frame,.banner-frame::before,.banner-frame img { animation:none; transition:none; } }
+    @media (prefers-reduced-motion:reduce) { .banner-frame,.banner-frame::before,.banner-frame img,.gate-rain,.gate-rain::before,.gate-rain::after,.gate-shell::before,.gate-orbit::before,.gate-progress span { animation:none; transition:none; } .access-gate { display:none; } }
     @media (max-width:860px) { main { grid-template-columns:1fr; align-items:start; padding-top:28px; } .feature-row { grid-template-columns:1fr; } }
     @media (max-width:520px) {
       main { width:100%; min-height:100dvh; padding:18px 12px 28px; gap:16px; }
@@ -3169,6 +3198,29 @@ function renderLogin(config) {
   </style>
 </head>
 <body>
+  <section class="access-gate" id="accessGate" aria-label="Entrada segura NexaDesk">
+    <div class="gate-rain"></div>
+    <div class="gate-grid"></div>
+    <div class="gate-shell">
+      <div class="gate-verify">
+        <div>
+          <div class="gate-orbit"><span class="gate-check">✓</span></div>
+          <h2 class="gate-title" id="gateTitle">Verificando acceso seguro</h2>
+          <p class="gate-copy" id="gateCopy">Comprobando sesion, navegador y conexion con NexaDesk.</p>
+          <div class="gate-proof"><span>NexaDesk Shield</span><strong id="gateStatus">Analizando...</strong></div>
+        </div>
+      </div>
+      <div class="gate-brand">
+        <div>
+          <img src="/assets/nexadesk-logo.svg" alt="NexaDesk">
+          <strong>NEXADESK</strong>
+          <p class="gate-copy">Entrando al centro de mando de soporte.</p>
+        </div>
+      </div>
+      <div class="gate-progress"><span></span></div>
+    </div>
+    <button class="gate-skip" type="button" id="gateSkip">Saltar</button>
+  </section>
   <div class="loading" id="loading">
     <div class="loader">
       <div class="pulse"></div>
@@ -3207,6 +3259,27 @@ function renderLogin(config) {
       'Afinando el contexto de NexaDesk',
       'Conectando con Discord de forma segura'
     ];
+    const gate = document.querySelector('#accessGate');
+    const gateTitle = document.querySelector('#gateTitle');
+    const gateCopy = document.querySelector('#gateCopy');
+    const gateStatus = document.querySelector('#gateStatus');
+    const finishGate = () => {
+      gate?.classList.add('is-hidden');
+      window.setTimeout(() => gate?.remove(), 900);
+    };
+    if (gate && window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      finishGate();
+    } else if (gate) {
+      window.setTimeout(() => {
+        gate.classList.add('is-complete');
+        if (gateTitle) gateTitle.textContent = 'Verificacion completada';
+        if (gateCopy) gateCopy.textContent = 'Acceso preparado. Cargando interfaz de NexaDesk.';
+        if (gateStatus) gateStatus.textContent = 'Permitido';
+      }, 2100);
+      window.setTimeout(() => gate.classList.add('is-brand'), 3050);
+      window.setTimeout(finishGate, 5100);
+      document.querySelector('#gateSkip')?.addEventListener('click', finishGate);
+    }
     let phraseIndex = 0;
     const phrase = document.querySelector('#loadingPhrase');
     setInterval(() => {
