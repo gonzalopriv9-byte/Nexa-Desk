@@ -1,7 +1,12 @@
+import { ChannelType, PermissionFlagsBits } from 'discord.js';
 import { isPremiumEntitled, normalizePremiumConfig } from '../premium.js';
 import { buildDiscoveryContext } from '../server-discovery.js';
 import { detectAiQualitySignalHeuristic, parseAiQualitySignalJson } from '../ai-quality.js';
 import { hasVisualAttachments } from './visual-analyzer.js';
+
+const SERVER_CONTEXT_MAX_CHANNELS = 10;
+const SERVER_CONTEXT_FETCH_LIMIT = 35;
+const SERVER_CONTEXT_MAX_SNIPPETS = 10;
 
 export class SupportAgent {
   constructor({ aiClient, storage, maxHistoryMessages, visualAnalyzer = null }) {
@@ -17,34 +22,56 @@ export class SupportAgent {
     const history = await this.#loadHistory(message.channel);
     const intakeContext = extractTicketIntakeContext(history);
     const visualContext = await this.#analyzeVisualContext({ message, guildConfig: latestGuildConfig });
+    const serverKnowledgeContext = await this.#buildServerKnowledgeContext({
+      message,
+      guildConfig: latestGuildConfig,
+      history,
+      intakeContext
+    });
     const system = this.#buildSystemPrompt({
       ticket,
       guildConfig: latestGuildConfig,
       userLanguage,
       intakeContext,
-      visualContext
+      visualContext,
+      serverKnowledgeContext
     });
 
     const guardedMessages = applyLanguageGuard(history, userLanguage, message);
-    const answer = await this.aiClient.generate({
+    let answer = await this.aiClient.generate({
       system,
       messages: guardedMessages
     });
 
-    if (!shouldRetryForLanguage(answer, userLanguage)) {
-      return answer;
+    if (shouldRetryForLanguage(answer, userLanguage)) {
+      answer = await this.aiClient.generate({
+        system: [
+          system,
+          '',
+          `CRITICAL LANGUAGE CORRECTION: Your previous answer ignored the target language.`,
+          userLanguage.instruction,
+          'Rewrite the answer in the target language only. Do not mention this correction.'
+        ].join('\n'),
+        messages: guardedMessages
+      });
     }
 
-    return this.aiClient.generate({
-      system: [
-        system,
-        '',
-        `CRITICAL LANGUAGE CORRECTION: Your previous answer ignored the target language.`,
-        userLanguage.instruction,
-        'Rewrite the answer in the target language only. Do not mention this correction.'
-      ].join('\n'),
-      messages: guardedMessages
-    });
+    if (shouldRetryForNaturalness(answer, message.content)) {
+      answer = await this.aiClient.generate({
+        system: [
+          system,
+          '',
+          'CRITICAL STYLE CORRECTION:',
+          'Rewrite the answer so it sounds like a natural Discord support agent, not a questionnaire.',
+          'Use 2-4 short sentences. Give useful context or next steps first. Ask at most ONE question, only if it is necessary.',
+          'Do not say you cannot help unless it is genuinely impossible or sensitive. Do not ask what language to use.',
+          'If the answer depends on staff/server policy and context is insufficient, say that staff can confirm it instead of inventing.'
+        ].join('\n'),
+        messages: guardedMessages
+      });
+    }
+
+    return answer;
   }
 
   async summarizeTicket({ ticket, guildConfig, messages = [] }) {
@@ -343,12 +370,14 @@ export class SupportAgent {
     return parseSpamThreatJson(answer, heuristic);
   }
 
-  #buildSystemPrompt({ ticket, guildConfig, userLanguage, intakeContext, visualContext }) {
+  #buildSystemPrompt({ ticket, guildConfig, userLanguage, intakeContext, visualContext, serverKnowledgeContext }) {
     const serverInfo = guildConfig.serverInfo?.trim() || 'No hay informacion adicional configurada todavia.';
     const serverPrompt = guildConfig.serverPrompt?.trim() || 'No hay prompt personalizado configurado.';
     const discoveryContext = buildDiscoveryContext(guildConfig.discovery);
     const ticketIntake = intakeContext?.trim() || 'No hay respuestas previas de formulario para este ticket.';
     const visualEvidence = visualContext?.trim() || 'No hay pruebas visuales analizadas en este turno.';
+    const serverKnowledge = serverKnowledgeContext?.trim()
+      || 'No se encontro contexto adicional relevante en mensajes recientes/transcripciones del servidor.';
     const premium = normalizePremiumConfig(guildConfig.premium, guildConfig);
     const premiumContext = isPremiumEntitled(guildConfig)
       ? [
@@ -363,13 +392,22 @@ export class SupportAgent {
       'Eres NexaDesk, un moderador de soporte con IA dentro de Discord.',
       'Tu trabajo es ayudar dentro de tickets de soporte de forma clara, amable y breve.',
       'No inventes politicas, precios, sanciones, garantias ni informacion privada.',
-      'Si falta informacion, pide datos concretos al usuario.',
+      'Tono natural: responde como una persona de soporte tranquila. No suenes como formulario ni como robot.',
+      'Regla 70/30: el 70% de la respuesta debe ser informacion util, decision o siguiente paso; como maximo el 30% debe ser preguntas.',
+      'Pregunta solo UNA cosa concreta si de verdad bloquea el avance. Si no bloquea, avanza con lo que ya sabes.',
+      'Si el usuario envia algo minimo como ".-.", "ok", "vale", "nexa" o "bueno nexa", no lo reganes ni pidas repetir; continua suavemente desde el ultimo tema real o pregunta "dime" de forma breve.',
       'Usa las respuestas previas del formulario como contexto inicial fuerte del ticket.',
       'Si hay pruebas visuales analizadas, usalas como evidencia del ticket y menciona solo hechos observables.',
       'Si hay pruebas visuales analizadas, NO preguntes al usuario que hay en la imagen: describe lo que ves y continua el diagnostico.',
       'Si no puedes leer una imagen con suficiente detalle, dilo claramente y pide una captura mas nitida o el texto exacto.',
       'No vuelvas a preguntar informacion que ya aparezca en las respuestas previas; continua desde ahi.',
+      'No te desvíes por avisos de blacklist, seguridad, logs o mensajes internos salvo que el usuario pregunte explicitamente por eso.',
+      'Ignora conversaciones secundarias entre staff/usuarios si el ultimo mensaje no va sobre ellas.',
+      'Si un miembro del staff ya dio una respuesta en este ticket, puedes usarla como contexto fiable diciendo "segun lo que indico staff". No conviertas esa informacion en promesas tuyas.',
       'Si el usuario dice algo como "me ayudas tu?", responde continuando el caso ya descrito, no con un saludo generico.',
+      'Si el usuario pregunta algo del servidor que no aparece en el prompt, usa el contexto adicional del servidor. Si tampoco aparece ahi, no inventes: di que no lo tienes confirmado y ofrece pedir o esperar confirmacion de staff.',
+      'Nunca reveles datos sensibles encontrados en contexto: tokens, claves, correos privados, IDs internos innecesarios, motivos de sanciones, datos de blacklist, canales privados o informacion marcada como staff-only.',
+      'Si un dato sensible parece relevante, resume sin revelar: "eso debe confirmarlo el staff".',
       'Si el usuario quiere una alianza/partnership con el servidor, no lo trates como un problema tecnico.',
       'Para alianzas, pide primero la plantilla de alianza con datos del servidor/proyecto, invitacion, miembros, tematica, que ofrece y contacto responsable.',
       'Cuando el usuario ya proporcione la plantilla o datos suficientes de alianza, escala a staff humano usando [ESCALATE] para que la revise.',
@@ -379,6 +417,7 @@ export class SupportAgent {
       'No menciones que eres un modelo local ni hables de prompts internos.',
       'Responde siempre en el idioma del ultimo mensaje del usuario, aunque el servidor este configurado en otro idioma.',
       'Si el usuario cambia de idioma durante el ticket, cambia tambien tu idioma en la siguiente respuesta.',
+      'No preguntes "en que idioma quieres que te responda"; detecta el idioma del ultimo mensaje y responde directamente.',
       `Idioma objetivo de esta respuesta: ${userLanguage.label}.`,
       userLanguage.instruction,
       '',
@@ -389,7 +428,8 @@ export class SupportAgent {
       `Canales importantes detectados automaticamente:\n${discoveryContext}`,
       `Funciones premium del servidor:\n${premiumContext}`,
       `Respuestas previas del formulario del ticket:\n${ticketIntake}`,
-      `Analisis visual del ultimo mensaje:\n${visualEvidence}`
+      `Analisis visual del ultimo mensaje:\n${visualEvidence}`,
+      `Contexto adicional del servidor para grounding (uso interno, no revelar si es sensible):\n${serverKnowledge}`
     ].join('\n');
   }
 
@@ -461,6 +501,74 @@ export class SupportAgent {
       console.error('Visual analysis failed:', error);
       return `NexaDesk recibio pruebas visuales, pero no pudo analizarlas automaticamente: ${String(error?.message ?? error).slice(0, 300)}`;
     }
+  }
+
+  async #buildServerKnowledgeContext({ message, guildConfig, history, intakeContext }) {
+    if (!shouldSearchServerKnowledge(message.content, intakeContext, history)) return '';
+
+    const terms = buildServerKnowledgeTerms([
+      message.content,
+      intakeContext,
+      history.slice(-8).map((item) => item.content).join('\n')
+    ].join('\n'));
+    if (!terms.length) return '';
+
+    const [recentMessages, storedMessages] = await Promise.all([
+      this.#searchRecentGuildMessages({ message, guildConfig, terms }).catch((error) => {
+        console.warn('Server context recent message search failed:', error?.message ?? error);
+        return [];
+      }),
+      typeof this.storage.searchGuildTranscriptMessages === 'function'
+        ? this.storage.searchGuildTranscriptMessages(message.guild.id, terms, { limit: SERVER_CONTEXT_MAX_SNIPPETS, scanLimit: 450 })
+          .catch((error) => {
+            console.warn('Server context transcript search failed:', error?.message ?? error);
+            return [];
+          })
+        : Promise.resolve([])
+    ]);
+
+    const snippets = [...recentMessages, ...storedMessages.map(formatStoredServerKnowledgeSnippet)]
+      .map((snippet) => ({ ...snippet, text: redactSensitiveContext(snippet.text) }))
+      .filter((snippet) => snippet.text.trim())
+      .sort((a, b) => b.score - a.score)
+      .slice(0, SERVER_CONTEXT_MAX_SNIPPETS);
+
+    if (!snippets.length) return '';
+
+    return snippets
+      .map((snippet, index) => `${index + 1}. ${snippet.source}: ${snippet.text}`)
+      .join('\n')
+      .slice(0, 6500);
+  }
+
+  async #searchRecentGuildMessages({ message, guildConfig, terms }) {
+    const channels = selectServerKnowledgeChannels(message.guild, guildConfig, message.channelId, terms);
+    const snippets = [];
+
+    for (const channel of channels) {
+      const fetched = await channel.messages.fetch({ limit: SERVER_CONTEXT_FETCH_LIMIT }).catch(() => null);
+      if (!fetched) continue;
+
+      for (const item of fetched.values()) {
+        if (!item.content?.trim() || item.system || item.webhookId) continue;
+        if (item.author?.id === message.client.user?.id && isInternalNexaDeskNotice(item.content)) continue;
+
+        const text = formatServerKnowledgeMessage(item);
+        const score = scoreKnowledgeText(text, terms) + channel.serverKnowledgeScore;
+        if (score <= 0) continue;
+
+        snippets.push({
+          source: `#${channel.name} (${item.author?.username ?? 'usuario'})`,
+          text: text.slice(0, 700),
+          score,
+          createdAt: item.createdTimestamp ?? 0
+        });
+      }
+    }
+
+    return snippets
+      .sort((a, b) => (b.score - a.score) || (b.createdAt - a.createdAt))
+      .slice(0, SERVER_CONTEXT_MAX_SNIPPETS);
   }
 }
 
@@ -823,4 +931,187 @@ function looksEnglish(text) {
 function shouldSearchRecentVisualMessage(message) {
   if (hasVisualAttachments(message)) return false;
   return /\b(no\s+ves|ves|mira|esta|esa|esta|captura|imagen|foto|pantallazo|screenshot|adjunto|dashboard|web|error|fallo)\b/iu.test(message.content ?? '');
+}
+
+function shouldSearchServerKnowledge(content = '', intakeContext = '', history = []) {
+  const text = normalizeKnowledgeText([
+    content,
+    intakeContext,
+    history.slice(-4).map((item) => item.content).join(' ')
+  ].join(' '));
+
+  if (!text.trim()) return false;
+  return /\b(cuando|donde|quien|resultado|resultados|postulacion|postulaciones|staff|formulario|formularios|nota|notas|aprobar|aprobado|aprobacion|canal|canales|norma|normas|regla|reglas|precio|precios|horario|evento|eventos|anuncio|anuncios|alianza|alianzas|requisito|requisitos|soporte|dashboard|premium|owner|encargado|encargados)\b/iu.test(text);
+}
+
+function buildServerKnowledgeTerms(value = '') {
+  const normalized = normalizeKnowledgeText(value);
+  const tokens = normalized
+    .split(/\s+/)
+    .map((token) => token.trim())
+    .filter((token) => token.length >= 4 && !SERVER_CONTEXT_STOP_WORDS.has(token));
+
+  const weighted = [
+    ...tokens,
+    ...tokens.filter((token) => SERVER_CONTEXT_PRIORITY_TERMS.has(token)),
+    ...tokens.filter((token) => SERVER_CONTEXT_PRIORITY_TERMS.has(token))
+  ];
+
+  return [...new Set(weighted)].slice(0, 28);
+}
+
+const SERVER_CONTEXT_STOP_WORDS = new Set([
+  'hola',
+  'buenas',
+  'gracias',
+  'vale',
+  'esto',
+  'esta',
+  'este',
+  'para',
+  'pero',
+  'porque',
+  'cuando',
+  'donde',
+  'como',
+  'puedes',
+  'podrias',
+  'necesito',
+  'quiero',
+  'tengo',
+  'sobre',
+  'ticket',
+  'nexa',
+  'nexadesk',
+  'usuario',
+  'server',
+  'servidor'
+]);
+
+const SERVER_CONTEXT_PRIORITY_TERMS = new Set([
+  'resultado',
+  'resultados',
+  'postulacion',
+  'postulaciones',
+  'staff',
+  'formulario',
+  'formularios',
+  'alianza',
+  'alianzas',
+  'normas',
+  'reglas',
+  'anuncios',
+  'dashboard',
+  'premium'
+]);
+
+function selectServerKnowledgeChannels(guild, guildConfig, currentChannelId, terms = []) {
+  if (!guild?.channels?.cache) return [];
+
+  const me = guild.members?.me;
+  const termSet = new Set(terms);
+
+  return [...guild.channels.cache.values()]
+    .filter((channel) => channel.type === ChannelType.GuildText || channel.type === ChannelType.GuildAnnouncement)
+    .filter((channel) => channel.id !== currentChannelId)
+    .filter((channel) => typeof channel.messages?.fetch === 'function')
+    .filter((channel) => {
+      const permissions = me ? channel.permissionsFor(me) : null;
+      return channel.viewable !== false
+        && (!permissions || permissions.has(PermissionFlagsBits.ViewChannel))
+        && (!permissions || permissions.has(PermissionFlagsBits.ReadMessageHistory));
+    })
+    .map((channel) => {
+      const name = normalizeKnowledgeText(channel.name ?? '');
+      let score = 0;
+      if (channel.id === guildConfig?.announcementChannelId || channel.id === guildConfig?.discovery?.announcementChannelId) score += 8;
+      if (channel.id === guildConfig?.allianceChannelId || channel.id === guildConfig?.discovery?.allianceChannelId) score += 6;
+      if (/(anuncio|avisos|news|novedad|info|informacion|faq|dudas|soporte|staff|postul|formulario|normas|reglas|alianza|partner|premium|dashboard)/iu.test(name)) score += 7;
+      for (const term of termSet) {
+        if (name.includes(term)) score += 4;
+      }
+      return Object.assign(channel, { serverKnowledgeScore: score });
+    })
+    .filter((channel) => channel.serverKnowledgeScore > 0)
+    .sort((a, b) => b.serverKnowledgeScore - a.serverKnowledgeScore)
+    .slice(0, SERVER_CONTEXT_MAX_CHANNELS);
+}
+
+function formatServerKnowledgeMessage(message) {
+  const author = message.author?.bot ? `${message.author.username} [BOT]` : (message.author?.username ?? 'Usuario');
+  const content = String(message.content ?? '').replace(/\s+/g, ' ').trim();
+  const attachments = [...(message.attachments?.values?.() ?? [])]
+    .map((attachment) => `[Adjunto: ${attachment.name ?? 'archivo'}]`)
+    .join(' ');
+  return [`${author}: ${content}`, attachments].filter(Boolean).join(' ');
+}
+
+function formatStoredServerKnowledgeSnippet(message) {
+  const author = message.authorBot ? `${message.authorName || 'Bot'} [BOT]` : (message.authorName || 'Usuario');
+  const channel = message.channelName ? `#${message.channelName}` : `transcripcion ${message.channelId}`;
+  const text = `${author}: ${String(message.content ?? '').replace(/\s+/g, ' ').trim()}`.slice(0, 700);
+  return {
+    source: channel,
+    text,
+    score: Number(message.score ?? 1),
+    createdAt: Date.parse(message.createdAt ?? '') || 0
+  };
+}
+
+function scoreKnowledgeText(value = '', terms = []) {
+  const text = normalizeKnowledgeText(value);
+  if (!text) return 0;
+
+  let score = 0;
+  for (const term of terms) {
+    if (!term) continue;
+    if (text.includes(term)) score += SERVER_CONTEXT_PRIORITY_TERMS.has(term) ? 4 : 2;
+  }
+  if (/\b(resultado|resultados|postulacion|formulario|nota|staff)\b/iu.test(text)) score += 5;
+  if (/\b(manana|hoy|fecha|hora|cuando|pronto|revision|revisar|aprobado|aprobacion)\b/iu.test(text)) score += 2;
+  if (isInternalNexaDeskNotice(value)) score -= 6;
+  if (isLikelySensitiveContext(value)) score -= 4;
+  return score;
+}
+
+function normalizeKnowledgeText(value = '') {
+  return String(value ?? '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}#@_-]+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function redactSensitiveContext(value = '') {
+  return String(value ?? '')
+    .replace(/\bmfa\.[A-Za-z0-9_-]{20,}\b/g, '[token oculto]')
+    .replace(/\b(?:gsk|sk|ak-live)-[A-Za-z0-9_-]{8,}\b/g, '[clave IA oculta]')
+    .replace(/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g, '[jwt oculto]')
+    .replace(/\b(?:service_role|supabase|client_secret|bot token|token|password|contraseña|contrasena)\s*[:=]\s*\S+/giu, '$1=[valor oculto]')
+    .replace(/XN Protect globalban alert[^:]*:\s*.+/giu, 'Aviso de blacklist interno [oculto]')
+    .replace(/\b\d{17,20}\b/g, '[id oculto]');
+}
+
+function isLikelySensitiveContext(value = '') {
+  return /\b(token|service_role|client_secret|password|contraseña|contrasena|blacklist|globalban|sancion|ban|api key|apikey|secret)\b/iu.test(value)
+    || /\b(?:gsk|sk|ak-live)-[A-Za-z0-9_-]{8,}\b/.test(value)
+    || /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/.test(value);
+}
+
+function isInternalNexaDeskNotice(value = '') {
+  return /\[NexaDesk\b|NexaDesk staff handoff|XN Protect globalban alert|Aviso de blacklist global|Revision manual recomendada/iu.test(value);
+}
+
+function shouldRetryForNaturalness(answer = '', latestContent = '') {
+  const text = String(answer ?? '').trim();
+  if (!text) return false;
+
+  const questionCount = (text.match(/[?？]/g) ?? []).length;
+  const asksForTooMuch = /\b(podrias proporcionar|puedes proporcionar|mas detalles|m[aá]s informaci[oó]n|necesito que me digas|qu[eé] resultado esperas|en qu[eé] idioma quieres)\b/iu.test(text);
+  const refusalNoise = /\b(no puedo ayudarte con eso|no puedo entender tu mensaje|repite(?:lo)?|idioma quieres)\b/iu.test(text);
+  const latestIsTiny = normalizeKnowledgeText(latestContent).split(/\s+/).filter(Boolean).length <= 3;
+
+  return refusalNoise || questionCount >= 3 || (asksForTooMuch && (questionCount >= 1 || latestIsTiny));
 }

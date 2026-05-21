@@ -128,6 +128,32 @@ export class JsonStorage {
     return transcripts[channelId] ?? [];
   }
 
+  async searchGuildTranscriptMessages(guildId, terms = [], { limit = 10, scanLimit = 400 } = {}) {
+    const transcripts = await this.#readJson(this.transcriptsFile);
+    const tickets = await this.#readJson(this.ticketsFile);
+    const candidates = [];
+
+    for (const [channelId, messages] of Object.entries(transcripts)) {
+      const ticket = tickets[channelId];
+      for (const message of [...messages].slice(-scanLimit)) {
+        if (message.guildId !== guildId && ticket?.guildId !== guildId) continue;
+        const score = scoreTranscriptMessageForTerms(message, terms);
+        if (score <= 0) continue;
+        candidates.push({
+          ...message,
+          guildId: message.guildId ?? ticket?.guildId,
+          channelId,
+          channelName: ticket?.channelName,
+          score
+        });
+      }
+    }
+
+    return candidates
+      .sort((a, b) => (b.score - a.score) || ((Date.parse(b.createdAt ?? '') || 0) - (Date.parse(a.createdAt ?? '') || 0)))
+      .slice(0, limit);
+  }
+
   async getDashboardStats(guildIds = []) {
     const guildIdSet = new Set(guildIds);
     const guilds = Object.values(await this.#readJson(this.guildsFile))
@@ -533,6 +559,29 @@ export class SupabaseStorage {
       .order('created_at', { ascending: true });
     if (error) throw error;
     return data.map(fromTranscriptRow);
+  }
+
+  async searchGuildTranscriptMessages(guildId, terms = [], { limit = 10, scanLimit = 400 } = {}) {
+    const { data, error } = await this.client
+      .from('transcript_messages')
+      .select('*')
+      .eq('guild_id', guildId)
+      .order('created_at', { ascending: false })
+      .limit(scanLimit);
+    if (error) throw error;
+
+    return data
+      .map((row) => {
+        const message = fromTranscriptRow(row);
+        const score = scoreTranscriptMessageForTerms(message, terms);
+        return {
+          ...message,
+          score
+        };
+      })
+      .filter((message) => message.score > 0)
+      .sort((a, b) => (b.score - a.score) || ((Date.parse(b.createdAt ?? '') || 0) - (Date.parse(a.createdAt ?? '') || 0)))
+      .slice(0, limit);
   }
 
   async getDashboardStats(guildIds = []) {
@@ -1208,6 +1257,55 @@ function isMissingFeedbackTableError(error) {
 
 function isMissingAiQualitySignalTableError(error) {
   return Boolean(error && /ai_quality_signals|relation .* does not exist|schema cache/i.test(String(error.message ?? '')));
+}
+
+function scoreTranscriptMessageForTerms(message, terms = []) {
+  const content = normalizeTranscriptSearchText([
+    message.authorName,
+    message.role,
+    message.content
+  ].join(' '));
+  if (!content) return 0;
+
+  let score = 0;
+  for (const term of terms) {
+    const normalizedTerm = normalizeTranscriptSearchText(term);
+    if (!normalizedTerm || normalizedTerm.length < 3) continue;
+    if (content.includes(normalizedTerm)) score += PRIORITY_TRANSCRIPT_TERMS.has(normalizedTerm) ? 5 : 2;
+  }
+
+  if (message.authorBot) score -= 2;
+  if (/\b(resultado|resultados|postulacion|formulario|nota|staff|alianza|normas|anuncios|dashboard|premium)\b/iu.test(content)) score += 4;
+  if (/\b(token|service_role|client_secret|password|contrasena|contraseña|blacklist|globalban|sancion|api key|apikey|secret)\b/iu.test(content)) score -= 5;
+
+  return score;
+}
+
+const PRIORITY_TRANSCRIPT_TERMS = new Set([
+  'resultado',
+  'resultados',
+  'postulacion',
+  'postulaciones',
+  'staff',
+  'formulario',
+  'formularios',
+  'alianza',
+  'alianzas',
+  'normas',
+  'reglas',
+  'anuncios',
+  'dashboard',
+  'premium'
+]);
+
+function normalizeTranscriptSearchText(value = '') {
+  return String(value ?? '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}#@_-]+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 function buildStats({ guilds, tickets, transcriptMessages, feedback = [] }) {
