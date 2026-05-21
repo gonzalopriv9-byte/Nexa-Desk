@@ -69,6 +69,14 @@ The dashboard can:
 - Receive live ticket/config updates through Server-Sent Events.
 - Open a direct Discord invite for manageable servers where the bot is not installed.
 
+Public status page:
+
+```text
+https://your-render-service.onrender.com/status
+```
+
+`/status` shows bot health, Discord/runtime metrics, HA leader state, components, and owner messages in real time. It is public for users, but only the global owner through Discord OAuth or an active `/admin` rotating-code session can edit the status and publish messages. Status edits are stored in global settings and broadcast through Server-Sent Events.
+
 For production on Render, set the same env vars in the web service settings. For the Raspberry Pi worker, keep `/home/pi/nexadesk/.env` updated separately.
 
 Visual analysis uses Groq vision models for images. Video support samples frames through `ffmpeg`; install `ffmpeg` on the worker machine if you want videos to be interpreted instead of only recorded as attachments.
@@ -275,6 +283,7 @@ npm run register
 /globalstats
 /crecimiento estado
 /crecimiento configurar [canal_reviews] [reviews_publicas] [rating_publico_min]
+/code
 /ayuda
 ```
 

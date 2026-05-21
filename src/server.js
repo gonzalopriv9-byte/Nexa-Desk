@@ -72,6 +72,93 @@ export function createServer({ config, storage, bot, events }) {
     }));
   });
 
+  app.get('/status', asyncHandler(async (req, res) => {
+    const snapshot = await buildStatusSnapshot({ storage, bot });
+    res.type('html').send(renderStatusPage({
+      snapshot,
+      canEdit: canEditStatusPage(req),
+      editorName: getStatusEditorName(req)
+    }));
+  }));
+
+  app.get('/status/api', asyncHandler(async (_req, res) => {
+    res.json(await buildStatusSnapshot({ storage, bot }));
+  }));
+
+  app.post('/status/api', requireStatusEditor, asyncHandler(async (req, res) => {
+    const settings = await storage.getGlobalSettings();
+    const current = normalizeStatusPage(settings.statusPage);
+    const next = normalizeStatusPage({
+      ...current,
+      state: req.body.state,
+      headline: req.body.headline,
+      message: req.body.message,
+      components: req.body.components,
+      updatedBy: req.statusEditor?.username ?? req.statusEditor?.id ?? 'owner',
+      updatedAt: new Date().toISOString()
+    });
+    const saved = await storage.updateGlobalSettings({ statusPage: next });
+    res.json({ status: normalizeStatusPage(saved.statusPage) });
+  }));
+
+  app.post('/status/api/messages', requireStatusEditor, asyncHandler(async (req, res) => {
+    const settings = await storage.getGlobalSettings();
+    const current = normalizeStatusPage(settings.statusPage);
+    const update = normalizeStatusUpdate({
+      id: `status-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`,
+      level: req.body.level,
+      title: req.body.title,
+      message: req.body.message,
+      createdBy: req.statusEditor?.username ?? req.statusEditor?.id ?? 'owner',
+      createdAt: new Date().toISOString()
+    });
+    if (!update.message) {
+      res.status(400).json({ error: 'Message is required.' });
+      return;
+    }
+    const next = normalizeStatusPage({
+      ...current,
+      updates: [update, ...current.updates].slice(0, 20),
+      updatedBy: update.createdBy,
+      updatedAt: update.createdAt
+    });
+    const saved = await storage.updateGlobalSettings({ statusPage: next });
+    res.json({ status: normalizeStatusPage(saved.statusPage) });
+  }));
+
+  app.get('/status/events', asyncHandler(async (req, res) => {
+    res.writeHead(200, {
+      'content-type': 'text/event-stream',
+      'cache-control': 'no-cache, no-transform',
+      connection: 'keep-alive'
+    });
+
+    const sendSnapshot = async (eventName = 'status.snapshot') => {
+      const snapshot = await buildStatusSnapshot({ storage, bot }).catch((error) => ({
+        status: normalizeStatusPage(),
+        generatedAt: new Date().toISOString(),
+        error: normalizeError(error)
+      }));
+      res.write(`event: ${eventName}\ndata: ${JSON.stringify(snapshot)}\n\n`);
+    };
+
+    await sendSnapshot('status.ready');
+    const heartbeat = setInterval(() => {
+      res.write(`event: heartbeat\ndata: ${JSON.stringify({ at: new Date().toISOString() })}\n\n`);
+    }, 25000);
+
+    const send = (event) => {
+      if (event.type !== 'global.settings.updated' && event.type !== 'maintenance.updated') return;
+      void sendSnapshot('status.update');
+    };
+
+    events?.on?.('event', send);
+    req.on('close', () => {
+      clearInterval(heartbeat);
+      events?.off?.('event', send);
+    });
+  }));
+
   app.get('/login', (req, res) => {
     if (getSession(req)) {
       res.redirect('/');
@@ -647,6 +734,27 @@ function requireAdminSession(req, res, next) {
   next();
 }
 
+function requireStatusEditor(req, res, next) {
+  const adminSession = getAdminSession(req);
+  if (adminSession) {
+    req.statusEditor = {
+      id: adminSession.issuedBy ?? 'admin-session',
+      username: 'Admin session'
+    };
+    next();
+    return;
+  }
+
+  const session = getSession(req);
+  if (session?.user?.id === GLOBAL_BLACKLIST_ADMIN_USER_ID) {
+    req.statusEditor = session.user;
+    next();
+    return;
+  }
+
+  res.status(403).json({ error: 'Status owner/admin only.' });
+}
+
 function requireGuildAccess(req, res, next) {
   if (!canAccessGuild(req.session, req.params.guildId)) {
     res.status(403).json({ error: 'You cannot manage this guild.' });
@@ -884,6 +992,168 @@ function buildAdminRuntime() {
     env: process.env.NODE_ENV || 'development',
     runBot: String(process.env.RUN_BOT ?? 'true')
   };
+}
+
+async function buildStatusSnapshot({ storage, bot }) {
+  const [settings, configs, tickets] = await Promise.all([
+    storage.getGlobalSettings().catch((error) => {
+      console.warn('Status settings lookup failed:', normalizeError(error));
+      return {};
+    }),
+    storage.listGuildConfigs().catch((error) => {
+      console.warn('Status guild lookup failed:', normalizeError(error));
+      return [];
+    }),
+    storage.listTickets().catch((error) => {
+      console.warn('Status tickets lookup failed:', normalizeError(error));
+      return [];
+    })
+  ]);
+  const installedGuildIds = await getInstalledGuildIds(bot, configs);
+  const status = normalizeStatusPage(settings.statusPage);
+  const lease = settings.botLease && typeof settings.botLease === 'object' ? settings.botLease : {};
+  const leaseExpiresAt = Date.parse(lease.expiresAt ?? '');
+  const leaderAlive = Boolean(lease.ownerId && Number.isFinite(leaseExpiresAt) && leaseExpiresAt > Date.now());
+  const openTickets = tickets.filter((ticket) => isOpenTicketStatus(ticket.status)).length;
+  return {
+    generatedAt: new Date().toISOString(),
+    status,
+    metrics: {
+      installedGuilds: installedGuildIds.size,
+      configuredGuilds: configs.filter((guild) => guild.ticketCategoryId).length,
+      openTickets,
+      totalTickets: tickets.length,
+      premiumGuilds: configs.filter(isPremiumEntitled).length
+    },
+    runtime: {
+      env: process.env.NODE_ENV || 'development',
+      uptimeSeconds: Math.round(process.uptime()),
+      runBot: String(process.env.RUN_BOT ?? 'true'),
+      haEnabled: String(process.env.BOT_HA_ENABLED ?? 'false'),
+      instanceId: process.env.BOT_INSTANCE_ID || 'local'
+    },
+    leader: {
+      ownerId: lease.ownerId ?? '',
+      hostname: lease.hostname ?? '',
+      updatedAt: lease.updatedAt ?? null,
+      expiresAt: lease.expiresAt ?? null,
+      alive: leaderAlive
+    }
+  };
+}
+
+function normalizeStatusPage(input = {}) {
+  const state = normalizeStatusState(input.state);
+  const now = new Date().toISOString();
+  return {
+    state,
+    headline: cleanStatusText(input.headline, defaultStatusHeadline(state), 90),
+    message: cleanStatusText(input.message, defaultStatusMessage(state), 700),
+    updatedBy: cleanStatusText(input.updatedBy, 'NexaDesk', 80),
+    updatedAt: input.updatedAt || now,
+    components: normalizeStatusComponents(input.components),
+    updates: normalizeStatusUpdates(input.updates)
+  };
+}
+
+function normalizeStatusState(value) {
+  const state = String(value ?? '').toLowerCase();
+  if (['operational', 'degraded', 'maintenance', 'outage'].includes(state)) return state;
+  return 'operational';
+}
+
+function normalizeStatusComponents(value) {
+  const parsed = parseMaybeJson(value, []);
+  const source = Array.isArray(parsed) && parsed.length ? parsed : defaultStatusComponents();
+  return source.slice(0, 8).map((item) => ({
+    name: cleanStatusText(item?.name, 'Sistema', 44),
+    state: normalizeStatusState(item?.state),
+    detail: cleanStatusText(item?.detail, statusLabel(normalizeStatusState(item?.state)), 120)
+  }));
+}
+
+function normalizeStatusUpdates(value) {
+  const parsed = parseMaybeJson(value, []);
+  if (!Array.isArray(parsed)) return [];
+  return parsed
+    .map(normalizeStatusUpdate)
+    .filter((item) => item.message)
+    .slice(0, 20);
+}
+
+function normalizeStatusUpdate(input = {}) {
+  const createdAt = input.createdAt || new Date().toISOString();
+  return {
+    id: String(input.id || `status-${Date.parse(createdAt) || Date.now()}`),
+    level: normalizeStatusState(input.level),
+    title: cleanStatusText(input.title, statusLabel(input.level), 80),
+    message: cleanStatusText(input.message, '', 600),
+    createdBy: cleanStatusText(input.createdBy, 'NexaDesk', 80),
+    createdAt
+  };
+}
+
+function defaultStatusComponents() {
+  return [
+    { name: 'Bot Discord', state: 'operational', detail: 'Atendiendo tickets y comandos.' },
+    { name: 'Dashboard', state: 'operational', detail: 'Panel web disponible.' },
+    { name: 'IA de soporte', state: 'operational', detail: 'Respuestas y contexto activos.' },
+    { name: 'Supabase', state: 'operational', detail: 'Datos y transcripciones sincronizados.' },
+    { name: 'Voz Pro', state: 'operational', detail: 'STT/TTS disponible segun plan.' }
+  ];
+}
+
+function cleanStatusText(value, fallback, maxLength) {
+  const text = String(value ?? '').replace(/\s+/g, ' ').trim();
+  return (text || fallback).slice(0, maxLength);
+}
+
+function parseMaybeJson(value, fallback) {
+  if (Array.isArray(value) || (value && typeof value === 'object')) return value;
+  if (typeof value !== 'string' || !value.trim()) return fallback;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return fallback;
+  }
+}
+
+function defaultStatusHeadline(state) {
+  return ({
+    operational: 'NexaDesk esta operativo',
+    degraded: 'NexaDesk funciona con degradacion parcial',
+    maintenance: 'NexaDesk esta en mantenimiento programado',
+    outage: 'NexaDesk esta revisando una incidencia'
+  })[state] ?? 'NexaDesk esta operativo';
+}
+
+function defaultStatusMessage(state) {
+  return ({
+    operational: 'Todos los sistemas principales responden con normalidad.',
+    degraded: 'Algunas funciones pueden ir mas lentas mientras revisamos el servicio.',
+    maintenance: 'Estamos aplicando mejoras. Los servidores premium mantienen prioridad.',
+    outage: 'Estamos investigando una incidencia y actualizaremos esta pagina en tiempo real.'
+  })[state] ?? 'Todos los sistemas principales responden con normalidad.';
+}
+
+function statusLabel(state) {
+  return ({
+    operational: 'Operativo',
+    degraded: 'Degradado',
+    maintenance: 'Mantenimiento',
+    outage: 'Incidencia'
+  })[normalizeStatusState(state)] ?? 'Operativo';
+}
+
+function canEditStatusPage(req) {
+  return Boolean(getAdminSession(req) || getSession(req)?.user?.id === GLOBAL_BLACKLIST_ADMIN_USER_ID);
+}
+
+function getStatusEditorName(req) {
+  const admin = getAdminSession(req);
+  if (admin) return 'Admin';
+  const session = getSession(req);
+  return session?.user?.username ?? '';
 }
 
 function buildPanelRequestPayload(req) {
@@ -1355,6 +1625,194 @@ function normalizeSearchText(value) {
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
     .toLowerCase();
+}
+
+function renderStatusPage({ snapshot, canEdit = false, editorName = '' }) {
+  const initialSnapshot = toInlineJson(snapshot);
+  return `<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NexaDesk Status</title>
+  <link rel="icon" href="/assets/nexadesk-logo.svg">
+  <style>
+    :root { color-scheme:dark; --bg:#040404; --line:rgba(255,255,255,.14); --text:#f7f7f7; --muted:#a8a8a8; --ok:#7cff6b; --warn:#ffcf5a; --bad:#ff5f57; --blue:#9ed7ff; }
+    * { box-sizing:border-box; }
+    body { margin:0; min-height:100vh; color:var(--text); font-family:"Space Grotesk","Segoe UI",sans-serif; background:radial-gradient(circle at 18% 18%, rgba(255,255,255,.16), transparent 26%), radial-gradient(circle at 82% 4%, rgba(124,255,107,.12), transparent 22%), linear-gradient(135deg, #030303, #101010 45%, #030303); overflow-x:hidden; }
+    body::before { content:""; position:fixed; inset:0; pointer-events:none; background-image:linear-gradient(rgba(255,255,255,.055) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.055) 1px, transparent 1px); background-size:72px 72px; mask-image:linear-gradient(to bottom, rgba(0,0,0,.9), rgba(0,0,0,.25)); animation:gridDrift 18s linear infinite; }
+    body::after { content:""; position:fixed; width:48vw; height:48vw; right:-18vw; top:10vh; border:1px solid rgba(255,255,255,.18); border-radius:50%; pointer-events:none; box-shadow:0 0 90px rgba(255,255,255,.08), inset 0 0 90px rgba(255,255,255,.05); animation:orb 9s ease-in-out infinite alternate; }
+    a { color:inherit; }
+    .wrap { width:min(1180px, calc(100% - 32px)); margin:0 auto; padding:32px 0 54px; position:relative; z-index:1; }
+    .topbar { display:flex; justify-content:space-between; align-items:center; gap:18px; margin-bottom:26px; }
+    .brand { display:flex; align-items:center; gap:12px; font-weight:950; letter-spacing:-.04em; text-decoration:none; }
+    .brand img { width:42px; height:42px; border:1px solid rgba(255,255,255,.18); border-radius:13px; padding:8px; background:#050505; box-shadow:0 0 34px rgba(255,255,255,.12); }
+    .toplinks { display:flex; flex-wrap:wrap; gap:10px; align-items:center; }
+    .pill,.toplinks a,.toplinks span { border:1px solid var(--line); border-radius:999px; padding:9px 12px; background:rgba(0,0,0,.34); color:#fff; text-decoration:none; font-size:13px; }
+    .hero { display:grid; grid-template-columns:minmax(0,1.15fr) minmax(320px,.85fr); gap:18px; align-items:stretch; }
+    .hero-card,.side-card,.component,.timeline,.editor { border:1px solid var(--line); border-radius:28px; background:linear-gradient(145deg, rgba(255,255,255,.09), rgba(255,255,255,.03)); box-shadow:0 28px 110px rgba(0,0,0,.38); backdrop-filter:blur(16px); }
+    .hero-card { padding:30px; min-height:360px; position:relative; overflow:hidden; }
+    .hero-card::after { content:""; position:absolute; right:-80px; bottom:-120px; width:320px; height:320px; border-radius:50%; border:1px solid rgba(255,255,255,.12); }
+    .kicker { margin:0 0 14px; color:var(--muted); text-transform:uppercase; letter-spacing:.16em; font-size:12px; font-weight:900; }
+    h1 { margin:0; font-size:clamp(46px, 8vw, 104px); line-height:.86; letter-spacing:-.08em; max-width:900px; }
+    .headline { margin:20px 0 0; font-size:clamp(18px, 2.5vw, 27px); color:#eaeaea; max-width:760px; }
+    .message { margin:12px 0 0; color:#bebebe; font-size:17px; line-height:1.65; max-width:820px; }
+    .status-mark { display:inline-flex; align-items:center; gap:10px; border:1px solid rgba(255,255,255,.18); border-radius:999px; padding:10px 14px; background:rgba(0,0,0,.38); margin-bottom:22px; font-weight:950; }
+    .dot { width:12px; height:12px; border-radius:50%; background:var(--ok); box-shadow:0 0 24px var(--ok); }
+    .is-degraded .dot { background:var(--warn); box-shadow:0 0 24px var(--warn); }
+    .is-maintenance .dot { background:var(--blue); box-shadow:0 0 24px var(--blue); }
+    .is-outage .dot { background:var(--bad); box-shadow:0 0 24px var(--bad); }
+    .side-card { padding:24px; display:grid; gap:14px; }
+    .metric-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
+    .metric { border:1px solid rgba(255,255,255,.12); border-radius:18px; padding:14px; background:rgba(0,0,0,.26); }
+    .metric span { display:block; color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.11em; }
+    .metric strong { display:block; margin-top:8px; font-size:30px; letter-spacing:-.06em; }
+    .leader { border:1px dashed rgba(255,255,255,.22); border-radius:18px; padding:14px; color:#ddd; }
+    .leader strong { display:block; color:#fff; margin-bottom:6px; }
+    .section-title { display:flex; justify-content:space-between; align-items:end; gap:16px; margin:30px 0 14px; }
+    .section-title h2 { margin:0; font-size:28px; letter-spacing:-.05em; }
+    .section-title p { margin:0; color:var(--muted); }
+    .components { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:12px; }
+    .component { padding:16px; min-height:150px; display:grid; align-content:space-between; }
+    .component strong { font-size:17px; }
+    .component p { color:var(--muted); margin:10px 0 0; line-height:1.45; }
+    .badge { width:max-content; border:1px solid rgba(255,255,255,.18); border-radius:999px; padding:7px 9px; font-size:12px; font-weight:950; }
+    .badge.operational { color:var(--ok); } .badge.degraded { color:var(--warn); } .badge.maintenance { color:var(--blue); } .badge.outage { color:var(--bad); }
+    .timeline { padding:18px; }
+    .update { display:grid; grid-template-columns:120px minmax(0,1fr); gap:16px; padding:16px 0; border-bottom:1px solid rgba(255,255,255,.1); }
+    .update:last-child { border-bottom:0; }
+    .update time { color:var(--muted); font-size:13px; }
+    .update h3 { margin:0 0 6px; }
+    .update p { margin:0; color:#c7c7c7; line-height:1.55; }
+    .editor { margin-top:24px; padding:20px; display:${canEdit ? 'block' : 'none'}; }
+    .editor-grid { display:grid; grid-template-columns:minmax(0,.9fr) minmax(0,1.1fr); gap:16px; }
+    label { display:grid; gap:7px; color:#d7d7d7; font-size:13px; font-weight:800; }
+    input,select,textarea { width:100%; border:1px solid rgba(255,255,255,.16); border-radius:14px; padding:12px 13px; background:#050505; color:#fff; font:inherit; }
+    textarea { min-height:112px; resize:vertical; }
+    button { border:0; border-radius:999px; padding:12px 16px; font-weight:950; cursor:pointer; background:#fff; color:#000; }
+    .component-editor { display:grid; grid-template-columns:1fr 150px; gap:8px; margin-bottom:8px; }
+    .muted { color:var(--muted); }
+    .toast { position:fixed; right:18px; bottom:18px; border:1px solid rgba(255,255,255,.18); border-radius:18px; background:rgba(0,0,0,.9); color:#fff; padding:13px 15px; opacity:0; transform:translateY(12px); transition:.18s ease; z-index:3; }
+    .toast.show { opacity:1; transform:translateY(0); }
+    @keyframes gridDrift { from { background-position:0 0; } to { background-position:72px 72px; } }
+    @keyframes orb { from { transform:translate3d(0,0,0) scale(1); } to { transform:translate3d(-20px,18px,0) scale(1.05); } }
+    @media (max-width:980px) { .hero,.editor-grid { grid-template-columns:1fr; } .components { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+    @media (max-width:620px) { .wrap { width:min(100% - 20px,1180px); padding-top:18px; } .topbar,.section-title { align-items:flex-start; flex-direction:column; } .components,.metric-grid { grid-template-columns:1fr; } .hero-card,.side-card { border-radius:22px; padding:20px; } .update { grid-template-columns:1fr; gap:6px; } h1 { font-size:52px; } }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header class="topbar">
+      <a class="brand" href="/"><img src="/assets/nexadesk-logo.svg" alt="">NexaDesk</a>
+      <nav class="toplinks">
+        <span id="livePill">Live conectado</span>
+        ${canEdit ? `<span>Editor: ${escapeHtml(editorName || 'owner')}</span>` : '<a href="/login">Login owner</a><a href="/admin">Admin code</a>'}
+      </nav>
+    </header>
+    <section class="hero">
+      <article class="hero-card" id="heroCard">
+        <div class="status-mark"><span class="dot"></span><span id="stateLabel">Operativo</span></div>
+        <p class="kicker">Estado publico</p>
+        <h1 id="statusHeadline">NexaDesk esta operativo</h1>
+        <p class="headline" id="statusMessage">Todos los sistemas principales responden con normalidad.</p>
+        <p class="message">Actualizado <span id="updatedAt">ahora</span> por <span id="updatedBy">NexaDesk</span>.</p>
+      </article>
+      <aside class="side-card">
+        <div><p class="kicker">Runtime</p><h2 style="margin:0;font-size:34px;letter-spacing:-.06em;">Pulso del bot</h2></div>
+        <div class="metric-grid">
+          <div class="metric"><span>Servidores</span><strong id="metricGuilds">0</strong></div>
+          <div class="metric"><span>Tickets abiertos</span><strong id="metricTickets">0</strong></div>
+          <div class="metric"><span>Premium</span><strong id="metricPremium">0</strong></div>
+          <div class="metric"><span>Uptime</span><strong id="metricUptime">0m</strong></div>
+        </div>
+        <div class="leader"><strong id="leaderTitle">Lider HA</strong><span id="leaderDetail">Calculando lease...</span></div>
+      </aside>
+    </section>
+    <div class="section-title"><div><h2>Componentes</h2><p>Estado de cada pieza importante de NexaDesk.</p></div><span class="pill" id="generatedAt">Snapshot inicial</span></div>
+    <section class="components" id="components"></section>
+    <div class="section-title"><div><h2>Mensajes</h2><p>Comunicados publicos del owner, incidentes y mantenimientos.</p></div></div>
+    <section class="timeline" id="updates"></section>
+    <section class="editor" id="statusEditor">
+      <div class="section-title" style="margin-top:0;"><div><h2>Editar estado</h2><p>Los cambios se publican en tiempo real.</p></div></div>
+      <div class="editor-grid">
+        <form id="stateForm">
+          <label>Estado<select id="editState"><option value="operational">Operativo</option><option value="degraded">Degradado</option><option value="maintenance">Mantenimiento</option><option value="outage">Incidencia</option></select></label><br>
+          <label>Titulo<input id="editHeadline" maxlength="90" placeholder="NexaDesk esta operativo"></label><br>
+          <label>Mensaje publico<textarea id="editMessage" maxlength="700" placeholder="Explica que esta pasando..."></textarea></label><br>
+          <div id="componentEditor"></div>
+          <button type="submit">Publicar estado</button>
+        </form>
+        <form id="messageForm">
+          <label>Tipo de mensaje<select id="messageLevel"><option value="operational">Info</option><option value="degraded">Aviso</option><option value="maintenance">Mantenimiento</option><option value="outage">Incidencia</option></select></label><br>
+          <label>Titulo del mensaje<input id="messageTitle" maxlength="80" placeholder="Actualizacion"></label><br>
+          <label>Mensaje<textarea id="messageBody" maxlength="600" placeholder="Escribe un comunicado para todos..."></textarea></label><br>
+          <button type="submit">Añadir mensaje</button>
+          <p class="muted">Consejo: usa mensajes cortos y claros. Si hay una incidencia, di que esta pasando, impacto y proximo update.</p>
+        </form>
+      </div>
+    </section>
+  </div>
+  <div class="toast" id="toast"></div>
+  <script>
+    const canEdit = ${canEdit ? 'true' : 'false'};
+    let snapshot = ${initialSnapshot};
+    const labels = { operational:'Operativo', degraded:'Degradado', maintenance:'Mantenimiento', outage:'Incidencia' };
+    const $ = (id) => document.getElementById(id);
+    const html = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[char]));
+    const fmt = (value) => value ? new Date(value).toLocaleString('es-ES') : 'Sin datos';
+    const uptime = (seconds) => { const value = Number(seconds || 0); if (value > 86400) return Math.floor(value / 86400) + 'd'; if (value > 3600) return Math.floor(value / 3600) + 'h'; return Math.max(0, Math.floor(value / 60)) + 'm'; };
+    function toast(message) { const node = $('toast'); node.textContent = message; node.classList.add('show'); clearTimeout(window.__statusToast); window.__statusToast = setTimeout(() => node.classList.remove('show'), 2400); }
+    function render(next) {
+      snapshot = next || snapshot;
+      const status = snapshot.status || {};
+      const state = status.state || 'operational';
+      $('heroCard').className = 'hero-card is-' + state;
+      $('stateLabel').textContent = labels[state] || 'Operativo';
+      $('statusHeadline').textContent = status.headline || 'NexaDesk esta operativo';
+      $('statusMessage').textContent = status.message || '';
+      $('updatedAt').textContent = fmt(status.updatedAt);
+      $('updatedBy').textContent = status.updatedBy || 'NexaDesk';
+      $('generatedAt').textContent = 'Actualizado ' + fmt(snapshot.generatedAt);
+      $('metricGuilds').textContent = snapshot.metrics?.installedGuilds ?? 0;
+      $('metricTickets').textContent = snapshot.metrics?.openTickets ?? 0;
+      $('metricPremium').textContent = snapshot.metrics?.premiumGuilds ?? 0;
+      $('metricUptime').textContent = uptime(snapshot.runtime?.uptimeSeconds);
+      $('leaderTitle').textContent = snapshot.leader?.alive ? 'Lider HA activo' : 'Lease sin lider activo';
+      $('leaderDetail').textContent = snapshot.leader?.ownerId ? snapshot.leader.ownerId + ' · expira ' + fmt(snapshot.leader.expiresAt) : 'Esperando worker principal o standby.';
+      $('components').innerHTML = (status.components || []).map((item) => '<article class="component"><div><strong>' + html(item.name) + '</strong><p>' + html(item.detail) + '</p></div><span class="badge ' + html(item.state) + '">' + html(labels[item.state] || item.state) + '</span></article>').join('');
+      $('updates').innerHTML = (status.updates || []).length ? status.updates.map((item) => '<article class="update"><time>' + html(fmt(item.createdAt)) + '</time><div><span class="badge ' + html(item.level) + '">' + html(labels[item.level] || item.level) + '</span><h3>' + html(item.title) + '</h3><p>' + html(item.message) + '</p><p class="muted">Por ' + html(item.createdBy || 'NexaDesk') + '</p></div></article>').join('') : '<p class="muted">Sin comunicados recientes. Si todo esta tranquilo, esto es buena señal.</p>';
+      if (canEdit) hydrateEditor(status);
+    }
+    function hydrateEditor(status) {
+      if (document.activeElement && ['INPUT','TEXTAREA','SELECT'].includes(document.activeElement.tagName)) return;
+      $('editState').value = status.state || 'operational';
+      $('editHeadline').value = status.headline || '';
+      $('editMessage').value = status.message || '';
+      $('componentEditor').innerHTML = (status.components || []).map((item, index) => '<div class="component-editor"><input data-comp-name="' + index + '" value="' + html(item.name) + '" maxlength="44"><select data-comp-state="' + index + '"><option value="operational">Operativo</option><option value="degraded">Degradado</option><option value="maintenance">Mantenimiento</option><option value="outage">Incidencia</option></select></div><input data-comp-detail="' + index + '" value="' + html(item.detail) + '" maxlength="120" style="margin-bottom:10px;">').join('');
+      (status.components || []).forEach((item, index) => { const select = document.querySelector('[data-comp-state="' + index + '"]'); if (select) select.value = item.state || 'operational'; });
+    }
+    function readComponents() { return Array.from(document.querySelectorAll('[data-comp-name]')).map((input) => { const index = input.getAttribute('data-comp-name'); return { name:input.value, state:document.querySelector('[data-comp-state="' + index + '"]')?.value || 'operational', detail:document.querySelector('[data-comp-detail="' + index + '"]')?.value || '' }; }); }
+    async function postJson(url, body) {
+      const response = await fetch(url, { method:'POST', headers:{ 'content-type':'application/json' }, credentials:'same-origin', body:JSON.stringify(body) });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || 'No se pudo guardar.');
+      const fresh = await fetch('/status/api', { credentials:'same-origin' }).then((item) => item.json());
+      render(fresh);
+      return data;
+    }
+    if (canEdit) {
+      $('stateForm').addEventListener('submit', async (event) => { event.preventDefault(); try { await postJson('/status/api', { state:$('editState').value, headline:$('editHeadline').value, message:$('editMessage').value, components:readComponents() }); toast('Estado publicado.'); } catch (error) { toast(error.message); } });
+      $('messageForm').addEventListener('submit', async (event) => { event.preventDefault(); try { await postJson('/status/api/messages', { level:$('messageLevel').value, title:$('messageTitle').value, message:$('messageBody').value }); $('messageBody').value = ''; toast('Mensaje añadido.'); } catch (error) { toast(error.message); } });
+    }
+    render(snapshot);
+    const source = new EventSource('/status/events');
+    source.addEventListener('status.update', (event) => render(JSON.parse(event.data)));
+    source.addEventListener('status.ready', (event) => render(JSON.parse(event.data)));
+    source.addEventListener('error', () => { $('livePill').textContent = 'Reconectando live'; });
+    source.addEventListener('open', () => { $('livePill').textContent = 'Live conectado'; });
+  </script>
+</body>
+</html>`;
 }
 
 function renderDocsDisabled(config) {
