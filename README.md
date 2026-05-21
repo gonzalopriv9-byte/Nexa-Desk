@@ -267,6 +267,12 @@ npm audit --omit=dev --audit-level=high
 npm run register
 ```
 
+If commands appear duplicated in a server, clear the fast guild-scoped copy and keep only the global commands:
+
+```bash
+DISCORD_GUILD_ID=your_server_id npm run register -- --clear-guild
+```
+
 ## Slash commands
 
 ```text

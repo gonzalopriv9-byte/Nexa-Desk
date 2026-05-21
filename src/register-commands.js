@@ -342,6 +342,9 @@ if (clearGuildScope) {
     { body: [] }
   );
   console.log('Cleared NexaDesk guild slash commands.');
+  if (!useGuildScope) {
+    process.exit(0);
+  }
 }
 
 await rest.put(route, { body: commands });
