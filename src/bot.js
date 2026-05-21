@@ -385,6 +385,12 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
     }
   });
 
+  client.on(Events.ChannelUpdate, async (oldChannel, newChannel) => {
+    await securityManager.handleChannelUpdate(oldChannel, newChannel).catch((error) => {
+      console.error(`Security channel update guard failed in ${newChannel?.guild?.id ?? 'unknown'}:`, error);
+    });
+  });
+
   client.on(Events.MessageCreate, async (message) => {
     if (!message.guild || !message.channel) return;
     if (await maybeMirrorGlobalAnnouncement({ client, storage, config, message })) return;
@@ -593,6 +599,12 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
   client.on(Events.GuildRoleUpdate, async (oldRole, newRole) => {
     await securityManager.handleRoleUpdate(oldRole, newRole).catch((error) => {
       console.error(`Security role update guard failed in ${newRole.guild.id}:`, error);
+    });
+  });
+
+  client.on(Events.GuildUpdate, async (oldGuild, newGuild) => {
+    await securityManager.handleGuildUpdate(oldGuild, newGuild).catch((error) => {
+      console.error(`Security guild update guard failed in ${newGuild?.id ?? 'unknown'}:`, error);
     });
   });
 
@@ -1639,7 +1651,8 @@ function buildSecurityStatusEmbed({ guild, security }) {
           `XN Protect Automod: **${config.antiOffensive ? 'on' : 'off'}**`,
           `Anti-bots Top.gg: **${config.antiBot ? 'on' : 'off'}**`,
           `Anti-alts: **${config.antiAlt ? 'on' : 'off'}** (${config.minAccountAgeDays} dias)`,
-          `Anti-nuke: **${config.antiNuke ? 'on' : 'off'}** (${config.nukeLimit} acciones/${config.nukeWindowSeconds}s)`
+          `Anti-nuke: **${config.antiNuke ? 'on' : 'off'}** (${config.nukeLimit} acciones/${config.nukeWindowSeconds}s)`,
+          `Canales/config: **${config.antiNuke ? 'vigilado' : 'off'}** (creaciones masivas, permisos y cambios del servidor)`
         ].join('\n')
       },
       { name: `${EMOJIS.wifi} Logs`, value: config.logChannelId ? `<#${config.logChannelId}>` : 'Sin canal de logs. Se avisara al owner por MD cuando sea importante.', inline: true },
@@ -2270,7 +2283,7 @@ function buildHelpEmbed({ view, config, guild }) {
             'XN Protect Automod: borra contenido ofensivo/malicioso y avisa al staff con motivo y palabras detectadas.',
             'Anti-bots Top.gg: solo banea bots que no aparezcan listados en Top.gg; si Top.gg no responde, no banea a ciegas.',
             'Anti-alts: expulsa cuentas demasiado nuevas si lo activas.',
-            'Anti-nuke: mira audit logs y reacciona ante acciones masivas en canales, roles, webhooks, kicks y bans.'
+            'Anti-nuke: mira audit logs y reacciona ante acciones masivas en canales, permisos, config del servidor, roles, webhooks, kicks y bans.'
           ].join('\n')
         },
         {

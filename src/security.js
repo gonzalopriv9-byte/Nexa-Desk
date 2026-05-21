@@ -8,6 +8,9 @@ import { DISCORD_EMOJIS as EMOJIS } from './emojis.js';
 
 const TOPGG_CACHE_MS = 1000 * 60 * 60 * 12;
 const TOPGG_ERROR_CACHE_MS = 1000 * 60 * 15;
+const LOCKDOWN_COOLDOWN_MS = 1000 * 60;
+const CHANNEL_CLEANUP_MAX = 12;
+const LOCKDOWN_CHANNEL_MAX = 20;
 
 export const SECURITY_LEVELS = {
   low: {
@@ -122,7 +125,7 @@ export function summarizeSecurityConfig(config = {}) {
     security.antiOffensive ? 'XN Automod' : null,
     security.antiBot ? 'Anti-bots Top.gg' : null,
     security.antiAlt ? 'Anti-alts' : null,
-    security.antiNuke ? 'Anti-nuke' : null
+    security.antiNuke ? 'Anti-nuke canales/config' : null
   ].filter(Boolean);
   return `${SECURITY_LEVELS[security.level].label}: ${enabled.join(', ') || 'solo logs'}`;
 }
@@ -136,6 +139,7 @@ export class SecurityManager {
     this.messageBuckets = new Map();
     this.joinBuckets = new Map();
     this.actionBuckets = new Map();
+    this.lockdownCooldowns = new Map();
     this.lastFloodWarnings = new Map();
     this.topGgBotCache = new Map();
     this.securityLabBotIds = parseIdList(config.SECURITY_LAB_BOT_IDS);
@@ -557,7 +561,8 @@ export class SecurityManager {
       targetId: channel?.id,
       auditType: AuditLogEvent.ChannelCreate,
       label: `creacion de canal #${channel?.name ?? channel?.id}`,
-      severity: 'medium'
+      severity: 'high',
+      targetName: channel?.name ?? null
     });
   }
 
@@ -566,7 +571,34 @@ export class SecurityManager {
       targetId: channel?.id,
       auditType: AuditLogEvent.ChannelDelete,
       label: `eliminacion de canal #${channel?.name ?? channel?.id}`,
-      severity: 'high'
+      severity: 'high',
+      targetName: channel?.name ?? null
+    });
+  }
+
+  async handleChannelUpdate(oldChannel, newChannel) {
+    if (!newChannel?.guild) return;
+    const changed = describeChannelChanges(oldChannel, newChannel);
+    if (!changed.length) return;
+    await this.handleAuditAction(newChannel.guild, {
+      targetId: newChannel.id,
+      auditType: AuditLogEvent.ChannelUpdate,
+      label: `cambio de configuracion de canal #${newChannel.name ?? newChannel.id}: ${changed.join(', ')}`,
+      severity: changed.some((item) => item.includes('permisos')) ? 'critical' : 'high',
+      targetName: newChannel.name ?? null
+    });
+  }
+
+  async handleGuildUpdate(oldGuild, newGuild) {
+    if (!newGuild) return;
+    const changed = describeGuildChanges(oldGuild, newGuild);
+    if (!changed.length) return;
+    await this.handleAuditAction(newGuild, {
+      targetId: newGuild.id,
+      auditType: AuditLogEvent.GuildUpdate,
+      label: `cambio de configuracion del servidor: ${changed.join(', ')}`,
+      severity: 'critical',
+      targetName: newGuild.name ?? null
     });
   }
 
@@ -675,7 +707,7 @@ export class SecurityManager {
     });
   }
 
-  async handleAuditAction(guild, { auditType, targetId, label, severity = 'medium' }) {
+  async handleAuditAction(guild, { auditType, targetId, label, severity = 'medium', targetName = null }) {
     if (!guild) return false;
     const guildConfig = await this.storage.getGuildConfig(guild.id);
     const security = normalizeSecurityConfig(guildConfig?.security);
@@ -702,8 +734,9 @@ export class SecurityManager {
     const key = `${guild.id}:${executor.id}`;
     const windowMs = security.nukeWindowSeconds * 1000;
     const bucket = (this.actionBuckets.get(key) ?? []).filter((item) => now - item.at <= windowMs);
-    bucket.push({ at: now, auditType, label });
+    bucket.push({ at: now, auditType, label, targetId, targetName, severity });
     this.actionBuckets.set(key, bucket);
+    const limit = getSensitiveActionLimit(security, auditType, severity);
 
     await this.sendSecurityLog({
       guild,
@@ -712,12 +745,12 @@ export class SecurityManager {
       description: `${executor.tag} ejecuto ${label}.`,
       fields: [
         { name: 'Executor', value: `${executor.tag} (${executor.id})`, inline: true },
-        { name: 'Acciones recientes', value: `${bucket.length}/${security.nukeLimit}`, inline: true },
+        { name: 'Acciones recientes', value: `${bucket.length}/${limit}`, inline: true },
         { name: 'Riesgo', value: severity, inline: true }
       ]
     });
 
-    if (bucket.length < security.nukeLimit) return true;
+    if (bucket.length < limit) return true;
 
     const member = await guild.members.fetch(executor.id).catch(() => null);
     const topGgDecision = member?.user?.bot
@@ -733,6 +766,20 @@ export class SecurityManager {
       await member.ban({ reason: `NexaDesk Security Guard: ${bucket.length} acciones sensibles en ${security.nukeWindowSeconds}s` }).catch(() => null);
     }
 
+    const cleanupResult = auditType === AuditLogEvent.ChannelCreate
+      ? await this.deleteRecentCreatedChannels({
+        guild,
+        bucket,
+        reason: `NexaDesk Security Guard: limpieza de canales por ${executor.tag}`
+      })
+      : null;
+    const lockdownResult = shouldApplyEmergencyLockdown(auditType, severity, bucket)
+      ? await this.applyEmergencyLockdown({
+        guild,
+        reason: `NexaDesk Security Guard: lockdown por ${executor.tag}`
+      })
+      : null;
+
     await this.sendSecurityLog({
       guild,
       config: security,
@@ -741,11 +788,81 @@ export class SecurityManager {
       fields: [
         { name: 'Acciones', value: bucket.map((item) => `- ${item.label}`).slice(-8).join('\n') || label },
         member?.user?.bot ? { name: 'Top.gg', value: describeTopGgLookup(topGgDecision.lookup) } : null,
+        cleanupResult ? { name: 'Limpieza de canales', value: cleanupResult } : null,
+        lockdownResult ? { name: 'Lockdown rapido', value: lockdownResult } : null,
         { name: 'Respuesta', value: this.isSecurityLabBot(member?.user?.id) ? 'Simulacion registrada. Bot de laboratorio no aislado.' : canBan ? 'Ban preventivo aplicado' : 'No pude banear por permisos, jerarquia o politica Top.gg' }
       ],
       important: true
     });
     return true;
+  }
+
+  async deleteRecentCreatedChannels({ guild, bucket, reason }) {
+    if (!guild.members.me?.permissions.has(PermissionFlagsBits.ManageChannels)) {
+      return 'No pude borrar canales: falta Manage Channels.';
+    }
+
+    const targetIds = [...new Set(bucket
+      .filter((item) => item.auditType === AuditLogEvent.ChannelCreate)
+      .map((item) => item.targetId)
+      .filter(Boolean))]
+      .slice(-CHANNEL_CLEANUP_MAX);
+
+    if (!targetIds.length) return 'No habia canales nuevos identificables para limpiar.';
+
+    let deleted = 0;
+    let skipped = 0;
+    for (const channelId of targetIds) {
+      const channel = await guild.channels.fetch(channelId).catch(() => null);
+      if (!channel || channel.deleted) {
+        skipped += 1;
+        continue;
+      }
+      const ageMs = Date.now() - Number(channel.createdTimestamp ?? Date.now());
+      if (ageMs > 1000 * 60 * 3) {
+        skipped += 1;
+        continue;
+      }
+      const ok = await channel.delete(reason).then(() => true).catch(() => false);
+      if (ok) deleted += 1;
+      else skipped += 1;
+    }
+
+    if (!deleted) return `No pude borrar los canales detectados (${skipped} omitidos/no accesibles).`;
+    return `Borre ${deleted} canales creados en la rafaga${skipped ? ` (${skipped} omitidos/no accesibles)` : ''}.`;
+  }
+
+  async applyEmergencyLockdown({ guild, reason }) {
+    const now = Date.now();
+    const lastLockdown = this.lockdownCooldowns.get(guild.id) ?? 0;
+    if (now - lastLockdown < LOCKDOWN_COOLDOWN_MS) {
+      return 'Lockdown ya aplicado hace menos de 60s; evito repetir cambios masivos.';
+    }
+    if (!guild.members.me?.permissions.has(PermissionFlagsBits.ManageChannels)) {
+      return 'No pude aplicar lockdown: falta Manage Channels.';
+    }
+
+    this.lockdownCooldowns.set(guild.id, now);
+    const textChannels = [...guild.channels.cache.values()]
+      .filter((channel) => [ChannelType.GuildText, ChannelType.GuildAnnouncement].includes(channel.type))
+      .sort((a, b) => Number(a.rawPosition ?? 0) - Number(b.rawPosition ?? 0))
+      .slice(0, LOCKDOWN_CHANNEL_MAX);
+
+    let locked = 0;
+    let failed = 0;
+    for (const channel of textChannels) {
+      const ok = await channel.permissionOverwrites.edit(guild.roles.everyone, {
+        SendMessages: false,
+        CreatePublicThreads: false,
+        CreatePrivateThreads: false,
+        AddReactions: false
+      }, { reason }).then(() => true).catch(() => false);
+      if (ok) locked += 1;
+      else failed += 1;
+    }
+
+    if (!locked) return `No pude bloquear canales (${failed} fallidos).`;
+    return `Lockdown aplicado en ${locked} canales de texto${failed ? ` (${failed} fallidos)` : ''}.`;
   }
 
   async findRecentAuditEntry(guild, auditType, targetId) {
@@ -899,6 +1016,65 @@ function describeTopGgLookup(lookup) {
   if (lookup.status === 'not_listed') return lookup.reason || 'Bot no listado en Top.gg.';
   if (lookup.status === 'lab_allowlisted') return lookup.reason || 'Bot de laboratorio autorizado.';
   return lookup.reason || 'Estado Top.gg desconocido.';
+}
+
+function getSensitiveActionLimit(security, auditType, severity) {
+  const base = Math.max(2, Number(security.nukeLimit ?? 3));
+  if (auditType === AuditLogEvent.GuildUpdate) return 2;
+  if (auditType === AuditLogEvent.ChannelCreate) return Math.max(2, base - 1);
+  if (auditType === AuditLogEvent.ChannelUpdate) return Math.max(2, base - 1);
+  if (severity === 'critical') return Math.max(2, base - 1);
+  return base;
+}
+
+function shouldApplyEmergencyLockdown(auditType, severity, bucket) {
+  if (severity === 'critical') return true;
+  const channelCreates = bucket.filter((item) => item.auditType === AuditLogEvent.ChannelCreate).length;
+  const channelUpdates = bucket.filter((item) => item.auditType === AuditLogEvent.ChannelUpdate).length;
+  const guildUpdates = bucket.filter((item) => item.auditType === AuditLogEvent.GuildUpdate).length;
+  return channelCreates >= 2 || channelUpdates >= 2 || guildUpdates >= 1;
+}
+
+function describeChannelChanges(oldChannel, newChannel) {
+  const changes = [];
+  if (!oldChannel || !newChannel) return changes;
+  if (oldChannel.name !== newChannel.name) changes.push('nombre');
+  if (oldChannel.parentId !== newChannel.parentId) changes.push('categoria');
+  if (oldChannel.topic !== newChannel.topic) changes.push('topic');
+  if (oldChannel.rateLimitPerUser !== newChannel.rateLimitPerUser) changes.push('slowmode');
+  if (oldChannel.nsfw !== newChannel.nsfw) changes.push('nsfw');
+  if (oldChannel.type !== newChannel.type) changes.push('tipo');
+  if (permissionOverwriteSignature(oldChannel) !== permissionOverwriteSignature(newChannel)) changes.push('permisos');
+  return changes.slice(0, 8);
+}
+
+function describeGuildChanges(oldGuild, newGuild) {
+  const changes = [];
+  if (!oldGuild || !newGuild) return changes;
+  const watched = [
+    ['name', 'nombre'],
+    ['icon', 'icono'],
+    ['verificationLevel', 'verificacion'],
+    ['explicitContentFilter', 'filtro de contenido'],
+    ['defaultMessageNotifications', 'notificaciones'],
+    ['mfaLevel', 'mfa'],
+    ['systemChannelId', 'canal sistema'],
+    ['rulesChannelId', 'canal normas'],
+    ['publicUpdatesChannelId', 'canal updates'],
+    ['afkChannelId', 'canal afk'],
+    ['preferredLocale', 'idioma']
+  ];
+  for (const [key, label] of watched) {
+    if (oldGuild[key] !== newGuild[key]) changes.push(label);
+  }
+  return changes.slice(0, 8);
+}
+
+function permissionOverwriteSignature(channel) {
+  return [...(channel?.permissionOverwrites?.cache?.values?.() ?? [])]
+    .map((overwrite) => `${overwrite.id}:${overwrite.type}:${String(overwrite.allow?.bitfield ?? '')}:${String(overwrite.deny?.bitfield ?? '')}`)
+    .sort()
+    .join('|');
 }
 
 function parseIdList(value = '') {

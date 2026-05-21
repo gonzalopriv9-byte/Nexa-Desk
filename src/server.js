@@ -1392,7 +1392,7 @@ async function buildDashboardAssistantReply({ config, message, guild, stats, act
         'En Crecimiento se gestionan valoraciones post-ticket, reviews publicas, canal de reviews y Churn Radar.',
         'En Premium se gestionan Voz Pro, IA prioritaria, transcripciones inteligentes, Security Plus, branding propio, informes semanales, Growth Engine y conversion insights por servidor.',
         'El modo mantenimiento se controla por slash command owner-only /mantenimiento o desde el panel oculto /admin; /admin se abre con codigo temporal emitido por /code a roles autorizados.',
-        'Security Guard incluye anti-flood, anti-links IA, XN Protect Automod, anti-bots Top.gg, anti-alts y anti-nuke.',
+        'Security Guard incluye anti-flood, anti-links IA, XN Protect Automod, anti-bots Top.gg, anti-alts y anti-nuke con proteccion ante canales/config masivos.',
         'En Tickets se ven tickets y transcripciones guardadas.',
         'Si el usuario pide que tu metas algo, explica que puedes rellenar campos con botones de accion, pero el usuario debe revisar y guardar/publicar.',
         'No pidas IDs si la dashboard ya ofrece selectores de roles, canales y categorias.',
@@ -1450,7 +1450,7 @@ function buildDashboardAssistantFallback({ message, guild, stats, activeView, ac
       ? 'Ve a Premium para activar o pausar Voz Pro, IA prioritaria, transcripciones inteligentes, Security Plus, Growth Engine, branding propio e informes semanales por servidor.'
       : 'Ve a Premium para ver que desbloquea el plan. La activacion del plan se hace manualmente con /activarpremium o desde Supabase, y despues alli gestionas los modulos.';
   } else if (lower.includes('seguridad') || lower.includes('security') || lower.includes('anti') || lower.includes('raid') || lower.includes('flood') || lower.includes('nuke') || lower.includes('phishing') || lower.includes('estafa') || lower.includes('links')) {
-    reply += 'Ve a Configuracion y baja hasta Security Guard. Puedes activar nivel intermedio, Anti-links IA, XN Protect Automod, Anti-bots Top.gg, elegir un canal de logs y guardar. Si Discord bloquea acciones, actualiza permisos desde el boton superior.';
+    reply += 'Ve a Configuracion y baja hasta Security Guard. Puedes activar nivel intermedio, Anti-links IA, XN Protect Automod, Anti-bots Top.gg, Anti-nuke de canales/config, elegir un canal de logs y guardar. Si Discord bloquea acciones, actualiza permisos desde el boton superior.';
   } else if (lower.includes('transcrip') || lower.includes('ticket')) {
     reply += 'En Tickets puedes abrir cada transcripcion guardada y descargarla en TXT. Si no aparecen tickets, abre uno desde un panel o una categoria configurada.';
   } else if (lower.includes('staff') || lower.includes('rol') || lower.includes('escalar')) {
@@ -2446,7 +2446,7 @@ function buildDocsSections(config) {
       summary: 'Capas anti-raid, anti-scam, blacklist y crisis.',
       blocks: [
         { type: 'list', items: [
-          'Security Guard detecta flood, links sospechosos, contenido ofensivo/malicioso, alts, bots no listados en Top.gg y patrones anti-nuke.',
+          'Security Guard detecta flood, links sospechosos, contenido ofensivo/malicioso, alts, bots no listados en Top.gg, creaciones masivas de canales, cambios de permisos/config y patrones anti-nuke.',
           'Los links se analizan con IA cuando aparecen en mensajes; puede recomendar review, borrado o aislamiento.',
           'XN Protect Automod se consulta con contenido textual y, si response.malicioso=true, se borra el mensaje, se intenta aislar al autor y se loguea motivo/palabras.',
           'Anti-bots consulta Top.gg con TOPGG_API_TOKEN. Solo banea bots cuando la API confirma que no estan listados; con timeout/error/token ausente solo deja aviso.',
@@ -3809,7 +3809,7 @@ function renderDashboard({ session, guilds, tickets, stats }) {
           <button class="secondary-button" type="button" onclick="return rescanDiscovery()">Reescanear canales</button>
         </article>
         <article class="control-card wide">
-          <div class="card-head"><span class="step">3</span><div><h2>Security Guard</h2><p>Activa proteccion anti-flood, anti-links IA, XN Protect Automod, anti-alts, anti-bots y anti-nuke usando audit logs.</p></div></div>
+            <div class="card-head"><span class="step">3</span><div><h2>Security Guard</h2><p>Activa proteccion anti-flood, anti-links IA, XN Protect Automod, anti-alts, anti-bots y anti-nuke de canales/config usando audit logs.</p></div></div>
           <form onsubmit="return saveSecurity(event)">
             <label>Estado<select id="securityEnabled">
               <option value="false">Desactivado</option>
@@ -3846,7 +3846,7 @@ function renderDashboard({ session, guilds, tickets, stats }) {
               <option value="true">Activo</option>
               <option value="false">Desactivado</option>
             </select></label>
-            <p class="notice span-2">Anti-bots solo banea bots que Top.gg confirme como no listados. Si Top.gg no responde o falta token, NexaDesk no banea a ciegas. Para anti-nuke completo, actualiza permisos con View Audit Log, Manage Messages, Moderate Members, Kick Members y Ban Members.</p>
+            <p class="notice span-2">Anti-bots solo banea bots que Top.gg confirme como no listados. Anti-nuke tambien detecta rafagas de canales, permisos y cambios del servidor; puede limpiar canales nuevos y aplicar lockdown rapido. Para cobertura completa, actualiza permisos con View Audit Log, Manage Channels, Manage Messages, Moderate Members, Kick Members y Ban Members.</p>
             <button class="span-2" type="submit">Guardar Security Guard</button>
           </form>
         </article>
@@ -4485,7 +4485,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
         announcements: { title: 'Detecta anuncios y canales clave', text: 'Reescanea canales para que NexaDesk encuentre anuncios, normas, FAQ y soporte incluso con tipografias raras.', view: 'settings', action: 'Revisar discovery' },
         staff: { title: 'Asigna rol de staff', text: 'NexaDesk necesita saber a quien avisar cuando haya escalado humano o asistencia manual.', view: 'settings', action: 'Elegir staff' },
         context: { title: 'Dale contexto a la IA', text: 'Anade reglas, FAQ, tono, limites y si debe pedir pruebas visuales. Esto mejora mucho las respuestas.', view: 'settings', action: 'Escribir prompt' },
-        security: { title: 'Activa Security Guard', text: 'Protege el servidor con anti-flood, anti-links IA, anti-bots, anti-alts y anti-nuke antes de abrirlo al publico.', view: 'settings', action: 'Configurar seguridad' },
+        security: { title: 'Activa Security Guard', text: 'Protege el servidor con anti-flood, anti-links IA, anti-bots, anti-alts, anti-nuke de canales/config y lockdown rapido antes de abrirlo al publico.', view: 'settings', action: 'Configurar seguridad' },
         growth: { title: 'Activa Growth Engine', text: 'Pide valoraciones al cerrar tickets y convierte el buen soporte en reviews, prueba social y oportunidades de crecimiento.', view: 'growth', action: 'Abrir crecimiento' },
         components: { title: 'Crea opciones de menu', text: 'Los componentes separan tipos de ticket, preguntas previas y mensajes iniciales personalizados.', view: 'components', action: 'Crear componente' },
         panels: { title: 'Publica un panel', text: 'Ya puedes publicar un panel en un canal visible para que los usuarios abran tickets desde Discord.', view: 'panels', action: 'Publicar panel' }
