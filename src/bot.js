@@ -23,7 +23,13 @@ import {
   isBlacklistEntryActive,
   parseBlacklistDuration
 } from './blacklist.js';
-import { ADMIN_CODE_ROLE_ID, buildAdminAccessCode, generateAdminCode } from './admin-code.js';
+import {
+  ADMIN_CODE_ROLE_ID,
+  buildAdminAccessCode,
+  canReuseAdminAccessCode,
+  generateAdminCode,
+  getAdminAccessCodeValue
+} from './admin-code.js';
 import {
   buildMaintenanceNoticeText,
   getMaintenanceDelayMs,
@@ -1440,22 +1446,36 @@ async function handleAdminCodeCommand({ interaction, storage, config }) {
     return;
   }
 
-  const code = generateAdminCode();
-  const record = buildAdminAccessCode({
-    code,
+  const settings = await storage.getGlobalSettings();
+  const currentRecord = settings?.adminAccessCode;
+  const canReuse = canReuseAdminAccessCode({
+    record: currentRecord,
     config,
-    createdBy: interaction.user.id,
-    createdByTag: interaction.user.tag ?? interaction.user.username,
-    guildId: interaction.guildId
+    createdBy: interaction.user.id
   });
-  await storage.updateGlobalSettings({ adminAccessCode: record });
+  const code = canReuse ? getAdminAccessCodeValue({ record: currentRecord, config }) : generateAdminCode();
+  const record = canReuse
+    ? currentRecord
+    : buildAdminAccessCode({
+      code,
+      config,
+      createdBy: interaction.user.id,
+      createdByTag: interaction.user.tag ?? interaction.user.username,
+      guildId: interaction.guildId
+    });
+  if (!canReuse) {
+    await storage.updateGlobalSettings({ adminAccessCode: record });
+  }
 
   const expiresAt = Math.round(Date.parse(record.expiresAt) / 1000);
   await interaction.reply({
     content: [
-      `${EMOJIS.check} Codigo temporal para **/admin**: \`${code}\``,
+      `${EMOJIS.check} ${canReuse ? 'Codigo activo' : 'Codigo nuevo'} para **/admin**: \`${code}\``,
       `Caduca <t:${expiresAt}:R> y se invalida al primer uso.`,
-      `Ruta: ${PUBLIC_DASHBOARD_URL}admin`
+      `Ruta: ${new URL('/admin', PUBLIC_DASHBOARD_URL).toString()}`,
+      canReuse
+        ? 'Te he devuelto el mismo codigo activo para evitar invalidarlo por pedirlo varias veces.'
+        : 'Si lo pides otra vez antes de usarlo, te devolvere este mismo codigo mientras siga activo.'
     ].join('\n'),
     ephemeral: true
   });

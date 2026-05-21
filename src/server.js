@@ -5,7 +5,7 @@ import cookieParser from 'cookie-parser';
 import crypto from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { verifyAdminAccessCode } from './admin-code.js';
+import { getAdminAccessCodeStatus, inspectAdminAccessCode } from './admin-code.js';
 import { GroqClient } from './ai/groq-client.js';
 import { GLOBAL_BLACKLIST_ADMIN_USER_ID, buildGlobalBanCode, isBlacklistEntryActive, parseBlacklistDuration } from './blacklist.js';
 import { normalizeTotpSecret, verifyTotpCode } from './docs-auth.js';
@@ -24,6 +24,7 @@ const BOT_INVITE_PERMISSIONS = '1099780451478';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ASSETS_DIR = path.resolve(__dirname, '..', 'assets');
 const docsAuthAttempts = new Map();
+const adminAuthAttempts = new Map();
 
 export function createServer({ config, storage, bot, events }) {
   const app = express();
@@ -316,7 +317,11 @@ export function createServer({ config, storage, bot, events }) {
     setDocsSecurityHeaders(res);
     const adminSession = getAdminSession(req);
     if (!adminSession) {
-      res.type('html').send(renderAdminGate({ config }));
+      const settings = await storage.getGlobalSettings().catch(() => ({}));
+      res.type('html').send(renderAdminGate({
+        config,
+        codeStatus: getAdminAccessCodeStatus(settings?.adminAccessCode)
+      }));
       return;
     }
 
@@ -330,7 +335,7 @@ export function createServer({ config, storage, bot, events }) {
   app.post('/admin', asyncHandler(async (req, res) => {
     setDocsSecurityHeaders(res);
     const ip = getRequestIp(req);
-    if (isDocsRateLimited(ip)) {
+    if (isAdminRateLimited(ip)) {
       res.status(429).type('html').send(renderAdminGate({
         config,
         error: 'Demasiados intentos. Espera un minuto antes de probar otro codigo.'
@@ -340,16 +345,20 @@ export function createServer({ config, storage, bot, events }) {
 
     const settings = await storage.getGlobalSettings();
     const record = settings?.adminAccessCode;
-    if (!verifyAdminAccessCode({ record, code: req.body.code, config })) {
-      recordDocsFailure(ip);
+    const verification = inspectAdminAccessCode({ record, code: req.body.code, config });
+    if (!verification.ok) {
+      if (verification.reason === 'wrong' || verification.reason === 'malformed') {
+        recordAdminFailure(ip);
+      }
       res.status(401).type('html').send(renderAdminGate({
         config,
-        error: 'Codigo incorrecto, caducado o ya utilizado. Genera otro con /code en Discord.'
+        codeStatus: getAdminAccessCodeStatus(record),
+        error: adminCodeErrorMessage(verification.reason)
       }));
       return;
     }
 
-    clearDocsFailures(ip);
+    clearAdminFailures(ip);
     const now = Date.now();
     const maxAge = config.DOCS_SESSION_MINUTES * 60 * 1000;
     await storage.updateGlobalSettings({
@@ -1295,27 +1304,60 @@ function getRequestIp(req) {
 }
 
 function isDocsRateLimited(ip) {
-  const entry = docsAuthAttempts.get(ip);
+  return isAuthRateLimited(docsAuthAttempts, ip);
+}
+
+function recordDocsFailure(ip) {
+  recordAuthFailure(docsAuthAttempts, ip);
+}
+
+function clearDocsFailures(ip) {
+  clearAuthFailures(docsAuthAttempts, ip);
+}
+
+function isAdminRateLimited(ip) {
+  return isAuthRateLimited(adminAuthAttempts, ip);
+}
+
+function recordAdminFailure(ip) {
+  recordAuthFailure(adminAuthAttempts, ip);
+}
+
+function clearAdminFailures(ip) {
+  clearAuthFailures(adminAuthAttempts, ip);
+}
+
+function isAuthRateLimited(store, ip) {
+  const entry = store.get(ip);
   if (!entry) return false;
   if (Date.now() > entry.resetAt) {
-    docsAuthAttempts.delete(ip);
+    store.delete(ip);
     return false;
   }
   return entry.count >= 6;
 }
 
-function recordDocsFailure(ip) {
+function recordAuthFailure(store, ip) {
   const now = Date.now();
-  const entry = docsAuthAttempts.get(ip);
+  const entry = store.get(ip);
   if (!entry || now > entry.resetAt) {
-    docsAuthAttempts.set(ip, { count: 1, resetAt: now + 60_000 });
+    store.set(ip, { count: 1, resetAt: now + 60_000 });
     return;
   }
   entry.count += 1;
 }
 
-function clearDocsFailures(ip) {
-  docsAuthAttempts.delete(ip);
+function clearAuthFailures(store, ip) {
+  store.delete(ip);
+}
+
+function adminCodeErrorMessage(reason) {
+  if (reason === 'missing') return 'No hay ningun codigo activo. Genera uno con /code en Discord.';
+  if (reason === 'expired') return 'Ese codigo ha caducado. Genera otro con /code en Discord.';
+  if (reason === 'used') return 'Ese codigo ya se utilizo. Genera otro con /code en Discord.';
+  if (reason === 'malformed') return 'El codigo debe tener 6 digitos. Puedes pegarlo con espacios, los limpio automaticamente.';
+  if (reason === 'invalid') return 'El codigo guardado no es valido. Genera uno nuevo con /code en Discord.';
+  return 'Codigo incorrecto. Copia el ultimo codigo activo generado con /code.';
 }
 
 async function buildDashboardAssistantReply({ config, message, guild, stats, activeView }) {
@@ -1878,7 +1920,9 @@ function renderAdminDisabled(config) {
   });
 }
 
-function renderAdminGate({ config, error = '' }) {
+function renderAdminGate({ config, error = '', codeStatus = null }) {
+  const status = codeStatus ?? getAdminAccessCodeStatus(null);
+  const statusText = renderAdminCodeStatus(status);
   return renderDocsShell({
     title: 'NexaDesk Admin',
     body: `
@@ -1886,7 +1930,11 @@ function renderAdminGate({ config, error = '' }) {
         <img src="/assets/nexadesk-logo.svg" alt="NexaDesk" class="gate-logo">
         <p class="kicker">Panel oculto</p>
         <h1>Introduce el codigo de rotacion</h1>
-        <p>Genera un codigo temporal con <code>/code</code> en Discord. Solo los usuarios con el rol autorizado pueden emitirlo. Esta ruta no esta enlazada desde la dashboard y la sesion caduca en ${escapeHtml(String(config.DOCS_SESSION_MINUTES))} minutos.</p>
+        <p>Genera un codigo temporal con <code>/code</code> en Discord. Si ya tienes uno activo, NexaDesk te devolvera el mismo codigo para no invalidarte el anterior. Esta sesion caduca en ${escapeHtml(String(config.DOCS_SESSION_MINUTES))} minutos.</p>
+        <div class="notice">
+          <strong>${escapeHtml(status.label)}</strong>
+          <span>${escapeHtml(statusText)}</span>
+        </div>
         ${error ? `<div class="error">${escapeHtml(error)}</div>` : ''}
         <form method="post" action="/admin" class="totp-form" autocomplete="off">
           <label>
@@ -1897,11 +1945,24 @@ function renderAdminGate({ config, error = '' }) {
         </form>
         <div class="notice">
           <strong>Sin acceso publico</strong>
-          <span>El codigo caduca en pocos minutos, se guarda hasheado, se invalida al primer uso y protege endpoints internos bajo <code>/admin/api</code>.</span>
+          <span>El codigo dura 10 minutos, se guarda hasheado, se cifra para poder repetirlo al mismo emisor mientras esta activo, se invalida al primer uso y protege endpoints internos bajo <code>/admin/api</code>.</span>
         </div>
       </main>
     `
   });
+}
+
+function renderAdminCodeStatus(status) {
+  if (!status || status.state === 'missing') return 'Ejecuta /code en Discord para crear un codigo nuevo.';
+  if (status.state === 'active') {
+    const expiresAt = status.expiresAt ? new Date(status.expiresAt).toLocaleString('es-ES') : 'pronto';
+    const minutes = Math.max(1, Math.ceil((status.secondsRemaining ?? 0) / 60));
+    const author = status.createdByTag ? ` Emitido por ${status.createdByTag}.` : '';
+    return `Hay un codigo activo durante unos ${minutes} min. Expira: ${expiresAt}.${author}`;
+  }
+  if (status.state === 'used') return 'El ultimo codigo ya se uso. Ejecuta /code para generar uno nuevo.';
+  if (status.state === 'expired') return 'El ultimo codigo expiro. Ejecuta /code para generar uno nuevo.';
+  return 'El codigo guardado no se puede validar. Ejecuta /code para regenerarlo.';
 }
 
 function renderAdminPanel({ config, session, snapshot }) {

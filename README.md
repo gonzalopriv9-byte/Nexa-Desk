@@ -130,7 +130,7 @@ Generate a secret:
 npm run docs:totp-secret
 ```
 
-Set the printed `DOCS_TOTP_SECRET` in Render and in the Raspberry Pi `.env`, then add the printed `otpauth_uri` manually to Google Authenticator. Docs use no-cache headers, noindex, short signed sessions, anti-copy/print guards, and persistent watermarks. Admin uses the same security headers but authenticates through `/code`, stored hashed and invalidated after first use. Browser code cannot fully prevent operating-system screenshots, so treat the watermark, TOTP, and rotating admin codes as defense-in-depth, not magic DRM.
+Set the printed `DOCS_TOTP_SECRET` in Render and in the Raspberry Pi `.env`, then add the printed `otpauth_uri` manually to Google Authenticator. Docs use no-cache headers, noindex, short signed sessions, anti-copy/print guards, and persistent watermarks. Admin uses the same security headers but authenticates through `/code`, stored hashed, encrypted for same-user reuse while active, and invalidated after first use. Set the same `ADMIN_CODE_SECRET` in Render and Pi for the cleanest setup; if it is missing, NexaDesk falls back to shared bot secrets so Pi-generated codes still validate on Render. Browser code cannot fully prevent operating-system screenshots, so treat the watermark, TOTP, and rotating admin codes as defense-in-depth, not magic DRM.
 
 ## Discord OAuth
 
