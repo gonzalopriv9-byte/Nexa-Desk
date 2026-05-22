@@ -119,7 +119,7 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
       if (interaction.isButton() && interaction.customId === 'nexadesk:create_ticket') {
         const guildConfig = await storage.getGuildConfig(interaction.guildId);
         const panel = findPanelForInteraction(guildConfig, interaction);
-        await createTicketFromConfiguredSource({ interaction, storage, guildConfig, panel, panelCreatedChannels, blacklistAlertedChannels, config, voiceManager });
+        await createTicketFromConfiguredSource({ interaction, storage, guildConfig, panel, panelCreatedChannels, blacklistAlertedChannels, config, voiceManager, supportAgent });
         return;
       }
 
@@ -158,7 +158,7 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
           return;
         }
 
-        await createTicketFromConfiguredSource({ interaction, storage, guildConfig, panel, component, panelCreatedChannels, blacklistAlertedChannels, config, voiceManager });
+        await createTicketFromConfiguredSource({ interaction, storage, guildConfig, panel, component, panelCreatedChannels, blacklistAlertedChannels, config, voiceManager, supportAgent });
         return;
       }
 
@@ -175,7 +175,7 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
           question,
           answer: interaction.fields.getTextInputValue(`question_${index}`) || 'Sin respuesta'
         }));
-        await createTicketFromConfiguredSource({ interaction, storage, guildConfig, component, answers, panelCreatedChannels, blacklistAlertedChannels, config, voiceManager });
+        await createTicketFromConfiguredSource({ interaction, storage, guildConfig, component, answers, panelCreatedChannels, blacklistAlertedChannels, config, voiceManager, supportAgent });
         return;
       }
 
@@ -2405,7 +2405,7 @@ function buildHelpComponents({ view, config }) {
   ];
 }
 
-async function createTicketFromConfiguredSource({ interaction, storage, guildConfig, panel = null, component = null, answers = [], panelCreatedChannels, blacklistAlertedChannels, config, voiceManager = null }) {
+async function createTicketFromConfiguredSource({ interaction, storage, guildConfig, panel = null, component = null, answers = [], panelCreatedChannels, blacklistAlertedChannels, config, voiceManager = null, supportAgent = null }) {
   if (!interaction.inGuild()) {
     await interaction.reply({ content: 'Los tickets solo se pueden abrir dentro de un servidor.', ephemeral: true });
     return;
@@ -2489,6 +2489,17 @@ async function createTicketFromConfiguredSource({ interaction, storage, guildCon
 
   const welcome = await channel.send(buildTicketWelcomeMessage({ panel: normalizedPanel, component: normalizedComponent, answers, userMention: `${interaction.user}` }));
   await saveTranscript(storage, welcome, 'assistant');
+  await sendContextualTicketOpening({
+    storage,
+    supportAgent,
+    channel,
+    ticket,
+    guildConfig,
+    panel: normalizedPanel,
+    component: normalizedComponent,
+    answers,
+    user: interaction.user
+  });
   await sendMaintenanceTicketNotice({ storage, channel, guildConfig });
 
   await maybeAlertXnProtectBlacklist({
@@ -2944,6 +2955,32 @@ function buildTicketWelcomeMessage({ panel, component, answers, userMention }) {
     : '';
 
   return `${EMOJIS.nexalogo} ${baseMessage}${answerBlock}`;
+}
+
+async function sendContextualTicketOpening({ storage, supportAgent, channel, ticket, guildConfig, panel, component, answers = [], user }) {
+  if (!supportAgent || !answers.length) return null;
+
+  const opening = await supportAgent.buildTicketOpening({
+    ticket,
+    guildConfig,
+    panel,
+    component,
+    answers,
+    userTag: user?.tag ?? user?.username ?? user?.id
+  });
+
+  if (!opening) return null;
+
+  const sent = await channel.send({
+    content: opening.slice(0, 1900),
+    allowedMentions: { parse: [] }
+  }).catch((error) => {
+    console.error(`Failed to send contextual ticket opening in ${channel.id}:`, error);
+    return null;
+  });
+
+  if (sent) await saveTranscript(storage, sent, 'assistant');
+  return sent;
 }
 
 function formatWelcomeTemplate(template, userMention) {
