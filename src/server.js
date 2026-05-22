@@ -5,7 +5,6 @@ import cookieParser from 'cookie-parser';
 import crypto from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import Stripe from 'stripe';
 import { getAdminAccessCodeStatus, inspectAdminAccessCode } from './admin-code.js';
 import { GroqClient } from './ai/groq-client.js';
 import { GLOBAL_BLACKLIST_ADMIN_USER_ID, buildGlobalBanCode, isBlacklistEntryActive, parseBlacklistDuration } from './blacklist.js';
@@ -30,39 +29,9 @@ const adminAuthAttempts = new Map();
 
 export function createServer({ config, storage, bot, events }) {
   const app = express();
-  const stripe = createStripeClient(config);
 
   app.use(helmet({ contentSecurityPolicy: false }));
   app.use(morgan('tiny'));
-
-  app.post('/api/premium/stripe/webhook', express.raw({ type: 'application/json' }), asyncHandler(async (req, res) => {
-    if (!stripe || !config.STRIPE_WEBHOOK_SECRET) {
-      res.status(503).json({ error: 'Stripe webhook is not configured.' });
-      return;
-    }
-
-    let event;
-    try {
-      event = stripe.webhooks.constructEvent(
-        req.body,
-        req.headers['stripe-signature'],
-        config.STRIPE_WEBHOOK_SECRET
-      );
-    } catch (error) {
-      res.status(400).send(`Webhook Error: ${normalizeError(error)}`);
-      return;
-    }
-
-    if (event.type === 'checkout.session.completed') {
-      await fulfillPremiumCheckoutSession({
-        session: event.data.object,
-        storage,
-        config
-      });
-    }
-
-    res.json({ received: true });
-  }));
 
   app.use(express.json());
   app.use(express.urlencoded({ extended: true }));
@@ -495,19 +464,22 @@ export function createServer({ config, storage, bot, events }) {
     res.redirect(buildBotInviteUrl(config, req.params.guildId));
   });
 
-  app.get('/premium/success', asyncHandler(async (req, res) => {
-    if (stripe && req.query.session_id) {
-      const checkoutSession = await stripe.checkout.sessions.retrieve(String(req.query.session_id));
-      if (checkoutSession?.metadata?.discordUserId === req.session.user.id) {
-        await fulfillPremiumCheckoutSession({
-          session: checkoutSession,
-          storage,
-          config
-        });
-      }
+  app.get('/premium/paypal/success', asyncHandler(async (req, res) => {
+    const orderId = String(req.query.token ?? '').trim();
+    if (orderId) {
+      await capturePremiumPayPalOrder({
+        orderId,
+        storage,
+        config,
+        session: req.session
+      });
     }
     res.redirect('/#premium');
   }));
+
+  app.get('/premium/paypal/cancel', (_req, res) => {
+    res.redirect('/#premium');
+  });
 
   app.get('/api/me', (req, res) => {
     res.json(req.session);
@@ -560,39 +532,24 @@ export function createServer({ config, storage, bot, events }) {
   }));
 
   app.post('/api/premium/checkout', asyncHandler(async (req, res) => {
-    if (!stripe) {
-      res.status(503).json({ error: 'Stripe no esta configurado todavia. Anade STRIPE_SECRET_KEY en Render.' });
+    const checkoutConfig = getPremiumCheckoutConfig(config);
+    if (!checkoutConfig.configured) {
+      res.status(503).json({ error: 'PayPal no esta configurado todavia. Anade PAYPAL_CLIENT_ID y PAYPAL_CLIENT_SECRET en Render.' });
       return;
     }
 
-    const checkoutConfig = getPremiumCheckoutConfig(config);
-    const session = await stripe.checkout.sessions.create({
-      mode: 'payment',
-      payment_method_types: ['card'],
-      line_items: [
-        {
-          price_data: {
-            currency: checkoutConfig.currency,
-            product_data: {
-              name: 'NexaDesk Premium',
-              description: `${checkoutConfig.slots} servidores premium por ${checkoutConfig.displayPrice}`
-            },
-            unit_amount: checkoutConfig.priceCents
-          },
-          quantity: 1
-        }
-      ],
-      success_url: `${config.DASHBOARD_PUBLIC_URL.replace(/\/$/, '')}/premium/success?session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${config.DASHBOARD_PUBLIC_URL.replace(/\/$/, '')}/#premium`,
-      metadata: {
-        discordUserId: req.session.user.id,
-        username: req.session.user.username ?? '',
-        slots: String(checkoutConfig.slots),
-        source: 'dashboard'
-      }
+    const order = await createPremiumPayPalOrder({
+      config,
+      session: req.session,
+      checkoutConfig
     });
+    const approveUrl = order.links?.find((link) => link.rel === 'approve')?.href;
+    if (!approveUrl) {
+      res.status(502).json({ error: 'PayPal no devolvio enlace de aprobacion.' });
+      return;
+    }
 
-    res.json({ url: session.url });
+    res.json({ url: approveUrl, orderId: order.id });
   }));
 
   app.post('/api/premium/activate', asyncHandler(async (req, res) => {
@@ -832,50 +789,131 @@ function asyncHandler(handler) {
   };
 }
 
-function createStripeClient(config) {
-  if (!config.STRIPE_SECRET_KEY) return null;
-  return new Stripe(config.STRIPE_SECRET_KEY, {
-    appInfo: {
-      name: 'NexaDesk',
-      version: '0.1.0'
-    }
-  });
-}
-
-async function fulfillPremiumCheckoutSession({ session, storage, config }) {
-  const paymentStatus = String(session?.payment_status ?? session?.status ?? '').toLowerCase();
-  const completed = session?.status === 'complete' || ['paid', 'no_payment_required', 'complete'].includes(paymentStatus);
-  if (!completed) return null;
-
-  const discordUserId = session?.metadata?.discordUserId;
-  if (!discordUserId) return null;
-
-  const checkoutConfig = getPremiumCheckoutConfig(config);
-  const slots = Number.parseInt(session.metadata?.slots ?? checkoutConfig.slots, 10) || checkoutConfig.slots;
-  return storage.recordPremiumPurchase({
-    id: `stripe-${session.id}`,
-    discordUserId,
-    buyerUsername: session.metadata?.username,
-    provider: 'stripe',
-    providerSessionId: session.id,
-    providerPaymentIntentId: typeof session.payment_intent === 'string' ? session.payment_intent : session.payment_intent?.id,
-    amountTotal: session.amount_total,
-    currency: session.currency ?? checkoutConfig.currency,
-    slotsPurchased: slots,
-    status: paymentStatus === 'paid' ? 'paid' : session.status,
-    metadata: {
-      customer: typeof session.customer === 'string' ? session.customer : session.customer?.id,
-      paymentStatus,
-      source: session.metadata?.source ?? 'dashboard'
-    }
-  });
-}
-
 function buildPremiumAccountResponse({ account, config }) {
   return {
     ...account,
     checkout: getPremiumCheckoutConfig(config)
   };
+}
+
+async function createPremiumPayPalOrder({ config, session, checkoutConfig }) {
+  const baseUrl = getPayPalBaseUrl(config);
+  const accessToken = await getPayPalAccessToken(config);
+  const purchaseId = `nexadesk-${session.user.id}-${Date.now()}`;
+  const value = (checkoutConfig.priceCents / 100).toFixed(2);
+  const dashboardUrl = config.DASHBOARD_PUBLIC_URL.replace(/\/$/, '');
+
+  return paypalFetch(config, `${baseUrl}/v2/checkout/orders`, {
+    method: 'POST',
+    accessToken,
+    body: {
+      intent: 'CAPTURE',
+      purchase_units: [
+        {
+          reference_id: purchaseId,
+          custom_id: session.user.id,
+          description: `${checkoutConfig.slots} servidores premium NexaDesk`,
+          amount: {
+            currency_code: checkoutConfig.currency.toUpperCase(),
+            value
+          }
+        }
+      ],
+      payment_source: {
+        paypal: {
+          experience_context: {
+            brand_name: 'NexaDesk',
+            landing_page: 'LOGIN',
+            user_action: 'PAY_NOW',
+            return_url: `${dashboardUrl}/premium/paypal/success`,
+            cancel_url: `${dashboardUrl}/premium/paypal/cancel`
+          }
+        }
+      }
+    }
+  });
+}
+
+async function capturePremiumPayPalOrder({ orderId, storage, config, session }) {
+  const baseUrl = getPayPalBaseUrl(config);
+  const accessToken = await getPayPalAccessToken(config);
+  const capture = await paypalFetch(config, `${baseUrl}/v2/checkout/orders/${encodeURIComponent(orderId)}/capture`, {
+    method: 'POST',
+    accessToken,
+    body: {}
+  });
+
+  if (capture.status !== 'COMPLETED') return null;
+  const unit = capture.purchase_units?.[0] ?? {};
+  const captureInfo = unit.payments?.captures?.[0] ?? {};
+  const checkoutConfig = getPremiumCheckoutConfig(config);
+  const discordUserId = unit.custom_id || session.user.id;
+  if (discordUserId !== session.user.id) {
+    throw new Error('Este pago de PayPal pertenece a otra sesion de Discord.');
+  }
+
+  return storage.recordPremiumPurchase({
+    id: `paypal-${capture.id}`,
+    discordUserId,
+    buyerUsername: session.user.username,
+    provider: 'paypal',
+    providerSessionId: capture.id,
+    providerPaymentIntentId: captureInfo.id,
+    amountTotal: Math.round(Number(captureInfo.amount?.value ?? checkoutConfig.priceCents / 100) * 100),
+    currency: captureInfo.amount?.currency_code?.toLowerCase() ?? checkoutConfig.currency,
+    slotsPurchased: checkoutConfig.slots,
+    status: 'paid',
+    metadata: {
+      paypalStatus: capture.status,
+      payerId: capture.payer?.payer_id,
+      payerEmail: capture.payer?.email_address,
+      captureStatus: captureInfo.status,
+      referenceId: unit.reference_id,
+      source: 'dashboard'
+    }
+  });
+}
+
+async function getPayPalAccessToken(config) {
+  const baseUrl = getPayPalBaseUrl(config);
+  const auth = Buffer.from(`${config.PAYPAL_CLIENT_ID}:${config.PAYPAL_CLIENT_SECRET}`).toString('base64');
+  const response = await fetch(`${baseUrl}/v1/oauth2/token`, {
+    method: 'POST',
+    headers: {
+      authorization: `Basic ${auth}`,
+      'content-type': 'application/x-www-form-urlencoded'
+    },
+    body: 'grant_type=client_credentials'
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data.access_token) {
+    throw new Error(`PayPal OAuth fallo: ${response.status} ${data.error_description || data.error || ''}`.trim());
+  }
+  return data.access_token;
+}
+
+async function paypalFetch(config, url, { method = 'GET', accessToken, body = null } = {}) {
+  const response = await fetch(url, {
+    method,
+    headers: {
+      authorization: `Bearer ${accessToken}`,
+      'content-type': 'application/json',
+      'prefer': 'return=representation'
+    },
+    ...(body === null ? {} : { body: JSON.stringify(body) })
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const detail = data.message || data.error_description || data.name || JSON.stringify(data);
+    throw new Error(`PayPal API fallo: ${response.status} ${detail}`);
+  }
+  return data;
+}
+
+function getPayPalBaseUrl(config) {
+  return config.PAYPAL_MODE === 'live'
+    ? 'https://api-m.paypal.com'
+    : 'https://api-m.sandbox.paypal.com';
 }
 
 function normalizeError(error) {
@@ -4460,14 +4498,14 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
           <article class="control-card premium-buy-card">
             <span class="premium-plan">Pack directo</span>
             <h2>3 servidores premium por <span id="premiumPackPrice">3,00 €</span></h2>
-            <p>Pagas una vez, vuelves a NexaDesk y eliges exactamente en que servidores quieres activar el premium. Sin tarjetas guardadas por NexaDesk.</p>
+            <p>Pagas una vez con PayPal, vuelves a NexaDesk y eliges exactamente en que servidores quieres activar el premium. NexaDesk no guarda datos de pago.</p>
             <div class="premium-wallet">
               <div><strong id="premiumSlotsAvailable">0</strong><small>Slots disponibles</small></div>
               <div><strong id="premiumSlotsUsed">0</strong><small>Slots usados</small></div>
               <div><strong id="premiumSlotsPurchased">0</strong><small>Slots comprados</small></div>
             </div>
             <button class="premium-billing-action" id="premiumBuyButton" type="button">Comprar pack premium</button>
-            <p class="notice" id="premiumCheckoutNotice">Pago seguro con Stripe Checkout.</p>
+            <p class="notice" id="premiumCheckoutNotice">Pago seguro con PayPal Checkout.</p>
           </article>
           <article class="control-card premium-activation-card">
             <div class="card-head"><span class="step">3</span><div><h2>¿En que servidores quieres activar el premium?</h2><p>Cuando el pago este confirmado, usa tus slots aqui. Cada slot activa un servidor completo.</p></div></div>
@@ -4720,14 +4758,14 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
         buyButton.disabled = !checkout.configured;
         buyButton.textContent = checkout.configured
           ? 'Comprar pack premium'
-          : 'Stripe pendiente';
+          : 'PayPal pendiente';
         buyButton.onclick = buyPremiumPack;
       }
       const notice = document.querySelector('#premiumCheckoutNotice');
       if (notice) {
         notice.textContent = checkout.configured
-          ? 'Pago seguro con Stripe Checkout. NexaDesk solo recibe confirmacion del pago y los slots.'
-          : 'Falta STRIPE_SECRET_KEY en Render para activar pagos reales.';
+          ? 'Pago seguro con PayPal Checkout. NexaDesk solo recibe confirmacion del pago y los slots.'
+          : 'Faltan PAYPAL_CLIENT_ID y PAYPAL_CLIENT_SECRET en Render para activar pagos reales.';
       }
 
       const target = document.querySelector('#premiumActivationList');
@@ -4767,9 +4805,9 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
     }
     async function buyPremiumPack() {
       try {
-        showToast('Preparando checkout seguro...');
+        showToast('Preparando checkout seguro con PayPal...');
         const response = await postJson('/api/premium/checkout', {});
-        if (!response.url) throw new Error('Stripe no devolvio URL de pago.');
+        if (!response.url) throw new Error('PayPal no devolvio URL de pago.');
         window.location.href = response.url;
       } catch (error) {
         showToast(error.message);

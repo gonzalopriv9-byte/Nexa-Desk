@@ -46,10 +46,12 @@ services:
         sync: false
       - key: SUPABASE_SERVICE_ROLE_KEY
         sync: false
-      - key: STRIPE_SECRET_KEY
+      - key: PAYPAL_CLIENT_ID
         sync: false
-      - key: STRIPE_WEBHOOK_SECRET
+      - key: PAYPAL_CLIENT_SECRET
         sync: false
+      - key: PAYPAL_MODE
+        value: live
       - key: PREMIUM_PACK_PRICE_CENTS
         value: 300
       - key: PREMIUM_PACK_SLOTS

@@ -153,7 +153,7 @@ create table if not exists public.premium_purchases (
   id text primary key,
   discord_user_id text not null,
   buyer_username text,
-  provider text not null default 'stripe',
+  provider text not null default 'paypal',
   provider_session_id text unique,
   provider_payment_intent_id text,
   amount_total integer,

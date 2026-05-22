@@ -23,7 +23,7 @@ export function normalizePremiumPurchase(value = {}) {
     id: String(value.id ?? value.providerSessionId ?? value.provider_session_id ?? `purchase-${Date.now()}`),
     discordUserId: String(value.discordUserId ?? value.discord_user_id ?? ''),
     buyerUsername: value.buyerUsername ?? value.buyer_username ?? null,
-    provider: String(value.provider ?? 'stripe'),
+    provider: String(value.provider ?? 'paypal'),
     providerSessionId: value.providerSessionId ?? value.provider_session_id ?? null,
     providerPaymentIntentId: value.providerPaymentIntentId ?? value.provider_payment_intent_id ?? null,
     amountTotal: Number.isFinite(Number(value.amountTotal ?? value.amount_total)) ? Number(value.amountTotal ?? value.amount_total) : null,
@@ -111,7 +111,9 @@ export function getPremiumCheckoutConfig(config) {
   const currency = String(config.PREMIUM_PACK_CURRENCY || 'eur').toLowerCase();
 
   return {
-    configured: Boolean(config.STRIPE_SECRET_KEY),
+    configured: Boolean(config.PAYPAL_CLIENT_ID && config.PAYPAL_CLIENT_SECRET),
+    provider: 'paypal',
+    mode: config.PAYPAL_MODE || 'sandbox',
     slots,
     priceCents,
     currency,
