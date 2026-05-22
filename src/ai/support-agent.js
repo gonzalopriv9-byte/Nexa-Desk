@@ -4,9 +4,14 @@ import { buildDiscoveryContext } from '../server-discovery.js';
 import { detectAiQualitySignalHeuristic, parseAiQualitySignalJson } from '../ai-quality.js';
 import { hasVisualAttachments } from './visual-analyzer.js';
 
-const SERVER_CONTEXT_MAX_CHANNELS = 10;
+const SERVER_CONTEXT_MAX_CHANNELS = 12;
+const SERVER_CONTEXT_FULL_SCAN_MAX_CHANNELS = 80;
 const SERVER_CONTEXT_FETCH_LIMIT = 35;
+const SERVER_CONTEXT_FULL_SCAN_FETCH_LIMIT = 18;
 const SERVER_CONTEXT_MAX_SNIPPETS = 10;
+const SERVER_CONTEXT_CACHE_TTL_MS = 45_000;
+const SERVER_CONTEXT_FETCH_TIMEOUT_MS = 2600;
+const SERVER_CONTEXT_CONCURRENCY = 8;
 
 export class SupportAgent {
   constructor({ aiClient, storage, maxHistoryMessages, visualAnalyzer = null }) {
@@ -14,6 +19,7 @@ export class SupportAgent {
     this.storage = storage;
     this.maxHistoryMessages = maxHistoryMessages;
     this.visualAnalyzer = visualAnalyzer;
+    this.serverKnowledgeCache = new Map();
   }
 
   async answerTicketMessage({ message, ticket, guildConfig }) {
@@ -406,6 +412,8 @@ export class SupportAgent {
       'Si un miembro del staff ya dio una respuesta en este ticket, puedes usarla como contexto fiable diciendo "segun lo que indico staff". No conviertas esa informacion en promesas tuyas.',
       'Si el usuario dice algo como "me ayudas tu?", responde continuando el caso ya descrito, no con un saludo generico.',
       'Si el usuario pregunta algo del servidor que no aparece en el prompt, usa el contexto adicional del servidor. Si tampoco aparece ahi, no inventes: di que no lo tienes confirmado y ofrece pedir o esperar confirmacion de staff.',
+      'Si el usuario pregunta por actualizaciones, version, changelog, novedades o "que incluye", busca esa informacion en el contexto adicional. No digas que la version es igual si no hay una fuente que lo confirme.',
+      'Si el usuario corrige el tema con "no", "no digo eso" o "me refiero a", abandona el tema anterior inmediatamente y responde solo a la nueva intencion.',
       'Nunca reveles datos sensibles encontrados en contexto: tokens, claves, correos privados, IDs internos innecesarios, motivos de sanciones, datos de blacklist, canales privados o informacion marcada como staff-only.',
       'Si un dato sensible parece relevante, resume sin revelar: "eso debe confirmarlo el staff".',
       'Si el usuario quiere una alianza/partnership con el servidor, no lo trates como un problema tecnico.',
@@ -504,17 +512,22 @@ export class SupportAgent {
   }
 
   async #buildServerKnowledgeContext({ message, guildConfig, history, intakeContext }) {
-    if (!shouldSearchServerKnowledge(message.content, intakeContext, history)) return '';
+    const searchMode = getServerKnowledgeSearchMode(message.content, intakeContext, history);
+    if (!searchMode.enabled) return '';
 
-    const terms = buildServerKnowledgeTerms([
-      message.content,
-      intakeContext,
-      history.slice(-8).map((item) => item.content).join('\n')
-    ].join('\n'));
+    const latestTerms = buildServerKnowledgeTerms(message.content);
+    const supportingTerms = searchMode.useHistoryTerms
+      ? buildServerKnowledgeTerms([
+          intakeContext,
+          history.slice(-4).map((item) => item.content).join('\n')
+        ].join('\n'))
+      : [];
+    const terms = mergeKnowledgeTerms(latestTerms, supportingTerms, searchMode);
     if (!terms.length) return '';
 
+    const cacheKey = buildServerKnowledgeCacheKey(message.guild.id, terms, searchMode);
     const [recentMessages, storedMessages] = await Promise.all([
-      this.#searchRecentGuildMessages({ message, guildConfig, terms }).catch((error) => {
+      this.#searchRecentGuildMessages({ message, guildConfig, terms, searchMode, cacheKey }).catch((error) => {
         console.warn('Server context recent message search failed:', error?.message ?? error);
         return [];
       }),
@@ -541,13 +554,22 @@ export class SupportAgent {
       .slice(0, 6500);
   }
 
-  async #searchRecentGuildMessages({ message, guildConfig, terms }) {
-    const channels = selectServerKnowledgeChannels(message.guild, guildConfig, message.channelId, terms);
-    const snippets = [];
+  async #searchRecentGuildMessages({ message, guildConfig, terms, searchMode, cacheKey }) {
+    const cached = this.serverKnowledgeCache.get(cacheKey);
+    if (cached && Date.now() - cached.createdAt < SERVER_CONTEXT_CACHE_TTL_MS) {
+      return cached.snippets;
+    }
 
-    for (const channel of channels) {
-      const fetched = await channel.messages.fetch({ limit: SERVER_CONTEXT_FETCH_LIMIT }).catch(() => null);
-      if (!fetched) continue;
+    const channels = selectServerKnowledgeChannels(message.guild, guildConfig, message.channelId, terms, searchMode);
+    const snippets = [];
+    const fetchLimit = searchMode.fullScan ? SERVER_CONTEXT_FULL_SCAN_FETCH_LIMIT : SERVER_CONTEXT_FETCH_LIMIT;
+
+    await mapWithConcurrency(channels, SERVER_CONTEXT_CONCURRENCY, async (channel) => {
+      const fetched = await withTimeout(
+        channel.messages.fetch({ limit: fetchLimit }),
+        SERVER_CONTEXT_FETCH_TIMEOUT_MS
+      ).catch(() => null);
+      if (!fetched) return;
 
       for (const item of fetched.values()) {
         if (!item.content?.trim() || item.system || item.webhookId) continue;
@@ -564,11 +586,15 @@ export class SupportAgent {
           createdAt: item.createdTimestamp ?? 0
         });
       }
-    }
+    });
 
-    return snippets
+    const ranked = snippets
       .sort((a, b) => (b.score - a.score) || (b.createdAt - a.createdAt))
       .slice(0, SERVER_CONTEXT_MAX_SNIPPETS);
+
+    this.serverKnowledgeCache.set(cacheKey, { createdAt: Date.now(), snippets: ranked });
+    pruneServerKnowledgeCache(this.serverKnowledgeCache);
+    return ranked;
   }
 }
 
@@ -933,15 +959,27 @@ function shouldSearchRecentVisualMessage(message) {
   return /\b(no\s+ves|ves|mira|esta|esa|esta|captura|imagen|foto|pantallazo|screenshot|adjunto|dashboard|web|error|fallo)\b/iu.test(message.content ?? '');
 }
 
-function shouldSearchServerKnowledge(content = '', intakeContext = '', history = []) {
-  const text = normalizeKnowledgeText([
-    content,
+function getServerKnowledgeSearchMode(content = '', intakeContext = '', history = []) {
+  const latestText = normalizeKnowledgeText(content);
+  const supportingText = normalizeKnowledgeText([
     intakeContext,
     history.slice(-4).map((item) => item.content).join(' ')
   ].join(' '));
+  const combinedText = `${latestText} ${supportingText}`.trim();
+  const isCorrection = /\b(no|nope|nono|no\s+digo|me\s+refiero|digo\s+que|eso\s+no|ese\s+no|no\s+es\s+el\s+tema)\b/iu.test(latestText);
+  const isUpdateQuestion = /\b(actualizacion|actualizaciones|version|versiones|changelog|novedad|novedades|cambios|update|updates|release|ultima\s+actualizacion|que\s+incluye|incluia|incluye\s+esta\s+version)\b/iu.test(latestText);
+  const isServerInfoQuestion = /\b(cuando|donde|quien|resultado|resultados|postulacion|postulaciones|staff|formulario|formularios|nota|notas|aprobar|aprobado|aprobacion|canal|canales|norma|normas|regla|reglas|precio|precios|horario|evento|eventos|anuncio|anuncios|alianza|alianzas|requisito|requisitos|soporte|dashboard|premium|owner|encargado|encargados)\b/iu.test(combinedText);
+  const isWeirdButContextual = latestText.length > 0
+    && latestText.length <= 18
+    && history.slice(-6).some((item) => /\b(actualizacion|version|resultado|postulacion|alianza|canal|staff|norma|dashboard)\b/iu.test(normalizeKnowledgeText(item.content)));
 
-  if (!text.trim()) return false;
-  return /\b(cuando|donde|quien|resultado|resultados|postulacion|postulaciones|staff|formulario|formularios|nota|notas|aprobar|aprobado|aprobacion|canal|canales|norma|normas|regla|reglas|precio|precios|horario|evento|eventos|anuncio|anuncios|alianza|alianzas|requisito|requisitos|soporte|dashboard|premium|owner|encargado|encargados)\b/iu.test(text);
+  return {
+    enabled: isUpdateQuestion || isServerInfoQuestion || isWeirdButContextual,
+    fullScan: isUpdateQuestion || (isCorrection && isServerInfoQuestion),
+    useHistoryTerms: !isUpdateQuestion && !isCorrection,
+    latestOnly: isUpdateQuestion || isCorrection,
+    reason: isUpdateQuestion ? 'update_question' : isServerInfoQuestion ? 'server_info_question' : 'contextual_short_message'
+  };
 }
 
 function buildServerKnowledgeTerms(value = '') {
@@ -959,6 +997,27 @@ function buildServerKnowledgeTerms(value = '') {
 
   return [...new Set(weighted)].slice(0, 28);
 }
+
+function mergeKnowledgeTerms(latestTerms = [], supportingTerms = [], searchMode = {}) {
+  const terms = searchMode.latestOnly
+    ? latestTerms
+    : [
+        ...latestTerms,
+        ...latestTerms,
+        ...supportingTerms.filter((term) => !LATEST_INTENT_POISON_TERMS.has(term)).slice(0, 10)
+      ];
+
+  return [...new Set(terms)].slice(0, 28);
+}
+
+const LATEST_INTENT_POISON_TERMS = new Set([
+  'blacklist',
+  'globalban',
+  'sancion',
+  'baneo',
+  'apelacion',
+  'apelar'
+]);
 
 const SERVER_CONTEXT_STOP_WORDS = new Set([
   'hola',
@@ -1002,14 +1061,26 @@ const SERVER_CONTEXT_PRIORITY_TERMS = new Set([
   'reglas',
   'anuncios',
   'dashboard',
-  'premium'
+  'premium',
+  'actualizacion',
+  'actualizaciones',
+  'version',
+  'versiones',
+  'changelog',
+  'novedad',
+  'novedades',
+  'cambios',
+  'update',
+  'updates',
+  'release'
 ]);
 
-function selectServerKnowledgeChannels(guild, guildConfig, currentChannelId, terms = []) {
+function selectServerKnowledgeChannels(guild, guildConfig, currentChannelId, terms = [], searchMode = {}) {
   if (!guild?.channels?.cache) return [];
 
   const me = guild.members?.me;
   const termSet = new Set(terms);
+  const limit = searchMode.fullScan ? SERVER_CONTEXT_FULL_SCAN_MAX_CHANNELS : SERVER_CONTEXT_MAX_CHANNELS;
 
   return [...guild.channels.cache.values()]
     .filter((channel) => channel.type === ChannelType.GuildText || channel.type === ChannelType.GuildAnnouncement)
@@ -1026,15 +1097,15 @@ function selectServerKnowledgeChannels(guild, guildConfig, currentChannelId, ter
       let score = 0;
       if (channel.id === guildConfig?.announcementChannelId || channel.id === guildConfig?.discovery?.announcementChannelId) score += 8;
       if (channel.id === guildConfig?.allianceChannelId || channel.id === guildConfig?.discovery?.allianceChannelId) score += 6;
-      if (/(anuncio|avisos|news|novedad|info|informacion|faq|dudas|soporte|staff|postul|formulario|normas|reglas|alianza|partner|premium|dashboard)/iu.test(name)) score += 7;
+      if (/(anuncio|avisos|news|novedad|changelog|update|actualiz|version|info|informacion|faq|dudas|soporte|staff|postul|formulario|normas|reglas|alianza|partner|premium|dashboard)/iu.test(name)) score += 7;
       for (const term of termSet) {
         if (name.includes(term)) score += 4;
       }
       return Object.assign(channel, { serverKnowledgeScore: score });
     })
-    .filter((channel) => channel.serverKnowledgeScore > 0)
+    .filter((channel) => searchMode.fullScan || channel.serverKnowledgeScore > 0)
     .sort((a, b) => b.serverKnowledgeScore - a.serverKnowledgeScore)
-    .slice(0, SERVER_CONTEXT_MAX_CHANNELS);
+    .slice(0, limit);
 }
 
 function formatServerKnowledgeMessage(message) {
@@ -1068,6 +1139,7 @@ function scoreKnowledgeText(value = '', terms = []) {
     if (text.includes(term)) score += SERVER_CONTEXT_PRIORITY_TERMS.has(term) ? 4 : 2;
   }
   if (/\b(resultado|resultados|postulacion|formulario|nota|staff)\b/iu.test(text)) score += 5;
+  if (/\b(actualizacion|actualizaciones|version|versiones|changelog|novedad|novedades|cambios|update|updates|release)\b/iu.test(text)) score += 7;
   if (/\b(manana|hoy|fecha|hora|cuando|pronto|revision|revisar|aprobado|aprobacion)\b/iu.test(text)) score += 2;
   if (isInternalNexaDeskNotice(value)) score -= 6;
   if (isLikelySensitiveContext(value)) score -= 4;
@@ -1107,11 +1179,53 @@ function isInternalNexaDeskNotice(value = '') {
 function shouldRetryForNaturalness(answer = '', latestContent = '') {
   const text = String(answer ?? '').trim();
   if (!text) return false;
+  const latest = normalizeKnowledgeText(latestContent);
 
   const questionCount = (text.match(/[?？]/g) ?? []).length;
   const asksForTooMuch = /\b(podrias proporcionar|puedes proporcionar|mas detalles|m[aá]s informaci[oó]n|necesito que me digas|qu[eé] resultado esperas|en qu[eé] idioma quieres)\b/iu.test(text);
   const refusalNoise = /\b(no puedo ayudarte con eso|no puedo entender tu mensaje|repite(?:lo)?|idioma quieres)\b/iu.test(text);
-  const latestIsTiny = normalizeKnowledgeText(latestContent).split(/\s+/).filter(Boolean).length <= 3;
+  const staleTopicAnswer = /\b(no\s+especificaste|estabas\s+buscando\s+ayuda|la\s+version\s+actual\s+.*\bmisma\b|la\s+version\s+actual\s+.*\bigual\b)\b/iu.test(normalizeKnowledgeText(text))
+    && /\b(actualizacion|actualizaciones|version|changelog|novedades|incluye|incluia|update|release)\b/iu.test(latest);
+  const latestIsTiny = latest.split(/\s+/).filter(Boolean).length <= 3;
 
-  return refusalNoise || questionCount >= 3 || (asksForTooMuch && (questionCount >= 1 || latestIsTiny));
+  return staleTopicAnswer || refusalNoise || questionCount >= 3 || (asksForTooMuch && (questionCount >= 1 || latestIsTiny));
+}
+
+function buildServerKnowledgeCacheKey(guildId, terms = [], searchMode = {}) {
+  return [
+    guildId,
+    searchMode.fullScan ? 'full' : 'focused',
+    searchMode.reason ?? 'generic',
+    terms.slice(0, 12).join(',')
+  ].join(':');
+}
+
+function pruneServerKnowledgeCache(cache) {
+  if (cache.size <= 40) return;
+  const now = Date.now();
+  for (const [key, value] of cache.entries()) {
+    if (now - value.createdAt > SERVER_CONTEXT_CACHE_TTL_MS) cache.delete(key);
+  }
+  while (cache.size > 40) {
+    const firstKey = cache.keys().next().value;
+    if (!firstKey) break;
+    cache.delete(firstKey);
+  }
+}
+
+async function mapWithConcurrency(items, concurrency, mapper) {
+  const workers = Array.from({ length: Math.min(concurrency, items.length) }, async (_, workerIndex) => {
+    for (let index = workerIndex; index < items.length; index += concurrency) {
+      await mapper(items[index], index);
+    }
+  });
+  await Promise.all(workers);
+}
+
+function withTimeout(promise, timeoutMs) {
+  let timeoutId;
+  const timeout = new Promise((_, reject) => {
+    timeoutId = setTimeout(() => reject(new Error('server context fetch timeout')), timeoutMs);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timeoutId));
 }

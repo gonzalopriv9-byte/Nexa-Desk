@@ -1276,6 +1276,7 @@ function scoreTranscriptMessageForTerms(message, terms = []) {
 
   if (message.authorBot) score -= 2;
   if (/\b(resultado|resultados|postulacion|formulario|nota|staff|alianza|normas|anuncios|dashboard|premium)\b/iu.test(content)) score += 4;
+  if (/\b(actualizacion|actualizaciones|version|versiones|changelog|novedad|novedades|cambios|update|updates|release)\b/iu.test(content)) score += 7;
   if (/\b(token|service_role|client_secret|password|contrasena|contraseña|blacklist|globalban|sancion|api key|apikey|secret)\b/iu.test(content)) score -= 5;
 
   return score;
@@ -1295,7 +1296,18 @@ const PRIORITY_TRANSCRIPT_TERMS = new Set([
   'reglas',
   'anuncios',
   'dashboard',
-  'premium'
+  'premium',
+  'actualizacion',
+  'actualizaciones',
+  'version',
+  'versiones',
+  'changelog',
+  'novedad',
+  'novedades',
+  'cambios',
+  'update',
+  'updates',
+  'release'
 ]);
 
 function normalizeTranscriptSearchText(value = '') {
