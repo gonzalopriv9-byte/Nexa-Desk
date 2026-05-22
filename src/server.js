@@ -187,6 +187,16 @@ export function createServer({ config, storage, bot, events }) {
     res.redirect(url.toString());
   });
 
+  app.get('/auth/discord/complete', (req, res) => {
+    const session = getSession(req);
+    if (!session) {
+      res.redirect('/login');
+      return;
+    }
+
+    res.type('html').send(renderDiscordAuthComplete(session));
+  });
+
   app.get('/auth/discord/callback', asyncHandler(async (req, res) => {
     try {
       if (!config.DISCORD_CLIENT_SECRET) {
@@ -229,7 +239,7 @@ export function createServer({ config, storage, bot, events }) {
         signed: true,
         maxAge: 1000 * 60 * 60 * 12
       });
-      res.redirect('/');
+      res.redirect('/auth/discord/complete');
     } catch (error) {
       console.error('Discord OAuth failed:', error);
       res.status(500).send('Discord login failed.');
@@ -3422,6 +3432,87 @@ function renderError(message) {
     <a href="/logout" onclick="event.preventDefault(); document.querySelector('form').submit()">Cerrar sesion</a>
     <form method="post" action="/logout"></form>
   </main>
+</body>
+</html>`;
+}
+
+function renderDiscordAuthComplete(session) {
+  const username = session?.user?.username ?? 'tu cuenta';
+  const guildCount = session?.guilds?.length ?? 0;
+  return `<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex,nofollow">
+  <title>NexaDesk - Acceso confirmado</title>
+  <link rel="icon" type="image/svg+xml" href="/assets/nexadesk-logo.svg">
+  <style>
+    :root { color-scheme:dark; --bg:#030303; --text:#fff; --muted:#a9a9a9; --line:rgba(255,255,255,.14); }
+    * { box-sizing:border-box; }
+    body { margin:0; min-height:100vh; overflow:hidden; font-family:"Segoe UI",ui-sans-serif,system-ui,sans-serif; background:radial-gradient(circle at 50% 44%, rgba(255,255,255,.13), transparent 24%), repeating-linear-gradient(90deg, rgba(255,255,255,.04) 0 1px, transparent 1px 88px), repeating-linear-gradient(0deg, rgba(255,255,255,.025) 0 1px, transparent 1px 88px), var(--bg); color:var(--text); }
+    body::before { content:""; position:fixed; inset:0; pointer-events:none; background:url('/assets/nexadesk-logo.svg') center / min(420px, 58vw) no-repeat; opacity:.055; filter:grayscale(1); animation:markPulse 4.8s ease-in-out infinite; }
+    .auth-shell { position:relative; z-index:2; min-height:100vh; display:grid; place-items:center; padding:20px; }
+    .auth-card { width:min(520px, 100%); border:1px solid var(--line); border-radius:18px; background:linear-gradient(180deg, rgba(16,16,16,.92), rgba(4,4,4,.92)); box-shadow:0 34px 130px rgba(0,0,0,.72), 0 0 100px rgba(255,255,255,.06); padding:26px; text-align:center; overflow:hidden; position:relative; animation:cardIn .72s cubic-bezier(.2,.8,.2,1) both; }
+    .auth-card::before { content:""; position:absolute; inset:-1px; background:linear-gradient(115deg, transparent 0 26%, rgba(255,255,255,.22) 48%, transparent 70%); transform:translateX(-130%); animation:scan 3.1s ease-in-out .35s both; pointer-events:none; }
+    .auth-logo { width:84px; height:84px; object-fit:contain; border:1px solid rgba(255,255,255,.24); border-radius:20px; padding:14px; background:#050505; box-shadow:0 0 70px rgba(255,255,255,.14); margin:0 auto 18px; }
+    .eyebrow { margin:0 0 10px; text-transform:uppercase; letter-spacing:.18em; font-size:12px; color:#fff; opacity:.8; }
+    h1 { margin:0; font-size:clamp(32px, 7vw, 62px); line-height:.92; letter-spacing:-.04em; }
+    p { margin:14px auto 0; max-width:390px; color:var(--muted); line-height:1.58; }
+    .status-grid { display:grid; gap:10px; margin:24px 0 0; text-align:left; }
+    .status-line { display:flex; justify-content:space-between; gap:14px; align-items:center; border:1px solid rgba(255,255,255,.1); border-radius:12px; padding:11px 12px; background:rgba(255,255,255,.04); color:var(--muted); }
+    .status-line strong { color:#fff; }
+    .progress { height:3px; background:rgba(255,255,255,.12); border-radius:999px; overflow:hidden; margin-top:22px; }
+    .progress span { display:block; height:100%; width:100%; background:#fff; transform-origin:left; animation:progress 4.15s cubic-bezier(.2,.8,.2,1) both; }
+    .phrase { min-height:24px; font-weight:900; color:#fff; margin-top:18px; }
+    .auth-rain,.auth-rain::before,.auth-rain::after { content:""; position:absolute; inset:-45% 0; pointer-events:none; background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='1440' height='720' viewBox='0 0 1440 720'%3E%3Cg stroke='%23fff' stroke-linecap='round'%3E%3Cline x1='46' y1='28' x2='46' y2='86' opacity='.46'/%3E%3Cline x1='219' y1='92' x2='219' y2='172' opacity='.56'/%3E%3Cline x1='428' y1='10' x2='428' y2='78' opacity='.5'/%3E%3Cline x1='790' y1='62' x2='790' y2='146' opacity='.58'/%3E%3Cline x1='1088' y1='132' x2='1088' y2='212' opacity='.5'/%3E%3Cline x1='1368' y1='42' x2='1368' y2='124' opacity='.54'/%3E%3Ccircle cx='74' cy='612' r='1' opacity='.6'/%3E%3Ccircle cx='884' cy='584' r='1' opacity='.54'/%3E%3C/g%3E%3C/svg%3E"); background-size:1440px 720px; animation:rain 2.8s linear infinite; opacity:.7; }
+    .auth-rain::before { inset:-55% -8% -35% 4%; animation-duration:2.1s; opacity:.42; transform:scaleX(-1); }
+    .auth-rain::after { inset:-65% 2% -30% -10%; animation-duration:3.4s; opacity:.3; transform:scale(1.12); }
+    .skip { position:fixed; right:18px; bottom:18px; z-index:5; border:1px solid rgba(255,255,255,.16); color:#fff; background:rgba(255,255,255,.045); border-radius:999px; padding:9px 12px; font-weight:800; cursor:pointer; }
+    @keyframes rain { from { transform:translate3d(0,-240px,0); } to { transform:translate3d(0,110vh,0); } }
+    @keyframes scan { 0%,22% { transform:translateX(-130%); opacity:0; } 44% { opacity:.72; } 100% { transform:translateX(130%); opacity:0; } }
+    @keyframes progress { from { transform:scaleX(0); } to { transform:scaleX(1); } }
+    @keyframes cardIn { from { opacity:0; transform:translateY(24px) scale(.97); filter:blur(12px); } to { opacity:1; transform:translateY(0) scale(1); filter:blur(0); } }
+    @keyframes markPulse { 0%,100% { opacity:.04; transform:scale(.98); } 50% { opacity:.09; transform:scale(1.02); } }
+    @media (prefers-reduced-motion:reduce) { .auth-rain,.auth-rain::before,.auth-rain::after,.auth-card,.auth-card::before,.progress span,body::before { animation:none; } }
+  </style>
+</head>
+<body>
+  <div class="auth-rain"></div>
+  <main class="auth-shell">
+    <section class="auth-card">
+      <img class="auth-logo" src="/assets/nexadesk-logo.svg" alt="NexaDesk">
+      <p class="eyebrow">Discord verificado</p>
+      <h1>Preparando tu dashboard</h1>
+      <p>OAuth completado para <strong>${escapeHtml(username)}</strong>. Estamos sincronizando servidores, permisos y datos en tiempo real.</p>
+      <div class="status-grid">
+        <div class="status-line"><span>Identidad Discord</span><strong>Confirmada</strong></div>
+        <div class="status-line"><span>Servidores gestionables</span><strong>${escapeHtml(String(guildCount))}</strong></div>
+        <div class="status-line"><span>Consola NexaDesk</span><strong>Desbloqueando</strong></div>
+      </div>
+      <div class="progress"><span></span></div>
+      <p class="phrase" id="authPhrase">Conectando tu centro de mando</p>
+    </section>
+  </main>
+  <button class="skip" type="button" id="enterNow">Entrar ahora</button>
+  <script>
+    const phrases = [
+      'Conectando tu centro de mando',
+      'Sincronizando permisos de Discord',
+      'Preparando servidores y paneles',
+      'Cargando transcripciones y estadisticas',
+      'Abriendo NexaDesk'
+    ];
+    let index = 0;
+    const phrase = document.querySelector('#authPhrase');
+    const go = () => { window.location.replace('/'); };
+    document.querySelector('#enterNow')?.addEventListener('click', go);
+    window.setInterval(() => {
+      index = (index + 1) % phrases.length;
+      if (phrase) phrase.textContent = phrases[index];
+    }, 900);
+    window.setTimeout(go, window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 900 : 4300);
+  </script>
 </body>
 </html>`;
 }
