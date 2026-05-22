@@ -543,9 +543,14 @@ export function createServer({ config, storage, bot, events }) {
       session: req.session,
       checkoutConfig
     });
-    const approveUrl = order.links?.find((link) => link.rel === 'approve')?.href;
+    const approveUrl = getPayPalApprovalUrl(order);
     if (!approveUrl) {
-      res.status(502).json({ error: 'PayPal no devolvio enlace de aprobacion.' });
+      console.warn('PayPal order without approval link:', JSON.stringify({
+        id: order.id,
+        status: order.status,
+        links: order.links?.map((link) => ({ rel: link.rel, href: link.href }))
+      }));
+      res.status(502).json({ error: 'PayPal no devolvio enlace de aprobacion compatible.' });
       return;
     }
 
@@ -914,6 +919,13 @@ function getPayPalBaseUrl(config) {
   return config.PAYPAL_MODE === 'live'
     ? 'https://api-m.paypal.com'
     : 'https://api-m.sandbox.paypal.com';
+}
+
+function getPayPalApprovalUrl(order = {}) {
+  const links = Array.isArray(order.links) ? order.links : [];
+  return links.find((link) => ['payer-action', 'payer_action', 'approve'].includes(String(link.rel ?? '').toLowerCase()))?.href
+    ?? links.find((link) => /paypal\.com\/checkoutnow|paypal\.com\/webapps\/hermes/i.test(String(link.href ?? '')))?.href
+    ?? null;
 }
 
 function normalizeError(error) {
