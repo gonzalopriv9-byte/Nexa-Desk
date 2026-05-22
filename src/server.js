@@ -5,6 +5,7 @@ import cookieParser from 'cookie-parser';
 import crypto from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import Stripe from 'stripe';
 import { getAdminAccessCodeStatus, inspectAdminAccessCode } from './admin-code.js';
 import { GroqClient } from './ai/groq-client.js';
 import { GLOBAL_BLACKLIST_ADMIN_USER_ID, buildGlobalBanCode, isBlacklistEntryActive, parseBlacklistDuration } from './blacklist.js';
@@ -13,6 +14,7 @@ import { discordEmojiUrl } from './emojis.js';
 import { normalizeGrowthConfig } from './growth.js';
 import { normalizeMaintenanceState } from './maintenance.js';
 import { normalizeTicketComponent } from './panel-options.js';
+import { DEFAULT_PREMIUM_MODULES, getPremiumCheckoutConfig } from './premium-billing.js';
 import { isPremiumEntitled, normalizePremiumConfig, summarizePremiumConfig } from './premium.js';
 import { normalizeSecurityConfig, summarizeSecurityConfig } from './security.js';
 import { buildTranscriptFileName, buildTranscriptText } from './transcripts.js';
@@ -28,9 +30,40 @@ const adminAuthAttempts = new Map();
 
 export function createServer({ config, storage, bot, events }) {
   const app = express();
+  const stripe = createStripeClient(config);
 
   app.use(helmet({ contentSecurityPolicy: false }));
   app.use(morgan('tiny'));
+
+  app.post('/api/premium/stripe/webhook', express.raw({ type: 'application/json' }), asyncHandler(async (req, res) => {
+    if (!stripe || !config.STRIPE_WEBHOOK_SECRET) {
+      res.status(503).json({ error: 'Stripe webhook is not configured.' });
+      return;
+    }
+
+    let event;
+    try {
+      event = stripe.webhooks.constructEvent(
+        req.body,
+        req.headers['stripe-signature'],
+        config.STRIPE_WEBHOOK_SECRET
+      );
+    } catch (error) {
+      res.status(400).send(`Webhook Error: ${normalizeError(error)}`);
+      return;
+    }
+
+    if (event.type === 'checkout.session.completed') {
+      await fulfillPremiumCheckoutSession({
+        session: event.data.object,
+        storage,
+        config
+      });
+    }
+
+    res.json({ received: true });
+  }));
+
   app.use(express.json());
   app.use(express.urlencoded({ extended: true }));
   app.use(cookieParser(config.SESSION_SECRET));
@@ -462,6 +495,20 @@ export function createServer({ config, storage, bot, events }) {
     res.redirect(buildBotInviteUrl(config, req.params.guildId));
   });
 
+  app.get('/premium/success', asyncHandler(async (req, res) => {
+    if (stripe && req.query.session_id) {
+      const checkoutSession = await stripe.checkout.sessions.retrieve(String(req.query.session_id));
+      if (checkoutSession?.metadata?.discordUserId === req.session.user.id) {
+        await fulfillPremiumCheckoutSession({
+          session: checkoutSession,
+          storage,
+          config
+        });
+      }
+    }
+    res.redirect('/#premium');
+  }));
+
   app.get('/api/me', (req, res) => {
     res.json(req.session);
   });
@@ -476,6 +523,9 @@ export function createServer({ config, storage, bot, events }) {
 
     const send = (event) => {
       if (event.payload?.guildId && !canAccessGuild(req.session, event.payload.guildId)) return;
+      if (event.payload?.discordUserId
+        && event.payload.discordUserId !== req.session.user.id
+        && req.session.user.id !== GLOBAL_BLACKLIST_ADMIN_USER_ID) return;
       res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
     };
 
@@ -502,6 +552,71 @@ export function createServer({ config, storage, bot, events }) {
     const guilds = mergeUserGuilds(req.session, configs, installedGuildIds, config);
     const stats = await storage.getDashboardStats(req.session.guilds.map((guild) => guild.id));
     res.json(enrichDashboardStats(stats, guilds));
+  }));
+
+  app.get('/api/premium/account', asyncHandler(async (req, res) => {
+    const account = await storage.getPremiumBillingAccount(req.session.user.id);
+    res.json(buildPremiumAccountResponse({ account, config }));
+  }));
+
+  app.post('/api/premium/checkout', asyncHandler(async (req, res) => {
+    if (!stripe) {
+      res.status(503).json({ error: 'Stripe no esta configurado todavia. Anade STRIPE_SECRET_KEY en Render.' });
+      return;
+    }
+
+    const checkoutConfig = getPremiumCheckoutConfig(config);
+    const session = await stripe.checkout.sessions.create({
+      mode: 'payment',
+      payment_method_types: ['card'],
+      line_items: [
+        {
+          price_data: {
+            currency: checkoutConfig.currency,
+            product_data: {
+              name: 'NexaDesk Premium',
+              description: `${checkoutConfig.slots} servidores premium por ${checkoutConfig.displayPrice}`
+            },
+            unit_amount: checkoutConfig.priceCents
+          },
+          quantity: 1
+        }
+      ],
+      success_url: `${config.DASHBOARD_PUBLIC_URL.replace(/\/$/, '')}/premium/success?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${config.DASHBOARD_PUBLIC_URL.replace(/\/$/, '')}/#premium`,
+      metadata: {
+        discordUserId: req.session.user.id,
+        username: req.session.user.username ?? '',
+        slots: String(checkoutConfig.slots),
+        source: 'dashboard'
+      }
+    });
+
+    res.json({ url: session.url });
+  }));
+
+  app.post('/api/premium/activate', asyncHandler(async (req, res) => {
+    const guildId = String(req.body.guildId ?? '').trim();
+    if (!canAccessGuild(req.session, guildId)) {
+      res.status(403).json({ error: 'No puedes activar premium en este servidor.' });
+      return;
+    }
+
+    const guild = req.session.guilds.find((item) => item.id === guildId);
+    const result = await storage.activatePremiumSlot({
+      discordUserId: req.session.user.id,
+      guildId,
+      guildName: guild?.name ?? req.body.guildName,
+      activatedBy: req.session.user.id
+    });
+    const configs = await storage.listGuildConfigs();
+    const installedGuildIds = await getInstalledGuildIds(bot, configs);
+    const guilds = mergeUserGuilds(req.session, configs, installedGuildIds, config);
+    res.json({
+      ...result,
+      account: buildPremiumAccountResponse({ account: result.account, config }),
+      guilds
+    });
   }));
 
   app.get('/api/blacklist', requireGlobalAdmin, asyncHandler(async (_req, res) => {
@@ -714,6 +829,52 @@ export function createServer({ config, storage, bot, events }) {
 function asyncHandler(handler) {
   return (req, res, next) => {
     Promise.resolve(handler(req, res, next)).catch(next);
+  };
+}
+
+function createStripeClient(config) {
+  if (!config.STRIPE_SECRET_KEY) return null;
+  return new Stripe(config.STRIPE_SECRET_KEY, {
+    appInfo: {
+      name: 'NexaDesk',
+      version: '0.1.0'
+    }
+  });
+}
+
+async function fulfillPremiumCheckoutSession({ session, storage, config }) {
+  const paymentStatus = String(session?.payment_status ?? session?.status ?? '').toLowerCase();
+  const completed = session?.status === 'complete' || ['paid', 'no_payment_required', 'complete'].includes(paymentStatus);
+  if (!completed) return null;
+
+  const discordUserId = session?.metadata?.discordUserId;
+  if (!discordUserId) return null;
+
+  const checkoutConfig = getPremiumCheckoutConfig(config);
+  const slots = Number.parseInt(session.metadata?.slots ?? checkoutConfig.slots, 10) || checkoutConfig.slots;
+  return storage.recordPremiumPurchase({
+    id: `stripe-${session.id}`,
+    discordUserId,
+    buyerUsername: session.metadata?.username,
+    provider: 'stripe',
+    providerSessionId: session.id,
+    providerPaymentIntentId: typeof session.payment_intent === 'string' ? session.payment_intent : session.payment_intent?.id,
+    amountTotal: session.amount_total,
+    currency: session.currency ?? checkoutConfig.currency,
+    slotsPurchased: slots,
+    status: paymentStatus === 'paid' ? 'paid' : session.status,
+    metadata: {
+      customer: typeof session.customer === 'string' ? session.customer : session.customer?.id,
+      paymentStatus,
+      source: session.metadata?.source ?? 'dashboard'
+    }
+  });
+}
+
+function buildPremiumAccountResponse({ account, config }) {
+  return {
+    ...account,
+    checkout: getPremiumCheckoutConfig(config)
   };
 }
 
@@ -3689,6 +3850,21 @@ function renderDashboard({ session, guilds, tickets, stats }) {
     .premium-grid { display:grid; grid-template-columns:minmax(320px,.92fr) minmax(0,1.08fr); gap:16px; align-items:start; }
     #view-premium { --gold:#f4c95d; --gold-2:#b98724; --gold-glow:rgba(244,201,93,.24); }
     #view-premium .surface,#view-premium .control-card { border-color:rgba(244,201,93,.28); box-shadow:0 24px 95px rgba(95,61,8,.18); }
+    .premium-market { display:grid; grid-template-columns:minmax(300px,.8fr) minmax(0,1.2fr); gap:16px; align-items:start; margin-bottom:16px; }
+    .premium-buy-card { background:radial-gradient(circle at 18% 0%, rgba(255,244,184,.28), transparent 34%), linear-gradient(145deg, rgba(244,201,93,.2), rgba(8,7,4,.92)); }
+    .premium-buy-card h2 { margin-top:14px; font-size:clamp(26px, 4vw, 44px); line-height:1; color:#fff4c9; font-family:Georgia, "Times New Roman", serif; }
+    .premium-wallet { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:9px; margin:16px 0; }
+    .premium-wallet div { border:1px solid rgba(244,201,93,.2); border-radius:14px; padding:12px; background:rgba(244,201,93,.07); }
+    .premium-wallet strong,.premium-wallet small { display:block; }
+    .premium-wallet strong { color:#fff4c9; font-size:24px; }
+    .premium-wallet small { margin-top:4px; color:#d7c27a; }
+    .premium-activation-list { display:grid; gap:10px; }
+    .premium-activation-row { display:grid; grid-template-columns:minmax(0,1fr) 140px; gap:12px; align-items:center; border:1px solid rgba(244,201,93,.2); border-radius:14px; padding:12px; background:linear-gradient(135deg, rgba(244,201,93,.08), rgba(255,255,255,.025)); }
+    .premium-activation-row strong,.premium-activation-row span { display:block; }
+    .premium-activation-row span { color:var(--muted); font-size:13px; margin-top:3px; }
+    .premium-activation-row.is-active { border-color:rgba(244,201,93,.5); background:linear-gradient(135deg, rgba(244,201,93,.18), rgba(255,255,255,.04)); }
+    .premium-activation-row button { background:linear-gradient(135deg, #fff6c8, #f4c95d); color:#080704; }
+    .premium-activation-row button.secondary-button { background:#0a0a0a; color:#fff4c9; border:1px solid rgba(244,201,93,.32); }
     .premium-hero { min-height:100%; background:radial-gradient(circle at 22% 0%, rgba(244,201,93,.34), transparent 34%), linear-gradient(145deg, rgba(244,201,93,.18), rgba(7,7,6,.92)); }
     .premium-plan { display:inline-flex; align-items:center; gap:8px; border:1px solid rgba(244,201,93,.65); border-radius:999px; padding:7px 10px; color:#120d02; background:linear-gradient(135deg, #fff4b8, var(--gold)); box-shadow:0 0 30px var(--gold-glow); font-size:12px; font-weight:900; text-transform:uppercase; letter-spacing:.08em; }
     .premium-hero h2 { margin-top:18px; font-size:clamp(28px, 4vw, 48px); line-height:.98; }
@@ -3840,7 +4016,7 @@ function renderDashboard({ session, guilds, tickets, stats }) {
     @keyframes loaderSweep { from { transform:translateX(-55%); } to { transform:translateX(55%); } }
     @keyframes spin { to { transform:rotate(360deg); } }
     @media (prefers-reduced-motion:reduce) { body::before,body::after,.ambient-scene,.ambient-scene::before,.ambient-scene::after,.ambient-orb,.ambient-rings,.banner-frame,.banner-frame::before,.banner-frame img,.loader::after,.pulse { animation:none; transition:none; } }
-    @media (max-width:1120px) { .app-shell,.workspace,.topbar,.command-center,.panel-builder,.premium-grid { grid-template-columns:1fr; } .sidebar { position:relative; height:auto; top:auto; } .nav-foot { position:static; margin-top:18px; } .panel-preview-wrap { position:relative; top:auto; } }
+    @media (max-width:1120px) { .app-shell,.workspace,.topbar,.command-center,.panel-builder,.premium-grid,.premium-market { grid-template-columns:1fr; } .sidebar { position:relative; height:auto; top:auto; } .nav-foot { position:static; margin-top:18px; } .panel-preview-wrap { position:relative; top:auto; } }
     @media (max-width:760px) {
       body { overflow-x:hidden; background-size:auto; }
       .app-shell { width:100%; gap:12px; padding:0 10px 96px; }
@@ -3864,7 +4040,7 @@ function renderDashboard({ session, guilds, tickets, stats }) {
       .topbar,.workspace,.command-center,.panel-builder { gap:12px; margin-bottom:12px; }
       .view-heading,.section-heading,.ticket-tools,.transcript-head { display:grid; align-items:start; gap:10px; }
       .active-server { margin-bottom:12px; }
-      form,.control-grid,.stats,.server-status,.server-score,.mini-grid,.discovery-grid,.panel-fields,.form-section,.readiness-checklist,.recommendation-grid,.premium-feature-grid,.premium-toggle { grid-template-columns:1fr; }
+      form,.control-grid,.stats,.server-status,.server-score,.mini-grid,.discovery-grid,.panel-fields,.form-section,.readiness-checklist,.recommendation-grid,.premium-feature-grid,.premium-toggle,.premium-wallet,.premium-activation-row { grid-template-columns:1fr; }
       input,select,textarea { font-size:16px; min-height:44px; }
       .sidebar { scroll-snap-type:x proximity; scrollbar-width:none; }
       .sidebar::-webkit-scrollbar { display:none; }
@@ -4278,13 +4454,33 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       </section>
       <section class="dashboard-view" id="view-premium" data-view="premium">
         <div class="view-heading">
-          <div><h2>Premium</h2><p>Gestiona las funciones de alto valor por servidor. La activacion del plan se hace con /activarpremium o Supabase.</p></div>
+          <div><h2>Premium</h2><p>Compra un pack de 3 servidores por 3€ y activalo directamente desde la dashboard.</p></div>
         </div>
+        <section class="premium-market" id="premiumMarket">
+          <article class="control-card premium-buy-card">
+            <span class="premium-plan">Pack directo</span>
+            <h2>3 servidores premium por <span id="premiumPackPrice">3,00 €</span></h2>
+            <p>Pagas una vez, vuelves a NexaDesk y eliges exactamente en que servidores quieres activar el premium. Sin tarjetas guardadas por NexaDesk.</p>
+            <div class="premium-wallet">
+              <div><strong id="premiumSlotsAvailable">0</strong><small>Slots disponibles</small></div>
+              <div><strong id="premiumSlotsUsed">0</strong><small>Slots usados</small></div>
+              <div><strong id="premiumSlotsPurchased">0</strong><small>Slots comprados</small></div>
+            </div>
+            <button class="premium-billing-action" id="premiumBuyButton" type="button">Comprar pack premium</button>
+            <p class="notice" id="premiumCheckoutNotice">Pago seguro con Stripe Checkout.</p>
+          </article>
+          <article class="control-card premium-activation-card">
+            <div class="card-head"><span class="step">3</span><div><h2>¿En que servidores quieres activar el premium?</h2><p>Cuando el pago este confirmado, usa tus slots aqui. Cada slot activa un servidor completo.</p></div></div>
+            <div class="premium-activation-list" id="premiumActivationList">
+              <p class="notice">Cargando estado premium...</p>
+            </div>
+          </article>
+        </section>
         <section class="premium-denied is-hidden" id="premiumDenied" aria-live="polite">
           <div class="premium-denied-inner">
             <span class="premium-denied-kicker">NexaDesk Premium</span>
             <h2>Este servidor no tiene premium</h2>
-            <p>Activalo abriendo ticket en el servidor de soporte</p>
+            <p>Compra el pack desde arriba o activalo abriendo ticket en el servidor de soporte.</p>
             <a href="https://discord.gg/vVXbq7ePEZ" target="_blank" rel="noopener">Abrir soporte</a>
           </div>
         </section>
@@ -4398,6 +4594,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
     const state = {
       tickets: ${JSON.stringify(tickets)},
       stats: ${JSON.stringify(stats)},
+      premiumAccount: null,
       activeTranscriptChannelId: null,
       activeView: 'overview'
     };
@@ -4501,8 +4698,106 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
         renderComponentHistory(activeGuild || {});
         renderPanelHistory(activeGuild || {});
         renderPremiumPanel(activeGuild || {});
+        renderPremiumAccount();
         renderGrowthPanel(activeGuild || {});
         renderGuildSelectors(activeGuildId);
+      }
+    }
+    async function refreshPremiumAccount() {
+      state.premiumAccount = await getJson('/api/premium/account');
+      renderPremiumAccount();
+      return state.premiumAccount;
+    }
+    function renderPremiumAccount() {
+      const account = state.premiumAccount;
+      const checkout = account?.checkout || {};
+      document.querySelector('#premiumPackPrice').textContent = checkout.displayPrice || '3,00 €';
+      document.querySelector('#premiumSlotsAvailable').textContent = account ? account.slotsAvailable : '...';
+      document.querySelector('#premiumSlotsUsed').textContent = account ? account.slotsUsed : '...';
+      document.querySelector('#premiumSlotsPurchased').textContent = account ? account.slotsPurchased : '...';
+      const buyButton = document.querySelector('#premiumBuyButton');
+      if (buyButton) {
+        buyButton.disabled = !checkout.configured;
+        buyButton.textContent = checkout.configured
+          ? 'Comprar pack premium'
+          : 'Stripe pendiente';
+        buyButton.onclick = buyPremiumPack;
+      }
+      const notice = document.querySelector('#premiumCheckoutNotice');
+      if (notice) {
+        notice.textContent = checkout.configured
+          ? 'Pago seguro con Stripe Checkout. NexaDesk solo recibe confirmacion del pago y los slots.'
+          : 'Falta STRIPE_SECRET_KEY en Render para activar pagos reales.';
+      }
+
+      const target = document.querySelector('#premiumActivationList');
+      if (!target) return;
+      if (!account) {
+        target.innerHTML = '<p class="notice">Cargando estado premium...</p>';
+        return;
+      }
+
+      const slotsAvailable = Number(account.slotsAvailable || 0);
+      target.innerHTML = guildConfigs.length
+        ? guildConfigs.map((guild) => {
+            const premium = normalizePremium(guild);
+            const installedText = guild.installed ? 'Bot instalado' : 'Bot no instalado todavia';
+            const statusText = premium.entitled ? 'Premium activo' : slotsAvailable > 0 ? 'Listo para activar' : 'Sin slots disponibles';
+            const buttonText = premium.entitled ? 'Activo' : slotsAvailable > 0 ? 'Activar' : 'Comprar';
+            const disabled = premium.entitled ? ' disabled' : '';
+            const action = slotsAvailable > 0 ? 'activate' : 'buy';
+            return '<div class="premium-activation-row ' + (premium.entitled ? 'is-active' : '') + '">' +
+              '<span><strong>' + escapeHtml(guild.guildName || guild.guildId) + '</strong><span>' + escapeHtml(statusText + ' - ' + installedText) + '</span></span>' +
+              '<button class="premium-billing-action ' + (premium.entitled ? 'secondary-button' : '') + '" type="button" data-premium-action="' + action + '" data-guild-id="' + escapeHtml(guild.guildId) + '"' + disabled + '>' + escapeHtml(buttonText) + '</button>' +
+              '</div>';
+          }).join('')
+        : '<p class="notice">No hay servidores gestionables en tu cuenta de Discord.</p>';
+      bindPremiumBillingButtons(target);
+    }
+    function bindPremiumBillingButtons(root = document) {
+      root.querySelectorAll('[data-premium-action]').forEach((button) => {
+        button.onclick = () => {
+          if (button.dataset.premiumAction === 'activate') {
+            activatePremiumForGuild(button.dataset.guildId);
+            return;
+          }
+          buyPremiumPack();
+        };
+      });
+    }
+    async function buyPremiumPack() {
+      try {
+        showToast('Preparando checkout seguro...');
+        const response = await postJson('/api/premium/checkout', {});
+        if (!response.url) throw new Error('Stripe no devolvio URL de pago.');
+        window.location.href = response.url;
+      } catch (error) {
+        showToast(error.message);
+      }
+    }
+    async function activatePremiumForGuild(guildId) {
+      const guild = getGuildConfig(guildId);
+      if (!guild) {
+        showToast('No encuentro ese servidor en tu cuenta.');
+        return;
+      }
+      try {
+        showToast('Activando premium en ' + guild.guildName + '...');
+        const result = await postJson('/api/premium/activate', {
+          guildId,
+          guildName: guild.guildName
+        });
+        if (Array.isArray(result.guilds)) {
+          guildConfigs.splice(0, guildConfigs.length, ...result.guilds);
+        }
+        state.premiumAccount = result.account;
+        renderGuildSelectors(document.querySelector('#guildId')?.value || guildId);
+        renderPremiumAccount();
+        renderPremiumPanel(getActiveGuild());
+        refreshStats().catch(() => {});
+        showToast(result.alreadyActive ? 'Ese servidor ya tenia premium activo.' : 'Premium activado. Ya puedes configurar los modulos.');
+      } catch (error) {
+        showToast(error.message);
       }
     }
     async function getJson(url) {
@@ -4769,6 +5064,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
         if (element) element.disabled = disabled;
       }
       document.querySelectorAll('#settings button, #components button, #panels button, #view-growth button, #view-premium button').forEach((button) => {
+        if (button.classList.contains('premium-billing-action')) return;
         button.disabled = disabled;
       });
     }
@@ -5475,6 +5771,16 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       refreshStats().catch(() => {});
       renderGrowthPanel(getActiveGuild());
     });
+    source.addEventListener('premium.purchase.recorded', () => {
+      document.querySelector('#lastSync').textContent = new Date().toLocaleTimeString();
+      refreshPremiumAccount().catch(() => {});
+    });
+    source.addEventListener('premium.activation.created', () => {
+      document.querySelector('#lastSync').textContent = new Date().toLocaleTimeString();
+      refreshGuilds().catch(() => {});
+      refreshPremiumAccount().catch(() => {});
+      refreshStats().catch(() => {});
+    });
     source.onerror = () => {
       document.querySelector('#liveState').textContent = 'Reconectando';
       document.querySelector('#liveState').className = '';
@@ -5525,6 +5831,8 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
     bindTranscriptButtons();
     updatePanelPreview();
     renderPremiumPanel(getActiveGuild());
+    renderPremiumAccount();
+    refreshPremiumAccount().catch((error) => showToast(error.message));
     renderGrowthPanel(getActiveGuild());
     renderReadinessChecklist(getActiveGuild());
     renderRecommendations(getActiveGuild());

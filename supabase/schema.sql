@@ -148,3 +148,44 @@ create index if not exists ai_quality_signals_category_idx on public.ai_quality_
 create index if not exists ai_quality_signals_severity_idx on public.ai_quality_signals (severity);
 create index if not exists ai_quality_signals_resolved_idx on public.ai_quality_signals (resolved);
 create index if not exists ai_quality_signals_created_at_idx on public.ai_quality_signals (created_at desc);
+
+create table if not exists public.premium_purchases (
+  id text primary key,
+  discord_user_id text not null,
+  buyer_username text,
+  provider text not null default 'stripe',
+  provider_session_id text unique,
+  provider_payment_intent_id text,
+  amount_total integer,
+  currency text not null default 'eur',
+  slots_purchased integer not null default 3 check (slots_purchased >= 1),
+  slots_used integer not null default 0 check (slots_used >= 0),
+  status text not null default 'paid',
+  metadata jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists premium_purchases_discord_user_id_idx on public.premium_purchases (discord_user_id);
+create index if not exists premium_purchases_provider_session_id_idx on public.premium_purchases (provider_session_id);
+create index if not exists premium_purchases_status_idx on public.premium_purchases (status);
+create index if not exists premium_purchases_created_at_idx on public.premium_purchases (created_at desc);
+
+create table if not exists public.premium_slot_activations (
+  id text primary key,
+  purchase_id text not null references public.premium_purchases(id) on delete cascade,
+  discord_user_id text not null,
+  guild_id text not null,
+  guild_name text,
+  activated_by text,
+  active boolean not null default true,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists premium_slot_activations_purchase_id_idx on public.premium_slot_activations (purchase_id);
+create index if not exists premium_slot_activations_discord_user_id_idx on public.premium_slot_activations (discord_user_id);
+create index if not exists premium_slot_activations_guild_id_idx on public.premium_slot_activations (guild_id);
+create unique index if not exists premium_slot_activations_one_active_guild_idx
+  on public.premium_slot_activations (guild_id)
+  where active = true;

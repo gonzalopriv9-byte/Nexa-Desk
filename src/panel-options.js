@@ -38,41 +38,43 @@ const DEFAULT_COMPONENT = {
 };
 
 export function normalizePanelOptions(input = {}) {
+  const source = input && typeof input === 'object' ? input : {};
   return {
-    panelType: normalizePanelType(input.panelType),
-    title: cleanString(input.title, DEFAULT_PANEL.title, 256),
-    description: cleanString(input.description, DEFAULT_PANEL.description, 4096),
-    buttonLabel: cleanString(input.buttonLabel, DEFAULT_PANEL.buttonLabel, 80),
-    buttonStyle: normalizeButtonStyle(input.buttonStyle),
-    buttonEmoji: cleanString(input.buttonEmoji, DEFAULT_PANEL.buttonEmoji, 100),
-    embedColor: normalizeHexColor(input.embedColor ?? input.color, DEFAULT_PANEL.embedColor),
-    authorName: cleanString(input.authorName, DEFAULT_PANEL.authorName, 256),
-    authorIconUrl: cleanUrl(input.authorIconUrl),
-    footerText: cleanString(input.footerText, DEFAULT_PANEL.footerText, 2048),
-    imageUrl: cleanUrl(input.imageUrl),
-    thumbnailUrl: cleanUrl(input.thumbnailUrl),
-    ticketCategoryId: cleanString(input.ticketCategoryId, DEFAULT_PANEL.ticketCategoryId, 32),
-    ticketCategoryName: cleanString(input.ticketCategoryName, DEFAULT_PANEL.ticketCategoryName, 100),
-    ticketMode: normalizeTicketMode(input.ticketMode),
-    selectPlaceholder: cleanString(input.selectPlaceholder, DEFAULT_PANEL.selectPlaceholder, 100),
-    componentIds: normalizeStringList(input.componentIds).slice(0, 25),
-    welcomeMessage: cleanString(input.welcomeMessage, DEFAULT_PANEL.welcomeMessage, 1200)
+    panelType: normalizePanelType(source.panelType),
+    title: cleanString(source.title, DEFAULT_PANEL.title, 256),
+    description: cleanString(source.description, DEFAULT_PANEL.description, 4096),
+    buttonLabel: cleanString(source.buttonLabel, DEFAULT_PANEL.buttonLabel, 80),
+    buttonStyle: normalizeButtonStyle(source.buttonStyle),
+    buttonEmoji: cleanString(source.buttonEmoji, DEFAULT_PANEL.buttonEmoji, 100),
+    embedColor: normalizeHexColor(source.embedColor ?? source.color, DEFAULT_PANEL.embedColor),
+    authorName: cleanString(source.authorName, DEFAULT_PANEL.authorName, 256),
+    authorIconUrl: cleanUrl(source.authorIconUrl),
+    footerText: cleanString(source.footerText, DEFAULT_PANEL.footerText, 2048),
+    imageUrl: cleanUrl(source.imageUrl),
+    thumbnailUrl: cleanUrl(source.thumbnailUrl),
+    ticketCategoryId: cleanString(source.ticketCategoryId, DEFAULT_PANEL.ticketCategoryId, 32),
+    ticketCategoryName: cleanString(source.ticketCategoryName, DEFAULT_PANEL.ticketCategoryName, 100),
+    ticketMode: normalizeTicketMode(source.ticketMode),
+    selectPlaceholder: cleanString(source.selectPlaceholder, DEFAULT_PANEL.selectPlaceholder, 100),
+    componentIds: normalizeStringList(source.componentIds).slice(0, 25),
+    welcomeMessage: cleanString(source.welcomeMessage, DEFAULT_PANEL.welcomeMessage, 1200)
   };
 }
 
 export function normalizeTicketComponent(input = {}) {
-  const existingId = cleanString(input.id, '', 80);
+  const source = input && typeof input === 'object' ? input : {};
+  const existingId = cleanString(source.id, '', 80);
   return {
     id: existingId || createComponentId(),
-    label: cleanString(input.label, DEFAULT_COMPONENT.label, 100),
-    description: cleanString(input.description, DEFAULT_COMPONENT.description, 100),
-    emoji: cleanString(input.emoji, DEFAULT_COMPONENT.emoji, 100),
-    ticketCategoryId: cleanString(input.ticketCategoryId, DEFAULT_COMPONENT.ticketCategoryId, 32),
-    ticketCategoryName: cleanString(input.ticketCategoryName, DEFAULT_COMPONENT.ticketCategoryName, 100),
-    ticketMode: normalizeTicketMode(input.ticketMode),
-    questions: normalizeStringList(input.questions).slice(0, 5).map((question) => cleanString(question, '', 45)).filter(Boolean),
-    welcomeMessage: cleanString(input.welcomeMessage, DEFAULT_COMPONENT.welcomeMessage, 1200),
-    createdAt: input.createdAt || new Date().toISOString()
+    label: cleanString(source.label, DEFAULT_COMPONENT.label, 100),
+    description: cleanString(source.description, DEFAULT_COMPONENT.description, 100),
+    emoji: cleanString(source.emoji, DEFAULT_COMPONENT.emoji, 100),
+    ticketCategoryId: cleanString(source.ticketCategoryId, DEFAULT_COMPONENT.ticketCategoryId, 32),
+    ticketCategoryName: cleanString(source.ticketCategoryName, DEFAULT_COMPONENT.ticketCategoryName, 100),
+    ticketMode: normalizeTicketMode(source.ticketMode),
+    questions: normalizeStringList(source.questions).slice(0, 5).map((question) => cleanString(question, '', 45)).filter(Boolean),
+    welcomeMessage: cleanString(source.welcomeMessage, DEFAULT_COMPONENT.welcomeMessage, 1200),
+    createdAt: source.createdAt || new Date().toISOString()
   };
 }
 

@@ -46,6 +46,16 @@ services:
         sync: false
       - key: SUPABASE_SERVICE_ROLE_KEY
         sync: false
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false
+      - key: PREMIUM_PACK_PRICE_CENTS
+        value: 300
+      - key: PREMIUM_PACK_SLOTS
+        value: 3
+      - key: PREMIUM_PACK_CURRENCY
+        value: eur
       - key: GROQ_API_KEY
         sync: false
       - key: GROQ_MODEL

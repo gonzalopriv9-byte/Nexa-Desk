@@ -5,6 +5,13 @@ import { normalizeAiQualitySignal } from './ai-quality.js';
 import { normalizeBlacklistEntry, normalizeBlacklistEvidence, normalizeBlacklistLookup } from './blacklist.js';
 import { buildFeedbackStats, normalizeGrowthConfig, normalizeTicketFeedback } from './growth.js';
 import { normalizeMaintenanceState } from './maintenance.js';
+import {
+  DEFAULT_PREMIUM_MODULES,
+  normalizePremiumActivation,
+  normalizePremiumPurchase,
+  pickAvailablePremiumPurchase,
+  summarizePremiumBilling
+} from './premium-billing.js';
 import { isPremiumEntitled, normalizePremiumConfig } from './premium.js';
 import { normalizeSecurityConfig } from './security.js';
 import { normalizeDiscoveryConfig } from './server-discovery.js';
@@ -23,6 +30,8 @@ export class JsonStorage {
     this.blacklistEvidenceFile = path.join(dataDir, 'global-blacklist-evidence.json');
     this.feedbackFile = path.join(dataDir, 'ticket-feedback.json');
     this.aiQualitySignalsFile = path.join(dataDir, 'ai-quality-signals.json');
+    this.premiumPurchasesFile = path.join(dataDir, 'premium-purchases.json');
+    this.premiumActivationsFile = path.join(dataDir, 'premium-activations.json');
   }
 
   async init() {
@@ -35,6 +44,8 @@ export class JsonStorage {
     await this.#ensureJson(this.blacklistEvidenceFile, {});
     await this.#ensureJson(this.feedbackFile, {});
     await this.#ensureJson(this.aiQualitySignalsFile, {});
+    await this.#ensureJson(this.premiumPurchasesFile, {});
+    await this.#ensureJson(this.premiumActivationsFile, {});
   }
 
   async getGuildConfig(guildId) {
@@ -205,6 +216,98 @@ export class JsonStorage {
     return signals
       .filter((item) => !guildIdSet.size || guildIdSet.has(item.guildId))
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+
+  async recordPremiumPurchase(purchase) {
+    const normalized = normalizePremiumPurchase(purchase);
+    const purchases = await this.#readJson(this.premiumPurchasesFile);
+    purchases[normalized.id] = {
+      ...(purchases[normalized.id] ?? {}),
+      ...normalized,
+      updatedAt: new Date().toISOString()
+    };
+    await this.#writeJson(this.premiumPurchasesFile, purchases);
+    this.events?.publish('premium.purchase.recorded', purchases[normalized.id]);
+    return normalizePremiumPurchase(purchases[normalized.id]);
+  }
+
+  async listPremiumPurchases(discordUserId) {
+    const purchases = Object.values(await this.#readJson(this.premiumPurchasesFile)).map(normalizePremiumPurchase);
+    return purchases
+      .filter((purchase) => purchase.discordUserId === String(discordUserId))
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+
+  async listPremiumActivations(discordUserId) {
+    const activations = Object.values(await this.#readJson(this.premiumActivationsFile)).map(normalizePremiumActivation);
+    return activations
+      .filter((activation) => activation.discordUserId === String(discordUserId) && activation.active)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+
+  async getPremiumBillingAccount(discordUserId) {
+    const [purchases, activations] = await Promise.all([
+      this.listPremiumPurchases(discordUserId),
+      this.listPremiumActivations(discordUserId)
+    ]);
+    return summarizePremiumBilling({ purchases, activations });
+  }
+
+  async activatePremiumSlot({ discordUserId, guildId, guildName, activatedBy }) {
+    const activations = await this.#readJson(this.premiumActivationsFile);
+    const existing = Object.values(activations)
+      .map(normalizePremiumActivation)
+      .find((activation) => activation.guildId === String(guildId) && activation.active);
+    if (existing) {
+      return {
+        activation: existing,
+        alreadyActive: true,
+        account: await this.getPremiumBillingAccount(discordUserId)
+      };
+    }
+
+    const purchases = await this.listPremiumPurchases(discordUserId);
+    const userActivations = await this.listPremiumActivations(discordUserId);
+    const purchase = pickAvailablePremiumPurchase({ purchases, activations: userActivations });
+    if (!purchase) {
+      throw new Error('No tienes slots premium disponibles. Compra un pack para activar mas servidores.');
+    }
+
+    const now = new Date().toISOString();
+    const activation = normalizePremiumActivation({
+      id: `activation-${guildId}-${Date.now()}`,
+      purchaseId: purchase.id,
+      discordUserId,
+      guildId,
+      guildName,
+      activatedBy,
+      active: true,
+      createdAt: now,
+      updatedAt: now
+    });
+    activations[activation.id] = activation;
+    await this.#writeJson(this.premiumActivationsFile, activations);
+
+    const allPurchases = await this.#readJson(this.premiumPurchasesFile);
+    allPurchases[purchase.id] = {
+      ...(allPurchases[purchase.id] ?? purchase),
+      slotsUsed: (userActivations.filter((item) => item.purchaseId === purchase.id).length + 1),
+      updatedAt: now
+    };
+    await this.#writeJson(this.premiumPurchasesFile, allPurchases);
+
+    await this.upsertGuildConfig(guildId, {
+      guildName,
+      plan: 'pro',
+      voiceSupportEnabled: true,
+      premium: normalizePremiumConfig(DEFAULT_PREMIUM_MODULES, { plan: 'pro', voiceSupportEnabled: true })
+    });
+    this.events?.publish('premium.activation.created', activation);
+    return {
+      activation,
+      alreadyActive: false,
+      account: await this.getPremiumBillingAccount(discordUserId)
+    };
   }
 
   async getGlobalSettings() {
@@ -759,6 +862,121 @@ export class SupabaseStorage {
     return data.map(fromBlacklistEvidenceRow);
   }
 
+  async recordPremiumPurchase(purchase) {
+    const normalized = normalizePremiumPurchase(purchase);
+    const { data, error } = await this.client
+      .from('premium_purchases')
+      .upsert(toPremiumPurchaseRow(normalized), { onConflict: 'id' })
+      .select()
+      .single();
+    if (isMissingPremiumBillingTableError(error)) return this.#recordPremiumPurchaseFallback(normalized);
+    if (error) throw error;
+    const saved = fromPremiumPurchaseRow(data);
+    this.events?.publish('premium.purchase.recorded', saved);
+    return saved;
+  }
+
+  async listPremiumPurchases(discordUserId) {
+    const { data, error } = await this.client
+      .from('premium_purchases')
+      .select('*')
+      .eq('discord_user_id', String(discordUserId))
+      .order('created_at', { ascending: false });
+    if (isMissingPremiumBillingTableError(error)) return this.#listPremiumPurchasesFallback(discordUserId);
+    if (error) throw error;
+    return data.map(fromPremiumPurchaseRow);
+  }
+
+  async listPremiumActivations(discordUserId) {
+    const { data, error } = await this.client
+      .from('premium_slot_activations')
+      .select('*')
+      .eq('discord_user_id', String(discordUserId))
+      .eq('active', true)
+      .order('created_at', { ascending: false });
+    if (isMissingPremiumBillingTableError(error)) return this.#listPremiumActivationsFallback(discordUserId);
+    if (error) throw error;
+    return data.map(fromPremiumActivationRow);
+  }
+
+  async getPremiumBillingAccount(discordUserId) {
+    const [purchases, activations] = await Promise.all([
+      this.listPremiumPurchases(discordUserId),
+      this.listPremiumActivations(discordUserId)
+    ]);
+    return summarizePremiumBilling({ purchases, activations });
+  }
+
+  async activatePremiumSlot({ discordUserId, guildId, guildName, activatedBy }) {
+    const existing = await this.#getActivePremiumActivationForGuild(guildId);
+    if (existing) {
+      return {
+        activation: existing,
+        alreadyActive: true,
+        account: await this.getPremiumBillingAccount(discordUserId)
+      };
+    }
+
+    const account = await this.getPremiumBillingAccount(discordUserId);
+    const purchase = pickAvailablePremiumPurchase(account);
+    if (!purchase) {
+      throw new Error('No tienes slots premium disponibles. Compra un pack para activar mas servidores.');
+    }
+
+    const now = new Date().toISOString();
+    const activation = normalizePremiumActivation({
+      id: `activation-${guildId}-${Date.now()}`,
+      purchaseId: purchase.id,
+      discordUserId,
+      guildId,
+      guildName,
+      activatedBy,
+      active: true,
+      createdAt: now,
+      updatedAt: now
+    });
+
+    let { data, error } = await this.client
+      .from('premium_slot_activations')
+      .insert(toPremiumActivationRow(activation))
+      .select()
+      .single();
+    if (isMissingPremiumBillingTableError(error)) {
+      return this.#activatePremiumSlotFallback({ discordUserId, guildId, guildName, activatedBy });
+    }
+    if (error && /duplicate key|unique/i.test(String(error.message ?? ''))) {
+      const existingAfterConflict = await this.#getActivePremiumActivationForGuild(guildId);
+      if (existingAfterConflict) {
+        return {
+          activation: existingAfterConflict,
+          alreadyActive: true,
+          account: await this.getPremiumBillingAccount(discordUserId)
+        };
+      }
+    }
+    if (error) throw error;
+
+    const savedActivation = fromPremiumActivationRow(data);
+    const usedByPurchase = account.activations.filter((item) => item.purchaseId === purchase.id).length + 1;
+    await this.client
+      .from('premium_purchases')
+      .update({ slots_used: usedByPurchase, updated_at: now })
+      .eq('id', purchase.id);
+
+    await this.upsertGuildConfig(guildId, {
+      guildName,
+      plan: 'pro',
+      voiceSupportEnabled: true,
+      premium: normalizePremiumConfig(DEFAULT_PREMIUM_MODULES, { plan: 'pro', voiceSupportEnabled: true })
+    });
+    this.events?.publish('premium.activation.created', savedActivation);
+    return {
+      activation: savedActivation,
+      alreadyActive: false,
+      account: await this.getPremiumBillingAccount(discordUserId)
+    };
+  }
+
   #mergeGuildCompatibility(guild) {
     if (!guild) return guild;
     return {
@@ -805,6 +1023,132 @@ export class SupabaseStorage {
       }
     }
     return null;
+  }
+
+  async #getActivePremiumActivationForGuild(guildId) {
+    const { data, error } = await this.client
+      .from('premium_slot_activations')
+      .select('*')
+      .eq('guild_id', String(guildId))
+      .eq('active', true)
+      .maybeSingle();
+    if (isMissingPremiumBillingTableError(error)) {
+      const store = await this.#getPremiumBillingFallbackStore();
+      return Object.values(store.activations)
+        .map(normalizePremiumActivation)
+        .find((activation) => activation.guildId === String(guildId) && activation.active) ?? null;
+    }
+    if (error) throw error;
+    return data ? fromPremiumActivationRow(data) : null;
+  }
+
+  async #recordPremiumPurchaseFallback(purchase) {
+    const normalized = normalizePremiumPurchase(purchase);
+    const store = await this.#getPremiumBillingFallbackStore();
+    store.purchases[normalized.id] = {
+      ...(store.purchases[normalized.id] ?? {}),
+      ...normalized,
+      updatedAt: new Date().toISOString()
+    };
+    await this.#savePremiumBillingFallbackStore(store);
+    const saved = normalizePremiumPurchase(store.purchases[normalized.id]);
+    this.events?.publish('premium.purchase.recorded', saved);
+    return saved;
+  }
+
+  async #listPremiumPurchasesFallback(discordUserId) {
+    const store = await this.#getPremiumBillingFallbackStore();
+    return Object.values(store.purchases)
+      .map(normalizePremiumPurchase)
+      .filter((purchase) => purchase.discordUserId === String(discordUserId))
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+
+  async #listPremiumActivationsFallback(discordUserId) {
+    const store = await this.#getPremiumBillingFallbackStore();
+    return Object.values(store.activations)
+      .map(normalizePremiumActivation)
+      .filter((activation) => activation.discordUserId === String(discordUserId) && activation.active)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+
+  async #activatePremiumSlotFallback({ discordUserId, guildId, guildName, activatedBy }) {
+    const store = await this.#getPremiumBillingFallbackStore();
+    const existing = Object.values(store.activations)
+      .map(normalizePremiumActivation)
+      .find((activation) => activation.guildId === String(guildId) && activation.active);
+    if (existing) {
+      return {
+        activation: existing,
+        alreadyActive: true,
+        account: await this.getPremiumBillingAccount(discordUserId)
+      };
+    }
+
+    const purchases = Object.values(store.purchases)
+      .map(normalizePremiumPurchase)
+      .filter((purchase) => purchase.discordUserId === String(discordUserId));
+    const activations = Object.values(store.activations)
+      .map(normalizePremiumActivation)
+      .filter((activation) => activation.discordUserId === String(discordUserId) && activation.active);
+    const purchase = pickAvailablePremiumPurchase({ purchases, activations });
+    if (!purchase) {
+      throw new Error('No tienes slots premium disponibles. Compra un pack para activar mas servidores.');
+    }
+
+    const now = new Date().toISOString();
+    const activation = normalizePremiumActivation({
+      id: `activation-${guildId}-${Date.now()}`,
+      purchaseId: purchase.id,
+      discordUserId,
+      guildId,
+      guildName,
+      activatedBy,
+      active: true,
+      createdAt: now,
+      updatedAt: now
+    });
+    store.activations[activation.id] = activation;
+    store.purchases[purchase.id] = {
+      ...(store.purchases[purchase.id] ?? purchase),
+      slotsUsed: activations.filter((item) => item.purchaseId === purchase.id).length + 1,
+      updatedAt: now
+    };
+    await this.#savePremiumBillingFallbackStore(store);
+
+    await this.upsertGuildConfig(guildId, {
+      guildName,
+      plan: 'pro',
+      voiceSupportEnabled: true,
+      premium: normalizePremiumConfig(DEFAULT_PREMIUM_MODULES, { plan: 'pro', voiceSupportEnabled: true })
+    });
+    this.events?.publish('premium.activation.created', activation);
+    return {
+      activation,
+      alreadyActive: false,
+      account: await this.getPremiumBillingAccount(discordUserId)
+    };
+  }
+
+  async #getPremiumBillingFallbackStore() {
+    const settings = await this.getGlobalSettings();
+    const source = settings.premiumBilling && typeof settings.premiumBilling === 'object'
+      ? settings.premiumBilling
+      : {};
+    return {
+      purchases: source.purchases && typeof source.purchases === 'object' ? source.purchases : {},
+      activations: source.activations && typeof source.activations === 'object' ? source.activations : {}
+    };
+  }
+
+  async #savePremiumBillingFallbackStore(store) {
+    return this.updateGlobalSettings({
+      premiumBilling: {
+        purchases: store.purchases ?? {},
+        activations: store.activations ?? {},
+        updatedAt: new Date().toISOString()
+      }
+    });
   }
 }
 
@@ -1247,6 +1591,74 @@ function fromBlacklistEvidenceRow(row) {
   });
 }
 
+function toPremiumPurchaseRow(purchase) {
+  const normalized = normalizePremiumPurchase(purchase);
+  return {
+    id: normalized.id,
+    discord_user_id: normalized.discordUserId,
+    buyer_username: normalized.buyerUsername,
+    provider: normalized.provider,
+    provider_session_id: normalized.providerSessionId,
+    provider_payment_intent_id: normalized.providerPaymentIntentId,
+    amount_total: normalized.amountTotal,
+    currency: normalized.currency,
+    slots_purchased: normalized.slotsPurchased,
+    slots_used: normalized.slotsUsed,
+    status: normalized.status,
+    metadata: normalized.metadata,
+    created_at: normalized.createdAt,
+    updated_at: normalized.updatedAt
+  };
+}
+
+function fromPremiumPurchaseRow(row) {
+  return normalizePremiumPurchase({
+    id: row.id,
+    discordUserId: row.discord_user_id,
+    buyerUsername: row.buyer_username,
+    provider: row.provider,
+    providerSessionId: row.provider_session_id,
+    providerPaymentIntentId: row.provider_payment_intent_id,
+    amountTotal: row.amount_total,
+    currency: row.currency,
+    slotsPurchased: row.slots_purchased,
+    slotsUsed: row.slots_used,
+    status: row.status,
+    metadata: row.metadata,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  });
+}
+
+function toPremiumActivationRow(activation) {
+  const normalized = normalizePremiumActivation(activation);
+  return {
+    id: normalized.id,
+    purchase_id: normalized.purchaseId,
+    discord_user_id: normalized.discordUserId,
+    guild_id: normalized.guildId,
+    guild_name: normalized.guildName,
+    activated_by: normalized.activatedBy,
+    active: normalized.active,
+    created_at: normalized.createdAt,
+    updated_at: normalized.updatedAt
+  };
+}
+
+function fromPremiumActivationRow(row) {
+  return normalizePremiumActivation({
+    id: row.id,
+    purchaseId: row.purchase_id,
+    discordUserId: row.discord_user_id,
+    guildId: row.guild_id,
+    guildName: row.guild_name,
+    activatedBy: row.activated_by,
+    active: row.active,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  });
+}
+
 function isMissingBlacklistTableError(error) {
   return Boolean(error && /global_blacklist|global_blacklist_evidence|relation .* does not exist|schema cache/i.test(String(error.message ?? '')));
 }
@@ -1257,6 +1669,10 @@ function isMissingFeedbackTableError(error) {
 
 function isMissingAiQualitySignalTableError(error) {
   return Boolean(error && /ai_quality_signals|relation .* does not exist|schema cache/i.test(String(error.message ?? '')));
+}
+
+function isMissingPremiumBillingTableError(error) {
+  return Boolean(error && /premium_purchases|premium_slot_activations|relation .* does not exist|schema cache/i.test(String(error.message ?? '')));
 }
 
 function scoreTranscriptMessageForTerms(message, terms = []) {
