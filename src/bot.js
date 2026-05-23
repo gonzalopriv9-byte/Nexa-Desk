@@ -80,23 +80,34 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
   const panelCreatedChannels = new Set();
   const blacklistAlertedChannels = new Set();
   const ticketWelcomeChannels = new Set();
+  const managedTimers = new Set();
   const securityManager = new SecurityManager({ storage, client, supportAgent, config });
 
-  client.once(Events.ClientReady, (readyClient) => {
+  const originalDestroy = client.destroy.bind(client);
+  client.destroy = async (...args) => {
+    clearManagedTimers(managedTimers);
+    return originalDestroy(...args);
+  };
+
+  client.on(Events.ClientReady, (readyClient) => {
+    clearManagedTimers(managedTimers);
     applyBotPresence(readyClient);
-    const presenceInterval = setInterval(() => applyBotPresence(readyClient), 1000 * 60 * 5);
-    presenceInterval.unref?.();
-    setTimeout(() => {
+    trackManagedInterval(managedTimers, () => {
+      if (!isClientReadyForDiscordRest(readyClient)) return;
+      applyBotPresence(readyClient);
+    }, 1000 * 60 * 5);
+    trackManagedTimeout(managedTimers, () => {
+      if (!isClientReadyForDiscordRest(readyClient)) return;
       scanInstalledGuildsForDiscovery({ client: readyClient, storage, supportAgent }).catch((error) => {
         console.error('Initial smart discovery failed:', error);
       });
-    }, 12_000).unref?.();
-    const discoveryInterval = setInterval(() => {
+    }, 12_000);
+    trackManagedInterval(managedTimers, () => {
+      if (!isClientReadyForDiscordRest(readyClient)) return;
       scanInstalledGuildsForDiscovery({ client: readyClient, storage, supportAgent }).catch((error) => {
         console.error('Scheduled smart discovery failed:', error);
       });
     }, 1000 * 60 * 60 * 6);
-    discoveryInterval.unref?.();
     console.log(`NexaDesk online as ${readyClient.user.tag}`);
   });
 
@@ -626,6 +637,35 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
   });
 
   return client;
+}
+
+function isClientReadyForDiscordRest(client) {
+  return Boolean(client?.isReady?.() && client?.token);
+}
+
+function trackManagedTimeout(timers, callback, delayMs) {
+  const timer = setTimeout(() => {
+    timers.delete(timer);
+    callback();
+  }, delayMs);
+  timer.unref?.();
+  timers.add(timer);
+  return timer;
+}
+
+function trackManagedInterval(timers, callback, intervalMs) {
+  const timer = setInterval(callback, intervalMs);
+  timer.unref?.();
+  timers.add(timer);
+  return timer;
+}
+
+function clearManagedTimers(timers) {
+  for (const timer of timers) {
+    clearTimeout(timer);
+    clearInterval(timer);
+  }
+  timers.clear();
 }
 
 async function safeInteractionReply(interaction, content) {
@@ -5231,6 +5271,10 @@ export async function createTicketCategory(client, storage, { guildId, name }) {
 }
 
 async function scanInstalledGuildsForDiscovery({ client, storage, supportAgent = null }) {
+  if (!isClientReadyForDiscordRest(client)) {
+    console.log('NexaDesk smart discovery skipped because this instance is not the active Discord gateway.');
+    return;
+  }
   const guilds = [...client.guilds.cache.values()];
   let detected = 0;
   for (const guild of guilds) {
@@ -5244,6 +5288,9 @@ async function scanInstalledGuildsForDiscovery({ client, storage, supportAgent =
 }
 
 export async function refreshGuildDiscovery(client, storage, { guildId, reason = 'manual' }, supportAgent = null) {
+  if (!isClientReadyForDiscordRest(client)) {
+    throw new Error('Discord gateway is not active on this NexaDesk instance.');
+  }
   const guild = await client.guilds.fetch(guildId);
   const channels = await guild.channels.fetch();
   const roles = await guild.roles.fetch().catch(() => null);
