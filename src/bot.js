@@ -4358,7 +4358,12 @@ async function resolveAllianceTicketFlow({ message, storage, guildConfig, ticket
     allianceState = createAllianceState();
   }
 
-  if (allianceState.started && isUserRequestingStaff(message.content)) {
+  const waitingForAllianceTemplate = allianceState.started && allianceState.rulesRead && !allianceState.userTemplate;
+  const currentMessageIsAllianceTemplate = waitingForAllianceTemplate
+    ? isAllianceTemplateMessage(message.content, { templateRequested: true })
+    : false;
+
+  if (allianceState.started && isUserRequestingStaff(message.content) && !currentMessageIsAllianceTemplate) {
     return {
       type: 'escalate',
       reason: 'El usuario solicita asistencia humana durante el flujo de alianza.',
@@ -4409,7 +4414,7 @@ async function resolveAllianceTicketFlow({ message, storage, guildConfig, ticket
   }
 
   if (!allianceState.userTemplate) {
-    if (!isAllianceTemplateMessage(message.content, { templateRequested: true })) {
+    if (!currentMessageIsAllianceTemplate) {
       return {
         type: 'reply',
         publicAnswer: 'Necesito primero la plantilla de alianza de tu servidor. Puedes enviarla completa en este ticket.'
