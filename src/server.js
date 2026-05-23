@@ -2582,7 +2582,7 @@ function buildDocsSections(config) {
           'Privileged intents recomendados: MESSAGE CONTENT INTENT y SERVER MEMBERS INTENT.',
           'Permisos de invitacion: Manage Channels, Manage Roles, View Audit Log, Manage Messages, Moderate Members, Kick, Ban, voz y lectura de historial.',
           'El bot registra slash commands globales con npm run register.',
-          'Comandos clave: /setup, /ayuda, /desactivar ia, /activar ia, /ticket cerrar, /ticket resumen, /voz crear, /globalstats, /crecimiento, /activarpremium, /mantenimiento, /seguridad configurar.',
+          'Comandos clave: /setup, /ayuda, /desactivar ia, /activar ia, /ticket prioridad, /ticket cerrar, /ticket resumen, /voz crear, /globalstats, /crecimiento, /activarpremium, /mantenimiento, /seguridad configurar.',
           '/seguridad configurar acepta nivel, canal_logs, edad_minima_dias, antiflood, antilinks, automod, antibots, antialts y antinuke.',
           'Si entra staff al ticket, NexaDesk deja de responder salvo mencion, reply o llamada directa.'
         ] }

@@ -281,6 +281,7 @@ DISCORD_GUILD_ID=your_server_id npm run register -- --clear-guild
 /activar ia
 /ticket estado
 /ticket resumen
+/ticket prioridad
 /ticket cerrar
 /voz crear [nombre]
 /voz estado
@@ -295,7 +296,7 @@ DISCORD_GUILD_ID=your_server_id npm run register -- --clear-guild
 
 `/transcripcion enviar` sends the current ticket transcript by DM to the ticket opener. If the ticket was created by another bot and NexaDesk cannot detect the opener, pass `usuario`.
 
-`/ticket resumen` gives staff a concise AI handoff, `/ticket estado` shows the operational state of the current ticket, and `/ticket cerrar` closes the ticket, sends the transcript by DM, and deletes the channel after a short delay.
+`/ticket resumen` gives staff a concise AI handoff, `/ticket prioridad` calculates risk, SLA and next action, `/ticket estado` shows the operational state of the current ticket, and `/ticket cerrar` closes the ticket, sends the transcript by DM, and deletes the channel after a short delay.
 
 Voice support is a Pro feature controlled manually from Supabase. For a server, set either `plan = 'pro'` or `voice_support_enabled = true` in `guild_configs`. Optional columns `voice_category_id` and `voice_category_name` let you choose where Pro voice rooms should be created. In the dashboard, set a panel button or menu component to `Voz Pro + STT/TTS` to open a normal private text ticket with a linked private voice room.
 

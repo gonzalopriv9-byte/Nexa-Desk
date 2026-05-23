@@ -67,6 +67,11 @@ const commands = [
     )
     .addSubcommand((subcommand) =>
       subcommand
+        .setName('prioridad')
+        .setDescription('Calcula prioridad, riesgos y siguiente accion recomendada para el staff.')
+    )
+    .addSubcommand((subcommand) =>
+      subcommand
         .setName('cerrar')
         .setDescription('Cierra el ticket, envia transcripcion por MD y elimina el canal.')
     )

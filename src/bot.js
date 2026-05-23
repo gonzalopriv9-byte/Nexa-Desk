@@ -244,6 +244,10 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
           await handleTicketSummaryCommand({ interaction, storage, supportAgent });
           return;
         }
+        if (subcommand === 'prioridad') {
+          await handleTicketPriorityCommand({ interaction, storage });
+          return;
+        }
         if (subcommand === 'cerrar') {
           await handleCloseTicketCommand({ interaction, storage, client, voiceManager });
           return;
@@ -566,7 +570,8 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
       }
     } catch (error) {
       console.error('AI response failed:', error);
-      await sendAiFailureNotice(message);
+      const failureNotice = await sendAiFailureNotice(message);
+      if (failureNotice) await saveTranscript(storage, failureNotice, 'assistant');
     } finally {
       activeResponses.delete(activeResponseKey);
     }
@@ -999,6 +1004,146 @@ async function handleTicketSummaryCommand({ interaction, storage, supportAgent }
     .setTimestamp(new Date());
 
   await interaction.editReply({ embeds: [embed], allowedMentions: { roles: [], users: [] } });
+}
+
+async function handleTicketPriorityCommand({ interaction, storage }) {
+  if (!interaction.inGuild() || !interaction.channelId) {
+    await interaction.reply({ content: 'Este comando solo se puede usar dentro de un ticket del servidor.', ephemeral: true });
+    return;
+  }
+
+  await interaction.deferReply({ ephemeral: true });
+
+  const [ticket, guildConfig, messages] = await Promise.all([
+    storage.getTicket(interaction.channelId),
+    storage.getGuildConfig(interaction.guildId),
+    storage.listTranscriptMessages(interaction.channelId)
+  ]);
+
+  if (!ticket) {
+    await interaction.editReply('Este canal no esta registrado como ticket de NexaDesk.');
+    return;
+  }
+
+  if (!canManageTicketTranscripts(interaction, guildConfig)) {
+    await interaction.editReply('Solo staff o usuarios con Manage Server pueden calcular prioridad del ticket.');
+    return;
+  }
+
+  const priority = analyzeTicketPriority({ ticket, messages });
+  const embed = new EmbedBuilder()
+    .setColor(priority.color)
+    .setTitle(`${EMOJIS.wifi} Triage inteligente del ticket`)
+    .setDescription(`Prioridad **${priority.label}** con score **${priority.score}/100**.`)
+    .addFields(
+      { name: 'Siguiente accion', value: priority.action.slice(0, 1024) },
+      { name: 'SLA recomendado', value: priority.sla, inline: true },
+      { name: 'Estado actual', value: ticket.status ?? 'open', inline: true },
+      { name: 'Senales detectadas', value: priority.signals.length ? priority.signals.slice(0, 8).join('\n') : 'Sin senales de riesgo fuerte.' }
+    )
+    .setFooter({ text: 'NexaDesk Ticket Triage' })
+    .setTimestamp(new Date());
+
+  await interaction.editReply({ embeds: [embed], allowedMentions: { roles: [], users: [] } });
+}
+
+function analyzeTicketPriority({ ticket, messages = [] }) {
+  const signals = [];
+  let score = 0;
+  let primary = 'normal';
+  const userMessages = messages.filter((item) => item.role === 'user' || (!item.authorBot && item.role !== 'assistant' && item.role !== 'system'));
+  const fullText = userMessages.map((item) => item.content ?? '').join('\n').slice(-9000);
+  const normalized = normalizeText(fullText);
+  const latestUser = [...userMessages].reverse().find((item) => item.content?.trim());
+  const latestAssistant = [...messages].reverse().find((item) => item.role === 'assistant' || item.authorBot);
+  const openedAt = Date.parse(ticket.createdAt ?? '') || Date.now();
+  const updatedAt = Date.parse(ticket.updatedAt ?? ticket.createdAt ?? '') || openedAt;
+  const ageHours = Math.max(0, (Date.now() - openedAt) / 3600000);
+  const idleHours = Math.max(0, (Date.now() - updatedAt) / 3600000);
+
+  const add = (points, label, key = null) => {
+    score += points;
+    signals.push(`${EMOJIS.rightArrow} ${label}`);
+    if (key) primary = key;
+  };
+
+  if (userMessages.some((item) => isCrisisRiskMessage(item.content))) {
+    add(100, 'Riesgo de autolesion o crisis: staff inmediato.', 'crisis');
+  }
+  if (/\b(?:amenaza|amenazado|acoso|acosar|dox|doxing|revelacion de secretos|chantaje|extorsion|suplantacion)\b/.test(normalized)) {
+    add(38, 'Caso sensible de seguridad/comunidad.', primary === 'crisis' ? null : 'safety');
+  }
+  if (/\b(?:scam|estafa|phishing|token|malware|nitro gratis|robux gratis|link sospechoso)\b/.test(normalized)) {
+    add(34, 'Posible fraude, scam o link malicioso.', primary === 'crisis' ? null : 'fraud');
+  }
+  if (/\b(?:blacklist|globalban|xn protect|aviso de blacklist global)\b/.test(normalized)) {
+    add(28, 'Hay senales de blacklist o revision XN Protect.', primary === 'crisis' ? null : 'blacklist');
+  }
+  if (latestUser && isUserRequestingStaff(latestUser.content)) {
+    add(24, 'El usuario ha pedido asistencia humana.', primary === 'normal' ? 'staff' : null);
+  }
+  if (/\b(?:alianza|partner|partnership|plantilla)\b/.test(normalized)) {
+    add(14, 'Flujo de alianza detectado.', primary === 'normal' ? 'alliance' : null);
+  }
+  if (/\[adjunto:|captura|imagen|foto|video|prueba|evidencia/.test(normalized)) {
+    add(10, 'Incluye o solicita pruebas visuales.');
+  }
+  if (latestUser && (!latestAssistant || (Date.parse(latestUser.createdAt ?? '') || 0) > (Date.parse(latestAssistant.createdAt ?? '') || 0))) {
+    add(16, 'El ultimo mensaje guardado es del usuario.');
+  }
+  if (['escalated', 'staff_waiting', 'staff_active'].includes(ticket.status)) {
+    add(18, 'El ticket ya esta marcado para staff.');
+  }
+  if (ageHours >= 24) add(22, 'Ticket abierto desde hace mas de 24h.');
+  else if (ageHours >= 6) add(10, 'Ticket abierto desde hace mas de 6h.');
+  if (idleHours >= 12) add(10, 'Ticket sin actividad reciente relevante.');
+
+  score = Math.min(100, Math.max(0, score));
+  const level = score >= 90
+    ? { label: 'CRITICA', color: 0xff3333, sla: 'Ahora mismo' }
+    : score >= 65
+      ? { label: 'ALTA', color: 0xff9900, sla: '< 15 min' }
+      : score >= 35
+        ? { label: 'MEDIA', color: 0xffcc00, sla: '< 1 h' }
+        : { label: 'BAJA', color: 0xffffff, sla: '< 6 h' };
+
+  return {
+    score,
+    label: level.label,
+    color: level.color,
+    sla: level.sla,
+    signals: dedupeSignals(signals),
+    action: buildTicketPriorityAction(primary, { ticket, latestUser })
+  };
+}
+
+function dedupeSignals(signals = []) {
+  return [...new Set(signals)].slice(0, 10);
+}
+
+function buildTicketPriorityAction(primary, { ticket, latestUser }) {
+  if (primary === 'crisis') {
+    return 'Entrar ya al ticket, mantener al usuario acompanado y activar el protocolo humano del servidor. No dejarlo solo con la IA.';
+  }
+  if (primary === 'safety') {
+    return 'Que un staff revise pruebas, usuarios implicados y contexto antes de cerrar. Si hay amenaza/acoso, conservar transcripcion.';
+  }
+  if (primary === 'fraud') {
+    return 'Revisar links/pruebas, borrar contenido peligroso si procede y dejar constancia para Security Guard.';
+  }
+  if (primary === 'blacklist') {
+    return 'No banear automaticamente: revisar el aviso XN Protect, motivo, prueba y decidir manualmente.';
+  }
+  if (primary === 'staff') {
+    return `Responder como staff a ${ticket.openedBy ? `<@${ticket.openedBy}>` : 'la persona del ticket'} y decidir si NexaDesk debe pausar la IA.`;
+  }
+  if (primary === 'alliance') {
+    return 'Continuar el flujo de alianza: normas, plantilla, captura de verificacion y publicacion en el canal configurado.';
+  }
+  if (latestUser?.content) {
+    return 'NexaDesk puede seguir atendiendo. Si el staff entra, conviene usar /ticket resumen antes de responder.';
+  }
+  return 'Sin mensajes de usuario suficientes. Revisa que el ticket se haya creado correctamente y que la transcripcion este activa.';
 }
 
 async function handleCloseTicketCommand({ interaction, storage, client, voiceManager = null }) {
@@ -2211,7 +2356,7 @@ function buildHelpEmbed({ view, config, guild }) {
           value: [
             'Mueve el rol de NexaDesk por encima del rol de staff para poder crear tickets privados.',
             'Diles que usen `/desactivar ia` cuando entren a atender manualmente.',
-            'Diles que usen `/ticket resumen` para leer el caso rapido y `/ticket cerrar` para cerrar con transcripcion.'
+            'Diles que usen `/ticket prioridad` para ver riesgo/SLA, `/ticket resumen` para leer el caso rapido y `/ticket cerrar` para cerrar con transcripcion.'
           ].join('\n')
         }
       );
@@ -2921,6 +3066,10 @@ function isMissingPermissionError(error) {
   return error?.code === 50013 || /Missing Permissions/i.test(String(error?.message ?? error));
 }
 
+function isMissingAccessError(error) {
+  return error?.code === 50001 || /Missing Access/i.test(String(error?.message ?? error));
+}
+
 function buildTicketComponentModal(component) {
   const normalized = normalizeTicketComponent(component);
   const modal = new ModalBuilder()
@@ -3104,12 +3253,15 @@ async function closeTicketWithTranscript({ client, storage, voiceManager = null,
       if (freshChannel?.deletable) {
         await freshChannel.delete(reason);
       } else if (freshChannel) {
-        await freshChannel.send('No tengo permisos suficientes para eliminar este canal. El ticket ya quedo cerrado en NexaDesk.');
+        await freshChannel.send('No tengo permisos suficientes para eliminar este canal. El ticket ya quedo cerrado en NexaDesk.').catch((sendError) => {
+          if (isMissingAccessError(sendError) || isMissingPermissionError(sendError)) return;
+          throw sendError;
+        });
       }
     } catch (error) {
       console.error(`Failed to delete closed ticket channel ${channel.id}:`, error);
     }
-  }, 8_000);
+  }, 8_000).unref?.();
 }
 
 async function finalizeDeletedTicket({ client, storage, channel, ticket, voiceManager = null }) {
@@ -4837,6 +4989,7 @@ async function maybeMirrorGlobalAnnouncement({ client, storage, config, message 
   let delivered = 0;
   let skipped = 0;
   let failed = 0;
+  let disabledTargets = 0;
 
   for (const guildConfig of guildConfigs) {
     const discovery = normalizeDiscoveryConfig(guildConfig.discovery);
@@ -4870,10 +5023,46 @@ async function maybeMirrorGlobalAnnouncement({ client, storage, config, message 
     } catch (error) {
       failed += 1;
       console.warn(`Failed to mirror announcement ${message.id} to ${targetChannelId}:`, error?.message ?? error);
+      if (isPermanentAnnouncementMirrorError(error)) {
+        const disabled = await disableBrokenAnnouncementTarget({
+          storage,
+          guildConfig,
+          targetChannelId,
+          error
+        }).catch((disableError) => {
+          console.warn(`Could not disable broken announcement target ${targetChannelId}:`, disableError?.message ?? disableError);
+          return false;
+        });
+        if (disabled) disabledTargets += 1;
+      }
     }
   }
 
-  console.log(`Global announcement ${message.id} mirrored. Delivered: ${delivered}. Skipped: ${skipped}. Failed: ${failed}.`);
+  console.log(`Global announcement ${message.id} mirrored. Delivered: ${delivered}. Skipped: ${skipped}. Failed: ${failed}. Disabled invalid targets: ${disabledTargets}.`);
+  return true;
+}
+
+function isPermanentAnnouncementMirrorError(error) {
+  const code = Number(error?.code ?? error?.rawError?.code ?? 0);
+  const message = String(error?.message ?? error ?? '');
+  return [10003, 10004, 50001, 50013].includes(code)
+    || /Unknown Channel|Unknown Guild|Missing Access|Missing Permissions/i.test(message);
+}
+
+async function disableBrokenAnnouncementTarget({ storage, guildConfig, targetChannelId, error }) {
+  if (!guildConfig?.guildId || !targetChannelId) return false;
+  const discovery = normalizeDiscoveryConfig(guildConfig.discovery);
+  if (discovery.announcementChannelId !== targetChannelId) return false;
+
+  await storage.upsertGuildConfig(guildConfig.guildId, {
+    discovery: {
+      ...(guildConfig.discovery ?? {}),
+      announcementChannelId: null,
+      announcementChannelName: null,
+      announcementMirrorDisabledAt: new Date().toISOString(),
+      announcementMirrorDisabledReason: String(error?.message ?? error ?? 'Destino invalido').slice(0, 240)
+    }
+  });
   return true;
 }
 
