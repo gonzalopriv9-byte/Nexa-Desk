@@ -38,8 +38,9 @@ const supportAgent = new SupportAgent({
   visualAnalyzer
 });
 
+const botGatewayEligible = config.RUN_BOT || config.BOT_HA_ENABLED;
 const bot = createBot({ config, storage, supportAgent, voiceManager });
-const botActions = config.RUN_BOT && !config.BOT_HA_ENABLED
+const botActions = botGatewayEligible && !config.BOT_HA_ENABLED
   ? {
       createTicketCategory: (input) => createTicketCategory(bot, storage, input),
       createTicketPanel: (input) => createTicketPanel(bot, storage, input),
@@ -59,12 +60,12 @@ const app = createServer({
 });
 app.listen(config.PORT, () => {
   console.log(`NexaDesk dashboard listening on http://localhost:${config.PORT}`);
-  console.log(`NexaDesk runtime: RUN_BOT=${config.RUN_BOT} BOT_HA_ENABLED=${config.BOT_HA_ENABLED} BOT_INSTANCE_ID=${config.BOT_INSTANCE_ID || 'auto'} KEEPALIVE_ENABLED=${config.KEEPALIVE_ENABLED}`);
+  console.log(`NexaDesk runtime: RUN_BOT=${config.RUN_BOT} BOT_HA_ENABLED=${config.BOT_HA_ENABLED} BOT_GATEWAY_ELIGIBLE=${botGatewayEligible} BOT_INSTANCE_ID=${config.BOT_INSTANCE_ID || 'auto'} KEEPALIVE_ENABLED=${config.KEEPALIVE_ENABLED}`);
 });
 
 startKeepAliveLoop(config);
 
-if (config.RUN_BOT && config.BOT_HA_ENABLED) {
+if (config.BOT_HA_ENABLED) {
   startHighAvailabilityBot({ bot, storage, config }).catch((error) => {
     console.error('NexaDesk HA startup failed. Dashboard remains online.', error);
   });

@@ -50,7 +50,7 @@ export function createServer({ config, storage, bot, events }) {
   });
 
   app.get('/health/ha', asyncHandler(async (_req, res) => {
-    res.json(await buildHaHealthSnapshot({ storage }));
+    res.json(await buildHaHealthSnapshot({ storage, config }));
   }));
 
   app.get('/robots.txt', (_req, res) => {
@@ -1228,7 +1228,7 @@ function buildAdminRuntime() {
   };
 }
 
-async function buildHaHealthSnapshot({ storage }) {
+async function buildHaHealthSnapshot({ storage, config }) {
   const settings = await storage.getGlobalSettings().catch((error) => ({
     botLeaseReadError: normalizeError(error)
   }));
@@ -1241,14 +1241,15 @@ async function buildHaHealthSnapshot({ storage }) {
     service: 'nexadesk',
     generatedAt: new Date(now).toISOString(),
     runtime: {
-      env: process.env.NODE_ENV || 'development',
+      env: config?.NODE_ENV || process.env.NODE_ENV || 'development',
       pid: process.pid,
       uptimeSeconds: Math.round(process.uptime()),
-      runBot: String(process.env.RUN_BOT ?? 'true'),
-      haEnabled: String(process.env.BOT_HA_ENABLED ?? 'false'),
-      instanceId: process.env.BOT_INSTANCE_ID || 'local',
-      keepaliveEnabled: String(process.env.KEEPALIVE_ENABLED ?? 'false'),
-      keepaliveUrl: process.env.KEEPALIVE_URL || ''
+      runBot: String(config?.RUN_BOT ?? process.env.RUN_BOT ?? 'true'),
+      haEnabled: String(config?.BOT_HA_ENABLED ?? process.env.BOT_HA_ENABLED ?? 'false'),
+      botGatewayEligible: String(Boolean(config?.RUN_BOT || config?.BOT_HA_ENABLED)),
+      instanceId: config?.BOT_INSTANCE_ID || process.env.BOT_INSTANCE_ID || 'local',
+      keepaliveEnabled: String(config?.KEEPALIVE_ENABLED ?? process.env.KEEPALIVE_ENABLED ?? 'false'),
+      keepaliveUrl: config?.KEEPALIVE_URL || process.env.KEEPALIVE_URL || ''
     },
     leader: {
       ownerId: lease.ownerId ?? '',
