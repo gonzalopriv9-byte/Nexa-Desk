@@ -169,6 +169,7 @@ async function startHighAvailabilityBot({ bot, storage, config }) {
   let renewTimer = null;
   let pollTimer = null;
   let lastStandbyLogAt = 0;
+  let leaseCheckInFlight = false;
   console.log(`NexaDesk HA starting on ${instanceId}. Lease TTL=${config.BOT_LEASE_TTL_MS}ms renew=${config.BOT_LEASE_RENEW_MS}ms poll=${config.BOT_FAILOVER_POLL_MS}ms.`);
 
   async function readLease() {
@@ -258,6 +259,7 @@ async function startHighAvailabilityBot({ bot, storage, config }) {
     const lease = await readLease();
     const expired = !lease.ownerId || lease.expiresAt <= Date.now();
     const ownsLease = lease.ownerId === instanceId;
+    if (ownsLease && renewTimer) return;
     if (ownsLease || expired) {
       if (expired && lease.ownerId && lease.ownerId !== instanceId) {
         console.warn(`NexaDesk HA lease expired for ${lease.ownerId}; ${instanceId} attempting takeover.`);
@@ -272,7 +274,7 @@ async function startHighAvailabilityBot({ bot, storage, config }) {
       }
       if (!renewTimer) {
         renewTimer = setInterval(() => {
-          renewLeadership().catch((error) => console.error('NexaDesk HA lease renewal failed:', error));
+          runLeaseCheck(renewLeadership).catch((error) => console.error('NexaDesk HA lease renewal failed:', error));
         }, config.BOT_LEASE_RENEW_MS);
         renewTimer.unref?.();
       }
@@ -282,6 +284,16 @@ async function startHighAvailabilityBot({ bot, storage, config }) {
     if (Date.now() - lastStandbyLogAt > 30000) {
       console.log(`NexaDesk HA standby on ${instanceId}. Current leader: ${lease.ownerId}, expires ${new Date(lease.expiresAt).toISOString()}.`);
       lastStandbyLogAt = Date.now();
+    }
+  }
+
+  async function runLeaseCheck(action) {
+    if (leaseCheckInFlight) return;
+    leaseCheckInFlight = true;
+    try {
+      await action();
+    } finally {
+      leaseCheckInFlight = false;
     }
   }
 
@@ -298,9 +310,9 @@ async function startHighAvailabilityBot({ bot, storage, config }) {
     }).catch(() => {});
   }
 
-  await tryBecomeLeader();
+  await runLeaseCheck(tryBecomeLeader);
   pollTimer = setInterval(() => {
-    tryBecomeLeader().catch((error) => console.error('NexaDesk HA failover poll failed:', error));
+    runLeaseCheck(tryBecomeLeader).catch((error) => console.error('NexaDesk HA failover poll failed:', error));
   }, config.BOT_FAILOVER_POLL_MS);
   pollTimer.unref?.();
 
