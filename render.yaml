@@ -42,6 +42,12 @@ services:
         value: 4000
       - key: BOT_FAILOVER_POLL_MS
         value: 2500
+      - key: KEEPALIVE_ENABLED
+        value: true
+      - key: KEEPALIVE_URL
+        value: https://nexa-desk.onrender.com/health
+      - key: KEEPALIVE_INTERVAL_MS
+        value: 300000
       - key: SUPABASE_URL
         sync: false
       - key: SUPABASE_SERVICE_ROLE_KEY

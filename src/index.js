@@ -58,7 +58,10 @@ const app = createServer({
 });
 app.listen(config.PORT, () => {
   console.log(`NexaDesk dashboard listening on http://localhost:${config.PORT}`);
+  console.log(`NexaDesk runtime: RUN_BOT=${config.RUN_BOT} BOT_HA_ENABLED=${config.BOT_HA_ENABLED} BOT_INSTANCE_ID=${config.BOT_INSTANCE_ID || 'auto'} KEEPALIVE_ENABLED=${config.KEEPALIVE_ENABLED}`);
 });
+
+startKeepAliveLoop(config);
 
 if (config.RUN_BOT && config.BOT_HA_ENABLED) {
   startHighAvailabilityBot({ bot, storage, config }).catch((error) => {
@@ -163,6 +166,7 @@ async function startHighAvailabilityBot({ bot, storage, config }) {
   let renewTimer = null;
   let pollTimer = null;
   let lastStandbyLogAt = 0;
+  console.log(`NexaDesk HA starting on ${instanceId}. Lease TTL=${config.BOT_LEASE_TTL_MS}ms renew=${config.BOT_LEASE_RENEW_MS}ms poll=${config.BOT_FAILOVER_POLL_MS}ms.`);
 
   async function readLease() {
     const settings = await storage.getGlobalSettings();
@@ -242,6 +246,9 @@ async function startHighAvailabilityBot({ bot, storage, config }) {
     const expired = !lease.ownerId || lease.expiresAt <= Date.now();
     const ownsLease = lease.ownerId === instanceId;
     if (ownsLease || expired) {
+      if (expired && lease.ownerId && lease.ownerId !== instanceId) {
+        console.warn(`NexaDesk HA lease expired for ${lease.ownerId}; ${instanceId} attempting takeover.`);
+      }
       const confirmed = await claimLease(lease.raw);
       if (!confirmed) return;
       try {
@@ -303,4 +310,31 @@ async function startHighAvailabilityBot({ bot, storage, config }) {
 
   process.once('SIGINT', () => { void shutdown().finally(() => process.exit(0)); });
   process.once('SIGTERM', () => { void shutdown().finally(() => process.exit(0)); });
+}
+
+function startKeepAliveLoop(config) {
+  if (!config.KEEPALIVE_ENABLED) return;
+  const url = config.KEEPALIVE_URL || (config.DASHBOARD_PUBLIC_URL ? `${String(config.DASHBOARD_PUBLIC_URL).replace(/\/+$/g, '')}/health` : '');
+  if (!url) {
+    console.warn('NexaDesk keepalive enabled but KEEPALIVE_URL/DASHBOARD_PUBLIC_URL is not configured.');
+    return;
+  }
+
+  const ping = async () => {
+    const startedAt = Date.now();
+    try {
+      const response = await fetch(url, {
+        headers: {
+          'user-agent': 'NexaDesk-HA-KeepAlive/1.0'
+        }
+      });
+      console.log(`NexaDesk keepalive ${response.status} ${url} (${Date.now() - startedAt}ms).`);
+    } catch (error) {
+      console.warn(`NexaDesk keepalive failed for ${url}:`, error?.message ?? error);
+    }
+  };
+
+  setTimeout(ping, 10_000).unref?.();
+  const timer = setInterval(ping, config.KEEPALIVE_INTERVAL_MS);
+  timer.unref?.();
 }

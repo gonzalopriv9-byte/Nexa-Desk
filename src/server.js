@@ -49,6 +49,10 @@ export function createServer({ config, storage, bot, events }) {
     res.json({ ok: true, service: 'nexadesk' });
   });
 
+  app.get('/health/ha', asyncHandler(async (_req, res) => {
+    res.json(await buildHaHealthSnapshot({ storage }));
+  }));
+
   app.get('/robots.txt', (_req, res) => {
     res.type('text/plain').send('User-agent: *\nDisallow: /docs\nDisallow: /admin\nDisallow: /api\n');
   });
@@ -1221,6 +1225,40 @@ function buildAdminRuntime() {
     heapUsedMb: Math.round(memory.heapUsed / 1024 / 1024),
     env: process.env.NODE_ENV || 'development',
     runBot: String(process.env.RUN_BOT ?? 'true')
+  };
+}
+
+async function buildHaHealthSnapshot({ storage }) {
+  const settings = await storage.getGlobalSettings().catch((error) => ({
+    botLeaseReadError: normalizeError(error)
+  }));
+  const lease = settings?.botLease && typeof settings.botLease === 'object' ? settings.botLease : {};
+  const expiresAtMs = Date.parse(lease.expiresAt ?? '');
+  const now = Date.now();
+  const alive = Boolean(lease.ownerId && Number.isFinite(expiresAtMs) && expiresAtMs > now);
+  return {
+    ok: true,
+    service: 'nexadesk',
+    generatedAt: new Date(now).toISOString(),
+    runtime: {
+      env: process.env.NODE_ENV || 'development',
+      pid: process.pid,
+      uptimeSeconds: Math.round(process.uptime()),
+      runBot: String(process.env.RUN_BOT ?? 'true'),
+      haEnabled: String(process.env.BOT_HA_ENABLED ?? 'false'),
+      instanceId: process.env.BOT_INSTANCE_ID || 'local',
+      keepaliveEnabled: String(process.env.KEEPALIVE_ENABLED ?? 'false'),
+      keepaliveUrl: process.env.KEEPALIVE_URL || ''
+    },
+    leader: {
+      ownerId: lease.ownerId ?? '',
+      hostname: lease.hostname ?? '',
+      updatedAt: lease.updatedAt ?? null,
+      expiresAt: lease.expiresAt ?? null,
+      alive,
+      secondsToExpiry: Number.isFinite(expiresAtMs) ? Math.round((expiresAtMs - now) / 1000) : null
+    },
+    warning: settings?.botLeaseReadError ?? null
   };
 }
 

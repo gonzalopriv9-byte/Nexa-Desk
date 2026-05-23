@@ -108,6 +108,24 @@ Use a different `BOT_INSTANCE_ID` on the standby, for example `oci-standby`. The
 
 Preferred standby target for this repo: the Render dashboard service. Set `RUN_BOT=true`, `BOT_HA_ENABLED=true`, and `BOT_INSTANCE_ID=render-dashboard-standby` there. Keep the Raspberry Pi as `BOT_INSTANCE_ID=pi-main`.
 
+Render Free web services can sleep after idle time, so the standby must receive periodic HTTP traffic or the Discord gateway will not be alive when the Pi drops. For the Render standby, set:
+
+```text
+KEEPALIVE_ENABLED=true
+KEEPALIVE_URL=https://your-render-service.onrender.com/health
+KEEPALIVE_INTERVAL_MS=300000
+```
+
+Verify standby readiness from:
+
+```text
+https://your-render-service.onrender.com/health/ha
+```
+
+When the Pi is leader, this endpoint should show `leader.ownerId = pi-main`. After unplugging the Pi, it should change to `render-dashboard-standby` after the lease expires.
+
+The repository also includes `.github/workflows/render-keepalive.yml`, which pings Render every 5 minutes from GitHub Actions. Keep Actions enabled on GitHub so the standby stays awake even when the Pi is healthy.
+
 ## Private docs vault
 
 Open the private internal docs manually at:
