@@ -21,6 +21,7 @@ const schema = z.object({
   BOT_LEASE_TTL_MS: z.coerce.number().int().min(5000).max(120000).default(12000),
   BOT_LEASE_RENEW_MS: z.coerce.number().int().min(1500).max(60000).default(4000),
   BOT_FAILOVER_POLL_MS: z.coerce.number().int().min(1000).max(60000).default(2500),
+  BOT_LEASE_CLAIM_SETTLE_MS: z.coerce.number().int().min(100).max(3000).default(500),
   KEEPALIVE_ENABLED: envBoolean.default(false),
   KEEPALIVE_URL: z.string().url().optional().or(z.literal('')).default(''),
   KEEPALIVE_INTERVAL_MS: z.coerce.number().int().min(60000).max(900000).default(300000),

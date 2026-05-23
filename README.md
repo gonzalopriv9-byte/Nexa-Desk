@@ -126,6 +126,16 @@ When the Pi is leader, this endpoint should show `leader.ownerId = pi-main`. Aft
 
 The repository also includes `.github/workflows/render-keepalive.yml`, which pings Render every 5 minutes from GitHub Actions. Keep Actions enabled on GitHub so the standby stays awake even when the Pi is healthy.
 
+If `/health/ha` shows `runtime.runBot = "false"` or `runtime.haEnabled = "false"` on Render, the standby is disabled regardless of `render.yaml`. Set these Render environment variables manually and redeploy:
+
+```text
+RUN_BOT=true
+BOT_HA_ENABLED=true
+BOT_INSTANCE_ID=render-dashboard-standby
+KEEPALIVE_ENABLED=true
+KEEPALIVE_URL=https://nexa-desk.onrender.com/health
+```
+
 ## Private docs vault
 
 Open the private internal docs manually at:

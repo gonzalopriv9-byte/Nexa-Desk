@@ -1,6 +1,7 @@
 import { config } from './config.js';
 import { createStorage } from './storage.js';
 import { AppEvents } from './events.js';
+import crypto from 'node:crypto';
 import os from 'node:os';
 import { AkiomaeClient } from './ai/akiomae-client.js';
 import { FallbackAiClient, createAiProvider } from './ai/fallback-ai-client.js';
@@ -161,6 +162,7 @@ function hasGroqProvider() {
 
 async function startHighAvailabilityBot({ bot, storage, config }) {
   const instanceId = config.BOT_INSTANCE_ID?.trim() || `${os.hostname()}-${process.pid}`;
+  let leaseToken = '';
   let loggedIn = false;
   let loginPromise = null;
   let renewTimer = null;
@@ -174,18 +176,21 @@ async function startHighAvailabilityBot({ bot, storage, config }) {
     const expiresAt = Date.parse(lease.expiresAt ?? '');
     return {
       ownerId: lease.ownerId ? String(lease.ownerId) : '',
+      claimToken: lease.claimToken ? String(lease.claimToken) : '',
       updatedAt: lease.updatedAt ?? null,
       expiresAt: Number.isFinite(expiresAt) ? expiresAt : 0,
       raw: lease
     };
   }
 
-  async function writeLease(previous = {}) {
+  async function writeLease(previous = {}, token = leaseToken || crypto.randomUUID()) {
+    leaseToken = token;
     const now = Date.now();
     return storage.updateGlobalSettings({
       botLease: {
         ...previous,
         ownerId: instanceId,
+        claimToken: token,
         hostname: os.hostname(),
         pid: process.pid,
         updatedAt: new Date(now).toISOString(),
@@ -195,9 +200,11 @@ async function startHighAvailabilityBot({ bot, storage, config }) {
   }
 
   async function claimLease(previous = {}) {
-    await writeLease(previous);
+    const token = crypto.randomUUID();
+    await writeLease(previous, token);
+    await wait(config.BOT_LEASE_CLAIM_SETTLE_MS);
     const confirmed = await readLease();
-    return confirmed.ownerId === instanceId ? confirmed : null;
+    return confirmed.ownerId === instanceId && confirmed.claimToken === token ? confirmed : null;
   }
 
   async function ensureLoggedIn() {
@@ -213,6 +220,11 @@ async function startHighAvailabilityBot({ bot, storage, config }) {
         });
     }
     await loginPromise;
+    const lease = await readLease();
+    if (lease.ownerId !== instanceId || lease.claimToken !== leaseToken) {
+      await releaseLocalBot(`lease changed after login to ${lease.ownerId || 'none'}`);
+      throw new Error(`Lost NexaDesk HA leadership after login; current leader is ${lease.ownerId || 'none'}.`);
+    }
   }
 
   async function releaseLocalBot(reason) {
@@ -337,4 +349,8 @@ function startKeepAliveLoop(config) {
   setTimeout(ping, 10_000).unref?.();
   const timer = setInterval(ping, config.KEEPALIVE_INTERVAL_MS);
   timer.unref?.();
+}
+
+function wait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
