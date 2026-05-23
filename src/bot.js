@@ -82,6 +82,7 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
   const ticketWelcomeChannels = new Set();
   const managedTimers = new Set();
   const securityManager = new SecurityManager({ storage, client, supportAgent, config });
+  const leadershipGate = createHaLeadershipGate({ storage, config });
 
   const originalDestroy = client.destroy.bind(client);
   client.destroy = async (...args) => {
@@ -113,6 +114,7 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
 
   client.on(Events.GuildCreate, async (guild) => {
     try {
+      if (!await leadershipGate.isActive()) return;
       applyBotPresence(client);
       await handleGuildJoin({ guild, storage, config });
       await refreshGuildDiscovery(client, storage, { guildId: guild.id, reason: 'guild_join' }, supportAgent);
@@ -122,11 +124,13 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
   });
 
   client.on(Events.GuildDelete, () => {
+    if (!leadershipGate.isProbablyActive()) return;
     applyBotPresence(client);
   });
 
   client.on(Events.InteractionCreate, async (interaction) => {
     try {
+      if (!await leadershipGate.isActive()) return;
       if (interaction.isButton() && interaction.customId === 'nexadesk:create_ticket') {
         const guildConfig = await storage.getGuildConfig(interaction.guildId);
         const panel = findPanelForInteraction(guildConfig, interaction);
@@ -337,6 +341,7 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
 
   client.on(Events.ChannelCreate, async (channel) => {
     try {
+      if (!await leadershipGate.isActive()) return;
       await securityManager.handleChannelCreate(channel);
       if (!channel.guild || channel.type !== ChannelType.GuildText) return;
 
@@ -364,6 +369,7 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
 
   client.on(Events.ChannelDelete, async (channel) => {
     try {
+      if (!await leadershipGate.isActive()) return;
       if (!channel.guild) return;
       await securityManager.handleChannelDelete(channel);
 
@@ -401,12 +407,14 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
   });
 
   client.on(Events.ChannelUpdate, async (oldChannel, newChannel) => {
+    if (!await leadershipGate.isActive()) return;
     await securityManager.handleChannelUpdate(oldChannel, newChannel).catch((error) => {
       console.error(`Security channel update guard failed in ${newChannel?.guild?.id ?? 'unknown'}:`, error);
     });
   });
 
   client.on(Events.MessageCreate, async (message) => {
+    if (!await leadershipGate.isActive()) return;
     if (!message.guild || !message.channel) return;
     if (await maybeMirrorGlobalAnnouncement({ client, storage, config, message })) return;
 
@@ -589,48 +597,56 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
   });
 
   client.on(Events.GuildMemberAdd, async (member) => {
+    if (!await leadershipGate.isActive()) return;
     await securityManager.handleMemberAdd(member).catch((error) => {
       console.error(`Security member join guard failed in ${member.guild.id}:`, error);
     });
   });
 
   client.on(Events.GuildMemberRemove, async (member) => {
+    if (!await leadershipGate.isActive()) return;
     await securityManager.handleMemberRemove(member).catch((error) => {
       console.error(`Security member remove guard failed in ${member.guild.id}:`, error);
     });
   });
 
   client.on(Events.GuildRoleCreate, async (role) => {
+    if (!await leadershipGate.isActive()) return;
     await securityManager.handleRoleCreate(role).catch((error) => {
       console.error(`Security role create guard failed in ${role.guild.id}:`, error);
     });
   });
 
   client.on(Events.GuildRoleDelete, async (role) => {
+    if (!await leadershipGate.isActive()) return;
     await securityManager.handleRoleDelete(role).catch((error) => {
       console.error(`Security role delete guard failed in ${role.guild.id}:`, error);
     });
   });
 
   client.on(Events.GuildRoleUpdate, async (oldRole, newRole) => {
+    if (!await leadershipGate.isActive()) return;
     await securityManager.handleRoleUpdate(oldRole, newRole).catch((error) => {
       console.error(`Security role update guard failed in ${newRole.guild.id}:`, error);
     });
   });
 
   client.on(Events.GuildUpdate, async (oldGuild, newGuild) => {
+    if (!await leadershipGate.isActive()) return;
     await securityManager.handleGuildUpdate(oldGuild, newGuild).catch((error) => {
       console.error(`Security guild update guard failed in ${newGuild?.id ?? 'unknown'}:`, error);
     });
   });
 
   client.on(Events.WebhooksUpdate, async (channel) => {
+    if (!await leadershipGate.isActive()) return;
     await securityManager.handleWebhooksUpdate(channel).catch((error) => {
       console.error(`Security webhook guard failed in ${channel.guild?.id ?? 'unknown'}:`, error);
     });
   });
 
   client.on(Events.GuildBanAdd, async (ban) => {
+    if (!await leadershipGate.isActive()) return;
     await securityManager.handleGuildBanAdd(ban).catch((error) => {
       console.error(`Security ban guard failed in ${ban.guild.id}:`, error);
     });
@@ -641,6 +657,46 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
 
 function isClientReadyForDiscordRest(client) {
   return Boolean(client?.isReady?.() && client?.token);
+}
+
+function createHaLeadershipGate({ storage, config }) {
+  const instanceId = String(config.BOT_INSTANCE_ID || '').trim();
+  let cache = {
+    checkedAt: 0,
+    active: !config.BOT_HA_ENABLED,
+    warnedAt: 0
+  };
+
+  const isProbablyActive = () => !config.BOT_HA_ENABLED || cache.active;
+
+  const isActive = async () => {
+    if (!config.BOT_HA_ENABLED) return true;
+    if (!instanceId) return false;
+
+    const now = Date.now();
+    if (now - cache.checkedAt < 750) return cache.active;
+
+    try {
+      const settings = await storage.getGlobalSettings();
+      const lease = settings?.botLease && typeof settings.botLease === 'object' ? settings.botLease : {};
+      const expiresAt = Date.parse(lease.expiresAt ?? '');
+      cache = {
+        checkedAt: now,
+        active: lease.ownerId === instanceId && Number.isFinite(expiresAt) && expiresAt > now,
+        warnedAt: cache.warnedAt
+      };
+      return cache.active;
+    } catch (error) {
+      cache = { ...cache, checkedAt: now, active: false };
+      if (now - cache.warnedAt > 30_000) {
+        console.warn('NexaDesk HA event gate could not verify leadership; ignoring Discord event to avoid duplicates:', error?.message ?? error);
+        cache.warnedAt = now;
+      }
+      return false;
+    }
+  };
+
+  return { isActive, isProbablyActive };
 }
 
 function trackManagedTimeout(timers, callback, delayMs) {
