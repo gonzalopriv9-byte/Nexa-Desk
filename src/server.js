@@ -1248,6 +1248,7 @@ async function buildHaHealthSnapshot({ storage, config }) {
       haEnabled: String(config?.BOT_HA_ENABLED ?? process.env.BOT_HA_ENABLED ?? 'false'),
       botGatewayEligible: String(Boolean(config?.RUN_BOT || config?.BOT_HA_ENABLED)),
       instanceId: config?.BOT_INSTANCE_ID || process.env.BOT_INSTANCE_ID || 'local',
+      primaryInstanceId: config?.BOT_PRIMARY_INSTANCE_ID || process.env.BOT_PRIMARY_INSTANCE_ID || '',
       keepaliveEnabled: String(config?.KEEPALIVE_ENABLED ?? process.env.KEEPALIVE_ENABLED ?? 'false'),
       keepaliveUrl: config?.KEEPALIVE_URL || process.env.KEEPALIVE_URL || ''
     },
@@ -1299,7 +1300,8 @@ async function buildStatusSnapshot({ storage, bot }) {
       uptimeSeconds: Math.round(process.uptime()),
       runBot: String(process.env.RUN_BOT ?? 'true'),
       haEnabled: String(process.env.BOT_HA_ENABLED ?? 'false'),
-      instanceId: process.env.BOT_INSTANCE_ID || 'local'
+      instanceId: process.env.BOT_INSTANCE_ID || 'local',
+      primaryInstanceId: process.env.BOT_PRIMARY_INSTANCE_ID || 'pi-main'
     },
     leader: {
       ownerId: lease.ownerId ?? '',

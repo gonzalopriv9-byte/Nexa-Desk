@@ -18,6 +18,7 @@ const schema = z.object({
   RUN_BOT: envBoolean.default(true),
   BOT_HA_ENABLED: envBoolean.default(false),
   BOT_INSTANCE_ID: z.string().optional().default(''),
+  BOT_PRIMARY_INSTANCE_ID: z.string().optional().default('pi-main'),
   BOT_LEASE_TTL_MS: z.coerce.number().int().min(5000).max(120000).default(12000),
   BOT_LEASE_RENEW_MS: z.coerce.number().int().min(1500).max(60000).default(4000),
   BOT_FAILOVER_POLL_MS: z.coerce.number().int().min(1000).max(60000).default(2500),

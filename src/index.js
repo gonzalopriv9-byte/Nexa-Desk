@@ -163,6 +163,8 @@ function hasGroqProvider() {
 
 async function startHighAvailabilityBot({ bot, storage, config }) {
   const instanceId = config.BOT_INSTANCE_ID?.trim() || `${os.hostname()}-${process.pid}`;
+  const primaryInstanceId = String(config.BOT_PRIMARY_INSTANCE_ID || '').trim();
+  const isPrimaryInstance = Boolean(primaryInstanceId && instanceId === primaryInstanceId);
   let leaseToken = '';
   let loggedIn = false;
   let loginPromise = null;
@@ -170,7 +172,7 @@ async function startHighAvailabilityBot({ bot, storage, config }) {
   let pollTimer = null;
   let lastStandbyLogAt = 0;
   let leaseCheckInFlight = false;
-  console.log(`NexaDesk HA starting on ${instanceId}. Lease TTL=${config.BOT_LEASE_TTL_MS}ms renew=${config.BOT_LEASE_RENEW_MS}ms poll=${config.BOT_FAILOVER_POLL_MS}ms.`);
+  console.log(`NexaDesk HA starting on ${instanceId}. Primary=${primaryInstanceId || 'none'} Lease TTL=${config.BOT_LEASE_TTL_MS}ms renew=${config.BOT_LEASE_RENEW_MS}ms poll=${config.BOT_FAILOVER_POLL_MS}ms.`);
 
   async function readLease() {
     const settings = await storage.getGlobalSettings();
@@ -259,10 +261,14 @@ async function startHighAvailabilityBot({ bot, storage, config }) {
     const lease = await readLease();
     const expired = !lease.ownerId || lease.expiresAt <= Date.now();
     const ownsLease = lease.ownerId === instanceId;
+    const canRecoverFromStandby = isPrimaryInstance && lease.ownerId && lease.ownerId !== instanceId && lease.ownerId !== primaryInstanceId;
     if (ownsLease && renewTimer) return;
-    if (ownsLease || expired) {
+    if (ownsLease || expired || canRecoverFromStandby) {
       if (expired && lease.ownerId && lease.ownerId !== instanceId) {
         console.warn(`NexaDesk HA lease expired for ${lease.ownerId}; ${instanceId} attempting takeover.`);
+      }
+      if (canRecoverFromStandby) {
+        console.warn(`NexaDesk HA primary ${instanceId} is recovering leadership from standby ${lease.ownerId}.`);
       }
       const confirmed = await claimLease(lease.raw);
       if (!confirmed) return;
