@@ -9,6 +9,7 @@ const SERVER_CONTEXT_FULL_SCAN_MAX_CHANNELS = 80;
 const SERVER_CONTEXT_FETCH_LIMIT = 35;
 const SERVER_CONTEXT_FULL_SCAN_FETCH_LIMIT = 18;
 const SERVER_CONTEXT_MAX_SNIPPETS = 10;
+const SERVER_CONTEXT_CHANNEL_LOOKUP_SNIPPETS = 6;
 const SERVER_CONTEXT_CACHE_TTL_MS = 45_000;
 const SERVER_CONTEXT_FETCH_TIMEOUT_MS = 2600;
 const SERVER_CONTEXT_CONCURRENCY = 8;
@@ -472,6 +473,8 @@ export class SupportAgent {
       'Si un miembro del staff ya dio una respuesta en este ticket, puedes usarla como contexto fiable diciendo "segun lo que indico staff". No conviertas esa informacion en promesas tuyas.',
       'Si el usuario dice algo como "me ayudas tu?", responde continuando el caso ya descrito, no con un saludo generico.',
       'Si el usuario pregunta algo del servidor que no aparece en el prompt, usa el contexto adicional del servidor. Si tampoco aparece ahi, no inventes: di que no lo tienes confirmado y ofrece pedir o esperar confirmacion de staff.',
+      'Si el usuario pregunta en que canal, donde encontrar algo, ejemplos, guias o documentacion, usa SOLO canales reales listados en "Contexto adicional" o "Canales importantes". Nunca inventes canales como #dudas, #faq o #soporte si no aparecen ahi.',
+      'Si el contexto adicional muestra "Canal real del servidor", priorizalo como fuente de verdad para responder ubicaciones dentro del servidor.',
       'Si el usuario pregunta por actualizaciones, version, changelog, novedades o "que incluye", busca esa informacion en el contexto adicional. No digas que la version es igual si no hay una fuente que lo confirme.',
       'Si el usuario corrige el tema con "no", "no digo eso" o "me refiero a", abandona el tema anterior inmediatamente y responde solo a la nueva intencion.',
       'Nunca reveles datos sensibles encontrados en contexto: tokens, claves, correos privados, IDs internos innecesarios, motivos de sanciones, datos de blacklist, canales privados o informacion marcada como staff-only.',
@@ -586,6 +589,13 @@ export class SupportAgent {
     if (!terms.length) return '';
 
     const cacheKey = buildServerKnowledgeCacheKey(message.guild.id, terms, searchMode);
+    const channelLookupSnippets = buildChannelLookupSnippets({
+      guild: message.guild,
+      guildConfig,
+      currentChannelId: message.channelId,
+      terms,
+      searchMode
+    });
     const [recentMessages, storedMessages] = await Promise.all([
       this.#searchRecentGuildMessages({ message, guildConfig, terms, searchMode, cacheKey }).catch((error) => {
         console.warn('Server context recent message search failed:', error?.message ?? error);
@@ -600,7 +610,7 @@ export class SupportAgent {
         : Promise.resolve([])
     ]);
 
-    const snippets = [...recentMessages, ...storedMessages.map(formatStoredServerKnowledgeSnippet)]
+    const snippets = [...channelLookupSnippets, ...recentMessages, ...storedMessages.map(formatStoredServerKnowledgeSnippet)]
       .map((snippet) => ({ ...snippet, text: redactSensitiveContext(snippet.text) }))
       .filter((snippet) => snippet.text.trim())
       .sort((a, b) => b.score - a.score)
@@ -1041,17 +1051,19 @@ function getServerKnowledgeSearchMode(content = '', intakeContext = '', history 
   const combinedText = `${latestText} ${supportingText}`.trim();
   const isCorrection = /\b(no|nope|nono|no\s+digo|me\s+refiero|digo\s+que|eso\s+no|ese\s+no|no\s+es\s+el\s+tema)\b/iu.test(latestText);
   const isUpdateQuestion = /\b(actualizacion|actualizaciones|version|versiones|changelog|novedad|novedades|cambios|update|updates|release|ultima\s+actualizacion|que\s+incluye|incluia|incluye\s+esta\s+version)\b/iu.test(latestText);
+  const isChannelLookup = isChannelLookupQuestion(latestText);
   const isServerInfoQuestion = /\b(cuando|donde|quien|resultado|resultados|postulacion|postulaciones|staff|formulario|formularios|nota|notas|aprobar|aprobado|aprobacion|canal|canales|norma|normas|regla|reglas|precio|precios|horario|evento|eventos|anuncio|anuncios|alianza|alianzas|requisito|requisitos|soporte|dashboard|premium|owner|encargado|encargados)\b/iu.test(combinedText);
   const isWeirdButContextual = latestText.length > 0
     && latestText.length <= 18
     && history.slice(-6).some((item) => /\b(actualizacion|version|resultado|postulacion|alianza|canal|staff|norma|dashboard)\b/iu.test(normalizeKnowledgeText(item.content)));
 
   return {
-    enabled: isUpdateQuestion || isServerInfoQuestion || isWeirdButContextual,
-    fullScan: isUpdateQuestion || (isCorrection && isServerInfoQuestion),
+    enabled: isUpdateQuestion || isChannelLookup || isServerInfoQuestion || isWeirdButContextual,
+    fullScan: isUpdateQuestion || isChannelLookup || (isCorrection && isServerInfoQuestion),
     useHistoryTerms: !isUpdateQuestion && !isCorrection,
     latestOnly: isUpdateQuestion || isCorrection,
-    reason: isUpdateQuestion ? 'update_question' : isServerInfoQuestion ? 'server_info_question' : 'contextual_short_message'
+    channelLookup: isChannelLookup,
+    reason: isUpdateQuestion ? 'update_question' : isChannelLookup ? 'channel_lookup_question' : isServerInfoQuestion ? 'server_info_question' : 'contextual_short_message'
   };
 }
 
@@ -1065,7 +1077,8 @@ function buildServerKnowledgeTerms(value = '') {
   const weighted = [
     ...tokens,
     ...tokens.filter((token) => SERVER_CONTEXT_PRIORITY_TERMS.has(token)),
-    ...tokens.filter((token) => SERVER_CONTEXT_PRIORITY_TERMS.has(token))
+    ...tokens.filter((token) => SERVER_CONTEXT_PRIORITY_TERMS.has(token)),
+    ...expandServerKnowledgeTerms(normalized, tokens)
   ];
 
   return [...new Set(weighted)].slice(0, 28);
@@ -1148,6 +1161,116 @@ const SERVER_CONTEXT_PRIORITY_TERMS = new Set([
   'release'
 ]);
 
+function isChannelLookupQuestion(normalizedText = '') {
+  return /\b(canal|canales|donde|en\s+que|encontrar|encuentro|ver|leer|mirar|ejemplo|ejemplos|demo|demos|tutorial|tutoriales|guia|guias|documentacion|docs|funciona|funcionas|funcionamiento|funciones)\b/iu.test(normalizedText)
+    && /\b(canal|canales|donde|encontrar|encuentro|ver|leer|mirar|ejemplo|ejemplos|demo|tutorial|guia|documentacion|docs|funciona|funcionas|funcionamiento)\b/iu.test(normalizedText);
+}
+
+function expandServerKnowledgeTerms(normalized = '', tokens = []) {
+  const expanded = [];
+  for (const token of tokens) {
+    if (token.length >= 5 && token.endsWith('s')) expanded.push(token.slice(0, -1));
+    if (token.length >= 5 && !token.endsWith('s')) expanded.push(`${token}s`);
+  }
+
+  if (/\b(ejemplo|ejemplos|demo|demos|tutorial|tutoriales|guia|guias|documentacion|docs|funciona|funcionas|funcionamiento|funciones|tester|test|prueba|pruebas)\b/iu.test(normalized)) {
+    expanded.push(
+      'ejemplo',
+      'ejemplos',
+      'demo',
+      'demos',
+      'tutorial',
+      'tutoriales',
+      'guia',
+      'guias',
+      'documentacion',
+      'docs',
+      'funcionamiento',
+      'funciones',
+      'prueba',
+      'pruebas',
+      'test'
+    );
+  }
+
+  if (/\b(canal|canales|donde|encontrar|encuentro|ver|leer|mirar)\b/iu.test(normalized)) {
+    expanded.push('canal', 'canales', 'info', 'informacion', 'ayuda');
+  }
+
+  return expanded;
+}
+
+function buildChannelLookupSnippets({ guild, guildConfig, currentChannelId, terms = [], searchMode = {} }) {
+  if (!searchMode.channelLookup || !guild?.channels?.cache) return [];
+
+  const me = guild.members?.me;
+  const termSet = new Set(terms);
+  return [...guild.channels.cache.values()]
+    .filter((channel) => (
+      channel.type === ChannelType.GuildText
+      || channel.type === ChannelType.GuildAnnouncement
+      || channel.type === ChannelType.GuildForum
+    ))
+    .filter((channel) => channel.id !== currentChannelId)
+    .filter((channel) => !isSensitiveChannelName(channel.name))
+    .filter((channel) => {
+      const permissions = me ? channel.permissionsFor(me) : null;
+      return channel.viewable !== false && (!permissions || permissions.has(PermissionFlagsBits.ViewChannel));
+    })
+    .map((channel) => {
+      const name = normalizeKnowledgeText(channel.name ?? '');
+      const topic = normalizeKnowledgeText(channel.topic ?? '');
+      const matches = [...termSet].filter((term) => term && (` ${name} ${topic} `).includes(term));
+      let score = scoreChannelLookupCandidate(channel, terms, guildConfig);
+      if (matches.length) score += Math.min(matches.length, 5) * 10;
+      return {
+        source: 'Mapa real de canales',
+        text: [
+          `Canal real del servidor: #${channel.name}.`,
+          topic ? `Descripcion/topic visible: ${String(channel.topic).replace(/\s+/g, ' ').slice(0, 220)}.` : null,
+          matches.length ? `Coincidencias con la pregunta: ${matches.slice(0, 8).join(', ')}.` : null,
+          'Usalo solo si responde directamente a la ubicacion que pide el usuario.'
+        ].filter(Boolean).join(' '),
+        score,
+        createdAt: Date.now()
+      };
+    })
+    .filter((snippet) => snippet.score >= 24)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, SERVER_CONTEXT_CHANNEL_LOOKUP_SNIPPETS);
+}
+
+function scoreChannelLookupCandidate(channel, terms = [], guildConfig = {}) {
+  const name = normalizeKnowledgeText(channel.name ?? '');
+  const topic = normalizeKnowledgeText(channel.topic ?? '');
+  const tokens = new Set(name.split(/\s+/).filter(Boolean));
+  const compactName = name.replace(/\s+/g, '');
+  let score = 0;
+
+  if (channel.id === guildConfig?.discovery?.faqChannelId) score += 30;
+  if (channel.id === guildConfig?.discovery?.supportChannelId) score += 18;
+  if (channel.id === guildConfig?.discovery?.rulesChannelId) score += 18;
+  if (channel.id === guildConfig?.announcementChannelId || channel.id === guildConfig?.discovery?.announcementChannelId) score += 14;
+
+  for (const term of terms) {
+    if (!term) continue;
+    const compactTerm = term.replace(/\s+/g, '');
+    if (name === term || compactName === compactTerm) score += 70;
+    else if (tokens.has(term)) score += 46;
+    else if (name.includes(term) || compactName.includes(compactTerm)) score += 32;
+    else if (topic.includes(term)) score += 12;
+  }
+
+  if (/\b(ejemplo|ejemplos|examples|demo|demos|tutorial|tutoriales|guia|guias|docs|documentacion|funcionamiento|como\s+funciona|pruebas|test)\b/iu.test(name)) score += 42;
+  if (/\b(faq|dudas|preguntas|ayuda|info|informacion|soporte|support)\b/iu.test(name)) score += 16;
+  return score;
+}
+
+function isSensitiveChannelName(value = '') {
+  const name = normalizeKnowledgeText(value);
+  return /\b(staff|admin|administracion|moderacion|moderadores|owner|owners|dev|developer|logs|audit|auditoria|sanciones|bans|ban|blacklist|privado|private|secret|secreto|backup|tokens|vault)\b/iu.test(name);
+}
+
 function selectServerKnowledgeChannels(guild, guildConfig, currentChannelId, terms = [], searchMode = {}) {
   if (!guild?.channels?.cache) return [];
 
@@ -1170,7 +1293,7 @@ function selectServerKnowledgeChannels(guild, guildConfig, currentChannelId, ter
       let score = 0;
       if (channel.id === guildConfig?.announcementChannelId || channel.id === guildConfig?.discovery?.announcementChannelId) score += 8;
       if (channel.id === guildConfig?.allianceChannelId || channel.id === guildConfig?.discovery?.allianceChannelId) score += 6;
-      if (/(anuncio|avisos|news|novedad|changelog|update|actualiz|version|info|informacion|faq|dudas|soporte|staff|postul|formulario|normas|reglas|alianza|partner|premium|dashboard)/iu.test(name)) score += 7;
+      if (/(anuncio|avisos|news|novedad|changelog|update|actualiz|version|info|informacion|faq|dudas|ejemplo|ejemplos|demo|tutorial|guia|docs|documentacion|soporte|staff|postul|formulario|normas|reglas|alianza|partner|premium|dashboard)/iu.test(name)) score += 7;
       for (const term of termSet) {
         if (name.includes(term)) score += 4;
       }
@@ -1221,8 +1344,9 @@ function scoreKnowledgeText(value = '', terms = []) {
 
 function normalizeKnowledgeText(value = '') {
   return String(value ?? '')
-    .normalize('NFD')
+    .normalize('NFKD')
     .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[\u200b-\u200f\u202a-\u202e\u2060-\u206f]/g, '')
     .toLowerCase()
     .replace(/[^\p{L}\p{N}#@_-]+/gu, ' ')
     .replace(/\s+/g, ' ')

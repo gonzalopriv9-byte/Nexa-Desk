@@ -23,7 +23,29 @@ const ANNOUNCEMENT_KEYWORDS = [
 
 const SUPPORT_KEYWORDS = ['soporte', 'support', 'ayuda', 'help', 'tickets', 'ticket', 'asistencia', 'atencion'];
 const RULES_KEYWORDS = ['normas', 'reglas', 'rules', 'normativa', 'reglamento'];
-const FAQ_KEYWORDS = ['faq', 'dudas', 'preguntas', 'guia', 'guide', 'informacion', 'info'];
+const FAQ_KEYWORDS = [
+  'faq',
+  'dudas',
+  'preguntas',
+  'guia',
+  'guias',
+  'guide',
+  'guides',
+  'informacion',
+  'info',
+  'ejemplo',
+  'ejemplos',
+  'example',
+  'examples',
+  'demo',
+  'demos',
+  'tutorial',
+  'tutoriales',
+  'documentacion',
+  'docs',
+  'como funciona',
+  'funcionamiento'
+];
 const TICKET_CATEGORY_KEYWORDS = ['tickets', 'ticket', 'soporte', 'support', 'ayuda', 'asistencia'];
 
 export function analyzeGuildChannelsForDiscovery(channelsInput = []) {
