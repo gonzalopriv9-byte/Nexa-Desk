@@ -428,7 +428,11 @@ export class SupabaseStorage {
     this.ticketCompatibilityOverlay = new Map();
   }
 
-  async init() {}
+  async init() {
+    await this.#loadTicketCompatibilityFallback().catch((error) => {
+      console.warn('Could not load ticket compatibility fallback:', error?.message ?? error);
+    });
+  }
 
   async getGlobalSettings() {
     const { data, error } = await this.client
@@ -569,7 +573,7 @@ export class SupabaseStorage {
       error = retry.error;
     }
     if (error) throw error;
-    if (usedCompatibleTicketSchema) this.#rememberTicketCompatibility(ticket.channelId, next);
+    if (usedCompatibleTicketSchema) await this.#rememberTicketCompatibility(ticket.channelId, next);
     const saved = this.#mergeTicketCompatibility(fromTicketRow(data));
     this.events?.publish('ticket.created', saved);
     return { ...saved, alreadyExists: false };
@@ -627,7 +631,7 @@ export class SupabaseStorage {
       error = retry.error;
     }
     if (error) throw error;
-    if (usedCompatibleTicketSchema) this.#rememberTicketCompatibility(channelId, next);
+    if (usedCompatibleTicketSchema) await this.#rememberTicketCompatibility(channelId, next);
     const saved = this.#mergeTicketCompatibility(fromTicketRow(data));
     this.events?.publish('ticket.updated', saved);
     return saved;
@@ -1007,12 +1011,15 @@ export class SupabaseStorage {
     };
   }
 
-  #rememberTicketCompatibility(channelId, ticket) {
+  async #rememberTicketCompatibility(channelId, ticket) {
     const overlay = pickTicketCompatibilityFields(ticket);
     if (!Object.keys(overlay).length) return;
     this.ticketCompatibilityOverlay.set(channelId, {
       ...(this.ticketCompatibilityOverlay.get(channelId) ?? {}),
       ...overlay
+    });
+    await this.#saveTicketCompatibilityFallback().catch((error) => {
+      console.warn('Could not persist ticket compatibility fallback:', error?.message ?? error);
     });
   }
 
@@ -1023,6 +1030,28 @@ export class SupabaseStorage {
       }
     }
     return null;
+  }
+
+  async #loadTicketCompatibilityFallback() {
+    const settings = await this.getGlobalSettings();
+    const source = settings.ticketCompatibilityOverlay && typeof settings.ticketCompatibilityOverlay === 'object'
+      ? settings.ticketCompatibilityOverlay.entries
+      : {};
+    if (!source || typeof source !== 'object') return;
+    for (const [channelId, overlay] of Object.entries(source)) {
+      if (!channelId || !overlay || typeof overlay !== 'object') continue;
+      this.ticketCompatibilityOverlay.set(channelId, overlay);
+    }
+  }
+
+  async #saveTicketCompatibilityFallback() {
+    const entries = Object.fromEntries([...this.ticketCompatibilityOverlay.entries()].slice(-750));
+    return this.updateGlobalSettings({
+      ticketCompatibilityOverlay: {
+        entries,
+        updatedAt: new Date().toISOString()
+      }
+    });
   }
 
   async #getActivePremiumActivationForGuild(guildId) {
