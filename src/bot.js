@@ -38,6 +38,16 @@ import {
 } from './maintenance.js';
 import { buildPanelActionRow, buildPanelEmbed, normalizePanelOptions, normalizeTicketComponent, panelWelcomeMessage } from './panel-options.js';
 import { DISCORD_EMOJIS as EMOJIS } from './emojis.js';
+import {
+  buildExamAnswerRecord,
+  buildExamQuestionPrompt,
+  formatExamEvaluation,
+  isExamCancelRequest,
+  isExamReviewRequest,
+  isExamTicketMode,
+  normalizeExamConfig,
+  normalizeExamState
+} from './exam-mode.js';
 import { buildFeedbackStats, formatRatingStars, normalizeGrowthConfig } from './growth.js';
 import { isPremiumEntitled, normalizePremiumConfig } from './premium.js';
 import { SecurityManager, SECURITY_LEVELS, normalizeSecurityConfig, normalizeSecurityLevel, summarizeSecurityConfig } from './security.js';
@@ -168,7 +178,7 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
         }
 
         refreshPanelSelectMenu(interaction, guildConfig, panel);
-        if (component.questions.length) {
+        if (!isExamTicketMode(component.ticketMode) && component.questions.length) {
           await interaction.showModal(buildTicketComponentModal(component));
           return;
         }
@@ -509,6 +519,15 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
       await handleNaturalCloseRequest({ client, storage, message, ticket, guildConfig });
       return;
     }
+
+    const examHandled = await handleExamModeMessage({
+      storage,
+      supportAgent,
+      message,
+      ticket,
+      guildConfig
+    });
+    if (examHandled) return;
 
     const staffHandoff = await handleStaffHandoffMessage({ storage, message, ticket, guildConfig, client });
     if (staffHandoff.ticket) ticket = staffHandoff.ticket;
@@ -1606,7 +1625,7 @@ async function handleActivatePremiumCommand({ interaction, storage, client }) {
       { name: 'Servidor', value: guildId, inline: true },
       { name: 'Plan', value: updated.plan ?? 'pro', inline: true },
       { name: 'Voz Pro', value: updated.voiceSupportEnabled ? 'Activa' : 'Pendiente', inline: true },
-      { name: 'Incluye', value: 'Voz Pro, IA prioritaria, transcripciones inteligentes, Security Plus, branding propio, informes semanales, Growth Engine, reviews publicas y Churn Radar.' }
+      { name: 'Incluye', value: 'Voz Pro, Modo examen, IA prioritaria, transcripciones inteligentes, Security Plus, branding propio, informes semanales, Growth Engine, reviews publicas y Churn Radar.' }
     )
     .setTimestamp(new Date());
 
@@ -2398,7 +2417,7 @@ function buildHelpEmbed({ view, config, guild }) {
   if (view === 'create_ticket') {
     return base
       .setTitle(`${EMOJIS.server} Como creo un ticket?`)
-      .setDescription('Los tickets se crean desde los paneles publicados por el servidor. NexaDesk puede abrir tickets de texto, menus con preguntas previas y tickets de voz Pro si el servidor lo tiene activo.')
+      .setDescription('Los tickets se crean desde los paneles publicados por el servidor. NexaDesk puede abrir tickets de texto, menus con preguntas previas, tickets de voz Pro y paneles de Modo examen si el servidor lo configura.')
       .addFields(
         {
           name: `${EMOJIS.rightArrow} Para miembros`,
@@ -2491,6 +2510,7 @@ function buildHelpEmbed({ view, config, guild }) {
           name: `${EMOJIS.nexalogo} Funciones incluidas`,
           value: [
             'Voz Pro con STT/TTS y salas privadas vinculadas al ticket.',
+            'Modo examen para oposiciones: preguntas automaticas, nota provisional y revision Premium con formulario/sala.',
             'IA prioritaria con respuestas menos genericas y mejores escalados.',
             'Transcripciones inteligentes para staff, dashboard y MD al usuario.',
             'Security Plus para links sospechosos, flood, blacklist y avisos reforzados.',
@@ -2672,6 +2692,24 @@ async function createTicketFromConfiguredSource({ interaction, storage, guildCon
     return;
   }
 
+  const examConfig = isExamTicketMode(ticketMode)
+    ? getExamConfigForTicketSource(normalizedPanel, normalizedComponent)
+    : null;
+  const canUsePremiumExamReview = isExamTicketMode(ticketMode)
+    && isPremiumEntitled(guildConfig)
+    && examConfig?.reviewEnabled
+    && Boolean(examConfig?.formUrl);
+  if (isExamTicketMode(ticketMode) && !canUsePremiumExamReview && !examConfig?.questions?.length) {
+    await interaction.reply({
+      content: [
+        `${EMOJIS.nexalogo} Este panel esta en Modo examen, pero no tiene preguntas ni formulario configurado.`,
+        'Editalo desde la dashboard y anade preguntas en formato `P: ...`. La revision con formulario externo solo funciona en servidores Premium y con "revision" activada.'
+      ].join('\n'),
+      ephemeral: true
+    });
+    return;
+  }
+
   await deferEphemeralInteraction(interaction);
 
   const ticketCategoryId = normalizedComponent?.ticketCategoryId || normalizedPanel?.ticketCategoryId || guildConfig?.ticketCategoryId;
@@ -2714,7 +2752,7 @@ async function createTicketFromConfiguredSource({ interaction, storage, guildCon
   }
   panelCreatedChannels.add(channel.id);
 
-  const ticket = await storage.createTicket({
+  let ticket = await storage.createTicket({
     guildId: interaction.guild.id,
     guildName: interaction.guild.name,
     channelId: channel.id,
@@ -2730,17 +2768,33 @@ async function createTicketFromConfiguredSource({ interaction, storage, guildCon
 
   const welcome = await channel.send(buildTicketWelcomeMessage({ panel: normalizedPanel, component: normalizedComponent, answers, userMention: `${interaction.user}` }));
   await saveTranscript(storage, welcome, 'assistant');
-  await sendContextualTicketOpening({
-    storage,
-    supportAgent,
-    channel,
-    ticket,
-    guildConfig,
-    panel: normalizedPanel,
-    component: normalizedComponent,
-    answers,
-    user: interaction.user
-  });
+  if (isExamTicketMode(ticketMode)) {
+    const startedExamTicket = await startExamTicket({
+      interaction,
+      storage,
+      channel,
+      ticket,
+      guildConfig,
+      panel: normalizedPanel,
+      component: normalizedComponent,
+      examConfig,
+      config,
+      voiceManager
+    });
+    ticket = startedExamTicket ?? ticket;
+  } else {
+    await sendContextualTicketOpening({
+      storage,
+      supportAgent,
+      channel,
+      ticket,
+      guildConfig,
+      panel: normalizedPanel,
+      component: normalizedComponent,
+      answers,
+      user: interaction.user
+    });
+  }
   await sendMaintenanceTicketNotice({ storage, channel, guildConfig });
 
   await maybeAlertXnProtectBlacklist({
@@ -2804,6 +2858,298 @@ async function createTicketFromConfiguredSource({ interaction, storage, guildCon
     ].filter(Boolean).join('\n'),
   });
   setTimeout(() => panelCreatedChannels.delete(channel.id), 30_000);
+}
+
+function getExamConfigForTicketSource(panel, component) {
+  const source = component && isExamTicketMode(component.ticketMode) ? component : panel;
+  return normalizeExamConfig(source);
+}
+
+async function startExamTicket({ interaction, storage, channel, ticket, guildConfig, panel, component, examConfig, config, voiceManager = null }) {
+  const premium = isPremiumEntitled(guildConfig);
+  const reviewEnabled = premium && examConfig.reviewEnabled && Boolean(examConfig.formUrl);
+  const now = new Date().toISOString();
+  const state = normalizeExamState({
+    enabled: true,
+    mode: reviewEnabled ? 'premium_review' : 'free_questions',
+    status: reviewEnabled ? 'awaiting_screen_share' : 'questioning',
+    questions: examConfig.questions,
+    currentIndex: 0,
+    answers: [],
+    formUrl: examConfig.formUrl,
+    reviewEnabled,
+    passScore: examConfig.passScore,
+    startedAt: now,
+    lastQuestionAt: reviewEnabled ? null : now,
+    warnings: reviewEnabled && !voiceManager ? ['Revision por voz sin STT/TTS activo en runtime.'] : []
+  });
+
+  let updated = await storage.updateTicket(ticket.channelId, {
+    openedBy: ticket.openedBy || interaction.user.id,
+    status: reviewEnabled ? 'exam_review' : 'exam',
+    examState: state
+  });
+
+  if (reviewEnabled) {
+    const intro = await channel.send({
+      embeds: [
+        new EmbedBuilder()
+          .setColor(0xffffff)
+          .setTitle(`${EMOJIS.nexalogo} Modo examen con revision Premium`)
+          .setDescription([
+            `${interaction.user}, he preparado el examen supervisado.`,
+            `Formulario: ${examConfig.formUrl}`,
+            '',
+            'Entra a la sala de voz, abre el formulario y comparte pantalla para que el staff pueda supervisar.',
+            'Importante: Discord no permite a los bots leer directamente la imagen de una pantalla compartida. NexaDesk deja la sala, la guia por voz y el aviso al staff; la supervision visual la confirma una persona.'
+          ].join('\n'))
+          .addFields(
+            { name: 'Regla del examen', value: 'Si sales del formulario, cambias de ventana o usas ayuda externa, el staff puede anular la prueba.', inline: false },
+            { name: 'Cuando empiece', value: 'Cuando staff confirme que ve el formulario, puedes comenzar. Si prefieres correccion automatica, usa preguntas dentro de NexaDesk.', inline: false }
+          )
+          .setFooter({ text: 'NexaDesk Exam Mode' })
+          .setTimestamp(new Date())
+      ],
+      allowedMentions: { users: [interaction.user.id] }
+    });
+    await saveTranscript(storage, intro, 'assistant');
+
+    const shouldMentionStaff = await registerTicketEscalation({
+      storage,
+      message: { guild: interaction.guild, channel, channelId: channel.id },
+      guildConfig,
+      ticket: updated ?? ticket,
+      reason: 'Modo examen Premium requiere supervision humana de pantalla.'
+    });
+    if (shouldMentionStaff && guildConfig.staffRoleId) {
+      const staffNotice = await channel.send({
+        content: `<@&${guildConfig.staffRoleId}> Examen supervisado iniciado para ${interaction.user}. Revisad pantalla compartida antes de aprobar la postulacion.`,
+        allowedMentions: { roles: [guildConfig.staffRoleId], users: [interaction.user.id] }
+      });
+      await saveTranscript(storage, staffNotice, 'assistant');
+    }
+
+    try {
+      const voiceResult = await createVoiceRoomForTicket({
+        interaction,
+        storage,
+        voiceManager,
+        ticket: updated ?? ticket,
+        guildConfig,
+        textChannel: channel,
+        requestedName: `examen-${interaction.user.username}`,
+        requestId: `exam-${interaction.id}`
+      });
+      if (voiceResult.ready) {
+        updated = voiceResult.ticket ?? updated;
+        await tryMoveExamCandidateToVoice(interaction, voiceResult.channel);
+        const voiceNotice = await channel.send(`${EMOJIS.wifi} Sala de examen vinculada: ${voiceResult.channel}.`);
+        await saveTranscript(storage, voiceNotice, 'assistant');
+        await voiceManager?.speakToTicket?.(
+          interaction.guildId,
+          'El examen comenzara en breves momentos. Por favor, ingresa al formulario y comparte pantalla.'
+        ).catch((error) => console.warn('Exam opening TTS failed:', error?.message ?? error));
+      }
+    } catch (error) {
+      console.error('Exam premium voice setup failed:', error);
+      const notice = await channel.send([
+        `${EMOJIS.wifi} No pude crear la sala de voz del examen.`,
+        isMissingPermissionError(error)
+          ? `Actualiza permisos para Move Members y Manage Channels: ${buildBotInviteUrl(config, interaction.guildId)}`
+          : 'El examen queda abierto por texto y staff puede supervisarlo manualmente.'
+      ].join('\n')).catch(() => null);
+      if (notice) await saveTranscript(storage, notice, 'assistant');
+    }
+
+    return updated;
+  }
+
+  const freeNotice = await channel.send({
+    embeds: [
+      new EmbedBuilder()
+        .setColor(0xffffff)
+        .setTitle(`${EMOJIS.nexalogo} Modo examen`)
+        .setDescription([
+          `${interaction.user}, voy a hacerte **${state.questions.length} preguntas** dentro de este ticket.`,
+          'Responde con sinceridad y sin ayuda externa. Al terminar, NexaDesk corregira y dara una nota provisional.',
+          'Si no estas de acuerdo con la nota, podras pedir revision humana escribiendo **solicito revision**.'
+        ].join('\n'))
+        .setFooter({ text: 'Los servidores Premium pueden activar revision supervisada con voz.' })
+        .setTimestamp(new Date())
+    ],
+    allowedMentions: { users: [interaction.user.id] }
+  });
+  await saveTranscript(storage, freeNotice, 'assistant');
+  const firstQuestion = await channel.send(buildExamQuestionPrompt(state));
+  await saveTranscript(storage, firstQuestion, 'assistant');
+  return updated;
+}
+
+async function tryMoveExamCandidateToVoice(interaction, voiceChannel) {
+  const member = interaction.member;
+  if (!member?.voice?.channelId || !voiceChannel) return false;
+  await member.voice.setChannel(voiceChannel, 'NexaDesk exam mode voice room').catch((error) => {
+    console.warn(`Could not move exam candidate ${interaction.user.id} to voice:`, error?.message ?? error);
+  });
+  return true;
+}
+
+async function handleExamModeMessage({ storage, supportAgent, message, ticket, guildConfig }) {
+  const state = normalizeExamState(ticket.examState);
+  if (!state.enabled || state.status === 'idle') return false;
+
+  if (ticket.openedBy && message.author.id !== ticket.openedBy) return false;
+  if (!ticket.openedBy) {
+    ticket = await storage.updateTicket(ticket.channelId, { openedBy: message.author.id }) ?? ticket;
+  }
+
+  if (isExamCancelRequest(message.content)) {
+    const nextState = { ...state, status: 'cancelled', completedAt: new Date().toISOString() };
+    const shouldMentionStaff = await registerTicketEscalation({
+      storage,
+      message,
+      guildConfig,
+      ticket,
+      reason: 'El candidato ha cancelado o anulado el examen.'
+    });
+    await storage.updateTicket(ticket.channelId, {
+      status: 'escalated',
+      aiDisabled: true,
+      aiDisabledBy: message.author.id,
+      aiDisabledAt: new Date().toISOString(),
+      examState: nextState
+    });
+    const reply = await sendTicketResponse(message, {
+      content: buildPublicReply({
+        shouldEscalate: true,
+        reason: 'Examen cancelado por el candidato.',
+        publicAnswer: 'He dejado el examen cancelado y lo paso a revision humana.'
+      }, guildConfig, { mentionStaff: shouldMentionStaff }),
+      allowedMentions: { roles: shouldMentionStaff && guildConfig.staffRoleId ? [guildConfig.staffRoleId] : [] }
+    });
+    await saveTranscript(storage, reply, 'assistant');
+    return true;
+  }
+
+  if (state.status === 'completed' && isExamReviewRequest(message.content)) {
+    await requestExamManualReview({ storage, message, ticket, guildConfig, state });
+    return true;
+  }
+
+  if (state.mode === 'premium_review') {
+    const reply = await sendTicketResponse(message, [
+      'Estoy en modo examen supervisado.',
+      state.formUrl ? `Formulario configurado: ${state.formUrl}` : '',
+      'Comparte pantalla en la sala de voz y espera confirmacion del staff. NexaDesk no puede leer video de pantalla compartida directamente desde Discord.'
+    ].filter(Boolean).join('\n'));
+    await saveTranscript(storage, reply, 'assistant');
+    return true;
+  }
+
+  if (state.status !== 'questioning') return false;
+
+  const question = state.questions[state.currentIndex];
+  if (!question) return false;
+
+  const answerRecord = buildExamAnswerRecord({
+    question,
+    answer: message.content,
+    askedAt: state.lastQuestionAt
+  });
+  const answers = [...state.answers, answerRecord];
+  const warnings = [...state.warnings, ...(answerRecord.flags ?? [])].slice(0, 20);
+  const nextIndex = state.currentIndex + 1;
+
+  if (nextIndex < state.questions.length) {
+    const nextState = {
+      ...state,
+      answers,
+      warnings,
+      currentIndex: nextIndex,
+      lastQuestionAt: new Date().toISOString()
+    };
+    await storage.updateTicket(ticket.channelId, { examState: nextState });
+    const reply = await sendTicketResponse(message, buildExamQuestionPrompt(nextState));
+    await saveTranscript(storage, reply, 'assistant');
+    return true;
+  }
+
+  const completedState = {
+    ...state,
+    answers,
+    warnings,
+    currentIndex: nextIndex,
+    status: 'grading',
+    completedAt: new Date().toISOString()
+  };
+  await storage.updateTicket(ticket.channelId, { examState: completedState });
+  await message.channel.sendTyping().catch(() => {});
+
+  let evaluation;
+  try {
+    evaluation = await supportAgent.gradeExamAnswers({
+      ticket,
+      guildConfig,
+      examState: completedState,
+      userTag: message.author.tag ?? message.author.username
+    });
+  } catch (error) {
+    console.error('Exam grading failed:', error);
+    evaluation = {
+      score: 0,
+      passed: false,
+      summary: 'No pude corregir automaticamente por un fallo temporal de IA.',
+      strengths: [],
+      concerns: ['Solicita revision manual.'],
+      manualReviewRecommended: true,
+      aiGeneratedSuspicion: 0,
+      perQuestion: []
+    };
+  }
+
+  const finalState = {
+    ...completedState,
+    status: 'completed',
+    evaluation
+  };
+  await storage.updateTicket(ticket.channelId, {
+    status: evaluation.manualReviewRecommended ? 'exam_review_recommended' : 'exam_completed',
+    examState: finalState
+  });
+  const reply = await sendTicketResponse(message, formatExamEvaluation(evaluation, finalState));
+  await saveTranscript(storage, reply, 'assistant');
+  return true;
+}
+
+async function requestExamManualReview({ storage, message, ticket, guildConfig, state }) {
+  const nextState = {
+    ...state,
+    status: 'manual_review_requested',
+    reviewRequestedAt: new Date().toISOString()
+  };
+  const shouldMentionStaff = await registerTicketEscalation({
+    storage,
+    message,
+    guildConfig,
+    ticket,
+    reason: 'El candidato solicita revision humana del examen.'
+  });
+  await storage.updateTicket(ticket.channelId, {
+    status: 'escalated',
+    aiDisabled: true,
+    aiDisabledBy: message.author.id,
+    aiDisabledAt: new Date().toISOString(),
+    examState: nextState
+  });
+  const reply = await sendTicketResponse(message, {
+    content: buildPublicReply({
+      shouldEscalate: true,
+      reason: 'Revision humana solicitada.',
+      publicAnswer: 'He solicitado revision humana del examen y he desactivado la IA en este ticket.'
+    }, guildConfig, { mentionStaff: shouldMentionStaff }).slice(0, 1900),
+    allowedMentions: { roles: shouldMentionStaff && guildConfig.staffRoleId ? [guildConfig.staffRoleId] : [] }
+  });
+  await saveTranscript(storage, reply, 'assistant');
 }
 
 async function resolveTicketCategoryForPanel({ interaction, storage, guildConfig, ticketCategoryId, config }) {

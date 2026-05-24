@@ -122,6 +122,18 @@ export class VoiceSessionManager {
     return this.sessionsByGuild.get(guildId) ?? null;
   }
 
+  async speakToTicket(guildId, text) {
+    const session = this.getSession(guildId);
+    if (!session || session.stopped) {
+      return { spoken: false, reason: 'No hay una sesion de voz activa para este servidor.' };
+    }
+    if (!this.config.VOICE_TTS_ENABLED) {
+      return { spoken: false, reason: 'VOICE_TTS_ENABLED esta desactivado.' };
+    }
+    await this.#speak(session, text);
+    return { spoken: true };
+  }
+
   async #captureSpeech(session, userId) {
     if (session.stopped || session.speakers.has(userId)) return;
 

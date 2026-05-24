@@ -2,6 +2,7 @@ import { ChannelType, PermissionFlagsBits } from 'discord.js';
 import { isPremiumEntitled, normalizePremiumConfig } from '../premium.js';
 import { buildDiscoveryContext } from '../server-discovery.js';
 import { detectAiQualitySignalHeuristic, parseAiQualitySignalJson } from '../ai-quality.js';
+import { buildExamEvaluationInput, parseExamEvaluationJson } from '../exam-mode.js';
 import { hasVisualAttachments } from './visual-analyzer.js';
 
 const SERVER_CONTEXT_MAX_CHANNELS = 12;
@@ -230,6 +231,41 @@ export class SupportAgent {
       console.warn('AI quality classifier fallback:', error?.message ?? error);
       return heuristic.detected ? heuristic : { detected: false };
     }
+  }
+
+  async gradeExamAnswers({ ticket, guildConfig, examState, userTag = 'usuario' }) {
+    const answerBlock = buildExamEvaluationInput(examState).slice(0, 12_000);
+    if (!answerBlock.trim()) {
+      return parseExamEvaluationJson('{}', { passScore: examState.passScore });
+    }
+
+    const answer = await this.aiClient.generate({
+      system: [
+        'Eres NexaDesk Exam Reviewer corrigiendo una prueba de postulacion/moderacion en Discord.',
+        'Corrige con criterio justo, sin inventar requisitos no mencionados.',
+        'Evalua claridad, madurez, seguridad, moderacion basica, comprension del rol y adecuacion al servidor.',
+        'Si una respuesta parece copiada, generica o enviada demasiado rapido, baja confianza y recomienda revision manual, pero no acuses con certeza.',
+        'Devuelve SOLO JSON valido con este esquema exacto:',
+        '{"score":0-10,"passed":true|false,"summary":"breve","strengths":["..."],"concerns":["..."],"manualReviewRecommended":true|false,"aiGeneratedSuspicion":0-100,"perQuestion":[{"index":1,"score":0-10,"feedback":"breve"}]}'
+      ].join('\n'),
+      messages: [
+        {
+          role: 'user',
+          content: [
+            `Servidor: ${guildConfig?.guildName ?? ticket?.guildName ?? ticket?.guildId}`,
+            `Usuario examinado: ${userTag}`,
+            `Nota minima recomendada: ${examState.passScore}/10`,
+            guildConfig?.serverPrompt ? `Prompt/contexto servidor:\n${guildConfig.serverPrompt}` : '',
+            guildConfig?.serverInfo ? `Info servidor:\n${guildConfig.serverInfo}` : '',
+            '',
+            'Preguntas, respuestas y senales automaticas:',
+            answerBlock
+          ].filter(Boolean).join('\n').slice(0, 14_000)
+        }
+      ]
+    });
+
+    return parseExamEvaluationJson(answer, { passScore: examState.passScore });
   }
 
   async detectAllianceChannel({ guildName, candidates = [] }) {

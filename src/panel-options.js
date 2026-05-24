@@ -1,3 +1,5 @@
+import { normalizeExamConfig } from './exam-mode.js';
+
 export const PANEL_BUTTON_STYLES = {
   primary: 1,
   secondary: 2,
@@ -21,6 +23,7 @@ const DEFAULT_PANEL = {
   ticketCategoryId: '',
   ticketCategoryName: '',
   ticketMode: 'text',
+  exam: normalizeExamConfig(),
   selectPlaceholder: 'Elige el tipo de ticket',
   componentIds: [],
   welcomeMessage: 'Hola {user}, soy NexaDesk.\nCuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al staff con el contexto ordenado.'
@@ -33,6 +36,7 @@ const DEFAULT_COMPONENT = {
   ticketCategoryId: '',
   ticketCategoryName: '',
   ticketMode: 'text',
+  exam: normalizeExamConfig(),
   questions: [],
   welcomeMessage: 'Hola {user}, soy NexaDesk.\nAntes de empezar, he guardado tus respuestas para que el staff tenga contexto.'
 };
@@ -55,6 +59,7 @@ export function normalizePanelOptions(input = {}) {
     ticketCategoryId: cleanString(source.ticketCategoryId, DEFAULT_PANEL.ticketCategoryId, 32),
     ticketCategoryName: cleanString(source.ticketCategoryName, DEFAULT_PANEL.ticketCategoryName, 100),
     ticketMode: normalizeTicketMode(source.ticketMode),
+    exam: normalizeExamConfig(source),
     selectPlaceholder: cleanString(source.selectPlaceholder, DEFAULT_PANEL.selectPlaceholder, 100),
     componentIds: normalizeStringList(source.componentIds).slice(0, 25),
     welcomeMessage: cleanString(source.welcomeMessage, DEFAULT_PANEL.welcomeMessage, 1200)
@@ -72,7 +77,10 @@ export function normalizeTicketComponent(input = {}) {
     ticketCategoryId: cleanString(source.ticketCategoryId, DEFAULT_COMPONENT.ticketCategoryId, 32),
     ticketCategoryName: cleanString(source.ticketCategoryName, DEFAULT_COMPONENT.ticketCategoryName, 100),
     ticketMode: normalizeTicketMode(source.ticketMode),
-    questions: normalizeStringList(source.questions).slice(0, 5).map((question) => cleanString(question, '', 45)).filter(Boolean),
+    exam: normalizeExamConfig(source),
+    questions: normalizeTicketMode(source.ticketMode) === 'exam'
+      ? []
+      : normalizeStringList(source.questions).slice(0, 5).map((question) => cleanString(question, '', 45)).filter(Boolean),
     welcomeMessage: cleanString(source.welcomeMessage, DEFAULT_COMPONENT.welcomeMessage, 1200),
     createdAt: source.createdAt || new Date().toISOString()
   };
@@ -184,7 +192,10 @@ function normalizePanelType(type) {
 }
 
 function normalizeTicketMode(mode) {
-  return String(mode ?? '').toLowerCase() === 'voice' ? 'voice' : DEFAULT_PANEL.ticketMode;
+  const normalized = String(mode ?? '').toLowerCase();
+  if (normalized === 'voice') return 'voice';
+  if (normalized === 'exam') return 'exam';
+  return DEFAULT_PANEL.ticketMode;
 }
 
 function normalizeHexColor(color, fallback = DEFAULT_PANEL.embedColor) {

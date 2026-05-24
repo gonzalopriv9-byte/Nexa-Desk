@@ -1445,6 +1445,7 @@ function buildPanelRequestPayload(req) {
     thumbnailUrl: req.body.thumbnailUrl,
     ticketCategoryId: req.body.ticketCategoryId,
     ticketCategoryName: req.body.ticketCategoryName,
+    exam: req.body.exam,
     selectPlaceholder: req.body.selectPlaceholder,
     componentIds: req.body.componentIds,
     welcomeMessage: req.body.welcomeMessage
@@ -1643,14 +1644,14 @@ async function buildDashboardAssistantReply({ config, message, guild, stats, act
       system: [
         'Eres el copiloto de la dashboard de NexaDesk.',
         'Responde en espanol claro, breve y accionable.',
-        'Ayuda a configurar servidores Discord para tickets con IA, paneles, componentes, staff, voz Pro con STT/TTS, transcripciones, Security Guard, Growth Engine, Premium y mantenimiento global.',
+        'Ayuda a configurar servidores Discord para tickets con IA, paneles, componentes, staff, voz Pro con STT/TTS, Modo examen, transcripciones, Security Guard, Growth Engine, Premium y mantenimiento global.',
         'La dashboard real tiene estas secciones: Resumen, Servidores, Configuracion, Componentes, Paneles, Crecimiento, Premium y Tickets.',
         'En Configuracion se elige categoria, rol staff, prompt del servidor, informacion del servidor y Security Guard.',
         'Descubrimiento inteligente escanea canales y detecta anuncios, normas, FAQ, soporte y categorias aunque usen tipografias raras.',
-        'En Componentes se crean opciones del menu con preguntas previas, primer mensaje y modo Texto o Voz Pro.',
-        'En Paneles se publica el embed, boton o menu en un canal de Discord; los botones tambien pueden abrir tickets de voz Pro.',
+        'En Componentes se crean opciones del menu con preguntas previas, primer mensaje y modo Texto, Voz Pro o Modo examen.',
+        'En Paneles se publica el embed, boton o menu en un canal de Discord; los botones tambien pueden abrir tickets de voz Pro o examenes.',
         'En Crecimiento se gestionan valoraciones post-ticket, reviews publicas, canal de reviews y Churn Radar.',
-        'En Premium se gestionan Voz Pro, IA prioritaria, transcripciones inteligentes, Security Plus, branding propio, informes semanales, Growth Engine y conversion insights por servidor.',
+        'En Premium se gestionan Voz Pro, Modo examen supervisado, IA prioritaria, transcripciones inteligentes, Security Plus, branding propio, informes semanales, Growth Engine y conversion insights por servidor.',
         'El modo mantenimiento se controla por slash command owner-only /mantenimiento o desde el panel oculto /admin; /admin se abre con codigo temporal emitido por /code a roles autorizados.',
         'Security Guard incluye anti-flood, anti-links IA, XN Protect Automod, anti-bots Top.gg, anti-alts y anti-nuke con proteccion ante canales/config masivos.',
         'En Tickets se ven tickets y transcripciones guardadas.',
@@ -1705,10 +1706,12 @@ function buildDashboardAssistantFallback({ message, guild, stats, activeView, ac
     reply += isPremiumEntitled(guild)
       ? 'Ve a Crecimiento para activar feedback por MD, elegir canal de reviews y convertir valoraciones altas en prueba social. Si activas Churn Radar, el staff recibe alertas cuando alguien queda insatisfecho.'
       : 'Ve a Crecimiento para preparar feedback post-ticket. Las reviews publicas y Churn Radar se desbloquean con Premium.';
+  } else if (lower.includes('examen') || lower.includes('oposicion') || lower.includes('postulacion')) {
+    reply += 'Para crear Modo examen, ve a Componentes o Paneles, elige "Modo examen" y pega preguntas en formato P:. En Free NexaDesk pregunta, corrige y permite revision humana. En Premium puedes poner URL de formulario y activar revision supervisada con sala de voz.';
   } else if (lower.includes('premium') || lower.includes('pro') || lower.includes('voz') || lower.includes('voice') || lower.includes('branding') || lower.includes('analitica') || lower.includes('insight')) {
     reply += isPremiumEntitled(guild)
-      ? 'Ve a Premium para activar o pausar Voz Pro, IA prioritaria, transcripciones inteligentes, Security Plus, Growth Engine, branding propio e informes semanales por servidor.'
-      : 'Ve a Premium para ver que desbloquea el plan. La activacion del plan se hace manualmente con /activarpremium o desde Supabase, y despues alli gestionas los modulos.';
+      ? 'Ve a Premium para activar o pausar Voz Pro, Modo examen supervisado, IA prioritaria, transcripciones inteligentes, Security Plus, Growth Engine, branding propio e informes semanales por servidor.'
+      : 'Ve a Premium para ver que desbloquea el plan. El Modo examen con preguntas funciona desde paneles; la revision supervisada con formulario/sala se desbloquea con Premium.';
   } else if (lower.includes('seguridad') || lower.includes('security') || lower.includes('anti') || lower.includes('raid') || lower.includes('flood') || lower.includes('nuke') || lower.includes('phishing') || lower.includes('estafa') || lower.includes('links')) {
     reply += 'Ve a Configuracion y baja hasta Security Guard. Puedes activar nivel intermedio, Anti-links IA, XN Protect Automod, Anti-bots Top.gg, Anti-nuke de canales/config, elegir un canal de logs y guardar. Si Discord bloquea acciones, actualiza permisos desde el boton superior.';
   } else if (lower.includes('transcrip') || lower.includes('ticket')) {
@@ -1817,6 +1820,10 @@ function suggestDashboardActions(message, guild) {
 
   if (lower.includes('crecimiento') || lower.includes('growth') || lower.includes('review') || lower.includes('valoracion') || lower.includes('reseña') || lower.includes('resena') || lower.includes('churn')) add('Abrir Crecimiento', 'growth');
   if (lower.includes('premium') || lower.includes('pro') || lower.includes('voz') || lower.includes('voice') || lower.includes('branding') || lower.includes('analitica') || lower.includes('insight')) add('Abrir Premium', 'premium');
+  if (lower.includes('examen') || lower.includes('oposicion') || lower.includes('postulacion')) {
+    add('Crear examen', 'panels');
+    add('Opciones de examen', 'components');
+  }
   if (lower.includes('servidor') || lower.includes('invitar') || lower.includes('instalar')) add('Ir a Servidores', 'servers');
   if (lower.includes('ia') || lower.includes('prompt') || lower.includes('contexto') || lower.includes('staff') || lower.includes('rol') || lower.includes('seguridad') || lower.includes('security') || lower.includes('anti') || lower.includes('raid') || lower.includes('flood') || lower.includes('nuke') || lower.includes('phishing') || lower.includes('estafa') || lower.includes('links')) add('Abrir Configuracion', 'settings');
   if (lower.includes('componente') || lower.includes('pregunta') || lower.includes('menu')) add('Crear Componentes', 'components');
@@ -2645,6 +2652,7 @@ function buildDocsSections(config) {
           'Primer mensaje del usuario en un ticket nuevo siempre debe ser respondido por NexaDesk aunque haya avisos de blacklist previos.',
           'La IA debe responder en el idioma del ultimo mensaje del usuario y no inventar que ha visto una imagen si no tiene analisis visual real.',
           'El contexto de voz transcrito se guarda como transcript y entra en el historial para siguientes respuestas.',
+          'Modo examen guarda estado, preguntas, respuestas, flags de posible copia/IA y nota provisional en tickets.exam_state.',
           'Si el usuario pide staff, asistencia manual, riesgo legal, amenazas, acoso serio o autolesion, NexaDesk escala con resumen claro.'
         ] }
       ]
@@ -2656,7 +2664,7 @@ function buildDocsSections(config) {
       blocks: [
         { type: 'table', headers: ['Tabla', 'Contenido', 'Riesgo'], rows: [
           ['guild_configs', 'Categoria, staff, prompt, info, paneles, componentes, premium, security, alianzas.', 'Alto: contiene contexto interno del servidor.'],
-          ['tickets', 'Canal, servidor, opener, voz, estado, timestamps.', 'Medio: metadatos de soporte.'],
+          ['tickets', 'Canal, servidor, opener, voz, estado, timestamps y exam_state.', 'Medio/Alto: metadatos de soporte y respuestas de examenes.'],
           ['transcript_messages', 'Mensajes de tickets, voz y eventos importantes.', 'Alto: puede contener datos de usuarios.'],
           ['ticket_feedback', 'Rating post-ticket, usuario, canal y si se publico review.', 'Medio: satisfaccion de usuarios y reputacion operativa.'],
           ['ai_quality_signals', 'Quejas espontaneas sobre errores de IA, frustracion, voz, vision, idioma, repeticion o respuestas malas.', 'Alto: contiene mensajes de usuario y ultima respuesta IA relacionada.'],
@@ -2700,9 +2708,10 @@ function buildDocsSections(config) {
           'Configuracion incluye Descubrimiento inteligente para reescanear canales y usar anuncios/normas/FAQ como contexto operativo.',
           'Los anuncios globales salen del canal central configurado y llegan al canal de anuncios detectado de cada servidor; por defecto no replica menciones para evitar @everyone accidental.',
           'Paneles soportan boton unico o menu desplegable con 2+ componentes.',
-          'Componentes guardan preguntas previas, categoria destino, primer mensaje y modo texto/voz.',
+          'Componentes guardan preguntas previas, categoria destino, primer mensaje y modo texto/voz/examen.',
+          'Modo examen Free pregunta dentro del ticket, corrige con IA, marca posibles copias/IA y permite solicitar revision humana; Modo examen Premium puede abrir sala de voz y formulario externo para supervision.',
           'Crecimiento permite configurar feedback post-ticket, canal de reviews, rating publico minimo y alertas de baja satisfaccion.',
-          'Premium incluye Voz Pro, IA prioritaria, transcripciones inteligentes, Security Plus, Growth Engine, reviews publicas, Churn Radar, branding propio e informes semanales.',
+          'Premium incluye Voz Pro, Modo examen supervisado, IA prioritaria, transcripciones inteligentes, Security Plus, Growth Engine, reviews publicas, Churn Radar, branding propio e informes semanales.',
           'La seccion Premium usa paleta dorada y solo abre si el usuario tiene al menos un servidor con premium activo.',
           'Premium no se ralentiza durante mantenimiento global; los servidores Free reciben aviso al abrir ticket.',
           'El antiguo modulo de musica fue retirado para centrar el producto en soporte, seguridad, voz, alianzas y transcripciones.',
@@ -2754,7 +2763,7 @@ function buildDocsSections(config) {
           'OAuth Discord con redirect correcto.',
           'DOCS_TOTP_SECRET configurado y probado desde Google Authenticator.',
           'No hay tokens ni service_role keys en commits, screenshots ni mensajes publicos.',
-          'Probar un ticket normal, uno Ticket King, uno con imagen, uno de voz y uno de cierre con transcripcion.'
+          'Probar un ticket normal, uno Ticket King, uno con imagen, uno de voz, uno de Modo examen y uno de cierre con transcripcion.'
         ] }
       ]
     }
@@ -3340,7 +3349,7 @@ function buildTermsSections() {
         'Compatibilidad con sistemas externos de tickets como Ticket King y canales creados en categorias configuradas.',
         'Dashboard web con OAuth de Discord para administrar servidores donde tengas permisos.',
         'Funciones de seguridad como anti-flood, analisis de links, XN Protect Automod, avisos de blacklist global, Anti-bots Top.gg, anti-alts y anti-nuke.',
-        'Funciones premium por servidor como voz con STT/TTS, IA prioritaria, transcripciones inteligentes, Growth Engine, reviews, Churn Radar, branding e informes.'
+        'Funciones premium por servidor como voz con STT/TTS, Modo examen supervisado, IA prioritaria, transcripciones inteligentes, Growth Engine, reviews, Churn Radar, branding e informes.'
       ]
     },
     {
@@ -4399,8 +4408,16 @@ function renderDashboard({ session, guilds, tickets, stats }) {
             <label>Tipo de ticket<select id="componentTicketMode">
               <option value="text">Texto + IA</option>
               <option value="voice">Voz Pro + STT/TTS</option>
+              <option value="exam">Modo examen</option>
             </select></label>
             <label class="span-2">Preguntas antes de crear el ticket<textarea id="componentQuestions" placeholder="Una pregunta por linea. Maximo 5.&#10;Ej: Cual es tu nick?&#10;Describe el problema"></textarea></label>
+            <div class="span-2 form-section compact is-hidden" id="componentExamSettings">
+              <div class="section-label"><strong>Modo examen</strong><span>En Free corrige preguntas dentro del ticket. En Premium puede abrir revision con formulario y sala de voz.</span></div>
+              <label class="span-2">URL del formulario externo Premium<input id="componentExamFormUrl" placeholder="https://forms.gle/..."></label>
+              <label>Revision Premium<select id="componentExamReviewEnabled"><option value="false">No, corregir por preguntas</option><option value="true">Si, sala de voz + formulario</option></select></label>
+              <label>Nota minima<input id="componentExamPassScore" type="number" min="0" max="10" step="0.5" value="6"></label>
+              <p class="notice span-2">Preguntas en formato recomendado: <strong>P: ¿Cuantos años tienes?</strong>. Si activas revision Premium, el formulario se abre fuera de Discord y el staff supervisa pantalla manualmente.</p>
+            </div>
             <label class="span-2">Primer mensaje personalizado<textarea id="componentWelcomeMessage">Hola {user}, soy NexaDesk.
 Antes de empezar, he guardado tus respuestas para que el staff tenga contexto.</textarea></label>
             <button class="span-2" type="submit">Crear componente</button>
@@ -4438,7 +4455,15 @@ Antes de empezar, he guardado tus respuestas para que el staff tenga contexto.</
                 <label id="panelTicketModeWrap">Tipo del boton<select id="panelTicketMode">
                   <option value="text">Texto + IA</option>
                   <option value="voice">Voz Pro + STT/TTS</option>
+                  <option value="exam">Modo examen</option>
                 </select></label>
+              </div>
+              <div class="form-section is-hidden" id="panelExamSettings">
+                <div class="section-label"><strong>Modo examen</strong><span>Preguntas automáticas o revisión Premium con formulario externo</span></div>
+                <label class="span-2">Preguntas del examen<textarea id="panelExamQuestions" placeholder="P: ¿Cuantos años tienes?&#10;P: ¿Cuanto llevas roleando?&#10;P: ¿Como resolverias un conflicto entre usuarios?"></textarea></label>
+                <label class="span-2">URL del formulario externo Premium<input id="panelExamFormUrl" placeholder="https://forms.gle/..."></label>
+                <label>Revision Premium<select id="panelExamReviewEnabled"><option value="false">No, corregir por preguntas</option><option value="true">Si, sala de voz + formulario</option></select></label>
+                <label>Nota minima<input id="panelExamPassScore" type="number" min="0" max="10" step="0.5" value="6"></label>
               </div>
               <div class="form-section" id="panelMenuComponentsSection">
                 <div class="section-label"><strong>Opciones del menu</strong><span>Marca 2 o mas componentes para construir menus completos</span></div>
@@ -4577,13 +4602,14 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
           <article class="control-card premium-hero" id="premiumHeroCard">
             <span class="premium-plan" id="premiumPlanBadge">Free</span>
             <h2 id="premiumHeroTitle">Convierte NexaDesk en un agente de pago.</h2>
-            <p id="premiumHeroText">Premium desbloquea voz natural, IA mas proactiva, transcripciones accionables, seguridad reforzada, branding propio e informes para que el owner vea valor real.</p>
+            <p id="premiumHeroText">Premium desbloquea voz natural, examenes supervisados, IA mas proactiva, transcripciones accionables, seguridad reforzada, branding propio e informes para que el owner vea valor real.</p>
             <div class="premium-lock" id="premiumLockNotice">
               <strong>Plan no activo todavia</strong>
               <p>Activalo con <code>/activarpremium servidor:&lt;ID&gt;</code> o poniendo <code>plan = pro</code> / <code>voice_support_enabled = true</code> en Supabase. Las preferencias se pueden dejar preparadas.</p>
             </div>
             <div class="premium-feature-grid">
               <div class="premium-feature"><strong>Voz Pro</strong><span>Tickets con sala privada, STT/TTS y transcripcion en el canal.</span></div>
+              <div class="premium-feature"><strong>Modo examen</strong><span>Oposiciones con preguntas automaticas, nota provisional y revision supervisada con formulario.</span></div>
               <div class="premium-feature"><strong>IA prioritaria</strong><span>Respuestas mas proactivas, checklist de datos y escalados mejor resumidos.</span></div>
               <div class="premium-feature"><strong>Smart transcripts</strong><span>Resumen ejecutivo, puntos clave y descarga lista para staff.</span></div>
               <div class="premium-feature"><strong>Security Plus</strong><span>Anti-scam IA, senales de riesgo y alertas mas visibles para staff.</span></div>
@@ -4651,6 +4677,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       <button class="assistant-chip" type="button" data-assistant-prompt="Como hago que la IA escale al staff?">Escalado staff</button>
       <button class="assistant-chip" type="button" data-assistant-prompt="Mete una configuracion de seguridad recomendada">Seguridad</button>
       <button class="assistant-chip" type="button" data-assistant-prompt="Como activo Growth Engine y reviews publicas?">Crecimiento</button>
+      <button class="assistant-chip" type="button" data-assistant-prompt="Como creo un panel de Modo examen para oposiciones?">Modo examen</button>
       <button class="assistant-chip" type="button" data-assistant-prompt="Que funciones premium puedo activar aqui?">Premium</button>
       <button class="assistant-chip" type="button" data-assistant-prompt="Donde veo las transcripciones?">Transcripciones</button>
     </div>
@@ -5148,7 +5175,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       });
     }
     function setConfigurationDisabled(disabled) {
-      for (const selector of ['#ticketCategoryId', '#staffRoleId', '#serverPrompt', '#serverInfo', '#categoryName', '#securityEnabled', '#securityLevel', '#securityLogChannelId', '#securityMinAccountAgeDays', '#securityAntiFlood', '#securityAntiScamLinks', '#securityAntiOffensive', '#securityAntiBot', '#securityAntiAlt', '#securityAntiNuke', '#componentLabel', '#componentEmoji', '#componentDescription', '#componentTicketCategoryId', '#componentTicketMode', '#componentQuestions', '#componentWelcomeMessage', '#panelType', '#panelSelectPlaceholder', '#panelComponentIds', '#panelChannelId', '#panelTicketCategoryId', '#panelTicketMode', '#panelButtonLabel', '#panelButtonStyle', '#panelButtonEmoji', '#panelTitle', '#panelEmbedColor', '#panelAuthorName', '#panelAuthorIconUrl', '#panelDescription', '#panelThumbnailUrl', '#panelImageUrl', '#panelFooterText', '#panelWelcomeMessage', '#growthEnabled', '#growthFeedbackDm', '#growthPublicReviews', '#growthReviewChannelId', '#growthTestimonialMinRating', '#growthLowRatingAlerts', '#growthInviteCta', '#premiumVoiceSupport', '#premiumPriorityAi', '#premiumSmartTranscripts', '#premiumSecurityPlus', '#premiumCustomBranding', '#premiumWeeklyInsights', '#premiumGrowthEngine', '#premiumPublicReviews', '#premiumChurnRadar', '#premiumConversionInsights']) {
+      for (const selector of ['#ticketCategoryId', '#staffRoleId', '#serverPrompt', '#serverInfo', '#categoryName', '#securityEnabled', '#securityLevel', '#securityLogChannelId', '#securityMinAccountAgeDays', '#securityAntiFlood', '#securityAntiScamLinks', '#securityAntiOffensive', '#securityAntiBot', '#securityAntiAlt', '#securityAntiNuke', '#componentLabel', '#componentEmoji', '#componentDescription', '#componentTicketCategoryId', '#componentTicketMode', '#componentQuestions', '#componentExamFormUrl', '#componentExamReviewEnabled', '#componentExamPassScore', '#componentWelcomeMessage', '#panelType', '#panelSelectPlaceholder', '#panelComponentIds', '#panelChannelId', '#panelTicketCategoryId', '#panelTicketMode', '#panelExamQuestions', '#panelExamFormUrl', '#panelExamReviewEnabled', '#panelExamPassScore', '#panelButtonLabel', '#panelButtonStyle', '#panelButtonEmoji', '#panelTitle', '#panelEmbedColor', '#panelAuthorName', '#panelAuthorIconUrl', '#panelDescription', '#panelThumbnailUrl', '#panelImageUrl', '#panelFooterText', '#panelWelcomeMessage', '#growthEnabled', '#growthFeedbackDm', '#growthPublicReviews', '#growthReviewChannelId', '#growthTestimonialMinRating', '#growthLowRatingAlerts', '#growthInviteCta', '#premiumVoiceSupport', '#premiumPriorityAi', '#premiumSmartTranscripts', '#premiumSecurityPlus', '#premiumCustomBranding', '#premiumWeeklyInsights', '#premiumGrowthEngine', '#premiumPublicReviews', '#premiumChurnRadar', '#premiumConversionInsights']) {
         const element = document.querySelector(selector);
         if (element) element.disabled = disabled;
       }
@@ -5257,7 +5284,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       document.querySelector('#securityLogChannelId').innerHTML = '<option value="">Sin canal de logs</option>' + textChannels.map((channel) => '<option value="' + channel.id + '">#' + escapeHtml(channel.name) + '</option>').join('');
       document.querySelector('#growthReviewChannelId').innerHTML = '<option value="">Sin canal de reviews</option>' + textChannels.map((channel) => '<option value="' + channel.id + '">#' + escapeHtml(channel.name) + '</option>').join('');
       document.querySelector('#panelComponentIds').innerHTML = (config.components || []).length
-        ? config.components.map((component) => '<option value="' + escapeHtml(component.id) + '">' + escapeHtml(component.label + (component.ticketMode === 'voice' ? ' - Voz Pro' : ' - Texto')) + '</option>').join('')
+        ? config.components.map((component) => '<option value="' + escapeHtml(component.id) + '">' + escapeHtml(component.label + ' - ' + formatTicketMode(component.ticketMode)) + '</option>').join('')
         : '<option value="">Crea componentes primero</option>';
       renderPanelComponentPicker(config);
       document.querySelector('#componentTicketCategoryId').value = config.ticketCategoryId || '';
@@ -5431,14 +5458,23 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
     async function createComponent(event) {
       event.preventDefault();
       const guildId = document.querySelector('#componentGuildId').value;
+      const ticketMode = document.querySelector('#componentTicketMode').value;
+      const rawQuestions = document.querySelector('#componentQuestions').value.split(/\\n/).map((item) => item.trim()).filter(Boolean);
       const updated = await postJson('/api/guilds/' + guildId + '/components', {
         label: document.querySelector('#componentLabel').value,
         description: document.querySelector('#componentDescription').value,
         emoji: document.querySelector('#componentEmoji').value,
         ticketCategoryId: document.querySelector('#componentTicketCategoryId').value,
         ticketCategoryName: selectedOptionText('#componentTicketCategoryId'),
-        ticketMode: document.querySelector('#componentTicketMode').value,
-        questions: document.querySelector('#componentQuestions').value.split(/\\n/).map((item) => item.trim()).filter(Boolean).slice(0, 5),
+        ticketMode,
+        questions: ticketMode === 'exam' ? [] : rawQuestions.slice(0, 5),
+        exam: {
+          enabled: ticketMode === 'exam',
+          questions: ticketMode === 'exam' ? rawQuestions.slice(0, 25) : [],
+          formUrl: document.querySelector('#componentExamFormUrl').value,
+          reviewEnabled: document.querySelector('#componentExamReviewEnabled').value === 'true',
+          passScore: document.querySelector('#componentExamPassScore').value
+        },
         welcomeMessage: document.querySelector('#componentWelcomeMessage').value
       }).catch((error) => showToast(error.message));
       if (updated) {
@@ -5449,12 +5485,27 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       }
       return false;
     }
+    function formatTicketMode(mode) {
+      if (mode === 'voice') return 'Voz Pro + STT/TTS';
+      if (mode === 'exam') return 'Modo examen';
+      return 'Texto + IA';
+    }
+    function updateComponentMode() {
+      const mode = document.querySelector('#componentTicketMode')?.value || 'text';
+      document.querySelector('#componentExamSettings')?.classList.toggle('is-hidden', mode !== 'exam');
+      const questions = document.querySelector('#componentQuestions');
+      if (questions) {
+        questions.placeholder = mode === 'exam'
+          ? 'P: ¿Cuantos años tienes?\\nP: ¿Cuanto llevas roleando?\\nP: ¿Como actuarias ante un usuario toxico?'
+          : 'Una pregunta por linea. Maximo 5.\\nEj: Cual es tu nick?\\nDescribe el problema';
+      }
+    }
     function renderComponentHistory(guild = {}) {
       const components = guild.components || [];
       const componentHistory = document.querySelector('#componentHistory');
       if (!componentHistory) return;
       componentHistory.innerHTML = components.length
-        ? components.slice().reverse().map((component) => '<article class="panel-card"><strong>' + escapeHtml((component.emoji ? component.emoji + ' ' : '') + (component.label || 'Componente sin nombre')) + '</strong><small>' + escapeHtml(component.description || 'Sin descripcion') + '</small><small>Modo: ' + escapeHtml(component.ticketMode === 'voice' ? 'Voz Pro + STT/TTS' : 'Texto + IA') + '</small><small>Categoria: ' + escapeHtml(component.ticketCategoryName || guild.ticketCategoryName || 'principal') + '</small><small>Preguntas: ' + escapeHtml(String((component.questions || []).length)) + '</small></article>').join('')
+        ? components.slice().reverse().map((component) => '<article class="panel-card"><strong>' + escapeHtml((component.emoji ? component.emoji + ' ' : '') + (component.label || 'Componente sin nombre')) + '</strong><small>' + escapeHtml(component.description || 'Sin descripcion') + '</small><small>Modo: ' + escapeHtml(formatTicketMode(component.ticketMode)) + '</small><small>Categoria: ' + escapeHtml(component.ticketCategoryName || guild.ticketCategoryName || 'principal') + '</small><small>Preguntas: ' + escapeHtml(String(component.ticketMode === 'exam' ? ((component.exam?.questions || []).length) : ((component.questions || []).length))) + '</small></article>').join('')
         : '<p class="notice">Aun no hay componentes. Crea uno para poder publicar paneles de menu.</p>';
     }
     function renderPanelHistory(guild = {}) {
@@ -5462,7 +5513,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       const panelHistory = document.querySelector('#panelHistory');
       if (!panelHistory) return;
       panelHistory.innerHTML = panels.length
-        ? panels.slice().reverse().map((panel) => '<article class="panel-card"><strong>' + escapeHtml(panel.title || 'Panel sin titulo') + '</strong><small>Tipo: ' + escapeHtml(panel.panelType === 'menu' ? 'Menu desplegable' : 'Boton') + '</small><small>Modo boton: ' + escapeHtml(panel.ticketMode === 'voice' ? 'Voz Pro + STT/TTS' : 'Texto + IA') + '</small><small>Canal: ' + escapeHtml(panel.channelName || panel.channelId || 'sin canal') + '</small><small>Categoria: ' + escapeHtml(panel.ticketCategoryName || guild.ticketCategoryName || 'principal') + '</small><small>' + escapeHtml(panel.panelType === 'menu' ? ('Componentes: ' + (panel.componentIds || []).length) : ('Boton: ' + (panel.buttonLabel || 'Abrir ticket'))) + '</small><button class="secondary-button table-action" type="button" data-edit-panel="' + escapeHtml(panel.messageId || '') + '">Editar panel enviado</button></article>').join('')
+        ? panels.slice().reverse().map((panel) => '<article class="panel-card"><strong>' + escapeHtml(panel.title || 'Panel sin titulo') + '</strong><small>Tipo: ' + escapeHtml(panel.panelType === 'menu' ? 'Menu desplegable' : 'Boton') + '</small><small>Modo boton: ' + escapeHtml(formatTicketMode(panel.ticketMode)) + '</small><small>Canal: ' + escapeHtml(panel.channelName || panel.channelId || 'sin canal') + '</small><small>Categoria: ' + escapeHtml(panel.ticketCategoryName || guild.ticketCategoryName || 'principal') + '</small><small>' + escapeHtml(panel.panelType === 'menu' ? ('Componentes: ' + (panel.componentIds || []).length) : ('Boton: ' + (panel.buttonLabel || 'Abrir ticket'))) + '</small><button class="secondary-button table-action" type="button" data-edit-panel="' + escapeHtml(panel.messageId || '') + '">Editar panel enviado</button></article>').join('')
         : '<p class="notice">Aun no hay paneles publicados en este servidor.</p>';
       bindPanelEditButtons(panelHistory);
     }
@@ -5479,7 +5530,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
         ? 'Premium activo en este servidor.'
         : 'Prepara el upgrade antes de venderlo.';
       document.querySelector('#premiumHeroText').textContent = premium.entitled
-        ? 'Configura que modulos quieres dejar activos: voz, IA prioritaria, smart transcripts, seguridad avanzada, Growth Engine, branding e informes.'
+      ? 'Configura que modulos quieres dejar activos: voz, Modo examen supervisado, IA prioritaria, smart transcripts, seguridad avanzada, Growth Engine, branding e informes.'
         : 'Puedes dejar estos modulos preparados. Cuando el owner active Premium, NexaDesk desbloqueara las funciones de mayor valor sin rehacer la configuracion.';
       const values = {
         premiumVoiceSupport: premium.voiceSupport,
@@ -5551,7 +5602,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
         ? components.map((component) => (
           '<label class="component-choice">' +
           '<input type="checkbox" value="' + escapeHtml(component.id) + '" ' + (selectedIds.has(component.id) ? 'checked' : '') + '>' +
-          '<span><strong>' + escapeHtml((component.emoji ? component.emoji + ' ' : '') + component.label) + '</strong><small>' + escapeHtml((component.ticketMode === 'voice' ? 'Voz Pro' : 'Texto') + ' - ' + (component.questions || []).length + ' preguntas') + '</small></span>' +
+          '<span><strong>' + escapeHtml((component.emoji ? component.emoji + ' ' : '') + component.label) + '</strong><small>' + escapeHtml(formatTicketMode(component.ticketMode) + ' - ' + (component.ticketMode === 'exam' ? ((component.exam?.questions || []).length) : ((component.questions || []).length)) + ' preguntas') + '</small></span>' +
           '</label>'
         )).join('')
         : '<p class="notice">Crea componentes primero para montar menus con varias opciones.</p>';
@@ -5595,9 +5646,11 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
     }
     function updatePanelMode() {
       const panelType = document.querySelector('#panelType')?.value || 'button';
+      const ticketMode = document.querySelector('#panelTicketMode')?.value || 'text';
       document.querySelector('#panelMenuComponentsSection')?.classList.toggle('is-hidden', panelType !== 'menu');
       document.querySelector('#panelSelectPlaceholderWrap')?.classList.toggle('is-hidden', panelType !== 'menu');
       document.querySelector('#panelTicketModeWrap')?.classList.toggle('is-hidden', panelType === 'menu');
+      document.querySelector('#panelExamSettings')?.classList.toggle('is-hidden', panelType !== 'button' || ticketMode !== 'exam');
       document.querySelector('#previewButton')?.classList.toggle('is-hidden', panelType === 'menu');
       document.querySelector('#previewMenu')?.classList.toggle('is-hidden', panelType !== 'menu');
     }
@@ -5620,6 +5673,10 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       document.querySelector('#panelChannelId').disabled = true;
       document.querySelector('#panelTicketCategoryId').value = panel.ticketCategoryId || '';
       document.querySelector('#panelTicketMode').value = panel.ticketMode || 'text';
+      document.querySelector('#panelExamQuestions').value = (panel.exam?.questions || []).map((item) => 'P: ' + item).join('\\n');
+      document.querySelector('#panelExamFormUrl').value = panel.exam?.formUrl || '';
+      document.querySelector('#panelExamReviewEnabled').value = panel.exam?.reviewEnabled ? 'true' : 'false';
+      document.querySelector('#panelExamPassScore').value = panel.exam?.passScore || 6;
       document.querySelector('#panelSelectPlaceholder').value = panel.selectPlaceholder || 'Elige el tipo de ticket';
       document.querySelector('#panelTitle').value = panel.title || 'Centro de soporte';
       document.querySelector('#panelDescription').value = panel.description || '';
@@ -5654,6 +5711,10 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       if (!keepFields) {
         document.querySelector('#panelType').value = 'button';
         document.querySelector('#panelTicketMode').value = 'text';
+        document.querySelector('#panelExamQuestions').value = '';
+        document.querySelector('#panelExamFormUrl').value = '';
+        document.querySelector('#panelExamReviewEnabled').value = 'false';
+        document.querySelector('#panelExamPassScore').value = '6';
         clearPanelComponents();
       }
       updatePanelPreview();
@@ -5689,7 +5750,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
         previewMenu.querySelector('strong').textContent = selectPlaceholder;
         const components = selectedPanelComponents();
         previewMenuOptions.innerHTML = components.length
-          ? components.map((component) => '<div class="menu-option-preview"><strong>' + escapeHtml((component.emoji ? component.emoji + ' ' : '') + component.label) + '</strong><small>' + escapeHtml(component.description || 'Sin descripcion') + '</small><div class="question-preview">' + escapeHtml(component.ticketMode === 'voice' ? 'Voz Pro + STT/TTS' : 'Texto + IA') + ' - ' + escapeHtml(String((component.questions || []).length)) + ' preguntas previas</div></div>').join('')
+          ? components.map((component) => '<div class="menu-option-preview"><strong>' + escapeHtml((component.emoji ? component.emoji + ' ' : '') + component.label) + '</strong><small>' + escapeHtml(component.description || 'Sin descripcion') + '</small><div class="question-preview">' + escapeHtml(formatTicketMode(component.ticketMode)) + ' - ' + escapeHtml(String(component.ticketMode === 'exam' ? ((component.exam?.questions || []).length) : ((component.questions || []).length))) + ' preguntas</div></div>').join('')
           : '<div class="menu-option-preview"><small>Selecciona componentes para previsualizar el menu.</small></div>';
       }
     }
@@ -5698,8 +5759,14 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       const guildId = document.querySelector('#panelGuildId').value;
       const editingMessageId = document.querySelector('#editingPanelMessageId').value;
       const componentIds = [...document.querySelector('#panelComponentIds').selectedOptions].map((option) => option.value).filter(Boolean);
+      const ticketMode = document.querySelector('#panelTicketMode').value;
+      const examQuestions = document.querySelector('#panelExamQuestions').value.split(/\\n/).map((item) => item.trim()).filter(Boolean);
       if (document.querySelector('#panelType').value === 'menu' && componentIds.length < 2) {
         showToast('Para un panel de menu, selecciona al menos 2 componentes.');
+        return false;
+      }
+      if (document.querySelector('#panelType').value === 'button' && ticketMode === 'exam' && !examQuestions.length && document.querySelector('#panelExamReviewEnabled').value !== 'true') {
+        showToast('Para Modo examen, anade preguntas o activa revision Premium con formulario.');
         return false;
       }
 
@@ -5709,7 +5776,14 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
         panelType: document.querySelector('#panelType').value,
         ticketCategoryId: document.querySelector('#panelTicketCategoryId').value,
         ticketCategoryName: selectedOptionText('#panelTicketCategoryId'),
-        ticketMode: document.querySelector('#panelTicketMode').value,
+        ticketMode,
+        exam: {
+          enabled: ticketMode === 'exam',
+          questions: ticketMode === 'exam' ? examQuestions.slice(0, 25) : [],
+          formUrl: document.querySelector('#panelExamFormUrl').value,
+          reviewEnabled: document.querySelector('#panelExamReviewEnabled').value === 'true',
+          passScore: document.querySelector('#panelExamPassScore').value
+        },
         selectPlaceholder: document.querySelector('#panelSelectPlaceholder').value,
         componentIds,
         title: document.querySelector('#panelTitle').value,
@@ -5913,11 +5987,14 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
         document.querySelector('#panelTicketCategoryId').value = document.querySelector('#ticketCategoryId').value;
       }
     });
-    for (const selector of ['#panelType', '#panelSelectPlaceholder', '#panelComponentIds', '#panelTicketMode', '#panelTitle', '#panelDescription', '#panelButtonLabel', '#panelButtonStyle', '#panelButtonEmoji', '#panelEmbedColor', '#panelAuthorName', '#panelThumbnailUrl', '#panelImageUrl', '#panelFooterText']) {
+    document.querySelector('#componentTicketMode')?.addEventListener('input', updateComponentMode);
+    document.querySelector('#componentTicketMode')?.addEventListener('change', updateComponentMode);
+    for (const selector of ['#panelType', '#panelSelectPlaceholder', '#panelComponentIds', '#panelTicketMode', '#panelExamQuestions', '#panelExamFormUrl', '#panelExamReviewEnabled', '#panelExamPassScore', '#panelTitle', '#panelDescription', '#panelButtonLabel', '#panelButtonStyle', '#panelButtonEmoji', '#panelEmbedColor', '#panelAuthorName', '#panelThumbnailUrl', '#panelImageUrl', '#panelFooterText']) {
       document.querySelector(selector)?.addEventListener('input', updatePanelPreview);
       document.querySelector(selector)?.addEventListener('change', updatePanelPreview);
     }
     bindTranscriptButtons();
+    updateComponentMode();
     updatePanelPreview();
     renderPremiumPanel(getActiveGuild());
     renderPremiumAccount();

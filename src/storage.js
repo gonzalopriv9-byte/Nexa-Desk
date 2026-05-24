@@ -1365,6 +1365,7 @@ function toTicketRow(ticket) {
   if ('aiDisabled' in ticket) row.ai_disabled = ticket.aiDisabled ?? false;
   if ('aiDisabledBy' in ticket) row.ai_disabled_by = ticket.aiDisabledBy;
   if ('aiDisabledAt' in ticket) row.ai_disabled_at = ticket.aiDisabledAt;
+  if ('examState' in ticket) row.exam_state = ticket.examState ?? null;
   return row;
 }
 
@@ -1373,6 +1374,7 @@ function toCompatibleTicketRow(ticket) {
   delete row.ai_disabled;
   delete row.ai_disabled_by;
   delete row.ai_disabled_at;
+  delete row.exam_state;
   delete row.voice_channel_id;
   delete row.voice_channel_name;
   delete row.voice_created_at;
@@ -1380,7 +1382,7 @@ function toCompatibleTicketRow(ticket) {
 }
 
 function isTicketCompatibilityError(error) {
-  return Boolean(error && /ai_disabled|voice_channel_id|voice_channel_name|voice_created_at/i.test(String(error.message ?? '')));
+  return Boolean(error && /ai_disabled|exam_state|voice_channel_id|voice_channel_name|voice_created_at/i.test(String(error.message ?? '')));
 }
 
 function pickTicketCompatibilityFields(ticket) {
@@ -1388,6 +1390,7 @@ function pickTicketCompatibilityFields(ticket) {
     aiDisabled: ticket.aiDisabled,
     aiDisabledBy: ticket.aiDisabledBy,
     aiDisabledAt: ticket.aiDisabledAt,
+    examState: ticket.examState,
     voiceChannelId: ticket.voiceChannelId,
     voiceChannelName: ticket.voiceChannelName,
     voiceCreatedAt: ticket.voiceCreatedAt
@@ -1416,6 +1419,7 @@ function fromTicketRow(row) {
     aiDisabled: row.ai_disabled ?? row.status === 'ai_disabled',
     aiDisabledBy: row.ai_disabled_by,
     aiDisabledAt: row.ai_disabled_at,
+    examState: row.exam_state ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at
   };

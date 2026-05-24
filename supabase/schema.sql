@@ -28,6 +28,7 @@ create table if not exists public.tickets (
   ai_disabled boolean not null default false,
   ai_disabled_by text,
   ai_disabled_at timestamptz,
+  exam_state jsonb,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -67,6 +68,7 @@ alter table public.tickets add column if not exists voice_created_at timestamptz
 alter table public.tickets add column if not exists ai_disabled boolean not null default false;
 alter table public.tickets add column if not exists ai_disabled_by text;
 alter table public.tickets add column if not exists ai_disabled_at timestamptz;
+alter table public.tickets add column if not exists exam_state jsonb;
 
 create table if not exists public.global_blacklist (
   user_id text primary key,
