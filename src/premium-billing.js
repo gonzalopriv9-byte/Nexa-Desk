@@ -1,5 +1,47 @@
 export const PREMIUM_PACK_NAME = 'NexaDesk Premium Pack';
 
+export const PREMIUM_SALES_FEATURES = [
+  {
+    title: 'IA prioritaria',
+    description: 'Respuestas mas naturales, menos rodeos y escalados con resumen accionable.'
+  },
+  {
+    title: 'Voz Pro',
+    description: 'Tickets con sala privada, STT/TTS y transcripcion automatica dentro del ticket.'
+  },
+  {
+    title: 'Modo examen',
+    description: 'Oposiciones corregidas por IA, nota provisional y revision humana si hace falta.'
+  },
+  {
+    title: 'Security Plus',
+    description: 'Anti-scam IA, flood, blacklist, links sospechosos y senales de riesgo para staff.'
+  },
+  {
+    title: 'Growth Engine',
+    description: 'Feedback post-ticket, reviews publicas, Churn Radar e insights de conversion.'
+  },
+  {
+    title: 'Marca y reportes',
+    description: 'Branding propio, transcripciones inteligentes e informes semanales para owners.'
+  }
+];
+
+export const PREMIUM_ADDONS = [
+  {
+    title: 'Setup basico',
+    description: 'Categoria, rol staff, contexto IA y primer panel listo para operar.'
+  },
+  {
+    title: 'Setup completo',
+    description: 'Paneles, componentes, seguridad, alianzas, modo examen y revision final contigo.'
+  },
+  {
+    title: 'White-label futuro',
+    description: 'Experiencia mas personalizada para comunidades grandes o marcas.'
+  }
+];
+
 export const DEFAULT_PREMIUM_MODULES = {
   enabled: true,
   voiceSupport: true,
@@ -73,6 +115,7 @@ export function summarizePremiumBilling({ purchases = [], activations = [] } = {
   });
 
   const paidPurchases = normalizedPurchases.filter(isUsablePremiumPurchase);
+  const pendingPurchases = normalizedPurchases.filter((purchase) => String(purchase.status ?? '').toLowerCase() === 'pending');
   const slotsPurchased = paidPurchases.reduce((total, purchase) => total + purchase.slotsPurchased, 0);
   const slotsUsed = Math.min(
     activeActivations.length,
@@ -82,6 +125,7 @@ export function summarizePremiumBilling({ purchases = [], activations = [] } = {
   return {
     purchases: normalizedPurchases,
     activations: activeActivations,
+    pendingPurchases: pendingPurchases.length,
     slotsPurchased,
     slotsUsed,
     slotsAvailable: Math.max(slotsPurchased - slotsUsed, 0)
@@ -109,15 +153,27 @@ export function getPremiumCheckoutConfig(config) {
   const slots = clampInteger(config.PREMIUM_PACK_SLOTS, 1, 25);
   const priceCents = clampInteger(config.PREMIUM_PACK_PRICE_CENTS, 50, 100000);
   const currency = String(config.PREMIUM_PACK_CURRENCY || 'eur').toLowerCase();
+  const apiConfigured = Boolean(config.PAYPAL_CLIENT_ID && config.PAYPAL_CLIENT_SECRET);
+  const manualPaymentUrl = String(config.PREMIUM_PAYMENT_URL || '').trim();
+  const setupPriceCents = clampInteger(config.PREMIUM_SETUP_PRICE_CENTS, 0, 100000);
+  const fullSetupPriceCents = clampInteger(config.PREMIUM_FULL_SETUP_PRICE_CENTS, 0, 100000);
 
   return {
-    configured: Boolean(config.PAYPAL_CLIENT_ID && config.PAYPAL_CLIENT_SECRET),
+    configured: Boolean(apiConfigured || manualPaymentUrl),
+    apiConfigured,
+    manualPaymentUrl,
     provider: 'paypal',
+    providerLabel: apiConfigured ? 'PayPal Checkout' : manualPaymentUrl ? 'Pago manual' : 'Sin configurar',
     mode: config.PAYPAL_MODE || 'sandbox',
     slots,
     priceCents,
     currency,
-    displayPrice: formatPriceCents(priceCents, currency)
+    displayPrice: formatPriceCents(priceCents, currency),
+    setupPriceCents,
+    fullSetupPriceCents,
+    setupDisplayPrice: formatPriceCents(setupPriceCents, currency),
+    fullSetupDisplayPrice: formatPriceCents(fullSetupPriceCents, currency),
+    supportUrl: config.PREMIUM_SUPPORT_URL || 'https://discord.gg/vVXbq7ePEZ'
   };
 }
 

@@ -276,6 +276,10 @@ const commands = [
     )
     .toJSON(),
   new SlashCommandBuilder()
+    .setName('premium')
+    .setDescription('Muestra precio, funciones y enlace para activar NexaDesk Premium.')
+    .toJSON(),
+  new SlashCommandBuilder()
     .setName('dmowner')
     .setDescription('Reenvia el MD de bienvenida al owner y al usuario que agrego NexaDesk.')
     .addStringOption((option) =>

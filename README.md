@@ -319,6 +319,7 @@ DISCORD_GUILD_ID=your_server_id npm run register -- --clear-guild
 /globalstats
 /crecimiento estado
 /crecimiento configurar [canal_reviews] [reviews_publicas] [rating_publico_min]
+/premium
 /code
 /ayuda
 ```
@@ -327,7 +328,9 @@ DISCORD_GUILD_ID=your_server_id npm run register -- --clear-guild
 
 `/ticket resumen` gives staff a concise AI handoff, `/ticket prioridad` calculates risk, SLA and next action, `/ticket estado` shows the operational state of the current ticket, and `/ticket cerrar` closes the ticket, sends the transcript by DM, and deletes the channel after a short delay.
 
-Voice support is a Pro feature controlled manually from Supabase. For a server, set either `plan = 'pro'` or `voice_support_enabled = true` in `guild_configs`. Optional columns `voice_category_id` and `voice_category_name` let you choose where Pro voice rooms should be created. In the dashboard, set a panel button or menu component to `Voz Pro + STT/TTS` to open a normal private text ticket with a linked private voice room.
+Premium monetization is built into the dashboard. Configure `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET`, `PAYPAL_MODE=live`, `PREMIUM_PACK_PRICE_CENTS=300`, `PREMIUM_PACK_SLOTS=3`, and `PREMIUM_PACK_CURRENCY=eur` for automatic PayPal Checkout. If you need to start selling before PayPal API verification is complete, set `PREMIUM_PAYMENT_URL` to a manual PayPal/payment link; the dashboard will open that link and record a pending manual intent in Supabase for validation through support. Users can run `/premium` to see the price, features, dashboard checkout, and support link.
+
+Voice support is a Pro feature activated by Premium slots, `/activarpremium`, or manually from Supabase. For a server, set either `plan = 'pro'` or `voice_support_enabled = true` in `guild_configs`. Optional columns `voice_category_id` and `voice_category_name` let you choose where Pro voice rooms should be created. In the dashboard, set a panel button or menu component to `Voz Pro + STT/TTS` to open a normal private text ticket with a linked private voice room.
 
 When a ticket channel registered by NexaDesk is deleted by another ticket bot, NexaDesk marks the ticket as closed, keeps the transcript available in the dashboard, and tries to DM the transcript to the opener automatically.
 

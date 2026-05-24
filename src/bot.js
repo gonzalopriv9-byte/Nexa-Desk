@@ -49,6 +49,7 @@ import {
   normalizeExamState
 } from './exam-mode.js';
 import { buildFeedbackStats, formatRatingStars, normalizeGrowthConfig } from './growth.js';
+import { PREMIUM_SALES_FEATURES, getPremiumCheckoutConfig } from './premium-billing.js';
 import { isPremiumEntitled, normalizePremiumConfig } from './premium.js';
 import { SecurityManager, SECURITY_LEVELS, normalizeSecurityConfig, normalizeSecurityLevel, summarizeSecurityConfig } from './security.js';
 import { analyzeGuildChannelsForDiscovery, hasUsefulDiscovery, normalizeChannelNameForDiscovery, normalizeDiscoveryConfig } from './server-discovery.js';
@@ -322,6 +323,11 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
 
       if (interaction.commandName === 'activarpremium') {
         await handleActivatePremiumCommand({ interaction, storage, client });
+        return;
+      }
+
+      if (interaction.commandName === 'premium') {
+        await handlePremiumCommand({ interaction, storage, config });
         return;
       }
 
@@ -889,6 +895,13 @@ function buildOwnerOnboardingEmbeds({ guild }) {
           'Usa IA con contexto del servidor, lee capturas cuando haga falta, escala a staff y guarda transcripciones.',
           'Security Guard protege contra spam, links sospechosos, bots no verificados, alts y acciones peligrosas.'
         ].join('\n')
+      },
+      {
+        name: `${EMOJIS.check} Si quieres ir a nivel Pro`,
+        value: [
+          'Premium desbloquea Voz Pro, Modo examen, IA prioritaria, transcripciones inteligentes, Growth Engine y Security Plus.',
+          `Se activa desde la dashboard en **Premium**: ${PUBLIC_DASHBOARD_URL}#premium`
+        ].join('\n')
       }
     )
     .setFooter({ text: 'Si necesitas ayuda: /ayuda o https://discord.gg/vVXbq7ePEZ' })
@@ -904,6 +917,10 @@ function buildOwnerOnboardingComponents(config) {
         .setStyle(ButtonStyle.Link)
         .setLabel('Abrir dashboard')
         .setURL(PUBLIC_DASHBOARD_URL),
+      new ButtonBuilder()
+        .setStyle(ButtonStyle.Link)
+        .setLabel('Ver Premium')
+        .setURL(`${PUBLIC_DASHBOARD_URL}#premium`),
       new ButtonBuilder()
         .setStyle(ButtonStyle.Link)
         .setLabel('Soporte oficial')
@@ -1425,7 +1442,7 @@ async function handleVoiceStatusCommand({ interaction, storage }) {
     .setTitle(`${EMOJIS.wifi} Estado de voz`)
     .setDescription(isVoiceSupportEnabled(guildConfig)
       ? 'Soporte por voz Pro disponible para este servidor.'
-      : 'Soporte por voz bloqueado. Activa plan Pro o `voice_support_enabled` en Supabase.')
+      : `Soporte por voz bloqueado. Activa Premium desde ${PUBLIC_DASHBOARD_URL}#premium.`)
     .addFields(
       { name: 'Plan', value: guildConfig?.plan ?? 'free', inline: true },
       { name: 'Voice enabled', value: String(Boolean(guildConfig?.voiceSupportEnabled)), inline: true },
@@ -1508,7 +1525,7 @@ async function getVoiceCommandContext({ interaction, storage, allowFreeStatus = 
     await interaction.reply({
       content: [
         'Soporte por voz es una funcion **Pro**.',
-        'Activalo manualmente en Supabase con `plan = pro` o `voice_support_enabled = true` para este `guild_id`.'
+        `Activalo desde ${PUBLIC_DASHBOARD_URL}#premium o abre ticket en soporte para validacion manual.`
       ].join('\n'),
       ephemeral: true
     });
@@ -1630,6 +1647,62 @@ async function handleActivatePremiumCommand({ interaction, storage, client }) {
     .setTimestamp(new Date());
 
   await interaction.editReply({ embeds: [embed] });
+}
+
+async function handlePremiumCommand({ interaction, storage, config }) {
+  const guildConfig = interaction.guildId
+    ? await storage.getGuildConfig(interaction.guildId).catch(() => null)
+    : null;
+  const checkout = getPremiumCheckoutConfig(config);
+  const premiumActive = isPremiumEntitled(guildConfig ?? {});
+  const dashboardPremiumUrl = new URL('/#premium', config.DASHBOARD_PUBLIC_URL || PUBLIC_DASHBOARD_URL).toString();
+  const featureText = PREMIUM_SALES_FEATURES
+    .slice(0, 6)
+    .map((feature) => `**${feature.title}:** ${feature.description}`)
+    .join('\n');
+
+  const embed = new EmbedBuilder()
+    .setColor(premiumActive ? 0xf4c95d : 0xffffff)
+    .setTitle(`${EMOJIS.check} NexaDesk Premium`)
+    .setDescription(premiumActive
+      ? `Este servidor ya tiene Premium activo. Puedes ajustar modulos desde la dashboard.`
+      : `${checkout.slots} servidores Premium por **${checkout.displayPrice}**. Pensado para vender soporte serio sin cambiar tu sistema de tickets.`)
+    .addFields(
+      { name: `${EMOJIS.global} Incluye`, value: featureText },
+      {
+        name: `${EMOJIS.wifi} Por que se paga solo`,
+        value: [
+          'Reduce tickets repetitivos y espera de usuarios.',
+          'Da voz, examenes, transcripciones y seguridad avanzada como valor visible.',
+          'Convierte tickets bien resueltos en reviews y confianza para crecer.'
+        ].join('\n')
+      },
+      {
+        name: `${EMOJIS.server} Estado`,
+        value: [
+          `Servidor: **${interaction.guild?.name ?? 'DM'}**`,
+          `Plan actual: **${premiumActive ? 'Premium activo' : 'Free'}**`,
+          `Pago: **${checkout.providerLabel}**`
+        ].join('\n')
+      }
+    )
+    .setFooter({ text: 'NexaDesk Premium - 3 servidores por pack' })
+    .setTimestamp(new Date());
+
+  const components = [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setStyle(ButtonStyle.Link)
+        .setLabel(premiumActive ? 'Gestionar Premium' : 'Comprar Premium')
+        .setURL(dashboardPremiumUrl),
+      new ButtonBuilder()
+        .setStyle(ButtonStyle.Link)
+        .setLabel('Soporte y activacion')
+        .setURL(checkout.supportUrl || SUPPORT_SERVER_URL)
+    )
+  ];
+
+  await interaction.reply({ embeds: [embed], components, ephemeral: true });
 }
 
 async function handleDmOwnerCommand({ interaction, storage, client, config }) {
@@ -2502,9 +2575,10 @@ function buildHelpEmbed({ view, config, guild }) {
   }
 
   if (view === 'premium') {
+    const checkout = getPremiumCheckoutConfig(config);
     return base
       .setTitle(`${EMOJIS.check} Premium de NexaDesk`)
-      .setDescription('Premium esta pensado para servidores que quieren soporte mas rapido, mas humano y mas facil de vender como experiencia profesional.')
+      .setDescription(`Premium esta pensado para servidores que quieren soporte mas rapido, mas humano y mas facil de vender como experiencia profesional. Pack actual: **${checkout.slots} servidores por ${checkout.displayPrice}**.`)
       .addFields(
         {
           name: `${EMOJIS.nexalogo} Funciones incluidas`,
@@ -2522,10 +2596,11 @@ function buildHelpEmbed({ view, config, guild }) {
         {
           name: `${EMOJIS.rightArrow} Como se activa`,
           value: [
-            'El owner autorizado puede usar `/activarpremium servidor:<ID>`.',
-            'El owner global puede usar `/mantenimiento activar` para ralentizar solo servidores Free durante ajustes del servicio.',
-            'Tambien puede activarse manualmente en Supabase con `plan = pro` o `voice_support_enabled = true`.',
-            `Despues se gestionan los modulos desde la dashboard: ${PUBLIC_DASHBOARD_URL}`
+            `1. Entra en la dashboard: ${PUBLIC_DASHBOARD_URL}#premium`,
+            `2. Compra el pack con ${checkout.providerLabel}.`,
+            '3. Vuelve a Premium y elige en que servidores activar tus slots.',
+            '4. Si necesitas validacion manual, abre ticket en soporte oficial.',
+            'El owner autorizado tambien puede activar casos especiales con `/activarpremium servidor:<ID>`.'
           ].join('\n')
         }
       );
@@ -2656,8 +2731,8 @@ function buildHelpComponents({ view, config }) {
         .setStyle(current === 'data' ? ButtonStyle.Success : ButtonStyle.Secondary),
       new ButtonBuilder()
         .setStyle(ButtonStyle.Link)
-        .setLabel('Dashboard')
-        .setURL(PUBLIC_DASHBOARD_URL),
+        .setLabel(current === 'premium' ? 'Comprar Premium' : 'Dashboard')
+        .setURL(current === 'premium' ? `${PUBLIC_DASHBOARD_URL}#premium` : PUBLIC_DASHBOARD_URL),
       new ButtonBuilder()
         .setStyle(ButtonStyle.Link)
         .setLabel('Soporte oficial')
@@ -2685,7 +2760,7 @@ async function createTicketFromConfiguredSource({ interaction, storage, guildCon
     await interaction.reply({
       content: [
         `${EMOJIS.wifi} Este panel abre tickets de voz, pero este servidor no tiene Pro Voice activo.`,
-        'Activa `plan = pro` o `voice_support_enabled = true` en Supabase para este servidor.'
+        `Activa Premium desde ${PUBLIC_DASHBOARD_URL}#premium o abre ticket en soporte si quieres validacion manual.`
       ].join('\n'),
       ephemeral: true
     });

@@ -14,7 +14,7 @@ import { discordEmojiUrl } from './emojis.js';
 import { normalizeGrowthConfig } from './growth.js';
 import { normalizeMaintenanceState } from './maintenance.js';
 import { normalizeTicketComponent } from './panel-options.js';
-import { DEFAULT_PREMIUM_MODULES, getPremiumCheckoutConfig } from './premium-billing.js';
+import { DEFAULT_PREMIUM_MODULES, PREMIUM_ADDONS, PREMIUM_SALES_FEATURES, getPremiumCheckoutConfig } from './premium-billing.js';
 import { isPremiumEntitled, normalizePremiumConfig, summarizePremiumConfig } from './premium.js';
 import { normalizeSecurityConfig, summarizeSecurityConfig } from './security.js';
 import { buildTranscriptFileName, buildTranscriptText } from './transcripts.js';
@@ -560,7 +560,21 @@ export function createServer({ config, storage, bot, events }) {
   app.post('/api/premium/checkout', asyncHandler(async (req, res) => {
     const checkoutConfig = getPremiumCheckoutConfig(config);
     if (!checkoutConfig.configured) {
-      res.status(503).json({ error: 'PayPal no esta configurado todavia. Anade PAYPAL_CLIENT_ID y PAYPAL_CLIENT_SECRET en Render.' });
+      res.status(503).json({ error: 'PayPal no esta configurado todavia. Anade PAYPAL_CLIENT_ID/PAYPAL_CLIENT_SECRET o PREMIUM_PAYMENT_URL en Render.' });
+      return;
+    }
+
+    if (!checkoutConfig.apiConfigured) {
+      const pendingPurchase = await recordManualPremiumIntent({ storage, session: req.session, checkoutConfig }).catch((error) => {
+        console.warn('Could not record manual premium intent:', normalizeError(error));
+        return null;
+      });
+      res.json({
+        url: checkoutConfig.manualPaymentUrl,
+        manual: true,
+        pendingPurchaseId: pendingPurchase?.id ?? null,
+        message: 'Pago manual abierto. Tras pagar, abre ticket de soporte para validar el pago y activar tus slots.'
+      });
       return;
     }
 
@@ -568,7 +582,23 @@ export function createServer({ config, storage, bot, events }) {
       config,
       session: req.session,
       checkoutConfig
+    }).catch(async (error) => {
+      if (checkoutConfig.manualPaymentUrl) {
+        console.warn('PayPal checkout failed; falling back to manual payment URL:', normalizeError(error));
+        const pendingPurchase = await recordManualPremiumIntent({ storage, session: req.session, checkoutConfig, error }).catch(() => null);
+        return { manualFallback: true, url: checkoutConfig.manualPaymentUrl, pendingPurchaseId: pendingPurchase?.id ?? null };
+      }
+      throw error;
     });
+    if (order.manualFallback) {
+      res.json({
+        url: order.url,
+        manual: true,
+        pendingPurchaseId: order.pendingPurchaseId,
+        message: 'PayPal Checkout fallo, pero puedes pagar con el enlace manual y validarlo por soporte.'
+      });
+      return;
+    }
     const approveUrl = getPayPalApprovalUrl(order);
     if (!approveUrl) {
       console.warn('PayPal order without approval link:', JSON.stringify({
@@ -576,6 +606,16 @@ export function createServer({ config, storage, bot, events }) {
         status: order.status,
         links: order.links?.map((link) => ({ rel: link.rel, href: link.href }))
       }));
+      if (checkoutConfig.manualPaymentUrl) {
+        const pendingPurchase = await recordManualPremiumIntent({ storage, session: req.session, checkoutConfig }).catch(() => null);
+        res.json({
+          url: checkoutConfig.manualPaymentUrl,
+          manual: true,
+          pendingPurchaseId: pendingPurchase?.id ?? null,
+          message: 'PayPal no devolvio enlace de aprobacion; abro el pago manual de respaldo.'
+        });
+        return;
+      }
       res.status(502).json({ error: 'PayPal no devolvio enlace de aprobacion compatible.' });
       return;
     }
@@ -908,10 +948,42 @@ function asyncHandler(handler) {
 }
 
 function buildPremiumAccountResponse({ account, config }) {
+  const checkout = getPremiumCheckoutConfig(config);
   return {
     ...account,
-    checkout: getPremiumCheckoutConfig(config)
+    checkout,
+    sales: {
+      headline: `${checkout.slots} servidores Premium por ${checkout.displayPrice}`,
+      subline: 'Activa soporte por IA, voz, examenes, seguridad avanzada y crecimiento sin cambiar tu bot de tickets.',
+      features: PREMIUM_SALES_FEATURES,
+      addons: PREMIUM_ADDONS,
+      urgency: 'Precio early-access mientras NexaDesk sigue creciendo. Ideal para cerrar los primeros servidores de pago.',
+      supportUrl: checkout.supportUrl
+    }
   };
+}
+
+async function recordManualPremiumIntent({ storage, session, checkoutConfig, error = null }) {
+  const now = new Date().toISOString();
+  return storage.recordPremiumPurchase({
+    id: `manual-pending-${session.user.id}-${Date.now()}`,
+    discordUserId: session.user.id,
+    buyerUsername: session.user.username,
+    provider: 'manual',
+    providerSessionId: `manual-${session.user.id}-${Date.now()}`,
+    amountTotal: checkoutConfig.priceCents,
+    currency: checkoutConfig.currency,
+    slotsPurchased: checkoutConfig.slots,
+    status: 'pending',
+    createdAt: now,
+    updatedAt: now,
+    metadata: {
+      source: 'dashboard',
+      paymentUrl: checkoutConfig.manualPaymentUrl,
+      supportUrl: checkoutConfig.supportUrl,
+      fallbackReason: error ? normalizeError(error) : null
+    }
+  });
 }
 
 async function createPremiumPayPalOrder({ config, session, checkoutConfig }) {
@@ -942,11 +1014,20 @@ async function createPremiumPayPalOrder({ config, session, checkoutConfig }) {
           experience_context: {
             brand_name: 'NexaDesk',
             landing_page: 'LOGIN',
+            shipping_preference: 'NO_SHIPPING',
             user_action: 'PAY_NOW',
             return_url: `${dashboardUrl}/premium/paypal/success`,
             cancel_url: `${dashboardUrl}/premium/paypal/cancel`
           }
         }
+      },
+      application_context: {
+        brand_name: 'NexaDesk',
+        landing_page: 'LOGIN',
+        shipping_preference: 'NO_SHIPPING',
+        user_action: 'PAY_NOW',
+        return_url: `${dashboardUrl}/premium/paypal/success`,
+        cancel_url: `${dashboardUrl}/premium/paypal/cancel`
       }
     }
   });
@@ -1016,6 +1097,7 @@ async function paypalFetch(config, url, { method = 'GET', accessToken, body = nu
     headers: {
       authorization: `Bearer ${accessToken}`,
       'content-type': 'application/json',
+      'paypal-request-id': crypto.randomUUID(),
       'prefer': 'return=representation'
     },
     ...(body === null ? {} : { body: JSON.stringify(body) })
@@ -2735,6 +2817,11 @@ function buildDocsSections(config) {
     ['AKIOMAE_API_KEY', secretState(config.AKIOMAE_API_KEY), 'Fallback externo cuando Groq agote limites.'],
     ['DISCORD_OWNER_ADMIN_ID', secretState(config.DISCORD_OWNER_ADMIN_ID), 'Usuario autorizado para activar Premium y funciones owner-only.'],
     ['DASHBOARD_PUBLIC_URL', secretState(config.DASHBOARD_PUBLIC_URL), 'URL publica usada en /ayuda, MD de bienvenida e invitaciones.'],
+    ['PAYPAL_CLIENT_ID', secretState(config.PAYPAL_CLIENT_ID), 'Checkout Premium automatico con PayPal.'],
+    ['PAYPAL_CLIENT_SECRET', secretState(config.PAYPAL_CLIENT_SECRET), 'Secreto PayPal para capturar pagos. Nunca exponer al cliente.'],
+    ['PREMIUM_PAYMENT_URL', secretState(config.PREMIUM_PAYMENT_URL), 'Fallback de pago manual si PayPal API aun no esta lista.'],
+    ['PREMIUM_PACK_PRICE_CENTS', secretState(config.PREMIUM_PACK_PRICE_CENTS), 'Precio del pack Premium en centimos.'],
+    ['PREMIUM_PACK_SLOTS', secretState(config.PREMIUM_PACK_SLOTS), 'Numero de servidores que activa cada compra Premium.'],
     ['VOICE_TTS_PROVIDER', secretState(config.VOICE_TTS_PROVIDER), 'Proveedor de voz para tickets Pro Voice.'],
     ['EDGE_TTS_VOICE', secretState(config.EDGE_TTS_VOICE), 'Voz natural usada cuando Edge TTS esta disponible.'],
     ['AI_VISUAL_ANALYSIS', secretState(config.AI_VISUAL_ANALYSIS), 'Activa analisis de imagenes y videos en tickets cuando el prompt lo permite.'],
@@ -2888,6 +2975,9 @@ function buildDocsSections(config) {
           'Modo examen Free pregunta dentro del ticket, corrige con IA, marca posibles copias/IA y permite solicitar revision humana; Modo examen Premium puede abrir sala de voz y formulario externo para supervision.',
           'Crecimiento permite configurar feedback post-ticket, canal de reviews, rating publico minimo y alertas de baja satisfaccion.',
           'Premium incluye Voz Pro, Modo examen supervisado, IA prioritaria, transcripciones inteligentes, Security Plus, Growth Engine, reviews publicas, Churn Radar, branding propio e informes semanales.',
+          'Monetizacion: el pack recomendado es PREMIUM_PACK_SLOTS servidores por PREMIUM_PACK_PRICE_CENTS centimos. PayPal Checkout crea orden, captura pago y guarda premium_purchases; despues el usuario elige servidores en la dashboard.',
+          'Fallback rapido: si PAYPAL_CLIENT_ID/SECRET no estan listos pero PREMIUM_PAYMENT_URL existe, la dashboard abre ese enlace y guarda una compra pending para validacion manual en soporte.',
+          'Upsell activo: /premium, /ayuda Premium, MD de bienvenida y bloqueos de Voz Pro apuntan a la dashboard #premium.',
           'La seccion Premium usa paleta dorada y solo abre si el usuario tiene al menos un servidor con premium activo.',
           'Premium no se ralentiza durante mantenimiento global; los servidores Free reciben aviso al abrir ticket.',
           'El antiguo modulo de musica fue retirado para centrar el producto en soporte, seguridad, voz, alianzas y transcripciones.',
@@ -4127,7 +4217,13 @@ function renderDashboard({ session, guilds, tickets, stats }) {
     .premium-market { display:grid; grid-template-columns:minmax(300px,.8fr) minmax(0,1.2fr); gap:16px; align-items:start; margin-bottom:16px; }
     .premium-buy-card { background:radial-gradient(circle at 18% 0%, rgba(255,244,184,.28), transparent 34%), linear-gradient(145deg, rgba(244,201,93,.2), rgba(8,7,4,.92)); }
     .premium-buy-card h2 { margin-top:14px; font-size:clamp(26px, 4vw, 44px); line-height:1; color:#fff4c9; font-family:Georgia, "Times New Roman", serif; }
-    .premium-wallet { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:9px; margin:16px 0; }
+    .premium-sales-note { margin-top:12px; border:1px solid rgba(244,201,93,.22); border-radius:14px; padding:12px; color:#ffeaa8; background:rgba(244,201,93,.075); line-height:1.45; }
+    .premium-sales-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; margin:14px 0; }
+    .premium-sales-grid div { border:1px solid rgba(244,201,93,.18); border-radius:13px; padding:11px; background:rgba(255,255,255,.04); }
+    .premium-sales-grid strong,.premium-sales-grid span { display:block; }
+    .premium-sales-grid span { color:#d7c27a; font-size:12px; margin-top:4px; line-height:1.35; }
+    .premium-checkout-mode { display:inline-flex; align-items:center; gap:7px; margin-top:8px; border:1px solid rgba(255,255,255,.18); border-radius:999px; padding:7px 10px; color:#fff; background:rgba(0,0,0,.28); font-size:12px; font-weight:850; }
+    .premium-wallet { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:9px; margin:16px 0; }
     .premium-wallet div { border:1px solid rgba(244,201,93,.2); border-radius:14px; padding:12px; background:rgba(244,201,93,.07); }
     .premium-wallet strong,.premium-wallet small { display:block; }
     .premium-wallet strong { color:#fff4c9; font-size:24px; }
@@ -4760,11 +4856,19 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
           <article class="control-card premium-buy-card">
             <span class="premium-plan">Pack directo</span>
             <h2>3 servidores premium por <span id="premiumPackPrice">3,00 €</span></h2>
-            <p>Pagas una vez con PayPal, vuelves a NexaDesk y eliges exactamente en que servidores quieres activar el premium. NexaDesk no guarda datos de pago.</p>
+            <p id="premiumSalesSubline">Pagas una vez con PayPal, vuelves a NexaDesk y eliges exactamente en que servidores quieres activar el premium. NexaDesk no guarda datos de pago.</p>
+            <div class="premium-checkout-mode" id="premiumCheckoutMode">PayPal Checkout</div>
+            <div class="premium-sales-note" id="premiumSalesUrgency">Precio early-access para activar monetizacion cuanto antes.</div>
+            <div class="premium-sales-grid">
+              <div><strong>Voz + examen</strong><span>Funciones que un servidor nota al instante.</span></div>
+              <div><strong>Seguridad + IA</strong><span>Proteccion avanzada sin cambiar de bot de tickets.</span></div>
+              <div><strong>Setup desde <b id="premiumSetupPrice">5,00 €</b></strong><span>Servicio manual para quien no quiere configurar nada.</span></div>
+            </div>
             <div class="premium-wallet">
               <div><strong id="premiumSlotsAvailable">0</strong><small>Slots disponibles</small></div>
               <div><strong id="premiumSlotsUsed">0</strong><small>Slots usados</small></div>
               <div><strong id="premiumSlotsPurchased">0</strong><small>Slots comprados</small></div>
+              <div><strong id="premiumPendingPurchases">0</strong><small>Pagos pendientes</small></div>
             </div>
             <button class="premium-billing-action" id="premiumBuyButton" type="button">Comprar pack premium</button>
             <p class="notice" id="premiumCheckoutNotice">Pago seguro con PayPal Checkout.</p>
@@ -4780,7 +4884,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
           <div class="premium-denied-inner">
             <span class="premium-denied-kicker">NexaDesk Premium</span>
             <h2>Este servidor no tiene premium</h2>
-            <p>Compra el pack desde arriba o activalo abriendo ticket en el servidor de soporte.</p>
+            <p>Compra el pack desde arriba, activa un slot en este servidor o abre ticket si quieres validacion manual.</p>
             <a href="https://discord.gg/vVXbq7ePEZ" target="_blank" rel="noopener">Abrir soporte</a>
           </div>
         </section>
@@ -5013,10 +5117,16 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
     function renderPremiumAccount() {
       const account = state.premiumAccount;
       const checkout = account?.checkout || {};
+      const sales = account?.sales || {};
       document.querySelector('#premiumPackPrice').textContent = checkout.displayPrice || '3,00 €';
+      document.querySelector('#premiumSalesSubline').textContent = sales.subline || 'Pagas una vez con PayPal, vuelves a NexaDesk y eliges exactamente en que servidores quieres activar el premium. NexaDesk no guarda datos de pago.';
+      document.querySelector('#premiumSalesUrgency').textContent = sales.urgency || 'Precio early-access para activar monetizacion cuanto antes.';
+      document.querySelector('#premiumCheckoutMode').textContent = checkout.providerLabel || 'PayPal Checkout';
+      document.querySelector('#premiumSetupPrice').textContent = checkout.setupDisplayPrice || '5,00 €';
       document.querySelector('#premiumSlotsAvailable').textContent = account ? account.slotsAvailable : '...';
       document.querySelector('#premiumSlotsUsed').textContent = account ? account.slotsUsed : '...';
       document.querySelector('#premiumSlotsPurchased').textContent = account ? account.slotsPurchased : '...';
+      document.querySelector('#premiumPendingPurchases').textContent = account ? account.pendingPurchases || 0 : '...';
       const buyButton = document.querySelector('#premiumBuyButton');
       if (buyButton) {
         buyButton.disabled = !checkout.configured;
@@ -5028,8 +5138,10 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       const notice = document.querySelector('#premiumCheckoutNotice');
       if (notice) {
         notice.textContent = checkout.configured
-          ? 'Pago seguro con PayPal Checkout. NexaDesk solo recibe confirmacion del pago y los slots.'
-          : 'Faltan PAYPAL_CLIENT_ID y PAYPAL_CLIENT_SECRET en Render para activar pagos reales.';
+          ? checkout.apiConfigured
+            ? 'Pago seguro con PayPal Checkout. NexaDesk solo recibe confirmacion del pago y los slots.'
+            : 'Pago manual activo: tras pagar, abre ticket de soporte para validar y activar slots.'
+          : 'Faltan PAYPAL_CLIENT_ID/PAYPAL_CLIENT_SECRET o PREMIUM_PAYMENT_URL en Render para activar pagos reales.';
       }
 
       const target = document.querySelector('#premiumActivationList');
@@ -5072,6 +5184,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
         showToast('Preparando checkout seguro con PayPal...');
         const response = await postJson('/api/premium/checkout', {});
         if (!response.url) throw new Error('PayPal no devolvio URL de pago.');
+        if (response.manual && response.message) showToast(response.message);
         window.location.href = response.url;
       } catch (error) {
         showToast(error.message);
