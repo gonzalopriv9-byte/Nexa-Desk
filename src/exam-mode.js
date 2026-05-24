@@ -94,7 +94,7 @@ export function parseExamEvaluationJson(value = '', fallback = {}) {
       manualReviewRecommended: Boolean(parsed.manualReviewRecommended),
       aiGeneratedSuspicion: clampNumber(parsed.aiGeneratedSuspicion, 0, 100, 0),
       perQuestion: Array.isArray(parsed.perQuestion)
-        ? parsed.perQuestion.slice(0, 25).map((item, index) => ({
+        ? parsed.perQuestion.slice(0, 40).map((item, index) => ({
             index: Number.parseInt(item.index ?? index + 1, 10) || index + 1,
             score: clampNumber(item.score, 0, 10, 0),
             feedback: cleanString(item.feedback, '', 500)
@@ -102,17 +102,63 @@ export function parseExamEvaluationJson(value = '', fallback = {}) {
         : []
     };
   } catch {
+    return buildHeuristicExamEvaluation(fallback.examState, fallback);
+  }
+}
+
+export function buildHeuristicExamEvaluation(examState = {}, fallback = {}) {
+  const state = normalizeExamState(examState);
+  const passScore = clampNumber(state.passScore ?? fallback.passScore, 0, 10, DEFAULT_PASS_SCORE);
+  const answers = state.answers ?? [];
+
+  if (!answers.length) {
     return {
       score: clampNumber(fallback.score, 0, 10, 0),
       passed: false,
-      summary: 'No pude leer la correccion automatica como JSON. Solicita revision manual.',
+      summary: 'No hay respuestas suficientes para corregir el examen automaticamente.',
       strengths: [],
-      concerns: ['Formato de correccion no valido.'],
+      concerns: ['Sin respuestas registradas.'],
       manualReviewRecommended: true,
       aiGeneratedSuspicion: 0,
       perQuestion: []
     };
   }
+
+  const scoredAnswers = answers.map((item, index) => scoreExamAnswer(item, index));
+  const answeredRatio = state.questions.length ? answers.length / state.questions.length : 1;
+  const baseAverage = average(scoredAnswers.map((item) => item.score));
+  const warningCount = state.warnings.length + answers.reduce((total, item) => total + (item.flags?.length ?? 0), 0);
+  const completionPenalty = answeredRatio < 0.95 ? (1 - answeredRatio) * 2 : 0;
+  const warningPenalty = Math.min(1.2, warningCount * 0.18);
+  const score = clampNumber(baseAverage - completionPenalty - warningPenalty, 0, 10, 0);
+  const passed = score >= passScore;
+
+  const strengths = inferExamStrengths(answers);
+  const concerns = inferExamConcerns({ answers, scoredAnswers, state, warningCount, passScore, score });
+  const aiGeneratedSuspicion = clampNumber(
+    Math.round(Math.min(92, warningCount * 22 + scoredAnswers.filter((item) => item.generic).length * 8)),
+    0,
+    100,
+    0
+  );
+
+  return {
+    score,
+    passed,
+    summary: [
+      'Correccion automatica generada con evaluador interno de respaldo.',
+      passed ? 'Las respuestas cubren la mayoria de criterios esperados.' : 'Las respuestas necesitan mas detalle o revision humana.'
+    ].join(' '),
+    strengths,
+    concerns,
+    manualReviewRecommended: warningCount > 0 || Math.abs(score - passScore) <= 1,
+    aiGeneratedSuspicion,
+    perQuestion: scoredAnswers.slice(0, 8).map((item) => ({
+      index: item.index,
+      score: item.score,
+      feedback: item.feedback
+    }))
+  };
 }
 
 export function formatExamEvaluation(evaluation, state) {
@@ -147,9 +193,110 @@ function normalizeExamQuestions(value) {
     .split(/\r?\n/)
     .map((line) => line.replace(/^\s*(?:P|Q|Pregunta)\s*[:.)-]\s*/iu, '').trim())
     .filter(Boolean)
-    .slice(0, 25)
+    .slice(0, 40)
     .map((question) => cleanString(question, '', 180))
     .filter(Boolean);
+}
+
+function scoreExamAnswer(item, index) {
+  const answer = cleanString(item.answer, '', 2200);
+  const normalized = normalizePlain(answer);
+  const question = normalizePlain(item.question);
+  const words = answer.split(/\s+/).filter(Boolean).length;
+  let score = 4;
+
+  if (words >= 3) score += 0.6;
+  if (words >= 8) score += 0.9;
+  if (words >= 18) score += 0.9;
+  if (words >= 35) score += 0.55;
+  if (words >= 75) score += 0.3;
+  if (/\b(no se|ni idea|da igual|lo que sea|porque si)\b/u.test(normalized)) score -= 2;
+
+  const positiveSignals = [
+    /\b(staff|moderador|humano|superior|owner)\b/u,
+    /\b(prueba|captura|evidencia|contexto|detalle|transcripcion)\b/u,
+    /\b(permiso|rol|categoria|configuracion|dashboard|supabase)\b/u,
+    /\b(escalar|avisar|mencionar|revisar|calmar|resolver)\b/u,
+    /\b(seguridad|blacklist|xn protect|link|malicioso|sospechoso)\b/u,
+    /\b(privacidad|contrasena|datos|sensible|bancario)\b/u,
+    /\b(emergencia|profesional|confianza|peligro|suicid)\b/u
+  ];
+  score += Math.min(2.6, positiveSignals.filter((pattern) => pattern.test(normalized)).length * 0.55);
+  score = Math.max(score, scoreTargetedExamAnswer({ question, answer: normalized }));
+
+  if (item.responseSeconds !== null && item.responseSeconds <= 4 && words >= 55) score -= 0.8;
+  if (item.flags?.length) score -= Math.min(1.2, item.flags.length * 0.45);
+
+  const generic = looksLikeGenericAnswer(normalized, words);
+  if (generic) score -= 0.35;
+
+  return {
+    index: index + 1,
+    score: Math.round(clampNumber(score, 0, 10, 0) * 10) / 10,
+    generic,
+    feedback: buildQuestionFeedback({ answer, words, score, flags: item.flags ?? [] })
+  };
+}
+
+function scoreTargetedExamAnswer({ question, answer }) {
+  if (/\bcomando\b/u.test(question) && /\/desactivar\s+ia\b/u.test(answer)) return 9.4;
+  if (/\bsuicid|quiere\s+suicidarse\b/u.test(question) && /\b(emergencia|profesional|confianza|peligro|no estas solo)\b/u.test(answer)) return 8.6;
+  if (/\bdatos\b/u.test(question) && /\b(contrasena|bancari|documento|sensible|ubicacion|clave)\b/u.test(answer)) return 8.3;
+  if (/\blink\b/u.test(question) && /\b(no\s+se\s+debe\s+abrir|sospechoso|seguridad|reportarlo|staff)\b/u.test(answer)) return 7.8;
+  if (/\bcaptura|imagen\b/u.test(question) && /\b(analizar|extraer|error|informacion|solucion|escalar)\b/u.test(answer)) return 7.7;
+  if (/\bblacklist|xn protect\b/u.test(question) && /\b(riesgo|staff|superior|revis|aviso)\b/u.test(answer)) return 7.5;
+  if (/\bsupabase\b/u.test(question) && /\b(ticket|mensaje|configuracion|transcripcion|servidor)\b/u.test(answer)) return 7.2;
+  if (/\bticket king\b/u.test(question) && /\b(permiso|categoria|configuracion|ia|ticket|estado|limitacion)\b/u.test(answer)) return 7.1;
+  if (/\bcanales privados\b/u.test(question) && /\b(permiso|rol|categoria|configuracion|restriccion)\b/u.test(answer)) return 7.6;
+  if (/\bescalar\b/u.test(question) && /\b(staff|superior|informacion|contexto|resolver)\b/u.test(answer)) return 7.4;
+  if (/\balianza\b/u.test(question) && /\b(plantilla|norma|captura|canal|alianza)\b/u.test(answer)) return 7.5;
+  if (/\balianza\b/u.test(question) && /\bstaff\b/u.test(answer)) return 5.8;
+  if (/\bhumano\b/u.test(question) && /\b(humano|manual|cargo|calmar|atender)\b/u.test(answer)) return 7.4;
+  return 0;
+}
+
+function buildQuestionFeedback({ answer, words, score, flags }) {
+  if (!answer.trim()) return 'Sin respuesta.';
+  if (flags.length) return `Respuesta valida, pero con senales a revisar: ${flags.join(', ')}.`;
+  if (score >= 7) return 'Respuesta clara y alineada con el rol.';
+  if (words < 12) return 'Respuesta demasiado corta; conviene aportar mas criterio y contexto.';
+  return 'Respuesta aceptable, aunque podria concretar mejor los pasos.';
+}
+
+function inferExamStrengths(answers) {
+  const text = normalizePlain(answers.map((item) => item.answer).join('\n'));
+  const strengths = [];
+  if (/\b(staff|moderador|humano|superior)\b/u.test(text)) strengths.push('entiende cuando debe intervenir el staff humano');
+  if (/\b(prueba|captura|evidencia|contexto|transcripcion)\b/u.test(text)) strengths.push('pide pruebas y contexto antes de actuar');
+  if (/\b(contrasena|datos bancarios|documentos|informacion sensible|privacidad)\b/u.test(text)) strengths.push('reconoce datos sensibles que no se deben pedir');
+  if (/\b(emergencia|profesional|confianza|peligro|suicid)\b/u.test(text)) strengths.push('trata casos de crisis con prudencia');
+  if (/\b(permiso|rol|categoria|dashboard|configuracion|supabase)\b/u.test(text)) strengths.push('conoce partes importantes de configuracion de NexaDesk');
+  return strengths.slice(0, 5);
+}
+
+function inferExamConcerns({ answers, scoredAnswers, state, warningCount, passScore, score }) {
+  const concerns = [];
+  const shortAnswers = scoredAnswers.filter((item) => item.score < 5).length;
+  if (state.questions.length && answers.length < state.questions.length) concerns.push('faltan preguntas por responder');
+  if (shortAnswers >= 3) concerns.push('varias respuestas son demasiado breves');
+  if (warningCount > 0) concerns.push('hay senales automaticas de respuesta pegada o posible IA');
+  if (score < passScore) concerns.push('no alcanza la nota minima configurada');
+  if (Math.abs(score - passScore) <= 1) concerns.push('resultado cercano al corte: recomendable revision humana');
+  return concerns.slice(0, 6);
+}
+
+function looksLikeGenericAnswer(normalized, words) {
+  if (words < 18) return false;
+  let score = 0;
+  if (/\b(es importante|se debe|hay que|correctamente|adecuadamente)\b/u.test(normalized)) score += 1;
+  if (/\b(usuario|staff|servidor)\b/u.test(normalized) && !/\b(captura|rol|categoria|ticket king|supabase|xn protect|emergencia)\b/u.test(normalized)) score += 1;
+  return score >= 2;
+}
+
+function average(values) {
+  const valid = values.filter((value) => Number.isFinite(Number(value)));
+  if (!valid.length) return 0;
+  return valid.reduce((total, value) => total + Number(value), 0) / valid.length;
 }
 
 function normalizeExamAnswer(item) {

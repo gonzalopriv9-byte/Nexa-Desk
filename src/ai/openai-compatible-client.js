@@ -5,7 +5,7 @@ export class OpenAICompatibleClient {
     this.apiKey = apiKey;
   }
 
-  async generate({ system, messages }) {
+  async generate({ system, messages, maxTokens = 350, temperature = 0.25 }) {
     const response = await fetch(`${this.baseUrl}/chat/completions`, {
       method: 'POST',
       headers: {
@@ -14,8 +14,8 @@ export class OpenAICompatibleClient {
       },
       body: JSON.stringify({
         model: this.model,
-        temperature: 0.25,
-        max_tokens: 350,
+        temperature,
+        max_tokens: maxTokens,
         messages: [
           { role: 'system', content: system },
           ...messages

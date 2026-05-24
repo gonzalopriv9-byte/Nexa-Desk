@@ -11,15 +11,15 @@ export class GroqClient {
     this.visionModel = visionModel;
   }
 
-  async generate({ system, messages }) {
+  async generate({ system, messages, maxTokens = 350, temperature = 0.25 }) {
     if (!this.client) {
       throw new Error('Set GROQ_API_KEY in .env to use Groq.');
     }
 
     const completion = await this.client.chat.completions.create({
       model: this.model,
-      temperature: 0.25,
-      max_completion_tokens: 350,
+      temperature,
+      max_completion_tokens: maxTokens,
       messages: [
         { role: 'system', content: system },
         ...messages

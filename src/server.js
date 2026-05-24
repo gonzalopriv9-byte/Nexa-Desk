@@ -4418,7 +4418,7 @@ function renderDashboard({ session, guilds, tickets, stats }) {
               <label class="span-2">URL del formulario externo Premium<input id="componentExamFormUrl" placeholder="https://forms.gle/..."></label>
               <label>Revision Premium<select id="componentExamReviewEnabled"><option value="false">No, corregir por preguntas</option><option value="true">Si, sala de voz + formulario</option></select></label>
               <label>Nota minima<input id="componentExamPassScore" type="number" min="0" max="10" step="0.5" value="6"></label>
-              <p class="notice span-2">Preguntas en formato recomendado: <strong>P: ¿Cuantos años tienes?</strong>. Si activas revision Premium, el formulario se abre fuera de Discord y el staff supervisa pantalla manualmente.</p>
+              <p class="notice span-2">Preguntas en formato recomendado: <strong>P: ¿Cuantos años tienes?</strong>. Puedes poner hasta 40 preguntas. Si activas revision Premium, el formulario se abre fuera de Discord y el staff supervisa pantalla manualmente.</p>
             </div>
             <label class="span-2">Primer mensaje personalizado<textarea id="componentWelcomeMessage">Hola {user}, soy NexaDesk.
 Antes de empezar, he guardado tus respuestas para que el staff tenga contexto.</textarea></label>
@@ -5472,7 +5472,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
         questions: ticketMode === 'exam' ? [] : rawQuestions.slice(0, 5),
         exam: {
           enabled: ticketMode === 'exam',
-          questions: ticketMode === 'exam' ? rawQuestions.slice(0, 25) : [],
+          questions: ticketMode === 'exam' ? rawQuestions.slice(0, 40) : [],
           formUrl: document.querySelector('#componentExamFormUrl').value,
           reviewEnabled: document.querySelector('#componentExamReviewEnabled').value === 'true',
           passScore: document.querySelector('#componentExamPassScore').value
@@ -5498,7 +5498,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       const questions = document.querySelector('#componentQuestions');
       if (questions) {
         questions.placeholder = mode === 'exam'
-          ? 'P: ¿Cuantos años tienes?\\nP: ¿Cuanto llevas roleando?\\nP: ¿Como actuarias ante un usuario toxico?'
+          ? 'Una pregunta por linea. Hasta 40 preguntas.\\nP: ¿Cuantos años tienes?\\nP: ¿Como actuarias ante un usuario toxico?'
           : 'Una pregunta por linea. Maximo 5.\\nEj: Cual es tu nick?\\nDescribe el problema';
       }
     }
@@ -5781,7 +5781,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
         ticketMode,
         exam: {
           enabled: ticketMode === 'exam',
-          questions: ticketMode === 'exam' ? examQuestions.slice(0, 25) : [],
+          questions: ticketMode === 'exam' ? examQuestions.slice(0, 40) : [],
           formUrl: document.querySelector('#panelExamFormUrl').value,
           reviewEnabled: document.querySelector('#panelExamReviewEnabled').value === 'true',
           passScore: document.querySelector('#panelExamPassScore').value

@@ -236,7 +236,7 @@ export class SupportAgent {
   async gradeExamAnswers({ ticket, guildConfig, examState, userTag = 'usuario' }) {
     const answerBlock = buildExamEvaluationInput(examState).slice(0, 12_000);
     if (!answerBlock.trim()) {
-      return parseExamEvaluationJson('{}', { passScore: examState.passScore });
+      return parseExamEvaluationJson('', { passScore: examState.passScore, examState });
     }
 
     const answer = await this.aiClient.generate({
@@ -245,8 +245,10 @@ export class SupportAgent {
         'Corrige con criterio justo, sin inventar requisitos no mencionados.',
         'Evalua claridad, madurez, seguridad, moderacion basica, comprension del rol y adecuacion al servidor.',
         'Si una respuesta parece copiada, generica o enviada demasiado rapido, baja confianza y recomienda revision manual, pero no acuses con certeza.',
-        'Devuelve SOLO JSON valido con este esquema exacto:',
-        '{"score":0-10,"passed":true|false,"summary":"breve","strengths":["..."],"concerns":["..."],"manualReviewRecommended":true|false,"aiGeneratedSuspicion":0-100,"perQuestion":[{"index":1,"score":0-10,"feedback":"breve"}]}'
+        'Devuelve SOLO un objeto JSON valido, sin markdown ni texto adicional.',
+        'Se conciso: strengths maximo 4, concerns maximo 5, perQuestion vacio salvo hasta 5 preguntas criticas.',
+        'Esquema exacto:',
+        '{"score":0-10,"passed":true|false,"summary":"breve","strengths":["..."],"concerns":["..."],"manualReviewRecommended":true|false,"aiGeneratedSuspicion":0-100,"perQuestion":[]}'
       ].join('\n'),
       messages: [
         {
@@ -262,10 +264,12 @@ export class SupportAgent {
             answerBlock
           ].filter(Boolean).join('\n').slice(0, 14_000)
         }
-      ]
+      ],
+      maxTokens: 1200,
+      temperature: 0.1
     });
 
-    return parseExamEvaluationJson(answer, { passScore: examState.passScore });
+    return parseExamEvaluationJson(answer, { passScore: examState.passScore, examState });
   }
 
   async detectAllianceChannel({ guildName, candidates = [] }) {
