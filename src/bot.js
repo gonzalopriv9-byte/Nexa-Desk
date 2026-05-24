@@ -4429,21 +4429,31 @@ async function handleStaffHandoffMessage({ storage, message, ticket, guildConfig
     }
 
     if (isStaffHandoffNo(message.content)) {
-      await markStaffHandoffState(storage, message, 'waiting_finish', message.author.id);
+      await markStaffHandoffState(storage, message, 'finished', message.author.id);
       const updatedTicket = await storage.updateTicket(ticket.channelId, {
-        status: 'staff_waiting',
+        status: 'open',
         aiDisabled: false,
         aiDisabledBy: null,
         aiDisabledAt: null
       }).catch((error) => {
-        console.error(`Failed to mark staff handoff waiting in ${ticket.channelId}:`, error);
+        console.error(`Failed to resume AI after staff declined handoff in ${ticket.channelId}:`, error);
         return null;
       });
-      const reply = await message.reply({
-        content: `Vale <@${message.author.id}>, avisame diciendo **Nexa, he terminado** para que siga atendiendo el ticket.`,
+      const staffReply = await message.reply({
+        content: `Vale <@${message.author.id}>. Entonces, por favor, dejame atender al usuario y continuo con el ticket.`,
         allowedMentions: { users: [message.author.id], repliedUser: false }
       });
-      await saveTranscript(storage, reply, 'assistant');
+      await saveTranscript(storage, staffReply, 'assistant');
+
+      const openerId = ticket.openedBy;
+      if (openerId) {
+        const userReply = await message.channel.send({
+          content: `<@${openerId}>, sigo contigo. Cuentame que necesitas ahora o pasame el ultimo detalle/captura y lo reviso.`,
+          allowedMentions: { users: [openerId] }
+        });
+        await saveTranscript(storage, userReply, 'assistant');
+      }
+
       return { handled: true, ticket: updatedTicket ?? ticket };
     }
 
