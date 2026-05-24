@@ -11,7 +11,7 @@ import { OpenAICompatibleClient } from './ai/openai-compatible-client.js';
 import { SupportAgent } from './ai/support-agent.js';
 import { VisualAnalyzer } from './ai/visual-analyzer.js';
 import { VoiceSessionManager } from './voice/voice-session-manager.js';
-import { createBot, createTicketCategory, createTicketPanel, listGuildChannels, listGuildRoles, listInstalledGuildIds, refreshGuildDiscovery, updateTicketPanel } from './bot.js';
+import { createBot, createTicketCategory, createTicketPanel, deleteTicketPanel, listGuildChannels, listGuildRoles, listInstalledGuildIds, refreshGuildDiscovery, refreshTicketPanels, updateTicketPanel } from './bot.js';
 import { createServer } from './server.js';
 import { createDiscordRestActions } from './discord-rest-actions.js';
 
@@ -45,6 +45,8 @@ const botActions = botGatewayEligible && !config.BOT_HA_ENABLED
       createTicketCategory: (input) => createTicketCategory(bot, storage, input),
       createTicketPanel: (input) => createTicketPanel(bot, storage, input),
       updateTicketPanel: (input) => updateTicketPanel(bot, storage, input),
+      deleteTicketPanel: (input) => deleteTicketPanel(bot, storage, input),
+      refreshTicketPanels: (input) => refreshTicketPanels(bot, storage, input),
       listGuildRoles: (input) => listGuildRoles(bot, input),
       listGuildChannels: (input) => listGuildChannels(bot, input),
       refreshGuildDiscovery: (input) => refreshGuildDiscovery(bot, storage, input, supportAgent),

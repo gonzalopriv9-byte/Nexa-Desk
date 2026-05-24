@@ -6329,6 +6329,51 @@ export async function updateTicketPanel(client, storage, { guildId, messageId, .
   });
 }
 
+export async function deleteTicketPanel(client, storage, { guildId, messageId }) {
+  const guild = await client.guilds.fetch(guildId);
+  const existing = await storage.getGuildConfig(guildId);
+  const currentPanel = existing?.panels?.find((panel) => panel.messageId === messageId);
+  if (!currentPanel) throw new Error('No encuentro ese panel en la configuracion guardada.');
+
+  const channel = await guild.channels.fetch(currentPanel.channelId).catch(() => null);
+  if (channel?.type === ChannelType.GuildText) {
+    const message = await channel.messages.fetch(messageId).catch(() => null);
+    await message?.delete().catch((error) => {
+      console.warn(`Could not delete panel message ${messageId}:`, error?.message ?? error);
+    });
+  }
+
+  return storage.upsertGuildConfig(guildId, {
+    guildName: guild.name,
+    panels: (existing?.panels ?? []).filter((item) => item.messageId !== messageId)
+  });
+}
+
+export async function refreshTicketPanels(client, storage, { guildId }) {
+  const guild = await client.guilds.fetch(guildId);
+  const existing = await storage.getGuildConfig(guildId);
+  const panels = existing?.panels ?? [];
+  const refreshedAt = new Date().toISOString();
+
+  for (const panel of panels) {
+    const channel = await guild.channels.fetch(panel.channelId).catch(() => null);
+    if (!channel || channel.type !== ChannelType.GuildText) continue;
+    const message = await channel.messages.fetch(panel.messageId).catch(() => null);
+    if (!message?.editable) continue;
+    await message.edit({
+      embeds: [new EmbedBuilder(buildPanelEmbed(panel))],
+      components: [buildPanelActionRow(panel, existing?.components ?? [])]
+    }).catch((error) => {
+      console.warn(`Could not refresh panel ${panel.messageId}:`, error?.message ?? error);
+    });
+  }
+
+  return storage.upsertGuildConfig(guildId, {
+    guildName: guild.name,
+    panels: panels.map((panel) => ({ ...panel, refreshedAt }))
+  });
+}
+
 export async function listGuildRoles(client, { guildId }) {
   const guild = await client.guilds.fetch(guildId);
   const roles = await guild.roles.fetch();

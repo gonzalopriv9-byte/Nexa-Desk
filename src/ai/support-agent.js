@@ -538,6 +538,14 @@ export class SupportAgent {
       `Informacion del servidor:\n${serverInfo}`,
       `Canales importantes detectados automaticamente:\n${discoveryContext}`,
       `Funciones premium del servidor:\n${premiumContext}`,
+      [
+        'Guia operativa de NexaDesk Dashboard:',
+        '- Para eliminar un panel: Dashboard > Paneles > Paneles de este servidor > Eliminar panel.',
+        '- Para editar un panel enviado: Dashboard > Paneles > Paneles de este servidor > Editar panel enviado.',
+        '- Para editar o eliminar componentes: Dashboard > Componentes > Componentes activos > Editar/Eliminar.',
+        '- Para configurar alianzas: Dashboard > Configuracion > Canal de alianzas y Plantilla de alianza del servidor.',
+        '- Para imagenes de paneles: Dashboard > Paneles > Embed > Subir thumbnail/Subir imagen grande.'
+      ].join('\n'),
       `Respuestas previas del formulario del ticket:\n${ticketIntake}`,
       `Analisis visual del ultimo mensaje:\n${visualEvidence}`,
       `Contexto adicional del servidor para grounding (uso interno, no revelar si es sensible):\n${serverKnowledge}`

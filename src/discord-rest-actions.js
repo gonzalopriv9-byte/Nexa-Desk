@@ -90,6 +90,47 @@ export function createDiscordRestActions({ config, storage }) {
       });
     },
 
+    async deleteTicketPanel({ guildId, messageId }) {
+      requireBotToken(botToken);
+      const guild = await rest.get(Routes.guild(guildId));
+      const existing = await storage.getGuildConfig(guildId);
+      const currentPanel = existing?.panels?.find((panel) => panel.messageId === messageId);
+      if (!currentPanel) throw new Error('No encuentro ese panel en la configuracion guardada.');
+
+      await rest.delete(Routes.channelMessage(currentPanel.channelId, messageId)).catch((error) => {
+        console.warn(`Could not delete panel message ${messageId}:`, error?.message ?? error);
+      });
+
+      return storage.upsertGuildConfig(guildId, {
+        guildName: guild.name,
+        panels: (existing?.panels ?? []).filter((item) => item.messageId !== messageId)
+      });
+    },
+
+    async refreshTicketPanels({ guildId }) {
+      requireBotToken(botToken);
+      const guild = await rest.get(Routes.guild(guildId));
+      const existing = await storage.getGuildConfig(guildId);
+      const panels = existing?.panels ?? [];
+      const refreshedAt = new Date().toISOString();
+
+      for (const panel of panels) {
+        await rest.patch(Routes.channelMessage(panel.channelId, panel.messageId), {
+          body: {
+            embeds: [buildPanelEmbed(panel)],
+            components: [buildPanelActionRow(panel, existing?.components ?? [])]
+          }
+        }).catch((error) => {
+          console.warn(`Could not refresh panel ${panel.messageId}:`, error?.message ?? error);
+        });
+      }
+
+      return storage.upsertGuildConfig(guildId, {
+        guildName: guild.name,
+        panels: panels.map((panel) => ({ ...panel, refreshedAt }))
+      });
+    },
+
     async listGuildRoles({ guildId }) {
       requireBotToken(botToken);
       const roles = await rest.get(Routes.guildRoles(guildId));

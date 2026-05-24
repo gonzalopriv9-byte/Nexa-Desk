@@ -3,6 +3,7 @@ import helmet from 'helmet';
 import morgan from 'morgan';
 import cookieParser from 'cookie-parser';
 import crypto from 'node:crypto';
+import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getAdminAccessCodeStatus, inspectAdminAccessCode } from './admin-code.js';
@@ -24,6 +25,7 @@ const ADMINISTRATOR = 0x8n;
 const BOT_INVITE_PERMISSIONS = '1099780451478';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ASSETS_DIR = path.resolve(__dirname, '..', 'assets');
+const UPLOADS_DIR = path.resolve(process.cwd(), 'data', 'uploads');
 const docsAuthAttempts = new Map();
 const adminAuthAttempts = new Map();
 
@@ -33,12 +35,32 @@ export function createServer({ config, storage, bot, events }) {
   app.use(helmet({ contentSecurityPolicy: false }));
   app.use(morgan('tiny'));
 
-  app.use(express.json());
-  app.use(express.urlencoded({ extended: true }));
+  app.use(express.json({ limit: '8mb' }));
+  app.use(express.urlencoded({ extended: true, limit: '8mb' }));
   app.use(cookieParser(config.SESSION_SECRET));
   app.use('/assets', express.static(ASSETS_DIR, {
     immutable: true,
     maxAge: '7d'
+  }));
+  app.use('/uploads', express.static(UPLOADS_DIR, {
+    immutable: true,
+    maxAge: '30d'
+  }));
+
+  app.get('/uploads/:fileName', asyncHandler(async (req, res) => {
+    const settings = await storage.getGlobalSettings().catch(() => ({}));
+    const upload = settings.dashboardUploads?.[req.params.fileName];
+    if (!upload?.dataUrl || !upload?.mimeType) {
+      res.status(404).send('Not found');
+      return;
+    }
+    const base64 = String(upload.dataUrl).split(',')[1];
+    if (!base64) {
+      res.status(404).send('Not found');
+      return;
+    }
+    res.setHeader('cache-control', 'public, max-age=2592000, immutable');
+    res.type(upload.mimeType).send(Buffer.from(base64, 'base64'));
   }));
 
   app.get('/favicon.ico', (_req, res) => {
@@ -688,6 +710,17 @@ export function createServer({ config, storage, bot, events }) {
     res.json(await storage.listTicketFeedback([req.params.guildId]));
   }));
 
+  app.post('/api/uploads/panel-image', requireDashboardSession, asyncHandler(async (req, res) => {
+    const upload = await saveDashboardImageUpload({
+      fileName: req.body.fileName,
+      mimeType: req.body.mimeType,
+      dataUrl: req.body.dataUrl,
+      config,
+      storage
+    });
+    res.json(upload);
+  }));
+
   app.post('/api/guilds/:guildId/discovery', requireGuildAccess, asyncHandler(async (req, res) => {
     if (typeof bot.refreshGuildDiscovery !== 'function') {
       res.status(501).json({ error: 'Smart discovery is not available in this runtime.' });
@@ -705,6 +738,11 @@ export function createServer({ config, storage, bot, events }) {
     }
     if (req.body.security) patch.security = normalizeSecurityConfig(req.body.security);
     if (req.body.growth) patch.growth = normalizeGrowthConfig(req.body.growth);
+    if (req.body.alliance) {
+      patch.allianceChannelId = req.body.alliance.channelId;
+      patch.allianceChannelName = req.body.alliance.channelName;
+      patch.allianceTemplate = req.body.alliance.template;
+    }
     if (req.session.user?.id === GLOBAL_BLACKLIST_ADMIN_USER_ID) {
       if (Object.prototype.hasOwnProperty.call(req.body, 'plan')) patch.plan = req.body.plan;
       if (Object.prototype.hasOwnProperty.call(req.body, 'voiceSupportEnabled')) patch.voiceSupportEnabled = Boolean(req.body.voiceSupportEnabled);
@@ -742,6 +780,65 @@ export function createServer({ config, storage, bot, events }) {
     res.json(updated);
   }));
 
+  app.put('/api/guilds/:guildId/components/:componentId', requireGuildAccess, asyncHandler(async (req, res) => {
+    const guild = req.session.guilds.find((item) => item.id === req.params.guildId);
+    const existing = await storage.getGuildConfig(req.params.guildId);
+    const components = existing?.components ?? [];
+    const previous = components.find((component) => component.id === req.params.componentId);
+    if (!previous) {
+      res.status(404).json({ error: 'No encuentro ese componente.' });
+      return;
+    }
+
+    const component = normalizeTicketComponent({
+      ...previous,
+      ...req.body,
+      id: previous.id,
+      createdAt: previous.createdAt
+    });
+    const updated = await storage.upsertGuildConfig(req.params.guildId, {
+      guildName: existing?.guildName || guild?.name,
+      components: components.map((item) => item.id === previous.id ? component : item)
+    });
+    await bot.refreshTicketPanels?.({ guildId: req.params.guildId }).catch((error) => {
+      console.warn(`Could not refresh panels after component update in ${req.params.guildId}:`, error?.message ?? error);
+    });
+    res.json(updated);
+  }));
+
+  app.delete('/api/guilds/:guildId/components/:componentId', requireGuildAccess, asyncHandler(async (req, res) => {
+    const guild = req.session.guilds.find((item) => item.id === req.params.guildId);
+    const existing = await storage.getGuildConfig(req.params.guildId);
+    const components = existing?.components ?? [];
+    const component = components.find((item) => item.id === req.params.componentId);
+    if (!component) {
+      res.status(404).json({ error: 'No encuentro ese componente.' });
+      return;
+    }
+    const affectedPanels = (existing?.panels ?? []).filter((panel) => (panel.componentIds ?? []).includes(component.id));
+    const panelsWithNoOptions = affectedPanels.filter((panel) => (panel.componentIds ?? []).filter((id) => id !== component.id).length === 0);
+    if (panelsWithNoOptions.length) {
+      res.status(400).json({ error: 'No puedo eliminarlo porque dejaria un panel de menu sin opciones. Edita o borra primero ese panel.' });
+      return;
+    }
+
+    const updatedPanels = (existing?.panels ?? []).map((panel) => ({
+      ...panel,
+      componentIds: Array.isArray(panel.componentIds)
+        ? panel.componentIds.filter((id) => id !== component.id)
+        : []
+    }));
+    const updated = await storage.upsertGuildConfig(req.params.guildId, {
+      guildName: existing?.guildName || guild?.name,
+      components: components.filter((item) => item.id !== component.id),
+      panels: updatedPanels
+    });
+    await bot.refreshTicketPanels?.({ guildId: req.params.guildId }).catch((error) => {
+      console.warn(`Could not refresh panels after component delete in ${req.params.guildId}:`, error?.message ?? error);
+    });
+    res.json(updated);
+  }));
+
   app.post('/api/guilds/:guildId/panels', requireGuildAccess, asyncHandler(async (req, res) => {
     try {
       const updated = await bot.createTicketPanel(buildPanelRequestPayload(req));
@@ -755,6 +852,18 @@ export function createServer({ config, storage, bot, events }) {
     try {
       const updated = await bot.updateTicketPanel({
         ...buildPanelRequestPayload(req),
+        messageId: req.params.messageId
+      });
+      res.json(updated);
+    } catch (error) {
+      res.status(400).json({ error: error.message });
+    }
+  }));
+
+  app.delete('/api/guilds/:guildId/panels/:messageId', requireGuildAccess, asyncHandler(async (req, res) => {
+    try {
+      const updated = await bot.deleteTicketPanel({
+        guildId: req.params.guildId,
         messageId: req.params.messageId
       });
       res.json(updated);
@@ -989,12 +1098,69 @@ function requireStatusEditor(req, res, next) {
   res.status(403).json({ error: 'Status owner/admin only.' });
 }
 
+function requireDashboardSession(req, res, next) {
+  if (!getSession(req)) {
+    res.status(401).json({ error: 'Inicia sesion con Discord para subir archivos.' });
+    return;
+  }
+  next();
+}
+
 function requireGuildAccess(req, res, next) {
   if (!canAccessGuild(req.session, req.params.guildId)) {
     res.status(403).json({ error: 'You cannot manage this guild.' });
     return;
   }
   next();
+}
+
+async function saveDashboardImageUpload({ fileName = 'panel-image.png', mimeType = '', dataUrl = '', config, storage }) {
+  const match = String(dataUrl).match(/^data:(image\/(?:png|jpe?g|webp|gif));base64,([a-z0-9+/=]+)$/i);
+  const type = match?.[1] || String(mimeType ?? '').toLowerCase();
+  if (!match || !['image/png', 'image/jpeg', 'image/jpg', 'image/webp', 'image/gif'].includes(type)) {
+    throw new Error('Sube una imagen PNG, JPG, WEBP o GIF valida.');
+  }
+
+  const buffer = Buffer.from(match[2], 'base64');
+  if (!buffer.length || buffer.length > 5_000_000) {
+    throw new Error('La imagen debe pesar menos de 5 MB.');
+  }
+
+  const extension = (({
+    'image/png': '.png',
+    'image/jpeg': '.jpg',
+    'image/jpg': '.jpg',
+    'image/webp': '.webp',
+    'image/gif': '.gif'
+  })[type] ?? path.extname(String(fileName)).toLowerCase()) || '.png';
+  const id = `${Date.now()}-${crypto.randomBytes(6).toString('hex')}${extension}`;
+  await fs.mkdir(UPLOADS_DIR, { recursive: true });
+  await fs.writeFile(path.join(UPLOADS_DIR, id), buffer);
+  const settings = await storage.getGlobalSettings().catch(() => ({}));
+  const uploads = {
+    ...(settings.dashboardUploads && typeof settings.dashboardUploads === 'object' ? settings.dashboardUploads : {}),
+    [id]: {
+      mimeType: type,
+      dataUrl,
+      size: buffer.length,
+      originalName: String(fileName ?? '').slice(0, 180),
+      createdAt: new Date().toISOString()
+    }
+  };
+  const trimmedUploads = Object.fromEntries(Object.entries(uploads)
+    .sort((a, b) => Date.parse(b[1]?.createdAt ?? '') - Date.parse(a[1]?.createdAt ?? ''))
+    .slice(0, 80));
+  await storage.updateGlobalSettings({ dashboardUploads: trimmedUploads }).catch((error) => {
+    console.warn('Could not persist dashboard upload in global settings:', error?.message ?? error);
+  });
+
+  const publicUrl = new URL(`/uploads/${id}`, config.DASHBOARD_PUBLIC_URL).toString();
+  return {
+    url: publicUrl,
+    fileName: id,
+    size: buffer.length,
+    mimeType: type
+  };
 }
 
 async function exchangeDiscordCode(config, code) {
@@ -1648,10 +1814,12 @@ async function buildDashboardAssistantReply({ config, message, guild, stats, act
         'Responde en espanol claro, breve y accionable.',
         'Ayuda a configurar servidores Discord para tickets con IA, paneles, componentes, staff, voz Pro con STT/TTS, Modo examen, transcripciones, Security Guard, Growth Engine, Premium y mantenimiento global.',
         'La dashboard real tiene estas secciones: Resumen, Servidores, Configuracion, Componentes, Paneles, Crecimiento, Premium y Tickets.',
-        'En Configuracion se elige categoria, rol staff, prompt del servidor, informacion del servidor y Security Guard.',
+        'En Configuracion se elige categoria, rol staff, prompt del servidor, informacion del servidor, canal/plantilla de alianzas y Security Guard.',
         'Descubrimiento inteligente escanea canales y detecta anuncios, normas, FAQ, soporte y categorias aunque usen tipografias raras.',
-        'En Componentes se crean opciones del menu con preguntas previas, primer mensaje y modo Texto, Voz Pro o Modo examen.',
-        'En Paneles se publica el embed, boton o menu en un canal de Discord; los botones tambien pueden abrir tickets de voz Pro o examenes.',
+        'En Componentes se crean, editan y eliminan opciones del menu con preguntas previas, primer mensaje y modo Texto, Voz Pro o Modo examen.',
+        'En Paneles se publica, edita y elimina el embed, boton o menu en un canal de Discord; los botones tambien pueden abrir tickets de voz Pro o examenes.',
+        'Para borrar paneles: Paneles > Paneles de este servidor > Eliminar panel. Para borrar componentes: Componentes > Componentes activos > Eliminar.',
+        'Las imagenes de panel se suben desde el dispositivo en Paneles > Embed > Subir thumbnail/Subir imagen grande.',
         'En Crecimiento se gestionan valoraciones post-ticket, reviews publicas, canal de reviews y Churn Radar.',
         'En Premium se gestionan Voz Pro, Modo examen supervisado, IA prioritaria, transcripciones inteligentes, Security Plus, branding propio, informes semanales, Growth Engine y conversion insights por servidor.',
         'El modo mantenimiento se controla por slash command owner-only /mantenimiento o desde el panel oculto /admin; /admin se abre con codigo temporal emitido por /code a roles autorizados.',
@@ -1698,9 +1866,15 @@ function buildDashboardAssistantFallback({ message, guild, stats, activeView, ac
     reply += 'Primero inicia sesion con Discord y selecciona un servidor gestionable.';
   } else if (fillAction) {
     reply += `Puedo hacerlo por ti desde aqui: pulsa "${fillAction.label}" y rellenare los campos correspondientes. Despues revisa el texto y guarda o publica.`;
+  } else if ((lower.includes('eliminar') || lower.includes('borrar')) && lower.includes('panel')) {
+    reply += 'Ve a Paneles y mira la tarjeta "Paneles de este servidor". Cada panel tiene "Editar panel enviado" y "Eliminar panel"; al eliminarlo NexaDesk intenta borrar tambien el mensaje de Discord.';
+  } else if ((lower.includes('eliminar') || lower.includes('borrar') || lower.includes('editar')) && lower.includes('componente')) {
+    reply += 'Ve a Componentes y mira "Componentes activos". Cada componente tiene botones de Editar y Eliminar; si esta usado por un menu, NexaDesk sincroniza los paneles cuando puede.';
+  } else if (lower.includes('alianza') || lower.includes('plantilla')) {
+    reply += 'Ve a Configuracion. Alli puedes elegir el canal de alianzas y pegar la plantilla completa del servidor con enters, emojis e invitaciones sin que se rompa como en un comando slash.';
   } else if (lower.includes('panel') || lower.includes('menu') || lower.includes('boton')) {
     reply += guild.components?.length
-      ? 'Para publicar un panel, ve a Paneles, elige canal, modo boton o menu y revisa la previsualizacion antes de publicar.'
+      ? 'Para publicar un panel, ve a Paneles, elige canal, modo boton o menu, sube imagenes desde el dispositivo si quieres y revisa la previsualizacion tipo Discord antes de publicar.'
       : 'Si quieres un menu desplegable, crea primero opciones en Componentes y despues publica el panel desde Paneles.';
   } else if (lower.includes('musica') || lower.includes('music') || lower.includes('cancion') || lower.includes('cola') || lower.includes('autocola') || lower.includes('dj')) {
     reply += 'El modulo de musica ya no forma parte de NexaDesk. La dashboard se centra en soporte, seguridad, voz Pro, paneles, alianzas, transcripciones y Premium.';
@@ -4015,17 +4189,18 @@ function renderDashboard({ session, guilds, tickets, stats }) {
     .panel-builder { grid-template-columns:minmax(0,1.05fr) minmax(320px,.95fr); align-items:start; }
     .panel-fields { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
     .panel-preview-wrap { position:sticky; top:22px; display:grid; gap:12px; }
-    .discord-preview { border:1px solid var(--line); border-radius:16px; background:linear-gradient(180deg,#151515,#080808); padding:16px; box-shadow:0 28px 90px rgba(0,0,0,.32); overflow:hidden; }
+    .discord-preview { border:1px solid var(--line); border-radius:16px; background:#313338; padding:16px; box-shadow:0 28px 90px rgba(0,0,0,.32); overflow:hidden; color:#dbdee1; }
     .preview-message { display:grid; grid-template-columns:42px minmax(0,1fr); gap:12px; align-items:start; }
-    .preview-avatar { width:42px; height:42px; border-radius:50%; border:1px solid rgba(255,255,255,.36); background:#fff; color:#050505; display:grid; place-items:center; font-weight:900; }
+    .preview-avatar { width:42px; height:42px; border-radius:50%; border:1px solid rgba(255,255,255,.22); background:#050505; color:#fff; display:grid; place-items:center; font-weight:900; box-shadow:0 0 18px rgba(255,255,255,.12); }
     .preview-name { display:flex; gap:8px; align-items:center; margin-bottom:8px; font-weight:800; }
-    .preview-badge { color:#050505; background:#fff; border-radius:5px; padding:2px 5px; font-size:10px; font-weight:900; }
-    .embed-preview { border-left:4px solid var(--preview-color,#fff); border-radius:6px; background:#101010; padding:12px; max-width:520px; transition:border-color .22s ease, transform .22s ease; }
+    .preview-badge { color:#fff; background:#5865f2; border-radius:5px; padding:2px 5px; font-size:10px; font-weight:900; }
+    .embed-preview { border-left:4px solid var(--preview-color,#fff); border-radius:4px; background:#2b2d31; padding:12px; max-width:520px; transition:border-color .22s ease, transform .22s ease; box-shadow:0 1px 0 rgba(0,0,0,.2); }
     .embed-author,.embed-footer { color:var(--muted); font-size:12px; overflow-wrap:anywhere; }
     .embed-title { color:#fff; font-weight:900; margin-top:6px; overflow-wrap:anywhere; }
     .embed-description { color:#d7d7d7; white-space:pre-wrap; overflow-wrap:anywhere; margin-top:6px; line-height:1.45; }
     .embed-media { display:grid; grid-template-columns:74px minmax(0,1fr); gap:10px; margin-top:10px; }
-    .embed-thumb,.embed-image { border:1px solid var(--soft-line); border-radius:10px; background:rgba(255,255,255,.055); min-height:58px; display:grid; place-items:center; color:var(--muted); font-size:12px; overflow:hidden; }
+    .embed-thumb,.embed-image { border:1px solid var(--soft-line); border-radius:10px; background:rgba(0,0,0,.18); min-height:58px; display:grid; place-items:center; color:#b5bac1; font-size:12px; overflow:hidden; }
+    .embed-thumb img,.embed-image img { width:100%; height:100%; object-fit:cover; display:block; }
     .embed-image { min-height:92px; }
     .preview-button { margin-top:10px; width:auto; display:inline-flex; padding:9px 12px; border-radius:8px; color:#fff; background:#5865f2; transition:background .22s ease, transform .22s ease; }
     .preview-button.secondary { background:#4f545c; }
@@ -4038,6 +4213,8 @@ function renderDashboard({ session, guilds, tickets, stats }) {
     .panel-card:hover { transform:translateX(3px); border-color:rgba(255,255,255,.3); background:rgba(255,255,255,.07); }
     .panel-card strong,.panel-card small { display:block; }
     .panel-card small { margin-top:4px; }
+    .card-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:8px; }
+    .danger-action { border-color:rgba(255,95,87,.48) !important; color:#fff !important; background:rgba(255,95,87,.12) !important; }
     .menu-preview { margin-top:10px; border:1px solid var(--line); border-radius:8px; background:#181818; color:#d7d7d7; padding:10px 12px; max-width:360px; }
     .menu-preview strong { display:block; color:#fff; margin-bottom:4px; }
     .menu-option-preview { border-top:1px solid var(--soft-line); padding:8px 0; }
@@ -4328,6 +4505,9 @@ function renderDashboard({ session, guilds, tickets, stats }) {
             <label>Rol staff<select id="staffRoleId"></select></label>
             <textarea id="serverPrompt" placeholder="Prompt del servidor: personalidad, tono, limites, cuando escalar..."></textarea>
             <textarea id="serverInfo" placeholder="Reglas, FAQs, horarios, precios, enlaces y respuestas frecuentes..."></textarea>
+            <label class="span-2">Canal de alianzas<select id="allianceChannelId"></select></label>
+            <textarea class="span-2" id="allianceTemplate" placeholder="Plantilla de alianza del servidor. Pegala completa con saltos de linea, emojis, invitacion y @everyone/@here si los usas."></textarea>
+            <p class="notice span-2">La plantilla de alianzas se copia exactamente desde aqui. Asi no se rompe con comandos slash y puedes pegar textos largos con enters.</p>
             <button class="span-2" type="submit">Guardar contexto y escalado</button>
           </form>
         </article>
@@ -4403,6 +4583,7 @@ function renderDashboard({ session, guilds, tickets, stats }) {
           <div class="card-head"><span class="step">3</span><div><h2>Nueva opcion de menu</h2><p>Cada componente aparece como categoria seleccionable antes de abrir el ticket.</p></div></div>
           <form onsubmit="return createComponent(event)">
             <select id="componentGuildId" hidden required>${guildOptions}</select>
+            <input id="editingComponentId" type="hidden">
             <label>Nombre visible<input id="componentLabel" value="Soporte general" maxlength="100"></label>
             <label>Emoji<input id="componentEmoji" placeholder="Ej: &lt;a:Global:1499728413974593708&gt;"></label>
             <label class="span-2">Descripcion corta<input id="componentDescription" value="Abre un ticket de soporte general." maxlength="100"></label>
@@ -4422,7 +4603,8 @@ function renderDashboard({ session, guilds, tickets, stats }) {
             </div>
             <label class="span-2">Primer mensaje personalizado<textarea id="componentWelcomeMessage">Hola {user}, soy NexaDesk.
 Antes de empezar, he guardado tus respuestas para que el staff tenga contexto.</textarea></label>
-            <button class="span-2" type="submit">Crear componente</button>
+            <button class="span-2" id="componentSubmitButton" type="submit">Crear componente</button>
+            <button class="span-2 secondary-button is-hidden" id="componentCancelEditButton" type="button" onclick="resetComponentEditor()">Cancelar edicion</button>
           </form>
         </article>
         <article class="control-card">
@@ -4494,8 +4676,10 @@ Antes de empezar, he guardado tus respuestas para que el staff tenga contexto.</
                 <label class="span-2">Autor<input id="panelAuthorName" placeholder="NexaDesk Support"></label>
                 <label class="span-2">Icono del autor<input id="panelAuthorIconUrl" placeholder="https://..."></label>
                 <textarea id="panelDescription">Pulsa el boton para abrir un ticket. NexaDesk analizara tu caso y avisara al staff si hace falta.</textarea>
-                <label>Thumbnail<input id="panelThumbnailUrl" placeholder="https://..."></label>
-                <label>Imagen grande<input id="panelImageUrl" placeholder="https://..."></label>
+                <input id="panelThumbnailUrl" type="hidden">
+                <input id="panelImageUrl" type="hidden">
+                <label>Subir thumbnail<input id="panelThumbnailFile" type="file" accept="image/png,image/jpeg,image/webp,image/gif"></label>
+                <label>Subir imagen grande<input id="panelImageFile" type="file" accept="image/png,image/jpeg,image/webp,image/gif"></label>
                 <label class="span-2">Footer<input id="panelFooterText" value="NexaDesk AI Support"></label>
               </div>
               <div class="form-section">
@@ -5177,7 +5361,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       });
     }
     function setConfigurationDisabled(disabled) {
-      for (const selector of ['#ticketCategoryId', '#staffRoleId', '#serverPrompt', '#serverInfo', '#categoryName', '#securityEnabled', '#securityLevel', '#securityLogChannelId', '#securityMinAccountAgeDays', '#securityAntiFlood', '#securityAntiScamLinks', '#securityAntiOffensive', '#securityAntiBot', '#securityAntiAlt', '#securityAntiNuke', '#componentLabel', '#componentEmoji', '#componentDescription', '#componentTicketCategoryId', '#componentTicketMode', '#componentQuestions', '#componentExamFormUrl', '#componentExamReviewEnabled', '#componentExamPassScore', '#componentWelcomeMessage', '#panelType', '#panelSelectPlaceholder', '#panelComponentIds', '#panelChannelId', '#panelTicketCategoryId', '#panelTicketMode', '#panelExamQuestions', '#panelExamFormUrl', '#panelExamReviewEnabled', '#panelExamPassScore', '#panelButtonLabel', '#panelButtonStyle', '#panelButtonEmoji', '#panelTitle', '#panelEmbedColor', '#panelAuthorName', '#panelAuthorIconUrl', '#panelDescription', '#panelThumbnailUrl', '#panelImageUrl', '#panelFooterText', '#panelWelcomeMessage', '#growthEnabled', '#growthFeedbackDm', '#growthPublicReviews', '#growthReviewChannelId', '#growthTestimonialMinRating', '#growthLowRatingAlerts', '#growthInviteCta', '#premiumVoiceSupport', '#premiumPriorityAi', '#premiumSmartTranscripts', '#premiumSecurityPlus', '#premiumCustomBranding', '#premiumWeeklyInsights', '#premiumGrowthEngine', '#premiumPublicReviews', '#premiumChurnRadar', '#premiumConversionInsights']) {
+      for (const selector of ['#ticketCategoryId', '#staffRoleId', '#serverPrompt', '#serverInfo', '#allianceChannelId', '#allianceTemplate', '#categoryName', '#securityEnabled', '#securityLevel', '#securityLogChannelId', '#securityMinAccountAgeDays', '#securityAntiFlood', '#securityAntiScamLinks', '#securityAntiOffensive', '#securityAntiBot', '#securityAntiAlt', '#securityAntiNuke', '#componentLabel', '#componentEmoji', '#componentDescription', '#componentTicketCategoryId', '#componentTicketMode', '#componentQuestions', '#componentExamFormUrl', '#componentExamReviewEnabled', '#componentExamPassScore', '#componentWelcomeMessage', '#panelType', '#panelSelectPlaceholder', '#panelComponentIds', '#panelChannelId', '#panelTicketCategoryId', '#panelTicketMode', '#panelExamQuestions', '#panelExamFormUrl', '#panelExamReviewEnabled', '#panelExamPassScore', '#panelButtonLabel', '#panelButtonStyle', '#panelButtonEmoji', '#panelTitle', '#panelEmbedColor', '#panelAuthorName', '#panelAuthorIconUrl', '#panelDescription', '#panelThumbnailUrl', '#panelImageUrl', '#panelThumbnailFile', '#panelImageFile', '#panelFooterText', '#panelWelcomeMessage', '#growthEnabled', '#growthFeedbackDm', '#growthPublicReviews', '#growthReviewChannelId', '#growthTestimonialMinRating', '#growthLowRatingAlerts', '#growthInviteCta', '#premiumVoiceSupport', '#premiumPriorityAi', '#premiumSmartTranscripts', '#premiumSecurityPlus', '#premiumCustomBranding', '#premiumWeeklyInsights', '#premiumGrowthEngine', '#premiumPublicReviews', '#premiumChurnRadar', '#premiumConversionInsights']) {
         const element = document.querySelector(selector);
         if (element) element.disabled = disabled;
       }
@@ -5197,6 +5381,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       document.querySelector('#ticketCategoryId').innerHTML = '<option>Instala NexaDesk para cargar categorias</option>';
       document.querySelector('#staffRoleId').innerHTML = '<option>Instala NexaDesk para cargar roles</option>';
       document.querySelector('#securityLogChannelId').innerHTML = '<option>Instala NexaDesk para cargar canales</option>';
+      document.querySelector('#allianceChannelId').innerHTML = '<option>Instala NexaDesk para cargar canales</option>';
       document.querySelector('#componentTicketCategoryId').innerHTML = '<option>Instala NexaDesk para cargar categorias</option>';
       document.querySelector('#panelChannelId').innerHTML = '<option>Instala NexaDesk para cargar canales</option>';
       document.querySelector('#panelTicketCategoryId').innerHTML = '<option>Instala NexaDesk para cargar categorias</option>';
@@ -5230,6 +5415,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       document.querySelector('#ticketCategoryId').innerHTML = '<option>No se pudieron cargar categorias</option>';
       document.querySelector('#staffRoleId').innerHTML = '<option>No se pudieron cargar roles</option>';
       document.querySelector('#securityLogChannelId').innerHTML = '<option>No se pudieron cargar canales</option>';
+      document.querySelector('#allianceChannelId').innerHTML = '<option>No se pudieron cargar canales</option>';
       document.querySelector('#componentTicketCategoryId').innerHTML = '<option>No se pudieron cargar categorias</option>';
       document.querySelector('#panelChannelId').innerHTML = '<option>No se pudieron cargar canales</option>';
       document.querySelector('#panelTicketCategoryId').innerHTML = '<option>No se pudieron cargar categorias</option>';
@@ -5284,6 +5470,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       document.querySelector('#panelChannelId').innerHTML = textChannels.map((channel) => '<option value="' + channel.id + '">#' + escapeHtml(channel.name) + '</option>').join('');
       document.querySelector('#panelTicketCategoryId').innerHTML = '<option value="">Usar categoria principal</option>' + categories.map((channel) => '<option value="' + channel.id + '">' + escapeHtml(channel.name) + '</option>').join('');
       document.querySelector('#securityLogChannelId').innerHTML = '<option value="">Sin canal de logs</option>' + textChannels.map((channel) => '<option value="' + channel.id + '">#' + escapeHtml(channel.name) + '</option>').join('');
+      document.querySelector('#allianceChannelId').innerHTML = '<option value="">Sin canal de alianzas</option>' + textChannels.map((channel) => '<option value="' + channel.id + '">#' + escapeHtml(channel.name) + '</option>').join('');
       document.querySelector('#growthReviewChannelId').innerHTML = '<option value="">Sin canal de reviews</option>' + textChannels.map((channel) => '<option value="' + channel.id + '">#' + escapeHtml(channel.name) + '</option>').join('');
       document.querySelector('#panelComponentIds').innerHTML = (config.components || []).length
         ? config.components.map((component) => '<option value="' + escapeHtml(component.id) + '">' + escapeHtml(component.label + ' - ' + formatTicketMode(component.ticketMode)) + '</option>').join('')
@@ -5296,6 +5483,8 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       document.querySelector('#ticketCategoryName').value = config.ticketCategoryName || selectedOptionText('#ticketCategoryId');
       document.querySelector('#serverPrompt').value = config.serverPrompt || '';
       document.querySelector('#serverInfo').value = config.serverInfo || '';
+      document.querySelector('#allianceChannelId').value = config.allianceChannelId || config.discovery?.allianceChannelId || '';
+      document.querySelector('#allianceTemplate').value = config.allianceTemplate || '';
       const security = normalizeSecurity(config);
       document.querySelector('#securityEnabled').value = security.enabled ? 'true' : 'false';
       document.querySelector('#securityLevel').value = security.level;
@@ -5365,7 +5554,12 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
         ticketCategoryName: categoryName,
         staffRoleId: document.querySelector('#staffRoleId').value,
         serverPrompt: document.querySelector('#serverPrompt').value,
-        serverInfo: document.querySelector('#serverInfo').value
+        serverInfo: document.querySelector('#serverInfo').value,
+        alliance: {
+          channelId: document.querySelector('#allianceChannelId').value,
+          channelName: selectedOptionText('#allianceChannelId'),
+          template: document.querySelector('#allianceTemplate').value
+        }
       }).catch((error) => showToast(error.message));
       if (updated) {
         const index = guildConfigs.findIndex((guild) => guild.guildId === guildId);
@@ -5460,9 +5654,10 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
     async function createComponent(event) {
       event.preventDefault();
       const guildId = document.querySelector('#componentGuildId').value;
+      const editingId = document.querySelector('#editingComponentId').value;
       const ticketMode = document.querySelector('#componentTicketMode').value;
       const rawQuestions = document.querySelector('#componentQuestions').value.split(/\\n/).map((item) => item.trim()).filter(Boolean);
-      const updated = await postJson('/api/guilds/' + guildId + '/components', {
+      const payload = {
         label: document.querySelector('#componentLabel').value,
         description: document.querySelector('#componentDescription').value,
         emoji: document.querySelector('#componentEmoji').value,
@@ -5478,14 +5673,75 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
           passScore: document.querySelector('#componentExamPassScore').value
         },
         welcomeMessage: document.querySelector('#componentWelcomeMessage').value
-      }).catch((error) => showToast(error.message));
+      };
+      const updated = await postJson(
+        editingId ? '/api/guilds/' + guildId + '/components/' + encodeURIComponent(editingId) : '/api/guilds/' + guildId + '/components',
+        payload,
+        editingId ? 'PUT' : 'POST'
+      ).catch((error) => showToast(error.message));
       if (updated) {
         const index = guildConfigs.findIndex((guild) => guild.guildId === guildId);
         if (index >= 0) guildConfigs[index] = { ...guildConfigs[index], ...updated };
+        resetComponentEditor({ keepGuild: true });
         renderGuildSelectors(guildId);
-        showToast('Componente creado. Ya puedes usarlo en un panel de menu.');
+        showToast(editingId ? 'Componente actualizado y paneles sincronizados.' : 'Componente creado. Ya puedes usarlo en un panel de menu.');
       }
       return false;
+    }
+    function resetComponentEditor({ keepGuild = false } = {}) {
+      const guildId = document.querySelector('#componentGuildId')?.value;
+      document.querySelector('#editingComponentId').value = '';
+      document.querySelector('#componentLabel').value = 'Soporte general';
+      document.querySelector('#componentEmoji').value = '';
+      document.querySelector('#componentDescription').value = 'Abre un ticket de soporte general.';
+      document.querySelector('#componentTicketCategoryId').value = '';
+      document.querySelector('#componentTicketMode').value = 'text';
+      document.querySelector('#componentQuestions').value = '';
+      document.querySelector('#componentExamFormUrl').value = '';
+      document.querySelector('#componentExamReviewEnabled').value = 'false';
+      document.querySelector('#componentExamPassScore').value = '6';
+      document.querySelector('#componentWelcomeMessage').value = 'Hola {user}, soy NexaDesk.\\nAntes de empezar, he guardado tus respuestas para que el staff tenga contexto.';
+      document.querySelector('#componentSubmitButton').textContent = 'Crear componente';
+      document.querySelector('#componentCancelEditButton')?.classList.add('is-hidden');
+      if (keepGuild && guildId) document.querySelector('#componentGuildId').value = guildId;
+      updateComponentMode();
+    }
+    function editComponent(componentId) {
+      const guild = getGuildConfig(document.querySelector('#componentGuildId')?.value) || {};
+      const component = (guild.components || []).find((item) => item.id === componentId);
+      if (!component) {
+        showToast('No encuentro ese componente.');
+        return;
+      }
+      document.querySelector('#editingComponentId').value = component.id;
+      document.querySelector('#componentLabel').value = component.label || '';
+      document.querySelector('#componentEmoji').value = component.emoji || '';
+      document.querySelector('#componentDescription').value = component.description || '';
+      document.querySelector('#componentTicketCategoryId').value = component.ticketCategoryId || '';
+      document.querySelector('#componentTicketMode').value = component.ticketMode || 'text';
+      const questions = component.ticketMode === 'exam' ? (component.exam?.questions || []) : (component.questions || []);
+      document.querySelector('#componentQuestions').value = questions.join('\\n');
+      document.querySelector('#componentExamFormUrl').value = component.exam?.formUrl || '';
+      document.querySelector('#componentExamReviewEnabled').value = component.exam?.reviewEnabled ? 'true' : 'false';
+      document.querySelector('#componentExamPassScore').value = component.exam?.passScore ?? '6';
+      document.querySelector('#componentWelcomeMessage').value = component.welcomeMessage || '';
+      document.querySelector('#componentSubmitButton').textContent = 'Guardar cambios del componente';
+      document.querySelector('#componentCancelEditButton')?.classList.remove('is-hidden');
+      updateComponentMode();
+      document.querySelector('#components')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+    async function deleteComponent(componentId) {
+      const guildId = document.querySelector('#componentGuildId').value;
+      if (!confirm('¿Eliminar este componente? Si esta en un panel de menu, NexaDesk intentara sincronizar el panel.')) return;
+      const updated = await postJson('/api/guilds/' + guildId + '/components/' + encodeURIComponent(componentId), {}, 'DELETE').catch((error) => showToast(error.message));
+      if (updated) {
+        const index = guildConfigs.findIndex((guild) => guild.guildId === guildId);
+        if (index >= 0) guildConfigs[index] = { ...guildConfigs[index], ...updated };
+        resetComponentEditor({ keepGuild: true });
+        renderGuildSelectors(guildId);
+        refreshStats().catch(() => {});
+        showToast('Componente eliminado.');
+      }
     }
     function formatTicketMode(mode) {
       if (mode === 'voice') return 'Voz Pro + STT/TTS';
@@ -5507,15 +5763,16 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       const componentHistory = document.querySelector('#componentHistory');
       if (!componentHistory) return;
       componentHistory.innerHTML = components.length
-        ? components.slice().reverse().map((component) => '<article class="panel-card"><strong>' + escapeHtml((component.emoji ? component.emoji + ' ' : '') + (component.label || 'Componente sin nombre')) + '</strong><small>' + escapeHtml(component.description || 'Sin descripcion') + '</small><small>Modo: ' + escapeHtml(formatTicketMode(component.ticketMode)) + '</small><small>Categoria: ' + escapeHtml(component.ticketCategoryName || guild.ticketCategoryName || 'principal') + '</small><small>Preguntas: ' + escapeHtml(String(component.ticketMode === 'exam' ? ((component.exam?.questions || []).length) : ((component.questions || []).length))) + '</small></article>').join('')
+        ? components.slice().reverse().map((component) => '<article class="panel-card"><strong>' + escapeHtml((component.emoji ? component.emoji + ' ' : '') + (component.label || 'Componente sin nombre')) + '</strong><small>' + escapeHtml(component.description || 'Sin descripcion') + '</small><small>Modo: ' + escapeHtml(formatTicketMode(component.ticketMode)) + '</small><small>Categoria: ' + escapeHtml(component.ticketCategoryName || guild.ticketCategoryName || 'principal') + '</small><small>Preguntas: ' + escapeHtml(String(component.ticketMode === 'exam' ? ((component.exam?.questions || []).length) : ((component.questions || []).length))) + '</small><div class="card-actions"><button class="secondary-button table-action" type="button" data-edit-component="' + escapeHtml(component.id) + '">Editar</button><button class="secondary-button table-action danger-action" type="button" data-delete-component="' + escapeHtml(component.id) + '">Eliminar</button></div></article>').join('')
         : '<p class="notice">Aun no hay componentes. Crea uno para poder publicar paneles de menu.</p>';
+      bindComponentButtons(componentHistory);
     }
     function renderPanelHistory(guild = {}) {
       const panels = guild.panels || [];
       const panelHistory = document.querySelector('#panelHistory');
       if (!panelHistory) return;
       panelHistory.innerHTML = panels.length
-        ? panels.slice().reverse().map((panel) => '<article class="panel-card"><strong>' + escapeHtml(panel.title || 'Panel sin titulo') + '</strong><small>Tipo: ' + escapeHtml(panel.panelType === 'menu' ? 'Menu desplegable' : 'Boton') + '</small><small>Modo boton: ' + escapeHtml(formatTicketMode(panel.ticketMode)) + '</small><small>Canal: ' + escapeHtml(panel.channelName || panel.channelId || 'sin canal') + '</small><small>Categoria: ' + escapeHtml(panel.ticketCategoryName || guild.ticketCategoryName || 'principal') + '</small><small>' + escapeHtml(panel.panelType === 'menu' ? ('Componentes: ' + (panel.componentIds || []).length) : ('Boton: ' + (panel.buttonLabel || 'Abrir ticket'))) + '</small><button class="secondary-button table-action" type="button" data-edit-panel="' + escapeHtml(panel.messageId || '') + '">Editar panel enviado</button></article>').join('')
+        ? panels.slice().reverse().map((panel) => '<article class="panel-card"><strong>' + escapeHtml(panel.title || 'Panel sin titulo') + '</strong><small>Tipo: ' + escapeHtml(panel.panelType === 'menu' ? 'Menu desplegable' : 'Boton') + '</small><small>Modo boton: ' + escapeHtml(formatTicketMode(panel.ticketMode)) + '</small><small>Canal: ' + escapeHtml(panel.channelName || panel.channelId || 'sin canal') + '</small><small>Categoria: ' + escapeHtml(panel.ticketCategoryName || guild.ticketCategoryName || 'principal') + '</small><small>' + escapeHtml(panel.panelType === 'menu' ? ('Componentes: ' + (panel.componentIds || []).length) : ('Boton: ' + (panel.buttonLabel || 'Abrir ticket'))) + '</small><div class="card-actions"><button class="secondary-button table-action" type="button" data-edit-panel="' + escapeHtml(panel.messageId || '') + '">Editar panel enviado</button><button class="secondary-button table-action danger-action" type="button" data-delete-panel="' + escapeHtml(panel.messageId || '') + '">Eliminar panel</button></div></article>').join('')
         : '<p class="notice">Aun no hay paneles publicados en este servidor.</p>';
       bindPanelEditButtons(panelHistory);
     }
@@ -5645,6 +5902,31 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       root.querySelectorAll('[data-edit-panel]').forEach((button) => {
         button.onclick = () => editPanel(button.dataset.editPanel);
       });
+      root.querySelectorAll('[data-delete-panel]').forEach((button) => {
+        button.onclick = () => deletePanel(button.dataset.deletePanel);
+      });
+    }
+    function bindComponentButtons(root = document) {
+      root.querySelectorAll('[data-edit-component]').forEach((button) => {
+        button.onclick = () => editComponent(button.dataset.editComponent);
+      });
+      root.querySelectorAll('[data-delete-component]').forEach((button) => {
+        button.onclick = () => deleteComponent(button.dataset.deleteComponent);
+      });
+    }
+    async function deletePanel(messageId) {
+      const guildId = document.querySelector('#panelGuildId').value;
+      if (!messageId) return;
+      if (!confirm('¿Eliminar este panel? NexaDesk intentara borrar tambien el mensaje publicado en Discord.')) return;
+      const updated = await postJson('/api/guilds/' + guildId + '/panels/' + encodeURIComponent(messageId), {}, 'DELETE').catch((error) => showToast(error.message));
+      if (updated) {
+        const index = guildConfigs.findIndex((guild) => guild.guildId === guildId);
+        if (index >= 0) guildConfigs[index] = { ...guildConfigs[index], ...updated };
+        resetPanelEditor();
+        renderGuildSelectors(guildId);
+        refreshStats().catch(() => {});
+        showToast('Panel eliminado.');
+      }
     }
     function updatePanelMode() {
       const panelType = document.querySelector('#panelType')?.value || 'button';
@@ -5690,6 +5972,8 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       document.querySelector('#panelAuthorIconUrl').value = panel.authorIconUrl || '';
       document.querySelector('#panelThumbnailUrl').value = panel.thumbnailUrl || '';
       document.querySelector('#panelImageUrl').value = panel.imageUrl || '';
+      document.querySelector('#panelThumbnailFile').value = '';
+      document.querySelector('#panelImageFile').value = '';
       document.querySelector('#panelFooterText').value = panel.footerText || 'NexaDesk AI Support';
       document.querySelector('#panelWelcomeMessage').value = panel.welcomeMessage || '';
       const componentIds = new Set(panel.componentIds || []);
@@ -5717,9 +6001,47 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
         document.querySelector('#panelExamFormUrl').value = '';
         document.querySelector('#panelExamReviewEnabled').value = 'false';
         document.querySelector('#panelExamPassScore').value = '6';
+        document.querySelector('#panelThumbnailUrl').value = '';
+        document.querySelector('#panelImageUrl').value = '';
+        document.querySelector('#panelThumbnailFile').value = '';
+        document.querySelector('#panelImageFile').value = '';
         clearPanelComponents();
       }
       updatePanelPreview();
+    }
+    async function uploadPanelImage(input, targetSelector) {
+      const file = input.files?.[0];
+      if (!file) return;
+      if (!file.type.startsWith('image/')) {
+        showToast('Sube una imagen valida.');
+        input.value = '';
+        return;
+      }
+      if (file.size > 5_000_000) {
+        showToast('La imagen debe pesar menos de 5 MB.');
+        input.value = '';
+        return;
+      }
+      showToast('Subiendo imagen...');
+      const dataUrl = await readFileAsDataUrl(file);
+      const uploaded = await postJson('/api/uploads/panel-image', {
+        fileName: file.name,
+        mimeType: file.type,
+        dataUrl
+      }).catch((error) => showToast(error.message));
+      if (uploaded?.url) {
+        document.querySelector(targetSelector).value = uploaded.url;
+        updatePanelPreview();
+        showToast('Imagen subida y lista para Discord.');
+      }
+    }
+    function readFileAsDataUrl(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result || ''));
+        reader.onerror = () => reject(reader.error || new Error('No se pudo leer la imagen.'));
+        reader.readAsDataURL(file);
+      });
     }
     function updatePanelPreview() {
       updatePanelMode();
@@ -5739,8 +6061,8 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       document.querySelector('#previewTitle').textContent = title;
       document.querySelector('#previewDescription').textContent = description;
       document.querySelector('#previewFooter').textContent = footer;
-      document.querySelector('#previewThumbnail').textContent = thumbnail ? 'Thumbnail cargada' : 'Thumbnail opcional';
-      document.querySelector('#previewImage').textContent = image ? 'Imagen cargada' : 'Imagen opcional';
+      document.querySelector('#previewThumbnail').innerHTML = thumbnail ? '<img src="' + escapeHtml(thumbnail) + '" alt="Thumbnail">' : 'Thumbnail opcional';
+      document.querySelector('#previewImage').innerHTML = image ? '<img src="' + escapeHtml(image) + '" alt="Imagen del embed">' : 'Imagen opcional';
       const previewButton = document.querySelector('#previewButton');
       if (previewButton) {
         previewButton.textContent = (buttonEmoji ? buttonEmoji + ' ' : '') + buttonLabel;
@@ -5995,6 +6317,8 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       document.querySelector(selector)?.addEventListener('input', updatePanelPreview);
       document.querySelector(selector)?.addEventListener('change', updatePanelPreview);
     }
+    document.querySelector('#panelThumbnailFile')?.addEventListener('change', (event) => uploadPanelImage(event.target, '#panelThumbnailUrl'));
+    document.querySelector('#panelImageFile')?.addEventListener('change', (event) => uploadPanelImage(event.target, '#panelImageUrl'));
     bindTranscriptButtons();
     updateComponentMode();
     updatePanelPreview();
