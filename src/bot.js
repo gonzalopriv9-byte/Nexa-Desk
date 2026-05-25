@@ -1270,7 +1270,7 @@ function buildTicketPriorityAction(primary, { ticket, latestUser }) {
     return `Responder como staff a ${ticket.openedBy ? `<@${ticket.openedBy}>` : 'la persona del ticket'} y decidir si NexaDesk debe pausar la IA.`;
   }
   if (primary === 'alliance') {
-    return 'Continuar el flujo de alianza: normas, plantilla, captura de verificacion y publicacion en el canal configurado.';
+    return 'Continuar el flujo de alianza: pedir plantilla, confirmar que es la correcta, enviar plantilla del servidor, pedir captura de verificacion y publicar en el canal configurado.';
   }
   if (latestUser?.content) {
     return 'NexaDesk puede seguir atendiendo. Si el staff entra, conviene usar /ticket resumen antes de responder.';
@@ -5037,8 +5037,10 @@ async function resolveAllianceTicketFlow({ message, storage, guildConfig, ticket
     allianceState = createAllianceState();
   }
 
-  const waitingForAllianceTemplate = allianceState.started && allianceState.rulesRead && !allianceState.userTemplate;
-  const currentMessageIsAllianceTemplate = waitingForAllianceTemplate
+  const templateWasRequested = allianceState.templateRequested || allianceState.rulesAsked || allianceState.rulesRead;
+  const waitingForAllianceTemplate = allianceState.started && templateWasRequested && !allianceState.userTemplate && !allianceState.templateCandidate;
+  const awaitingTemplateConfirmation = allianceState.started && Boolean(allianceState.templateCandidate) && !allianceState.userTemplate;
+  const currentMessageIsAllianceTemplate = (waitingForAllianceTemplate || awaitingTemplateConfirmation)
     ? isAllianceTemplateMessage(message.content, { templateRequested: true })
     : false;
 
@@ -5065,30 +5067,67 @@ async function resolveAllianceTicketFlow({ message, storage, guildConfig, ticket
     };
   }
 
-  if (!allianceState.rulesAsked) {
-    await markAllianceState(storage, message.channel, 'rules_asked');
+  if (!templateWasRequested && !allianceState.templateCandidate && !allianceState.userTemplate) {
+    await markAllianceState(storage, message.channel, 'template_requested');
     return {
       type: 'reply',
       publicAnswer: [
         'Perfecto, esto seria una alianza.',
-        'Por favor, lee las normas de alianzas del servidor antes de proceder con el siguiente paso.',
-        'Cuando las hayas leido, escribe exactamente: **Ya las he leido**'
+        'Enviame la **plantilla de alianza de tu servidor** en un solo mensaje.',
+        'Cuando la detecte, te preguntare si esa es la plantilla correcta antes de continuar.'
       ].join('\n')
     };
   }
 
-  if (!allianceState.rulesRead) {
-    if (isAllianceRulesReadAck(message.content)) {
-      await markAllianceState(storage, message.channel, 'rules_read');
+  if (awaitingTemplateConfirmation) {
+    if (isAllianceTemplateConfirmYes(message.content)) {
+      await markAllianceState(storage, message.channel, 'user_template', allianceState.templateCandidate);
+      await markAllianceState(storage, message.channel, 'server_template_sent');
       return {
         type: 'reply',
-        publicAnswer: 'Gracias. Por favor, proporciona ahora la plantilla de alianza de tu servidor.'
+        messages: [
+          {
+            mode: 'reply',
+            content: [
+              'Perfecto, usare esa plantilla.',
+              'Te paso la plantilla del servidor en el siguiente mensaje para que puedas copiarla limpia.',
+              '',
+              'Para favorecer un buen funcionamiento del sistema de alianzas, envia una captura de como has enviado la plantilla que te hemos proporcionado.',
+              'Despues, tu plantilla sera enviada automaticamente al canal de alianzas.'
+            ].join('\n')
+          },
+          {
+            mode: 'send',
+            content: guildConfig.allianceTemplate.trim()
+          }
+        ]
+      };
+    }
+
+    if (isAllianceTemplateConfirmNo(message.content)) {
+      await markAllianceState(storage, message.channel, 'template_rejected');
+      await markAllianceState(storage, message.channel, 'template_requested');
+      return {
+        type: 'reply',
+        publicAnswer: 'Vale, no usare esa plantilla. Enviame la plantilla correcta de tu servidor en un solo mensaje.'
+      };
+    }
+
+    if (currentMessageIsAllianceTemplate) {
+      await markAllianceState(storage, message.channel, 'template_candidate', message.content);
+      return {
+        type: 'reply',
+        publicAnswer: [
+          'He detectado este mensaje como posible plantilla de alianza.',
+          '¿Es esta la plantilla que quieres que envie al canal de alianzas?',
+          'Responde **si** para continuar o **no** para enviarla de nuevo.'
+        ].join('\n')
       };
     }
 
     return {
       type: 'reply',
-      publicAnswer: 'Antes de continuar, lee las normas de alianzas del servidor. Cuando termines, escribe: **Ya las he leido**'
+      publicAnswer: 'Necesito que me confirmes la plantilla detectada. Responde **si** si es correcta o **no** si quieres enviarla de nuevo.'
     };
   }
 
@@ -5100,26 +5139,14 @@ async function resolveAllianceTicketFlow({ message, storage, guildConfig, ticket
       };
     }
 
-    await markAllianceState(storage, message.channel, 'user_template', message.content);
-    await markAllianceState(storage, message.channel, 'server_template_sent');
+    await markAllianceState(storage, message.channel, 'template_candidate', message.content);
     return {
       type: 'reply',
-      messages: [
-        {
-          mode: 'reply',
-          content: [
-            'Perfecto, ya tengo tu plantilla.',
-            'Te paso la plantilla del servidor en el siguiente mensaje para que puedas copiarla limpia.',
-            '',
-            'Para favorecer un buen funcionamiento del sistema de alianzas, envia una captura de como has enviado la plantilla que te hemos proporcionado.',
-            'Despues, tu plantilla sera enviada automaticamente al canal de alianzas.'
-          ].join('\n')
-        },
-        {
-          mode: 'send',
-          content: guildConfig.allianceTemplate.trim()
-        }
-      ]
+      publicAnswer: [
+        'He detectado este mensaje como posible plantilla de alianza.',
+        '¿Es esta la plantilla que quieres que envie al canal de alianzas?',
+        'Responde **si** para continuar o **no** para enviarla de nuevo.'
+      ].join('\n')
     };
   }
 
@@ -5231,13 +5258,22 @@ function parseAllianceState(messages = []) {
     }
     state.started = true;
     if (content.includes('rules_asked')) state.rulesAsked = true;
-    if (content.includes('rules_read')) state.rulesRead = true;
+    if (content.includes('rules_read')) {
+      state.rulesRead = true;
+      state.templateRequested = true;
+    }
+    if (content.includes('template_requested')) state.templateRequested = true;
     if (content.includes('server_template_sent')) state.serverTemplateSent = true;
     if (content.includes('proof_verified')) state.proofVerified = true;
     if (content.includes('published')) state.published = true;
     if (content.includes('cancelled')) state.cancelled = true;
+    if (content.includes('template_rejected')) state.templateCandidate = '';
+    if (content.includes('template_candidate:')) {
+      state.templateCandidate = content.split('template_candidate:').slice(1).join('template_candidate:').trim();
+    }
     if (content.includes('user_template:')) {
       state.userTemplate = content.split('user_template:').slice(1).join('user_template:').trim();
+      state.templateCandidate = '';
     }
   }
 
@@ -5249,6 +5285,8 @@ function createAllianceState() {
     started: false,
     rulesAsked: false,
     rulesRead: false,
+    templateRequested: false,
+    templateCandidate: '',
     userTemplate: '',
     serverTemplateSent: false,
     proofVerified: false,
@@ -5319,6 +5357,24 @@ function isAlliancePublishChannel(channel) {
 
 function isAllianceRulesReadAck(content) {
   return /\bya\s+(?:las\s+)?(?:he|e)\s+leido\b/i.test(normalizeText(content));
+}
+
+function isAllianceTemplateConfirmYes(content) {
+  const normalized = normalizeText(content);
+  if (normalized.length > 90) return false;
+  return [
+    /^(?:si|sii|sip|yes|yep|correcto|correcta|esa|es esa|exacto|dale|vale|ok|perfecto)\b/,
+    /\b(?:esa\s+es|es\s+esa|es\s+correcta|esta\s+bien|esta\s+correcta|continua|sigue)\b/
+  ].some((pattern) => pattern.test(normalized));
+}
+
+function isAllianceTemplateConfirmNo(content) {
+  const normalized = normalizeText(content);
+  if (normalized.length > 90) return false;
+  return [
+    /^(?:no|nop|nah|negativo)\b/,
+    /\b(?:no\s+es|no\s+era|incorrecta|equivocada|otra\s+plantilla|la\s+cambio|la\s+envio\s+de\s+nuevo)\b/
+  ].some((pattern) => pattern.test(normalized));
 }
 
 function hasStaffHumanConversation(recentMessages, currentMessage, guildConfig = null, ticket = null) {
