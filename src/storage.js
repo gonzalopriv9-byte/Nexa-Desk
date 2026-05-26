@@ -1,6 +1,13 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createClient } from '@supabase/supabase-js';
+import {
+  addDays,
+  generateAffiliateCode,
+  normalizeAffiliateCode,
+  normalizeAffiliateProfile,
+  normalizeAffiliateRedemption
+} from './affiliates.js';
 import { normalizeAiQualitySignal } from './ai-quality.js';
 import { normalizeBlacklistEntry, normalizeBlacklistEvidence, normalizeBlacklistLookup } from './blacklist.js';
 import { buildFeedbackStats, normalizeGrowthConfig, normalizeTicketFeedback } from './growth.js';
@@ -253,6 +260,147 @@ export class JsonStorage {
     return summarizePremiumBilling({ purchases, activations });
   }
 
+  async getOrCreateAffiliateProfile({ discordUserId, username, rewardThreshold = 7, rewardSlots = 1, rewardDays = 30 }) {
+    const settings = await this.getGlobalSettings();
+    const store = normalizeAffiliateStore(settings.affiliates);
+    const userId = String(discordUserId);
+    const existing = Object.values(store.profiles)
+      .map(normalizeAffiliateProfile)
+      .find((profile) => profile.discordUserId === userId);
+    if (existing) {
+      const updated = normalizeAffiliateProfile({
+        ...existing,
+        username: username ?? existing.username,
+        rewardThreshold,
+        rewardSlots,
+        rewardDays,
+        updatedAt: new Date().toISOString()
+      });
+      store.profiles[updated.discordUserId] = updated;
+      await this.updateGlobalSettings({ affiliates: store });
+      return updated;
+    }
+
+    let code;
+    const usedCodes = new Set(Object.values(store.profiles).map((profile) => normalizeAffiliateCode(profile.code)));
+    do {
+      code = generateAffiliateCode(username ?? userId);
+    } while (usedCodes.has(code));
+
+    const profile = normalizeAffiliateProfile({
+      discordUserId: userId,
+      username,
+      code,
+      rewardThreshold,
+      rewardSlots,
+      rewardDays
+    });
+    store.profiles[profile.discordUserId] = profile;
+    await this.updateGlobalSettings({ affiliates: store });
+    return profile;
+  }
+
+  async getAffiliateProfileByCode(code) {
+    const settings = await this.getGlobalSettings();
+    const store = normalizeAffiliateStore(settings.affiliates);
+    const normalizedCode = normalizeAffiliateCode(code);
+    return Object.values(store.profiles)
+      .map(normalizeAffiliateProfile)
+      .find((profile) => profile.code === normalizedCode) ?? null;
+  }
+
+  async getAffiliateRedemptionByGuild(guildId) {
+    const settings = await this.getGlobalSettings();
+    const store = normalizeAffiliateStore(settings.affiliates);
+    return Object.values(store.redemptions)
+      .map(normalizeAffiliateRedemption)
+      .find((redemption) => redemption.guildId === String(guildId)) ?? null;
+  }
+
+  async recordAffiliateRedemption({ code, guildId, guildName, redeemedByUserId, redeemedByUsername, rewardThreshold = 7, rewardSlots = 1, rewardDays = 30 }) {
+    const settings = await this.getGlobalSettings();
+    const store = normalizeAffiliateStore(settings.affiliates);
+    const normalizedCode = normalizeAffiliateCode(code);
+    const existing = Object.values(store.redemptions)
+      .map(normalizeAffiliateRedemption)
+      .find((redemption) => redemption.guildId === String(guildId));
+    if (existing) {
+      return {
+        alreadyRedeemed: true,
+        redemption: existing,
+        profile: Object.values(store.profiles).map(normalizeAffiliateProfile).find((profile) => profile.discordUserId === existing.ownerDiscordUserId) ?? null,
+        rewardPurchase: null
+      };
+    }
+
+    const profile = Object.values(store.profiles)
+      .map(normalizeAffiliateProfile)
+      .find((item) => item.code === normalizedCode);
+    if (!profile) throw new Error('Codigo de afiliado no encontrado.');
+    if (profile.discordUserId === String(redeemedByUserId)) {
+      throw new Error('No puedes usar tu propio codigo de afiliado en un servidor.');
+    }
+
+    const now = new Date().toISOString();
+    const nextTotal = profile.totalRedemptions + 1;
+    const rewardGranted = nextTotal % rewardThreshold === 0;
+    const nextProfile = normalizeAffiliateProfile({
+      ...profile,
+      username: profile.username,
+      rewardThreshold,
+      rewardSlots,
+      rewardDays,
+      totalRedemptions: nextTotal,
+      rewardsEarned: profile.rewardsEarned + (rewardGranted ? 1 : 0),
+      updatedAt: now
+    });
+    const redemption = normalizeAffiliateRedemption({
+      id: `affiliate-${guildId}-${Date.now()}`,
+      code: normalizedCode,
+      ownerDiscordUserId: profile.discordUserId,
+      guildId,
+      guildName,
+      redeemedByUserId,
+      redeemedByUsername,
+      rewardGranted,
+      createdAt: now
+    });
+    store.profiles[nextProfile.discordUserId] = nextProfile;
+    store.redemptions[redemption.id] = redemption;
+    await this.updateGlobalSettings({ affiliates: store });
+
+    let rewardPurchase = null;
+    if (rewardGranted) {
+      const cycle = Math.floor(nextTotal / rewardThreshold);
+      const expiresAt = addDays(now, rewardDays);
+      rewardPurchase = await this.recordPremiumPurchase({
+        id: `affiliate-reward-${profile.discordUserId}-${cycle}-${Date.now()}`,
+        discordUserId: profile.discordUserId,
+        buyerUsername: profile.username,
+        provider: 'affiliate',
+        providerSessionId: `affiliate-${profile.discordUserId}-${cycle}`,
+        amountTotal: 0,
+        currency: 'eur',
+        slotsPurchased: rewardSlots,
+        slotsUsed: 0,
+        status: 'paid',
+        expiresAt,
+        metadata: {
+          type: 'affiliate_reward',
+          threshold: rewardThreshold,
+          rewardDays,
+          rewardSlots,
+          cycle,
+          expiresAt
+        },
+        createdAt: now,
+        updatedAt: now
+      });
+    }
+
+    return { alreadyRedeemed: false, redemption, profile: nextProfile, rewardPurchase };
+  }
+
   async activatePremiumSlot({ discordUserId, guildId, guildName, activatedBy }) {
     const activations = await this.#readJson(this.premiumActivationsFile);
     const existing = Object.values(activations)
@@ -282,6 +430,7 @@ export class JsonStorage {
       guildName,
       activatedBy,
       active: true,
+      expiresAt: purchase.expiresAt,
       createdAt: now,
       updatedAt: now
     });
@@ -300,7 +449,7 @@ export class JsonStorage {
       guildName,
       plan: 'pro',
       voiceSupportEnabled: true,
-      premium: normalizePremiumConfig(DEFAULT_PREMIUM_MODULES, { plan: 'pro', voiceSupportEnabled: true })
+      premium: normalizePremiumConfig({ ...DEFAULT_PREMIUM_MODULES, expiresAt: purchase.expiresAt }, { plan: 'pro', voiceSupportEnabled: true })
     });
     this.events?.publish('premium.activation.created', activation);
     return {
@@ -868,11 +1017,22 @@ export class SupabaseStorage {
 
   async recordPremiumPurchase(purchase) {
     const normalized = normalizePremiumPurchase(purchase);
-    const { data, error } = await this.client
+    let { data, error } = await this.client
       .from('premium_purchases')
       .upsert(toPremiumPurchaseRow(normalized), { onConflict: 'id' })
       .select()
       .single();
+    if (error && /expires_at/i.test(String(error.message ?? ''))) {
+      const compatibleRow = toPremiumPurchaseRow(normalized);
+      delete compatibleRow.expires_at;
+      const retry = await this.client
+        .from('premium_purchases')
+        .upsert(compatibleRow, { onConflict: 'id' })
+        .select()
+        .single();
+      data = retry.data;
+      error = retry.error;
+    }
     if (isMissingPremiumBillingTableError(error)) return this.#recordPremiumPurchaseFallback(normalized);
     if (error) throw error;
     const saved = fromPremiumPurchaseRow(data);
@@ -911,6 +1071,190 @@ export class SupabaseStorage {
     return summarizePremiumBilling({ purchases, activations });
   }
 
+  async getOrCreateAffiliateProfile({ discordUserId, username, rewardThreshold = 7, rewardSlots = 1, rewardDays = 30 }) {
+    const userId = String(discordUserId);
+    const existing = await this.#getAffiliateProfileByUserId(userId);
+    if (existing) {
+      const next = normalizeAffiliateProfile({
+        ...existing,
+        username: username ?? existing.username,
+        rewardThreshold,
+        rewardSlots,
+        rewardDays,
+        updatedAt: new Date().toISOString()
+      });
+      const { data, error } = await this.client
+        .from('affiliate_profiles')
+        .upsert(toAffiliateProfileRow(next), { onConflict: 'discord_user_id' })
+        .select()
+        .single();
+      if (isMissingAffiliateTableError(error)) return this.#getOrCreateAffiliateProfileFallback({ discordUserId, username, rewardThreshold, rewardSlots, rewardDays });
+      if (error) throw error;
+      return fromAffiliateProfileRow(data);
+    }
+
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const profile = normalizeAffiliateProfile({
+        discordUserId: userId,
+        username,
+        code: generateAffiliateCode(username ?? userId),
+        rewardThreshold,
+        rewardSlots,
+        rewardDays
+      });
+      const { data, error } = await this.client
+        .from('affiliate_profiles')
+        .insert(toAffiliateProfileRow(profile))
+        .select()
+        .single();
+      if (isMissingAffiliateTableError(error)) return this.#getOrCreateAffiliateProfileFallback({ discordUserId, username, rewardThreshold, rewardSlots, rewardDays });
+      if (error && /duplicate key|unique/i.test(String(error.message ?? ''))) continue;
+      if (error) throw error;
+      return fromAffiliateProfileRow(data);
+    }
+    throw new Error('No pude generar un codigo de afiliado unico. Pruebalo otra vez.');
+  }
+
+  async getAffiliateProfileByCode(code) {
+    const { data, error } = await this.client
+      .from('affiliate_profiles')
+      .select('*')
+      .eq('code', normalizeAffiliateCode(code))
+      .maybeSingle();
+    if (isMissingAffiliateTableError(error)) return this.#getAffiliateProfileByCodeFallback(code);
+    if (error) throw error;
+    return data ? fromAffiliateProfileRow(data) : null;
+  }
+
+  async getAffiliateRedemptionByGuild(guildId) {
+    const { data, error } = await this.client
+      .from('affiliate_redemptions')
+      .select('*')
+      .eq('guild_id', String(guildId))
+      .maybeSingle();
+    if (isMissingAffiliateTableError(error)) return this.#getAffiliateRedemptionByGuildFallback(guildId);
+    if (error) throw error;
+    return data ? fromAffiliateRedemptionRow(data) : null;
+  }
+
+  async recordAffiliateRedemption({ code, guildId, guildName, redeemedByUserId, redeemedByUsername, rewardThreshold = 7, rewardSlots = 1, rewardDays = 30 }) {
+    const existing = await this.getAffiliateRedemptionByGuild(guildId);
+    if (existing) {
+      return {
+        alreadyRedeemed: true,
+        redemption: existing,
+        profile: await this.#getAffiliateProfileByUserId(existing.ownerDiscordUserId),
+        rewardPurchase: null
+      };
+    }
+
+    const profile = await this.getAffiliateProfileByCode(code);
+    if (!profile) throw new Error('Codigo de afiliado no encontrado.');
+    if (profile.discordUserId === String(redeemedByUserId)) {
+      throw new Error('No puedes usar tu propio codigo de afiliado en un servidor.');
+    }
+
+    const now = new Date().toISOString();
+    const nextTotal = profile.totalRedemptions + 1;
+    const rewardGranted = nextTotal % rewardThreshold === 0;
+    const nextProfile = normalizeAffiliateProfile({
+      ...profile,
+      rewardThreshold,
+      rewardSlots,
+      rewardDays,
+      totalRedemptions: nextTotal,
+      rewardsEarned: profile.rewardsEarned + (rewardGranted ? 1 : 0),
+      updatedAt: now
+    });
+    const redemption = normalizeAffiliateRedemption({
+      id: `affiliate-${guildId}-${Date.now()}`,
+      code: profile.code,
+      ownerDiscordUserId: profile.discordUserId,
+      guildId,
+      guildName,
+      redeemedByUserId,
+      redeemedByUsername,
+      rewardGranted,
+      createdAt: now
+    });
+
+    const insert = await this.client
+      .from('affiliate_redemptions')
+      .insert(toAffiliateRedemptionRow(redemption))
+      .select()
+      .single();
+    if (isMissingAffiliateTableError(insert.error)) return this.#recordAffiliateRedemptionFallback({ code, guildId, guildName, redeemedByUserId, redeemedByUsername, rewardThreshold, rewardSlots, rewardDays });
+    if (insert.error && /duplicate key|unique/i.test(String(insert.error.message ?? ''))) {
+      return {
+        alreadyRedeemed: true,
+        redemption: await this.getAffiliateRedemptionByGuild(guildId),
+        profile,
+        rewardPurchase: null
+      };
+    }
+    if (insert.error) throw insert.error;
+
+    const update = await this.client
+      .from('affiliate_profiles')
+      .update({
+        username: nextProfile.username,
+        reward_threshold: nextProfile.rewardThreshold,
+        reward_slots: nextProfile.rewardSlots,
+        reward_days: nextProfile.rewardDays,
+        total_redemptions: nextProfile.totalRedemptions,
+        rewards_earned: nextProfile.rewardsEarned,
+        updated_at: now
+      })
+      .eq('discord_user_id', profile.discordUserId)
+      .select()
+      .single();
+    if (update.error) throw update.error;
+
+    let rewardPurchase = null;
+    let savedRedemption = fromAffiliateRedemptionRow(insert.data);
+    if (rewardGranted) {
+      const cycle = Math.floor(nextTotal / rewardThreshold);
+      const expiresAt = addDays(now, rewardDays);
+      rewardPurchase = await this.recordPremiumPurchase({
+        id: `affiliate-reward-${profile.discordUserId}-${cycle}-${Date.now()}`,
+        discordUserId: profile.discordUserId,
+        buyerUsername: profile.username,
+        provider: 'affiliate',
+        providerSessionId: `affiliate-${profile.discordUserId}-${cycle}`,
+        amountTotal: 0,
+        currency: 'eur',
+        slotsPurchased: rewardSlots,
+        slotsUsed: 0,
+        status: 'paid',
+        expiresAt,
+        metadata: {
+          type: 'affiliate_reward',
+          threshold: rewardThreshold,
+          rewardDays,
+          rewardSlots,
+          cycle,
+          expiresAt
+        },
+        createdAt: now,
+        updatedAt: now
+      });
+      const patch = await this.client
+        .from('affiliate_redemptions')
+        .update({ reward_purchase_id: rewardPurchase.id, reward_granted: true })
+        .eq('id', savedRedemption.id)
+        .select()
+        .single();
+      if (!patch.error && patch.data) savedRedemption = fromAffiliateRedemptionRow(patch.data);
+    }
+
+    return {
+      alreadyRedeemed: false,
+      redemption: savedRedemption,
+      profile: fromAffiliateProfileRow(update.data),
+      rewardPurchase
+    };
+  }
+
   async activatePremiumSlot({ discordUserId, guildId, guildName, activatedBy }) {
     const existing = await this.#getActivePremiumActivationForGuild(guildId);
     if (existing) {
@@ -936,6 +1280,7 @@ export class SupabaseStorage {
       guildName,
       activatedBy,
       active: true,
+      expiresAt: purchase.expiresAt,
       createdAt: now,
       updatedAt: now
     });
@@ -945,6 +1290,17 @@ export class SupabaseStorage {
       .insert(toPremiumActivationRow(activation))
       .select()
       .single();
+    if (error && /expires_at/i.test(String(error.message ?? ''))) {
+      const compatibleRow = toPremiumActivationRow(activation);
+      delete compatibleRow.expires_at;
+      const retry = await this.client
+        .from('premium_slot_activations')
+        .insert(compatibleRow)
+        .select()
+        .single();
+      data = retry.data;
+      error = retry.error;
+    }
     if (isMissingPremiumBillingTableError(error)) {
       return this.#activatePremiumSlotFallback({ discordUserId, guildId, guildName, activatedBy });
     }
@@ -971,7 +1327,7 @@ export class SupabaseStorage {
       guildName,
       plan: 'pro',
       voiceSupportEnabled: true,
-      premium: normalizePremiumConfig(DEFAULT_PREMIUM_MODULES, { plan: 'pro', voiceSupportEnabled: true })
+      premium: normalizePremiumConfig({ ...DEFAULT_PREMIUM_MODULES, expiresAt: purchase.expiresAt }, { plan: 'pro', voiceSupportEnabled: true })
     });
     this.events?.publish('premium.activation.created', savedActivation);
     return {
@@ -1065,10 +1421,11 @@ export class SupabaseStorage {
       const store = await this.#getPremiumBillingFallbackStore();
       return Object.values(store.activations)
         .map(normalizePremiumActivation)
-        .find((activation) => activation.guildId === String(guildId) && activation.active) ?? null;
+        .find((activation) => activation.guildId === String(guildId) && activation.active && !isExpiredDate(activation.expiresAt)) ?? null;
     }
     if (error) throw error;
-    return data ? fromPremiumActivationRow(data) : null;
+    const activation = data ? fromPremiumActivationRow(data) : null;
+    return activation && !isExpiredDate(activation.expiresAt) ? activation : null;
   }
 
   async #recordPremiumPurchaseFallback(purchase) {
@@ -1134,6 +1491,7 @@ export class SupabaseStorage {
       guildName,
       activatedBy,
       active: true,
+      expiresAt: purchase.expiresAt,
       createdAt: now,
       updatedAt: now
     });
@@ -1149,7 +1507,7 @@ export class SupabaseStorage {
       guildName,
       plan: 'pro',
       voiceSupportEnabled: true,
-      premium: normalizePremiumConfig(DEFAULT_PREMIUM_MODULES, { plan: 'pro', voiceSupportEnabled: true })
+      premium: normalizePremiumConfig({ ...DEFAULT_PREMIUM_MODULES, expiresAt: purchase.expiresAt }, { plan: 'pro', voiceSupportEnabled: true })
     });
     this.events?.publish('premium.activation.created', activation);
     return {
@@ -1175,6 +1533,170 @@ export class SupabaseStorage {
       premiumBilling: {
         purchases: store.purchases ?? {},
         activations: store.activations ?? {},
+        updatedAt: new Date().toISOString()
+      }
+    });
+  }
+
+  async #getAffiliateProfileByUserId(discordUserId) {
+    const { data, error } = await this.client
+      .from('affiliate_profiles')
+      .select('*')
+      .eq('discord_user_id', String(discordUserId))
+      .maybeSingle();
+    if (isMissingAffiliateTableError(error)) {
+      const store = await this.#getAffiliateFallbackStore();
+      return Object.values(store.profiles)
+        .map(normalizeAffiliateProfile)
+        .find((profile) => profile.discordUserId === String(discordUserId)) ?? null;
+    }
+    if (error) throw error;
+    return data ? fromAffiliateProfileRow(data) : null;
+  }
+
+  async #getOrCreateAffiliateProfileFallback({ discordUserId, username, rewardThreshold = 7, rewardSlots = 1, rewardDays = 30 }) {
+    const store = await this.#getAffiliateFallbackStore();
+    const userId = String(discordUserId);
+    const existing = Object.values(store.profiles)
+      .map(normalizeAffiliateProfile)
+      .find((profile) => profile.discordUserId === userId);
+    if (existing) {
+      const updated = normalizeAffiliateProfile({
+        ...existing,
+        username: username ?? existing.username,
+        rewardThreshold,
+        rewardSlots,
+        rewardDays,
+        updatedAt: new Date().toISOString()
+      });
+      store.profiles[updated.discordUserId] = updated;
+      await this.#saveAffiliateFallbackStore(store);
+      return updated;
+    }
+
+    let code;
+    const usedCodes = new Set(Object.values(store.profiles).map((profile) => normalizeAffiliateCode(profile.code)));
+    do {
+      code = generateAffiliateCode(username ?? userId);
+    } while (usedCodes.has(code));
+    const profile = normalizeAffiliateProfile({
+      discordUserId: userId,
+      username,
+      code,
+      rewardThreshold,
+      rewardSlots,
+      rewardDays
+    });
+    store.profiles[profile.discordUserId] = profile;
+    await this.#saveAffiliateFallbackStore(store);
+    return profile;
+  }
+
+  async #getAffiliateProfileByCodeFallback(code) {
+    const store = await this.#getAffiliateFallbackStore();
+    const normalizedCode = normalizeAffiliateCode(code);
+    return Object.values(store.profiles)
+      .map(normalizeAffiliateProfile)
+      .find((profile) => profile.code === normalizedCode) ?? null;
+  }
+
+  async #getAffiliateRedemptionByGuildFallback(guildId) {
+    const store = await this.#getAffiliateFallbackStore();
+    return Object.values(store.redemptions)
+      .map(normalizeAffiliateRedemption)
+      .find((redemption) => redemption.guildId === String(guildId)) ?? null;
+  }
+
+  async #recordAffiliateRedemptionFallback({ code, guildId, guildName, redeemedByUserId, redeemedByUsername, rewardThreshold = 7, rewardSlots = 1, rewardDays = 30 }) {
+    const store = await this.#getAffiliateFallbackStore();
+    const existing = Object.values(store.redemptions)
+      .map(normalizeAffiliateRedemption)
+      .find((redemption) => redemption.guildId === String(guildId));
+    if (existing) {
+      return {
+        alreadyRedeemed: true,
+        redemption: existing,
+        profile: Object.values(store.profiles).map(normalizeAffiliateProfile).find((profile) => profile.discordUserId === existing.ownerDiscordUserId) ?? null,
+        rewardPurchase: null
+      };
+    }
+
+    const profile = Object.values(store.profiles)
+      .map(normalizeAffiliateProfile)
+      .find((item) => item.code === normalizeAffiliateCode(code));
+    if (!profile) throw new Error('Codigo de afiliado no encontrado.');
+    if (profile.discordUserId === String(redeemedByUserId)) {
+      throw new Error('No puedes usar tu propio codigo de afiliado en un servidor.');
+    }
+
+    const now = new Date().toISOString();
+    const nextTotal = profile.totalRedemptions + 1;
+    const rewardGranted = nextTotal % rewardThreshold === 0;
+    const nextProfile = normalizeAffiliateProfile({
+      ...profile,
+      rewardThreshold,
+      rewardSlots,
+      rewardDays,
+      totalRedemptions: nextTotal,
+      rewardsEarned: profile.rewardsEarned + (rewardGranted ? 1 : 0),
+      updatedAt: now
+    });
+    const redemption = normalizeAffiliateRedemption({
+      id: `affiliate-${guildId}-${Date.now()}`,
+      code: profile.code,
+      ownerDiscordUserId: profile.discordUserId,
+      guildId,
+      guildName,
+      redeemedByUserId,
+      redeemedByUsername,
+      rewardGranted,
+      createdAt: now
+    });
+    store.profiles[nextProfile.discordUserId] = nextProfile;
+    store.redemptions[redemption.id] = redemption;
+    await this.#saveAffiliateFallbackStore(store);
+
+    let rewardPurchase = null;
+    if (rewardGranted) {
+      const cycle = Math.floor(nextTotal / rewardThreshold);
+      const expiresAt = addDays(now, rewardDays);
+      rewardPurchase = await this.recordPremiumPurchase({
+        id: `affiliate-reward-${profile.discordUserId}-${cycle}-${Date.now()}`,
+        discordUserId: profile.discordUserId,
+        buyerUsername: profile.username,
+        provider: 'affiliate',
+        providerSessionId: `affiliate-${profile.discordUserId}-${cycle}`,
+        amountTotal: 0,
+        currency: 'eur',
+        slotsPurchased: rewardSlots,
+        slotsUsed: 0,
+        status: 'paid',
+        expiresAt,
+        metadata: {
+          type: 'affiliate_reward',
+          threshold: rewardThreshold,
+          rewardDays,
+          rewardSlots,
+          cycle,
+          expiresAt
+        },
+        createdAt: now,
+        updatedAt: now
+      });
+    }
+    return { alreadyRedeemed: false, redemption, profile: nextProfile, rewardPurchase };
+  }
+
+  async #getAffiliateFallbackStore() {
+    const settings = await this.getGlobalSettings();
+    return normalizeAffiliateStore(settings.affiliates);
+  }
+
+  async #saveAffiliateFallbackStore(store) {
+    return this.updateGlobalSettings({
+      affiliates: {
+        profiles: store.profiles ?? {},
+        redemptions: store.redemptions ?? {},
         updatedAt: new Date().toISOString()
       }
     });
@@ -1639,6 +2161,7 @@ function toPremiumPurchaseRow(purchase) {
     slots_used: normalized.slotsUsed,
     status: normalized.status,
     metadata: normalized.metadata,
+    expires_at: normalized.expiresAt,
     created_at: normalized.createdAt,
     updated_at: normalized.updatedAt
   };
@@ -1658,6 +2181,7 @@ function fromPremiumPurchaseRow(row) {
     slotsUsed: row.slots_used,
     status: row.status,
     metadata: row.metadata,
+    expiresAt: row.expires_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at
   });
@@ -1673,6 +2197,7 @@ function toPremiumActivationRow(activation) {
     guild_name: normalized.guildName,
     activated_by: normalized.activatedBy,
     active: normalized.active,
+    expires_at: normalized.expiresAt,
     created_at: normalized.createdAt,
     updated_at: normalized.updatedAt
   };
@@ -1687,9 +2212,80 @@ function fromPremiumActivationRow(row) {
     guildName: row.guild_name,
     activatedBy: row.activated_by,
     active: row.active,
+    expiresAt: row.expires_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at
   });
+}
+
+function toAffiliateProfileRow(profile) {
+  const normalized = normalizeAffiliateProfile(profile);
+  return {
+    discord_user_id: normalized.discordUserId,
+    username: normalized.username,
+    code: normalized.code,
+    reward_threshold: normalized.rewardThreshold,
+    reward_slots: normalized.rewardSlots,
+    reward_days: normalized.rewardDays,
+    total_redemptions: normalized.totalRedemptions,
+    rewards_earned: normalized.rewardsEarned,
+    created_at: normalized.createdAt,
+    updated_at: normalized.updatedAt
+  };
+}
+
+function fromAffiliateProfileRow(row) {
+  return normalizeAffiliateProfile({
+    discordUserId: row.discord_user_id,
+    username: row.username,
+    code: row.code,
+    rewardThreshold: row.reward_threshold,
+    rewardSlots: row.reward_slots,
+    rewardDays: row.reward_days,
+    totalRedemptions: row.total_redemptions,
+    rewardsEarned: row.rewards_earned,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  });
+}
+
+function toAffiliateRedemptionRow(redemption) {
+  const normalized = normalizeAffiliateRedemption(redemption);
+  return {
+    id: normalized.id,
+    code: normalized.code,
+    owner_discord_user_id: normalized.ownerDiscordUserId,
+    guild_id: normalized.guildId,
+    guild_name: normalized.guildName,
+    redeemed_by_user_id: normalized.redeemedByUserId,
+    redeemed_by_username: normalized.redeemedByUsername,
+    reward_granted: normalized.rewardGranted,
+    reward_purchase_id: normalized.rewardPurchaseId,
+    created_at: normalized.createdAt
+  };
+}
+
+function fromAffiliateRedemptionRow(row) {
+  return normalizeAffiliateRedemption({
+    id: row.id,
+    code: row.code,
+    ownerDiscordUserId: row.owner_discord_user_id,
+    guildId: row.guild_id,
+    guildName: row.guild_name,
+    redeemedByUserId: row.redeemed_by_user_id,
+    redeemedByUsername: row.redeemed_by_username,
+    rewardGranted: row.reward_granted,
+    rewardPurchaseId: row.reward_purchase_id,
+    createdAt: row.created_at
+  });
+}
+
+function normalizeAffiliateStore(source = {}) {
+  const value = source && typeof source === 'object' ? source : {};
+  return {
+    profiles: value.profiles && typeof value.profiles === 'object' ? value.profiles : {},
+    redemptions: value.redemptions && typeof value.redemptions === 'object' ? value.redemptions : {}
+  };
 }
 
 function isMissingBlacklistTableError(error) {
@@ -1705,7 +2301,17 @@ function isMissingAiQualitySignalTableError(error) {
 }
 
 function isMissingPremiumBillingTableError(error) {
-  return Boolean(error && /premium_purchases|premium_slot_activations|relation .* does not exist|schema cache/i.test(String(error.message ?? '')));
+  return Boolean(error && /premium_purchases|premium_slot_activations|expires_at|relation .* does not exist|schema cache/i.test(String(error.message ?? '')));
+}
+
+function isMissingAffiliateTableError(error) {
+  return Boolean(error && /affiliate_profiles|affiliate_redemptions|relation .* does not exist|schema cache/i.test(String(error.message ?? '')));
+}
+
+function isExpiredDate(value) {
+  if (!value) return false;
+  const time = Date.parse(value);
+  return Number.isFinite(time) && time <= Date.now();
 }
 
 function scoreTranscriptMessageForTerms(message, terms = []) {

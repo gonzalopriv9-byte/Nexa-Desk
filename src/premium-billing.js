@@ -24,6 +24,18 @@ export const PREMIUM_SALES_FEATURES = [
   {
     title: 'Marca y reportes',
     description: 'Branding propio, transcripciones inteligentes e informes semanales para owners.'
+  },
+  {
+    title: 'SLA Radar',
+    description: 'Alertas si un ticket se enfria, queda sin responder o necesita staff antes de perder al usuario.'
+  },
+  {
+    title: 'Auto-config Pro',
+    description: 'NexaDesk detecta canales clave, alianzas, categorias y gaps de setup con recomendaciones accionables.'
+  },
+  {
+    title: 'Team Assist',
+    description: 'Briefings para staff, handoff inteligente y sugerencias de respuesta para cerrar tickets mejor.'
   }
 ];
 
@@ -53,7 +65,13 @@ export const DEFAULT_PREMIUM_MODULES = {
   growthEngine: true,
   publicReviews: true,
   churnRadar: true,
-  conversionInsights: true
+  conversionInsights: true,
+  slaRadar: true,
+  autoSetupPlus: true,
+  allianceAutomation: true,
+  teamAssist: true,
+  premiumAnalytics: true,
+  affiliateBoost: true
 };
 
 export function normalizePremiumPurchase(value = {}) {
@@ -74,6 +92,7 @@ export function normalizePremiumPurchase(value = {}) {
     slotsUsed,
     status: String(value.status ?? 'paid').toLowerCase(),
     metadata: value.metadata && typeof value.metadata === 'object' ? value.metadata : {},
+    expiresAt: value.expiresAt ?? value.expires_at ?? value.metadata?.expiresAt ?? null,
     createdAt,
     updatedAt: value.updatedAt ?? value.updated_at ?? createdAt
   };
@@ -90,6 +109,7 @@ export function normalizePremiumActivation(value = {}) {
     guildName: value.guildName ?? value.guild_name ?? null,
     activatedBy: value.activatedBy ?? value.activated_by ?? null,
     active: value.active !== false,
+    expiresAt: value.expiresAt ?? value.expires_at ?? null,
     createdAt,
     updatedAt: value.updatedAt ?? value.updated_at ?? createdAt
   };
@@ -98,7 +118,7 @@ export function normalizePremiumActivation(value = {}) {
 export function summarizePremiumBilling({ purchases = [], activations = [] } = {}) {
   const activeActivations = activations
     .map(normalizePremiumActivation)
-    .filter((activation) => activation.active);
+    .filter((activation) => activation.active && !isExpired(activation.expiresAt));
   const usedByPurchase = new Map();
   for (const activation of activeActivations) {
     if (!activation.purchaseId) continue;
@@ -146,7 +166,8 @@ export function pickAvailablePremiumPurchase({ purchases = [], activations = [] 
 
 export function isUsablePremiumPurchase(purchase = {}) {
   const status = String(purchase.status ?? '').toLowerCase();
-  return ['paid', 'complete', 'completed', 'succeeded', 'no_payment_required'].includes(status);
+  return ['paid', 'complete', 'completed', 'succeeded', 'no_payment_required'].includes(status)
+    && !isExpired(purchase.expiresAt ?? purchase.expires_at);
 }
 
 export function getPremiumCheckoutConfig(config) {
@@ -193,4 +214,10 @@ function clampInteger(value, min, max) {
   const parsed = Number.parseInt(value, 10);
   if (!Number.isFinite(parsed)) return min;
   return Math.min(Math.max(parsed, min), max);
+}
+
+function isExpired(value) {
+  if (!value) return false;
+  const time = Date.parse(value);
+  return Number.isFinite(time) && time <= Date.now();
 }

@@ -1903,7 +1903,8 @@ async function buildDashboardAssistantReply({ config, message, guild, stats, act
         'Para borrar paneles: Paneles > Paneles de este servidor > Eliminar panel. Para borrar componentes: Componentes > Componentes activos > Eliminar.',
         'Las imagenes de panel se suben desde el dispositivo en Paneles > Embed > Subir thumbnail/Subir imagen grande.',
         'En Crecimiento se gestionan valoraciones post-ticket, reviews publicas, canal de reviews y Churn Radar.',
-        'En Premium se gestionan Voz Pro, Modo examen supervisado, IA prioritaria, transcripciones inteligentes, Security Plus, branding propio, informes semanales, Growth Engine y conversion insights por servidor.',
+        'En Premium se gestionan Voz Pro, Modo examen supervisado, IA prioritaria, transcripciones inteligentes, Security Plus, branding propio, informes semanales, Growth Engine, SLA Radar, Auto-config Pro, Alianzas Pro, Team Assist, analitica premium, Affiliate Boost y conversion insights por servidor.',
+        'El sistema de afiliados usa /afiliado codigo para generar codigo y /afiliado server codigo:<CODIGO> para registrar quien recomendo NexaDesk en un servidor; cada 7 servidores desbloquean un slot Premium temporal.',
         'El modo mantenimiento se controla por slash command owner-only /mantenimiento o desde el panel oculto /admin; /admin se abre con codigo temporal emitido por /code a roles autorizados.',
         'Security Guard incluye anti-flood, anti-links IA, XN Protect Automod, anti-bots Top.gg, anti-alts y anti-nuke con proteccion ante canales/config masivos.',
         'En Tickets se ven tickets y transcripciones guardadas.',
@@ -1968,7 +1969,7 @@ function buildDashboardAssistantFallback({ message, guild, stats, activeView, ac
     reply += 'Para crear Modo examen, ve a Componentes o Paneles, elige "Modo examen" y pega preguntas en formato P:. En Free NexaDesk pregunta, corrige y permite revision humana. En Premium puedes poner URL de formulario y activar revision supervisada con sala de voz.';
   } else if (lower.includes('premium') || lower.includes('pro') || lower.includes('voz') || lower.includes('voice') || lower.includes('branding') || lower.includes('analitica') || lower.includes('insight')) {
     reply += isPremiumEntitled(guild)
-      ? 'Ve a Premium para activar o pausar Voz Pro, Modo examen supervisado, IA prioritaria, transcripciones inteligentes, Security Plus, Growth Engine, branding propio e informes semanales por servidor.'
+      ? 'Ve a Premium para activar o pausar Voz Pro, Modo examen supervisado, IA prioritaria, transcripciones inteligentes, Security Plus, SLA Radar, Auto-config Pro, Alianzas Pro, Team Assist, Growth Engine, Affiliate Boost, branding e informes por servidor.'
       : 'Ve a Premium para ver que desbloquea el plan. El Modo examen con preguntas funciona desde paneles; la revision supervisada con formulario/sala se desbloquea con Premium.';
   } else if (lower.includes('seguridad') || lower.includes('security') || lower.includes('anti') || lower.includes('raid') || lower.includes('flood') || lower.includes('nuke') || lower.includes('phishing') || lower.includes('estafa') || lower.includes('links')) {
     reply += 'Ve a Configuracion y baja hasta Security Guard. Puedes activar nivel intermedio, Anti-links IA, XN Protect Automod, Anti-bots Top.gg, Anti-nuke de canales/config, elegir un canal de logs y guardar. Si Discord bloquea acciones, actualiza permisos desde el boton superior.';
@@ -2974,7 +2975,8 @@ function buildDocsSections(config) {
           'Componentes guardan preguntas previas, categoria destino, primer mensaje y modo texto/voz/examen.',
           'Modo examen Free pregunta dentro del ticket, corrige con IA, marca posibles copias/IA y permite solicitar revision humana; Modo examen Premium puede abrir sala de voz y formulario externo para supervision.',
           'Crecimiento permite configurar feedback post-ticket, canal de reviews, rating publico minimo y alertas de baja satisfaccion.',
-          'Premium incluye Voz Pro, Modo examen supervisado, IA prioritaria, transcripciones inteligentes, Security Plus, Growth Engine, reviews publicas, Churn Radar, branding propio e informes semanales.',
+          'Premium incluye Voz Pro, Modo examen supervisado, IA prioritaria, transcripciones inteligentes, Security Plus, Growth Engine, reviews publicas, Churn Radar, SLA Radar, Auto-config Pro, Alianzas Pro, Team Assist, analitica premium, Affiliate Boost, branding propio e informes semanales.',
+          'Afiliados: /afiliado codigo crea codigo personal; /afiliado server codigo:<CODIGO> registra un servidor una sola vez. Cada AFFILIATE_REWARD_SERVER_COUNT servidores generan AFFILIATE_REWARD_SLOTS slots Premium durante AFFILIATE_REWARD_DAYS dias.',
           'Monetizacion: el pack recomendado es PREMIUM_PACK_SLOTS servidores por PREMIUM_PACK_PRICE_CENTS centimos. PayPal Checkout crea orden, captura pago y guarda premium_purchases; despues el usuario elige servidores en la dashboard.',
           'Fallback rapido: si PAYPAL_CLIENT_ID/SECRET no estan listos pero PREMIUM_PAYMENT_URL existe, la dashboard abre ese enlace y guarda una compra pending para validacion manual en soporte.',
           'Upsell activo: /premium, /ayuda Premium, MD de bienvenida y bloqueos de Voz Pro apuntan a la dashboard #premium.',
@@ -4892,7 +4894,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
           <article class="control-card premium-hero" id="premiumHeroCard">
             <span class="premium-plan" id="premiumPlanBadge">Free</span>
             <h2 id="premiumHeroTitle">Convierte NexaDesk en un agente de pago.</h2>
-            <p id="premiumHeroText">Premium desbloquea voz natural, examenes supervisados, IA mas proactiva, transcripciones accionables, seguridad reforzada, branding propio e informes para que el owner vea valor real.</p>
+            <p id="premiumHeroText">Premium desbloquea voz natural, examenes supervisados, IA mas proactiva, transcripciones accionables, seguridad reforzada, branding propio, Growth Engine, SLA Radar y afiliados para que el owner vea valor real.</p>
             <div class="premium-lock" id="premiumLockNotice">
               <strong>Plan no activo todavia</strong>
               <p>Activalo con <code>/activarpremium servidor:&lt;ID&gt;</code> o poniendo <code>plan = pro</code> / <code>voice_support_enabled = true</code> en Supabase. Las preferencias se pueden dejar preparadas.</p>
@@ -4907,6 +4909,11 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
               <div class="premium-feature"><strong>Informes semanales</strong><span>Ideas de mejora: motivos frecuentes, volumen y necesidades de staff.</span></div>
               <div class="premium-feature"><strong>Growth Engine</strong><span>Feedback post-ticket, reviews publicas y conversion de soporte en prueba social.</span></div>
               <div class="premium-feature"><strong>Churn Radar</strong><span>Alertas cuando un usuario queda insatisfecho para recuperarlo antes de perderlo.</span></div>
+              <div class="premium-feature"><strong>SLA Radar</strong><span>Detecta tickets frios o sin respuesta antes de que el usuario se marche.</span></div>
+              <div class="premium-feature"><strong>Auto-config Pro</strong><span>Recomendaciones de canales, gaps de setup y pistas para no inventar respuestas.</span></div>
+              <div class="premium-feature"><strong>Alianzas Pro</strong><span>Flujo mas limpio para plantillas, verificacion y publicacion automatica.</span></div>
+              <div class="premium-feature"><strong>Team Assist</strong><span>Briefings para staff, handoff inteligente y sugerencias de cierre.</span></div>
+              <div class="premium-feature"><strong>Affiliate Boost</strong><span>Recompensas por crecimiento y slots premium por servidores referidos.</span></div>
             </div>
           </article>
           <article class="control-card" id="premiumSettingsCard">
@@ -4923,6 +4930,12 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
               <label class="premium-toggle"><span><strong>Reviews publicas</strong><span>Convierte valoraciones altas en mensajes visibles en el canal elegido.</span></span><select id="premiumPublicReviews"><option value="true">Activo</option><option value="false">Pausado</option></select></label>
               <label class="premium-toggle"><span><strong>Churn Radar</strong><span>Avisa al staff cuando hay valoraciones bajas o riesgo de perdida.</span></span><select id="premiumChurnRadar"><option value="true">Activo</option><option value="false">Pausado</option></select></label>
               <label class="premium-toggle"><span><strong>Conversion insights</strong><span>Prepara senales para detectar donde los tickets ayudan a crecer.</span></span><select id="premiumConversionInsights"><option value="true">Activo</option><option value="false">Pausado</option></select></label>
+              <label class="premium-toggle"><span><strong>SLA Radar</strong><span>Detecta tickets que llevan demasiado tiempo sin accion clara.</span></span><select id="premiumSlaRadar"><option value="true">Activo</option><option value="false">Pausado</option></select></label>
+              <label class="premium-toggle"><span><strong>Auto-config Pro</strong><span>Usa descubrimiento inteligente para encontrar canales y contexto real del servidor.</span></span><select id="premiumAutoSetupPlus"><option value="true">Activo</option><option value="false">Pausado</option></select></label>
+              <label class="premium-toggle"><span><strong>Alianzas Pro</strong><span>Mejora el flujo de alianzas y su verificacion automatica.</span></span><select id="premiumAllianceAutomation"><option value="true">Activo</option><option value="false">Pausado</option></select></label>
+              <label class="premium-toggle"><span><strong>Team Assist</strong><span>Ayuda al staff con handoff, briefings y respuestas recomendadas.</span></span><select id="premiumTeamAssist"><option value="true">Activo</option><option value="false">Pausado</option></select></label>
+              <label class="premium-toggle"><span><strong>Analitica premium</strong><span>Prepara datos para informes de motivos, resultados y calidad de soporte.</span></span><select id="premiumAnalytics"><option value="true">Activo</option><option value="false">Pausado</option></select></label>
+              <label class="premium-toggle"><span><strong>Affiliate Boost</strong><span>Activa recompensas por afiliados y crecimiento recomendado.</span></span><select id="premiumAffiliateBoost"><option value="true">Activo</option><option value="false">Pausado</option></select></label>
               <button type="submit">Guardar modulos premium</button>
             </form>
           </article>
@@ -5314,7 +5327,13 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
         growthEngine: raw.growthEngine !== false,
         publicReviews: raw.publicReviews !== false,
         churnRadar: raw.churnRadar !== false,
-        conversionInsights: raw.conversionInsights !== false
+        conversionInsights: raw.conversionInsights !== false,
+        slaRadar: raw.slaRadar !== false,
+        autoSetupPlus: raw.autoSetupPlus !== false,
+        allianceAutomation: raw.allianceAutomation !== false,
+        teamAssist: raw.teamAssist !== false,
+        premiumAnalytics: raw.premiumAnalytics !== false,
+        affiliateBoost: raw.affiliateBoost !== false
       };
     }
     function normalizeGrowth(guild = {}) {
@@ -5474,7 +5493,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       });
     }
     function setConfigurationDisabled(disabled) {
-      for (const selector of ['#ticketCategoryId', '#staffRoleId', '#serverPrompt', '#serverInfo', '#allianceChannelId', '#allianceTemplate', '#categoryName', '#securityEnabled', '#securityLevel', '#securityLogChannelId', '#securityMinAccountAgeDays', '#securityAntiFlood', '#securityAntiScamLinks', '#securityAntiOffensive', '#securityAntiBot', '#securityAntiAlt', '#securityAntiNuke', '#componentLabel', '#componentEmoji', '#componentDescription', '#componentTicketCategoryId', '#componentTicketMode', '#componentQuestions', '#componentExamFormUrl', '#componentExamReviewEnabled', '#componentExamPassScore', '#componentWelcomeMessage', '#panelType', '#panelSelectPlaceholder', '#panelComponentIds', '#panelChannelId', '#panelTicketCategoryId', '#panelTicketMode', '#panelExamQuestions', '#panelExamFormUrl', '#panelExamReviewEnabled', '#panelExamPassScore', '#panelButtonLabel', '#panelButtonStyle', '#panelButtonEmoji', '#panelTitle', '#panelEmbedColor', '#panelAuthorName', '#panelAuthorIconUrl', '#panelDescription', '#panelThumbnailUrl', '#panelImageUrl', '#panelThumbnailFile', '#panelImageFile', '#panelFooterText', '#panelWelcomeMessage', '#growthEnabled', '#growthFeedbackDm', '#growthPublicReviews', '#growthReviewChannelId', '#growthTestimonialMinRating', '#growthLowRatingAlerts', '#growthInviteCta', '#premiumVoiceSupport', '#premiumPriorityAi', '#premiumSmartTranscripts', '#premiumSecurityPlus', '#premiumCustomBranding', '#premiumWeeklyInsights', '#premiumGrowthEngine', '#premiumPublicReviews', '#premiumChurnRadar', '#premiumConversionInsights']) {
+      for (const selector of ['#ticketCategoryId', '#staffRoleId', '#serverPrompt', '#serverInfo', '#allianceChannelId', '#allianceTemplate', '#categoryName', '#securityEnabled', '#securityLevel', '#securityLogChannelId', '#securityMinAccountAgeDays', '#securityAntiFlood', '#securityAntiScamLinks', '#securityAntiOffensive', '#securityAntiBot', '#securityAntiAlt', '#securityAntiNuke', '#componentLabel', '#componentEmoji', '#componentDescription', '#componentTicketCategoryId', '#componentTicketMode', '#componentQuestions', '#componentExamFormUrl', '#componentExamReviewEnabled', '#componentExamPassScore', '#componentWelcomeMessage', '#panelType', '#panelSelectPlaceholder', '#panelComponentIds', '#panelChannelId', '#panelTicketCategoryId', '#panelTicketMode', '#panelExamQuestions', '#panelExamFormUrl', '#panelExamReviewEnabled', '#panelExamPassScore', '#panelButtonLabel', '#panelButtonStyle', '#panelButtonEmoji', '#panelTitle', '#panelEmbedColor', '#panelAuthorName', '#panelAuthorIconUrl', '#panelDescription', '#panelThumbnailUrl', '#panelImageUrl', '#panelThumbnailFile', '#panelImageFile', '#panelFooterText', '#panelWelcomeMessage', '#growthEnabled', '#growthFeedbackDm', '#growthPublicReviews', '#growthReviewChannelId', '#growthTestimonialMinRating', '#growthLowRatingAlerts', '#growthInviteCta', '#premiumVoiceSupport', '#premiumPriorityAi', '#premiumSmartTranscripts', '#premiumSecurityPlus', '#premiumCustomBranding', '#premiumWeeklyInsights', '#premiumGrowthEngine', '#premiumPublicReviews', '#premiumChurnRadar', '#premiumConversionInsights', '#premiumSlaRadar', '#premiumAutoSetupPlus', '#premiumAllianceAutomation', '#premiumTeamAssist', '#premiumAnalytics', '#premiumAffiliateBoost']) {
         const element = document.querySelector(selector);
         if (element) element.disabled = disabled;
       }
@@ -5723,7 +5742,13 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
           growthEngine: document.querySelector('#premiumGrowthEngine').value === 'true',
           publicReviews: document.querySelector('#premiumPublicReviews').value === 'true',
           churnRadar: document.querySelector('#premiumChurnRadar').value === 'true',
-          conversionInsights: document.querySelector('#premiumConversionInsights').value === 'true'
+          conversionInsights: document.querySelector('#premiumConversionInsights').value === 'true',
+          slaRadar: document.querySelector('#premiumSlaRadar').value === 'true',
+          autoSetupPlus: document.querySelector('#premiumAutoSetupPlus').value === 'true',
+          allianceAutomation: document.querySelector('#premiumAllianceAutomation').value === 'true',
+          teamAssist: document.querySelector('#premiumTeamAssist').value === 'true',
+          premiumAnalytics: document.querySelector('#premiumAnalytics').value === 'true',
+          affiliateBoost: document.querySelector('#premiumAffiliateBoost').value === 'true'
         }
       }).catch((error) => showToast(error.message));
       if (updated) {
@@ -5902,7 +5927,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
         ? 'Premium activo en este servidor.'
         : 'Prepara el upgrade antes de venderlo.';
       document.querySelector('#premiumHeroText').textContent = premium.entitled
-      ? 'Configura que modulos quieres dejar activos: voz, Modo examen supervisado, IA prioritaria, smart transcripts, seguridad avanzada, Growth Engine, branding e informes.'
+      ? 'Configura que modulos quieres dejar activos: voz, Modo examen, IA prioritaria, smart transcripts, seguridad avanzada, Growth Engine, SLA Radar, Team Assist, alianzas y afiliados.'
         : 'Puedes dejar estos modulos preparados. Cuando el owner active Premium, NexaDesk desbloqueara las funciones de mayor valor sin rehacer la configuracion.';
       const values = {
         premiumVoiceSupport: premium.voiceSupport,
@@ -5914,7 +5939,13 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
         premiumGrowthEngine: premium.growthEngine,
         premiumPublicReviews: premium.publicReviews,
         premiumChurnRadar: premium.churnRadar,
-        premiumConversionInsights: premium.conversionInsights
+        premiumConversionInsights: premium.conversionInsights,
+        premiumSlaRadar: premium.slaRadar,
+        premiumAutoSetupPlus: premium.autoSetupPlus,
+        premiumAllianceAutomation: premium.allianceAutomation,
+        premiumTeamAssist: premium.teamAssist,
+        premiumAnalytics: premium.premiumAnalytics,
+        premiumAffiliateBoost: premium.affiliateBoost
       };
       for (const [id, value] of Object.entries(values)) {
         const element = document.querySelector('#' + id);

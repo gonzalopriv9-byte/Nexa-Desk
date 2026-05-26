@@ -491,7 +491,12 @@ export class SupportAgent {
           premium.priorityAi ? 'IA prioritaria: guia al usuario con preguntas concretas, evita respuestas genericas y resume mejor antes de escalar.' : null,
           premium.smartTranscripts ? 'Transcripciones inteligentes: deja respuestas faciles de resumir, con hechos, pruebas y siguiente accion claros.' : null,
           premium.securityPlus ? 'Security Plus: si ves fraude, acoso, amenazas, crisis o riesgo de seguridad, escala rapido con contexto accionable.' : null,
-          premium.customBranding ? 'Branding propio: manten el tono del servidor y evita sonar como una plantilla generica.' : null
+          premium.customBranding ? 'Branding propio: manten el tono del servidor y evita sonar como una plantilla generica.' : null,
+          premium.slaRadar ? 'SLA Radar: detecta tickets frios, usuarios frustrados o casos que no deben quedarse esperando.' : null,
+          premium.autoSetupPlus ? 'Auto-config Pro: si el usuario pregunta por canales, ejemplos o configuracion, usa contexto del servidor antes de contestar.' : null,
+          premium.allianceAutomation ? 'Alianzas Pro: si el ticket es de alianza, guia al usuario con pasos claros y evita repetir mensajes roboticos.' : null,
+          premium.teamAssist ? 'Team Assist: cuando entre staff, prepara resumen breve, siguiente accion y evita estorbar.' : null,
+          premium.premiumAnalytics ? 'Analitica premium: deja senales utiles para informes: motivo, resultado, riesgo y satisfaccion.' : null
         ].filter(Boolean).join('\n') || 'Premium activo sin modulos especificos marcados.'
       : 'Premium no activo: usa el flujo estandar.';
 

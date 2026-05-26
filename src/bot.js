@@ -17,6 +17,12 @@ import {
   TextInputStyle
 } from 'discord.js';
 import {
+  buildAffiliateProgress,
+  normalizeAffiliateCode,
+  normalizeAffiliateProfile,
+  normalizeAffiliateRedemption
+} from './affiliates.js';
+import {
   GLOBAL_BLACKLIST_ADMIN_USER_ID,
   SUPPORT_SERVER_URL,
   buildGlobalBanCode,
@@ -49,7 +55,7 @@ import {
   normalizeExamState
 } from './exam-mode.js';
 import { buildFeedbackStats, formatRatingStars, normalizeGrowthConfig } from './growth.js';
-import { PREMIUM_SALES_FEATURES, getPremiumCheckoutConfig } from './premium-billing.js';
+import { DEFAULT_PREMIUM_MODULES, PREMIUM_SALES_FEATURES, getPremiumCheckoutConfig } from './premium-billing.js';
 import { isPremiumEntitled, normalizePremiumConfig } from './premium.js';
 import { SecurityManager, SECURITY_LEVELS, normalizeSecurityConfig, normalizeSecurityLevel, summarizeSecurityConfig } from './security.js';
 import { analyzeGuildChannelsForDiscovery, hasUsefulDiscovery, normalizeChannelNameForDiscovery, normalizeDiscoveryConfig } from './server-discovery.js';
@@ -328,6 +334,11 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
 
       if (interaction.commandName === 'premium') {
         await handlePremiumCommand({ interaction, storage, config });
+        return;
+      }
+
+      if (interaction.commandName === 'afiliado') {
+        await handleAffiliateCommand({ interaction, storage, config, client });
         return;
       }
 
@@ -837,12 +848,16 @@ async function handleGuildJoin({ guild, storage, config }) {
   if (sent) {
     console.log(`Sent NexaDesk onboarding DM to owner ${ownerUser.tag} for ${guild.name} (${guild.id}).`);
   }
+  await sendAffiliateWelcomeDm({ user: ownerUser, guild, config })
+    .catch((error) => console.warn(`Could not send affiliate DM to owner ${ownerUser.tag}:`, error?.message ?? error));
 
   if (installer?.userId && installer.userId !== ownerUser.id) {
     const installerUser = await guild.client.users.fetch(installer.userId).catch(() => null);
     if (installerUser) {
       await sendOwnerOnboardingDm({ user: installerUser, guild, config, prefix: `${EMOJIS.check} Gracias por agregar **NexaDesk** a **${guild.name}**.` })
         .catch((error) => console.warn(`Could not send installer onboarding DM to ${installerUser.tag}:`, error?.message ?? error));
+      await sendAffiliateWelcomeDm({ user: installerUser, guild, config })
+        .catch((error) => console.warn(`Could not send affiliate DM to installer ${installerUser.tag}:`, error?.message ?? error));
     }
   }
 }
@@ -858,6 +873,50 @@ async function sendOwnerOnboardingDm({ user, guild, config, prefix }) {
     embeds,
     files: [flowCard],
     components
+  });
+}
+
+async function sendAffiliateWelcomeDm({ user, guild, config }) {
+  const threshold = config.AFFILIATE_REWARD_SERVER_COUNT ?? 7;
+  const rewardDays = config.AFFILIATE_REWARD_DAYS ?? 30;
+  const dashboardUrl = config.DASHBOARD_PUBLIC_URL || PUBLIC_DASHBOARD_URL;
+  const embed = new EmbedBuilder()
+    .setColor(0xf4c95d)
+    .setTitle(`${EMOJIS.global} ¿Tienes un amigo que te ha hablado de NexaDesk?`)
+    .setDescription([
+      `Si alguien te recomendo NexaDesk para **${guild.name}**, dile que te pase su codigo de afiliado.`,
+      '',
+      `Usalo dentro del servidor con: \`/afiliado server codigo:<CODIGO>\``,
+      '',
+      `Cuando lo registres, ambos ayudais al crecimiento de NexaDesk. Cada **${threshold} servidores** que usen un codigo, ese afiliado gana **1 slot Premium durante ${rewardDays} dias**.`
+    ].join('\n'))
+    .addFields(
+      {
+        name: `${EMOJIS.check} Si tu quieres invitar servidores`,
+        value: 'Ejecuta `/afiliado codigo` y comparte tu codigo. Es una forma directa de conseguir Premium sin pagar.'
+      },
+      {
+        name: `${EMOJIS.nexalogo} Importante`,
+        value: 'Cada servidor solo puede registrar un codigo de afiliado una vez. Elegidlo bien antes de usarlo.'
+      }
+    )
+    .setFooter({ text: 'NexaDesk Affiliates - crecimiento con recompensa real' })
+    .setTimestamp(new Date());
+
+  return user.send({
+    embeds: [embed],
+    components: [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setStyle(ButtonStyle.Link)
+          .setLabel('Abrir dashboard')
+          .setURL(dashboardUrl),
+        new ButtonBuilder()
+          .setStyle(ButtonStyle.Link)
+          .setLabel('Soporte oficial')
+          .setURL('https://discord.gg/vVXbq7ePEZ')
+      )
+    ]
   });
 }
 
@@ -919,7 +978,7 @@ function buildOwnerOnboardingEmbeds({ guild }) {
       {
         name: `${EMOJIS.check} Si quieres ir a nivel Pro`,
         value: [
-          'Premium desbloquea Voz Pro, Modo examen, IA prioritaria, transcripciones inteligentes, Growth Engine y Security Plus.',
+          'Premium desbloquea Voz Pro, Modo examen, IA prioritaria, transcripciones inteligentes, Security Plus, SLA Radar, Growth Engine, Alianzas Pro, Team Assist y Affiliate Boost.',
           `Se activa desde la dashboard en **Premium**: ${PUBLIC_DASHBOARD_URL}#premium`
         ].join('\n')
       }
@@ -1640,18 +1699,7 @@ async function handleActivatePremiumCommand({ interaction, storage, client }) {
     guildName: targetGuild?.name ?? existing?.guildName ?? `Servidor ${guildId}`,
     plan: 'pro',
     voiceSupportEnabled: true,
-    premium: normalizePremiumConfig({
-      voiceSupport: true,
-      priorityAi: true,
-      smartTranscripts: true,
-      securityPlus: true,
-      customBranding: true,
-      weeklyInsights: true,
-      growthEngine: true,
-      publicReviews: true,
-      churnRadar: true,
-      conversionInsights: true
-    }, { plan: 'pro', voiceSupportEnabled: true })
+    premium: normalizePremiumConfig(DEFAULT_PREMIUM_MODULES, { plan: 'pro', voiceSupportEnabled: true })
   });
 
   const embed = new EmbedBuilder()
@@ -1662,7 +1710,7 @@ async function handleActivatePremiumCommand({ interaction, storage, client }) {
       { name: 'Servidor', value: guildId, inline: true },
       { name: 'Plan', value: updated.plan ?? 'pro', inline: true },
       { name: 'Voz Pro', value: updated.voiceSupportEnabled ? 'Activa' : 'Pendiente', inline: true },
-      { name: 'Incluye', value: 'Voz Pro, Modo examen, IA prioritaria, transcripciones inteligentes, Security Plus, branding propio, informes semanales, Growth Engine, reviews publicas y Churn Radar.' }
+      { name: 'Incluye', value: 'Voz Pro, Modo examen, IA prioritaria, transcripciones inteligentes, Security Plus, branding propio, informes, Growth Engine, Churn Radar, SLA Radar, Auto-config Pro, Alianzas Pro, Team Assist y analitica premium.' }
     )
     .setTimestamp(new Date());
 
@@ -1677,7 +1725,6 @@ async function handlePremiumCommand({ interaction, storage, config }) {
   const premiumActive = isPremiumEntitled(guildConfig ?? {});
   const dashboardPremiumUrl = new URL('/#premium', config.DASHBOARD_PUBLIC_URL || PUBLIC_DASHBOARD_URL).toString();
   const featureText = PREMIUM_SALES_FEATURES
-    .slice(0, 6)
     .map((feature) => `**${feature.title}:** ${feature.description}`)
     .join('\n');
 
@@ -1723,6 +1770,111 @@ async function handlePremiumCommand({ interaction, storage, config }) {
   ];
 
   await interaction.reply({ embeds: [embed], components, ephemeral: true });
+}
+
+async function handleAffiliateCommand({ interaction, storage, config, client }) {
+  const subcommand = interaction.options.getSubcommand();
+  if (subcommand === 'codigo') {
+    await interaction.deferReply({ ephemeral: true });
+    const profile = await storage.getOrCreateAffiliateProfile({
+      discordUserId: interaction.user.id,
+      username: interaction.user.tag ?? interaction.user.username,
+      rewardThreshold: config.AFFILIATE_REWARD_SERVER_COUNT,
+      rewardSlots: config.AFFILIATE_REWARD_SLOTS,
+      rewardDays: config.AFFILIATE_REWARD_DAYS
+    });
+    const progress = buildAffiliateProgress(profile);
+    const embed = new EmbedBuilder()
+      .setColor(0xf4c95d)
+      .setTitle(`${EMOJIS.global} Tu codigo de afiliado NexaDesk`)
+      .setDescription([
+        `Tu codigo es: \`${profile.code}\``,
+        '',
+        'Compártelo con owners que vayan a invitar NexaDesk. Cuando el bot entre a su servidor, ellos deben usar:',
+        `\`/afiliado server codigo:${profile.code}\``
+      ].join('\n'))
+      .addFields(
+        { name: 'Progreso', value: `${progress.totalRedemptions}/${progress.rewardThreshold} servidores registrados en el ciclo actual.`, inline: true },
+        { name: 'Recompensa', value: `${profile.rewardSlots} slot Premium durante ${profile.rewardDays} dias cada ${profile.rewardThreshold} servidores.`, inline: true },
+        { name: 'Te faltan', value: `${progress.remainingForNextReward || profile.rewardThreshold} servidores para el siguiente slot.`, inline: true }
+      )
+      .setFooter({ text: 'Cada servidor solo puede registrar un codigo una vez.' })
+      .setTimestamp(new Date());
+    await interaction.editReply({ embeds: [embed] });
+    return;
+  }
+
+  if (subcommand === 'server') {
+    if (!interaction.inGuild()) {
+      await interaction.reply({ content: 'Este comando debe usarse dentro del servidor que quiere registrar el codigo.', ephemeral: true });
+      return;
+    }
+    if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+      await interaction.reply({ content: 'Necesitas Manage Server para registrar un codigo de afiliado en este servidor.', ephemeral: true });
+      return;
+    }
+
+    await interaction.deferReply({ ephemeral: true });
+    const code = normalizeAffiliateCode(interaction.options.getString('codigo', true));
+    const result = await storage.recordAffiliateRedemption({
+      code,
+      guildId: interaction.guildId,
+      guildName: interaction.guild?.name ?? `Servidor ${interaction.guildId}`,
+      redeemedByUserId: interaction.user.id,
+      redeemedByUsername: interaction.user.tag ?? interaction.user.username,
+      rewardThreshold: config.AFFILIATE_REWARD_SERVER_COUNT,
+      rewardSlots: config.AFFILIATE_REWARD_SLOTS,
+      rewardDays: config.AFFILIATE_REWARD_DAYS
+    });
+
+    if (result.alreadyRedeemed) {
+      const redemption = normalizeAffiliateRedemption(result.redemption);
+      await interaction.editReply([
+        `${EMOJIS.wifi} Este servidor ya tiene un codigo de afiliado registrado.`,
+        `Codigo usado: \`${redemption.code}\``,
+        'Por seguridad y para evitar abuso, no se puede cambiar desde Discord.'
+      ].join('\n'));
+      return;
+    }
+
+    const profile = normalizeAffiliateProfile(result.profile);
+    const progress = buildAffiliateProgress(profile);
+    await notifyAffiliateOwner({ client, profile, guildName: interaction.guild?.name ?? interaction.guildId, rewardPurchase: result.rewardPurchase }).catch((error) => {
+      console.warn(`Could not notify affiliate owner ${profile.discordUserId}:`, error?.message ?? error);
+    });
+
+    const embed = new EmbedBuilder()
+      .setColor(0xf4c95d)
+      .setTitle(`${EMOJIS.check} Codigo de afiliado registrado`)
+      .setDescription([
+        `Servidor registrado correctamente con el codigo \`${profile.code}\`.`,
+        '',
+        `El afiliado recibio un aviso por MD. Le faltan **${progress.remainingForNextReward || profile.rewardThreshold} servidores** para su siguiente recompensa.`
+      ].join('\n'))
+      .addFields(
+        { name: 'Servidor', value: interaction.guild?.name ?? interaction.guildId, inline: true },
+        { name: 'Recompensa', value: result.rewardPurchase ? 'Slot Premium generado.' : `Cada ${profile.rewardThreshold} servidores = ${profile.rewardSlots} slot Premium / ${profile.rewardDays} dias.`, inline: true }
+      )
+      .setTimestamp(new Date());
+    await interaction.editReply({ embeds: [embed] });
+  }
+}
+
+async function notifyAffiliateOwner({ client, profile, guildName, rewardPurchase }) {
+  const user = await client.users.fetch(profile.discordUserId).catch(() => null);
+  if (!user) return;
+  const progress = buildAffiliateProgress(profile);
+  const remaining = progress.remainingForNextReward || profile.rewardThreshold;
+  const lines = [
+    `${EMOJIS.global} **ALGUIEN HA UTILIZADO TU CODIGO DE AFILIADO**`,
+    '',
+    `Tu codigo \`${profile.code}\` ha sido registrado en **${guildName}**.`,
+    `Te quedan **${remaining} servidores** para conseguir **1 servidor Premium**.`
+  ];
+  if (rewardPurchase) {
+    lines.push('', `${EMOJIS.check} Acabas de desbloquear **${rewardPurchase.slotsPurchased} slot Premium durante ${profile.rewardDays} dias**. Entra en la dashboard y activalo en el servidor que quieras.`);
+  }
+  await user.send(lines.join('\n'));
 }
 
 async function handleDmOwnerCommand({ interaction, storage, client, config }) {
@@ -2609,7 +2761,9 @@ function buildHelpEmbed({ view, config, guild }) {
             'Transcripciones inteligentes para staff, dashboard y MD al usuario.',
             'Security Plus para links sospechosos, flood, blacklist y avisos reforzados.',
             'Growth Engine con feedback post-ticket, reviews publicas y Churn Radar.',
-            'Branding propio, conversion insights e informes semanales para demostrar valor al owner.',
+            'SLA Radar para tickets frios, usuarios frustrados y tiempos de espera peligrosos.',
+            'Auto-config Pro, Alianzas Pro y Team Assist para que el staff trabaje con contexto real.',
+            'Branding propio, Affiliate Boost, conversion insights e informes semanales para demostrar valor al owner.',
             'Prioridad normal incluso si el modo mantenimiento global esta activo para servidores Free.'
           ].join('\n')
         },

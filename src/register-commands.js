@@ -280,6 +280,28 @@ const commands = [
     .setDescription('Muestra precio, funciones y enlace para activar NexaDesk Premium.')
     .toJSON(),
   new SlashCommandBuilder()
+    .setName('afiliado')
+    .setDescription('Sistema de afiliados: gana slots Premium invitando servidores a NexaDesk.')
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName('codigo')
+        .setDescription('Genera o consulta tu codigo de afiliado.')
+    )
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName('server')
+        .setDescription('Registra el codigo de afiliado que recomendo NexaDesk en este servidor.')
+        .addStringOption((option) =>
+          option
+            .setName('codigo')
+            .setDescription('Codigo de afiliado de la persona que te recomendo NexaDesk.')
+            .setMinLength(4)
+            .setMaxLength(24)
+            .setRequired(true)
+        )
+    )
+    .toJSON(),
+  new SlashCommandBuilder()
     .setName('dmowner')
     .setDescription('Reenvia el MD de bienvenida al owner y al usuario que agrego NexaDesk.')
     .addStringOption((option) =>

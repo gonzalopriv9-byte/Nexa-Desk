@@ -172,6 +172,8 @@ create index if not exists premium_purchases_discord_user_id_idx on public.premi
 create index if not exists premium_purchases_provider_session_id_idx on public.premium_purchases (provider_session_id);
 create index if not exists premium_purchases_status_idx on public.premium_purchases (status);
 create index if not exists premium_purchases_created_at_idx on public.premium_purchases (created_at desc);
+alter table public.premium_purchases add column if not exists expires_at timestamptz;
+create index if not exists premium_purchases_expires_at_idx on public.premium_purchases (expires_at);
 
 create table if not exists public.premium_slot_activations (
   id text primary key,
@@ -191,3 +193,38 @@ create index if not exists premium_slot_activations_guild_id_idx on public.premi
 create unique index if not exists premium_slot_activations_one_active_guild_idx
   on public.premium_slot_activations (guild_id)
   where active = true;
+alter table public.premium_slot_activations add column if not exists expires_at timestamptz;
+create index if not exists premium_slot_activations_expires_at_idx on public.premium_slot_activations (expires_at);
+
+create table if not exists public.affiliate_profiles (
+  discord_user_id text primary key,
+  username text,
+  code text not null unique,
+  reward_threshold integer not null default 7 check (reward_threshold >= 1),
+  reward_slots integer not null default 1 check (reward_slots >= 1),
+  reward_days integer not null default 30 check (reward_days >= 1),
+  total_redemptions integer not null default 0 check (total_redemptions >= 0),
+  rewards_earned integer not null default 0 check (rewards_earned >= 0),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists affiliate_profiles_code_idx on public.affiliate_profiles (code);
+create index if not exists affiliate_profiles_total_redemptions_idx on public.affiliate_profiles (total_redemptions desc);
+
+create table if not exists public.affiliate_redemptions (
+  id text primary key,
+  code text not null,
+  owner_discord_user_id text not null,
+  guild_id text not null unique,
+  guild_name text,
+  redeemed_by_user_id text,
+  redeemed_by_username text,
+  reward_granted boolean not null default false,
+  reward_purchase_id text,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists affiliate_redemptions_owner_idx on public.affiliate_redemptions (owner_discord_user_id);
+create index if not exists affiliate_redemptions_code_idx on public.affiliate_redemptions (code);
+create index if not exists affiliate_redemptions_created_at_idx on public.affiliate_redemptions (created_at desc);
