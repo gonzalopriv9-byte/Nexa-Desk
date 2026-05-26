@@ -594,9 +594,26 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
         return;
       }
 
-      await message.channel.sendTyping();
       await applyMaintenanceThrottle({ storage, message, guildConfig });
-      const answer = await supportAgent.answerTicketMessage({ message, ticket, guildConfig });
+      const typing = createTypingHeartbeat(message.channel, {
+        intervalMs: config.AI_TYPING_INTERVAL_MS,
+        label: `ticket ${message.channel.id}`
+      });
+      typing.start();
+      let answer = '';
+      let elapsedMs = 0;
+      try {
+        answer = await withTimeout(
+          supportAgent.answerTicketMessage({ message, ticket, guildConfig }),
+          config.AI_REPLY_TIMEOUT_MS,
+          'La IA ha tardado demasiado en responder.'
+        );
+      } finally {
+        elapsedMs = typing.stop();
+        if (elapsedMs >= config.AI_SLOW_LOG_MS) {
+          console.warn(`Slow AI ticket reply in ${message.guild?.name ?? message.guildId}/${message.channel?.name ?? message.channelId}: ${elapsedMs}ms`);
+        }
+      }
       if (answer) {
         const latestTicket = await storage.getTicket(message.channel.id);
         if (!latestTicket || isClosedTicket(latestTicket) || isAiDisabledTicket(latestTicket)) return;
@@ -6566,5 +6583,33 @@ async function waitForClientReady(client, timeoutMs = 3000) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function withTimeout(promise, timeoutMs, message = 'Operation timed out') {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+function createTypingHeartbeat(channel, { intervalMs = 7000, label = 'channel' } = {}) {
+  let timer = null;
+  const startedAt = Date.now();
+  const sendTyping = () => channel.sendTyping().catch((error) => {
+    console.warn(`Typing heartbeat failed for ${label}:`, error?.message ?? error);
+  });
+
+  return {
+    start() {
+      sendTyping();
+      timer = setInterval(sendTyping, intervalMs);
+    },
+    stop() {
+      if (timer) clearInterval(timer);
+      timer = null;
+      return Date.now() - startedAt;
+    }
+  };
 }
 
