@@ -432,17 +432,20 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
   client.on(Events.MessageCreate, async (message) => {
     if (!await leadershipGate.isActive()) return;
     if (!message.guild || !message.channel) return;
+    const guildId = message.guildId;
+    const channelId = message.channelId;
+    if (!guildId || !channelId) return;
     if (await maybeMirrorGlobalAnnouncement({ client, storage, config, message })) return;
 
     const handledBySecurity = await securityManager.handleMessageCreate(message).catch((error) => {
-      console.error(`Security message guard failed in ${message.guild.id}:`, error);
+      console.error(`Security message guard failed in ${guildId}:`, error);
       return false;
     });
     if (handledBySecurity) return;
 
     let [ticket, guildConfig] = await Promise.all([
-      storage.getTicket(message.channel.id),
-      storage.getGuildConfig(message.guild.id)
+      storage.getTicket(channelId),
+      storage.getGuildConfig(guildId)
     ]);
 
     const ticketKingDetected = (!ticket || !ticket.openedBy) && await shouldDetectTicketKingChannel(message);
