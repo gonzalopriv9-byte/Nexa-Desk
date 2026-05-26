@@ -11,6 +11,20 @@ const TOPGG_ERROR_CACHE_MS = 1000 * 60 * 15;
 const LOCKDOWN_COOLDOWN_MS = 1000 * 60;
 const CHANNEL_CLEANUP_MAX = 12;
 const LOCKDOWN_CHANNEL_MAX = 20;
+const CHANNEL_LOCKDOWN_AUDIT_TYPES = new Set([
+  AuditLogEvent.ChannelCreate,
+  AuditLogEvent.ChannelUpdate,
+  AuditLogEvent.WebhookCreate,
+  AuditLogEvent.WebhookDelete,
+  AuditLogEvent.WebhookUpdate
+]);
+const LOCKDOWN_CHANNEL_TYPES = new Set([
+  ChannelType.GuildText,
+  ChannelType.GuildAnnouncement,
+  ChannelType.GuildForum,
+  ChannelType.GuildMedia,
+  ChannelType.GuildCategory
+]);
 
 export const SECURITY_LEVELS = {
   low: {
@@ -663,9 +677,11 @@ export class SecurityManager {
     for (const auditType of [AuditLogEvent.WebhookCreate, AuditLogEvent.WebhookDelete, AuditLogEvent.WebhookUpdate]) {
       const handled = await this.handleAuditAction(channel.guild, {
         targetId: null,
+        channelId: channel.id,
         auditType,
         label: `cambio de webhook en #${channel.name ?? channel.id}`,
-        severity: 'high'
+        severity: 'high',
+        targetName: channel.name ?? null
       });
       if (handled) return;
     }
@@ -707,7 +723,7 @@ export class SecurityManager {
     });
   }
 
-  async handleAuditAction(guild, { auditType, targetId, label, severity = 'medium', targetName = null }) {
+  async handleAuditAction(guild, { auditType, targetId, label, severity = 'medium', targetName = null, channelId = null }) {
     if (!guild) return false;
     const guildConfig = await this.storage.getGuildConfig(guild.id);
     const security = normalizeSecurityConfig(guildConfig?.security);
@@ -734,7 +750,8 @@ export class SecurityManager {
     const key = `${guild.id}:${executor.id}`;
     const windowMs = security.nukeWindowSeconds * 1000;
     const bucket = (this.actionBuckets.get(key) ?? []).filter((item) => now - item.at <= windowMs);
-    bucket.push({ at: now, auditType, label, targetId, targetName, severity });
+    const lockdownChannelId = channelId ?? (CHANNEL_LOCKDOWN_AUDIT_TYPES.has(auditType) ? targetId : null);
+    bucket.push({ at: now, auditType, label, targetId, targetName, severity, channelId: lockdownChannelId });
     this.actionBuckets.set(key, bucket);
     const limit = getSensitiveActionLimit(security, auditType, severity);
 
@@ -766,6 +783,8 @@ export class SecurityManager {
       await member.ban({ reason: `NexaDesk Security Guard: ${bucket.length} acciones sensibles en ${security.nukeWindowSeconds}s` }).catch(() => null);
     }
 
+    const isLabSimulation = this.isSecurityLabBot(member?.user?.id ?? executor.id);
+    const lockdownTargetIds = collectLockdownTargetChannelIds(bucket);
     const cleanupResult = auditType === AuditLogEvent.ChannelCreate
       ? await this.deleteRecentCreatedChannels({
         guild,
@@ -773,11 +792,14 @@ export class SecurityManager {
         reason: `NexaDesk Security Guard: limpieza de canales por ${executor.tag}`
       })
       : null;
-    const lockdownResult = shouldApplyEmergencyLockdown(auditType, severity, bucket)
-      ? await this.applyEmergencyLockdown({
-        guild,
-        reason: `NexaDesk Security Guard: lockdown por ${executor.tag}`
-      })
+    const lockdownResult = shouldApplyEmergencyLockdown(severity, bucket, lockdownTargetIds)
+      ? isLabSimulation
+        ? 'Simulacion detectada: lockdown omitido para no interferir con pruebas controladas.'
+        : await this.applyEmergencyLockdown({
+          guild,
+          channelIds: lockdownTargetIds,
+          reason: `NexaDesk Security Guard: lockdown por ${executor.tag}`
+        })
       : null;
 
     await this.sendSecurityLog({
@@ -790,7 +812,7 @@ export class SecurityManager {
         member?.user?.bot ? { name: 'Top.gg', value: describeTopGgLookup(topGgDecision.lookup) } : null,
         cleanupResult ? { name: 'Limpieza de canales', value: cleanupResult } : null,
         lockdownResult ? { name: 'Lockdown rapido', value: lockdownResult } : null,
-        { name: 'Respuesta', value: this.isSecurityLabBot(member?.user?.id) ? 'Simulacion registrada. Bot de laboratorio no aislado.' : canBan ? 'Ban preventivo aplicado' : 'No pude banear por permisos, jerarquia o politica Top.gg' }
+        { name: 'Respuesta', value: isLabSimulation ? 'Simulacion registrada. Bot de laboratorio no aislado ni bloqueado.' : canBan ? 'Ban preventivo aplicado' : 'No pude banear por permisos, jerarquia o politica Top.gg' }
       ],
       important: true
     });
@@ -832,25 +854,31 @@ export class SecurityManager {
     return `Borre ${deleted} canales creados en la rafaga${skipped ? ` (${skipped} omitidos/no accesibles)` : ''}.`;
   }
 
-  async applyEmergencyLockdown({ guild, reason }) {
+  async applyEmergencyLockdown({ guild, channelIds = [], reason }) {
     const now = Date.now();
-    const lastLockdown = this.lockdownCooldowns.get(guild.id) ?? 0;
+    const targetIds = [...new Set(channelIds.map(String).filter((id) => /^\d{17,20}$/.test(id)))]
+      .slice(-LOCKDOWN_CHANNEL_MAX);
+    if (!targetIds.length) return 'Lockdown omitido: no hay canal objetivo identificable.';
+
+    const cooldownKey = `${guild.id}:${[...targetIds].sort().join(',')}`;
+    const lastLockdown = this.lockdownCooldowns.get(cooldownKey) ?? 0;
     if (now - lastLockdown < LOCKDOWN_COOLDOWN_MS) {
-      return 'Lockdown ya aplicado hace menos de 60s; evito repetir cambios masivos.';
+      return 'Lockdown ya aplicado hace menos de 60s sobre el canal objetivo; evito repetir cambios.';
     }
     if (!guild.members.me?.permissions.has(PermissionFlagsBits.ManageChannels)) {
       return 'No pude aplicar lockdown: falta Manage Channels.';
     }
 
-    this.lockdownCooldowns.set(guild.id, now);
-    const textChannels = [...guild.channels.cache.values()]
-      .filter((channel) => [ChannelType.GuildText, ChannelType.GuildAnnouncement].includes(channel.type))
-      .sort((a, b) => Number(a.rawPosition ?? 0) - Number(b.rawPosition ?? 0))
-      .slice(0, LOCKDOWN_CHANNEL_MAX);
+    const targetChannels = [];
+    for (const channelId of targetIds) {
+      const channel = await guild.channels.fetch(channelId).catch(() => null);
+      if (channel && LOCKDOWN_CHANNEL_TYPES.has(channel.type)) targetChannels.push(channel);
+    }
+    if (!targetChannels.length) return 'Lockdown omitido: los canales objetivo ya no existen o no son bloqueables.';
 
     let locked = 0;
     let failed = 0;
-    for (const channel of textChannels) {
+    for (const channel of targetChannels) {
       const ok = await channel.permissionOverwrites.edit(guild.roles.everyone, {
         SendMessages: false,
         CreatePublicThreads: false,
@@ -861,8 +889,9 @@ export class SecurityManager {
       else failed += 1;
     }
 
-    if (!locked) return `No pude bloquear canales (${failed} fallidos).`;
-    return `Lockdown aplicado en ${locked} canales de texto${failed ? ` (${failed} fallidos)` : ''}.`;
+    this.lockdownCooldowns.set(cooldownKey, now);
+    if (!locked) return `No pude bloquear el canal objetivo (${failed} fallidos).`;
+    return `Lockdown aplicado en ${locked} canal(es) objetivo${failed ? ` (${failed} fallidos)` : ''}.`;
   }
 
   async findRecentAuditEntry(guild, auditType, targetId) {
@@ -1027,12 +1056,24 @@ function getSensitiveActionLimit(security, auditType, severity) {
   return base;
 }
 
-function shouldApplyEmergencyLockdown(auditType, severity, bucket) {
+function shouldApplyEmergencyLockdown(severity, bucket, targetChannelIds = collectLockdownTargetChannelIds(bucket)) {
+  if (!targetChannelIds.length) return false;
   if (severity === 'critical') return true;
   const channelCreates = bucket.filter((item) => item.auditType === AuditLogEvent.ChannelCreate).length;
   const channelUpdates = bucket.filter((item) => item.auditType === AuditLogEvent.ChannelUpdate).length;
-  const guildUpdates = bucket.filter((item) => item.auditType === AuditLogEvent.GuildUpdate).length;
-  return channelCreates >= 2 || channelUpdates >= 2 || guildUpdates >= 1;
+  const webhookUpdates = bucket.filter((item) => [
+    AuditLogEvent.WebhookCreate,
+    AuditLogEvent.WebhookDelete,
+    AuditLogEvent.WebhookUpdate
+  ].includes(item.auditType)).length;
+  return channelCreates >= 2 || channelUpdates >= 2 || webhookUpdates >= 2;
+}
+
+function collectLockdownTargetChannelIds(bucket = []) {
+  return [...new Set(bucket
+    .filter((item) => CHANNEL_LOCKDOWN_AUDIT_TYPES.has(item.auditType))
+    .map((item) => item.channelId ?? item.targetId)
+    .filter((id) => /^\d{17,20}$/.test(String(id))))].slice(-LOCKDOWN_CHANNEL_MAX);
 }
 
 function describeChannelChanges(oldChannel, newChannel) {

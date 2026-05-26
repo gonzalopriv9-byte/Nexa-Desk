@@ -4666,7 +4666,7 @@ function renderDashboard({ session, guilds, tickets, stats }) {
               <option value="true">Activo</option>
               <option value="false">Desactivado</option>
             </select></label>
-            <p class="notice span-2">Anti-bots solo banea bots que Top.gg confirme como no listados. Anti-nuke tambien detecta rafagas de canales, permisos y cambios del servidor; puede limpiar canales nuevos y aplicar lockdown rapido. Para cobertura completa, actualiza permisos con View Audit Log, Manage Channels, Manage Messages, Moderate Members, Kick Members y Ban Members.</p>
+            <p class="notice span-2">Anti-bots solo banea bots que Top.gg confirme como no listados. Anti-nuke tambien detecta rafagas de canales, permisos y cambios del servidor; puede limpiar canales nuevos y aplicar lockdown rapido solo sobre canales afectados. Para cobertura completa, actualiza permisos con View Audit Log, Manage Channels, Manage Messages, Moderate Members, Kick Members y Ban Members.</p>
             <button class="span-2" type="submit">Guardar Security Guard</button>
           </form>
         </article>
@@ -5480,7 +5480,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
         announcements: { title: 'Detecta anuncios y canales clave', text: 'Reescanea canales para que NexaDesk encuentre anuncios, normas, FAQ y soporte incluso con tipografias raras.', view: 'settings', action: 'Revisar discovery' },
         staff: { title: 'Asigna rol de staff', text: 'NexaDesk necesita saber a quien avisar cuando haya escalado humano o asistencia manual.', view: 'settings', action: 'Elegir staff' },
         context: { title: 'Dale contexto a la IA', text: 'Anade reglas, FAQ, tono, limites y si debe pedir pruebas visuales. Esto mejora mucho las respuestas.', view: 'settings', action: 'Escribir prompt' },
-        security: { title: 'Activa Security Guard', text: 'Protege el servidor con anti-flood, anti-links IA, anti-bots, anti-alts, anti-nuke de canales/config y lockdown rapido antes de abrirlo al publico.', view: 'settings', action: 'Configurar seguridad' },
+        security: { title: 'Activa Security Guard', text: 'Protege el servidor con anti-flood, anti-links IA, anti-bots, anti-alts, anti-nuke de canales/config y lockdown quirurgico solo en canales afectados.', view: 'settings', action: 'Configurar seguridad' },
         growth: { title: 'Activa Growth Engine', text: 'Pide valoraciones al cerrar tickets y convierte el buen soporte en reviews, prueba social y oportunidades de crecimiento.', view: 'growth', action: 'Abrir crecimiento' },
         components: { title: 'Crea opciones de menu', text: 'Los componentes separan tipos de ticket, preguntas previas y mensajes iniciales personalizados.', view: 'components', action: 'Crear componente' },
         panels: { title: 'Publica un panel', text: 'Ya puedes publicar un panel en un canal visible para que los usuarios abran tickets desde Discord.', view: 'panels', action: 'Publicar panel' }
