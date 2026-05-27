@@ -228,3 +228,107 @@ create table if not exists public.affiliate_redemptions (
 create index if not exists affiliate_redemptions_owner_idx on public.affiliate_redemptions (owner_discord_user_id);
 create index if not exists affiliate_redemptions_code_idx on public.affiliate_redemptions (code);
 create index if not exists affiliate_redemptions_created_at_idx on public.affiliate_redemptions (created_at desc);
+create index if not exists affiliate_redemptions_guild_id_idx on public.affiliate_redemptions (guild_id);
+create index if not exists affiliate_redemptions_reward_purchase_id_idx on public.affiliate_redemptions (reward_purchase_id);
+
+alter table public.affiliate_profiles add column if not exists reward_threshold integer not null default 7;
+alter table public.affiliate_profiles add column if not exists reward_slots integer not null default 1;
+alter table public.affiliate_profiles add column if not exists reward_days integer not null default 30;
+alter table public.affiliate_profiles add column if not exists total_redemptions integer not null default 0;
+alter table public.affiliate_profiles add column if not exists rewards_earned integer not null default 0;
+alter table public.affiliate_profiles add column if not exists updated_at timestamptz not null default now();
+
+alter table public.affiliate_redemptions add column if not exists owner_discord_user_id text;
+alter table public.affiliate_redemptions add column if not exists guild_id text;
+alter table public.affiliate_redemptions add column if not exists guild_name text;
+alter table public.affiliate_redemptions add column if not exists redeemed_by_user_id text;
+alter table public.affiliate_redemptions add column if not exists redeemed_by_username text;
+alter table public.affiliate_redemptions add column if not exists reward_granted boolean not null default false;
+alter table public.affiliate_redemptions add column if not exists reward_purchase_id text;
+
+update public.affiliate_redemptions redemptions
+set owner_discord_user_id = profiles.discord_user_id
+from public.affiliate_profiles profiles
+where redemptions.owner_discord_user_id is null
+  and upper(redemptions.code) = upper(profiles.code);
+
+with duplicated_redemptions as (
+  select
+    ctid,
+    row_number() over (partition by guild_id order by created_at asc, id asc) as duplicate_rank
+  from public.affiliate_redemptions
+  where guild_id is not null
+)
+delete from public.affiliate_redemptions redemptions
+using duplicated_redemptions
+where redemptions.ctid = duplicated_redemptions.ctid
+  and duplicated_redemptions.duplicate_rank > 1;
+
+create unique index if not exists affiliate_redemptions_one_per_guild_idx
+  on public.affiliate_redemptions (guild_id)
+  where guild_id is not null;
+
+create or replace function public.sync_affiliate_profile_counts(p_owner_discord_user_id text)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if p_owner_discord_user_id is null then
+    return;
+  end if;
+
+  update public.affiliate_profiles profiles
+  set
+    total_redemptions = stats.total_redemptions,
+    rewards_earned = greatest(stats.reward_rows, stats.total_redemptions / greatest(profiles.reward_threshold, 1)),
+    updated_at = now()
+  from (
+    select
+      count(*)::integer as total_redemptions,
+      count(*) filter (where reward_granted = true)::integer as reward_rows
+    from public.affiliate_redemptions redemptions
+    where redemptions.owner_discord_user_id = p_owner_discord_user_id
+  ) stats
+  where profiles.discord_user_id = p_owner_discord_user_id;
+end;
+$$;
+
+create or replace function public.affiliate_redemptions_sync_profile()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if tg_op = 'DELETE' then
+    perform public.sync_affiliate_profile_counts(old.owner_discord_user_id);
+    return old;
+  end if;
+
+  perform public.sync_affiliate_profile_counts(new.owner_discord_user_id);
+
+  if tg_op = 'UPDATE'
+    and old.owner_discord_user_id is distinct from new.owner_discord_user_id
+  then
+    perform public.sync_affiliate_profile_counts(old.owner_discord_user_id);
+  end if;
+
+  return new;
+end;
+$$;
+
+drop trigger if exists affiliate_redemptions_sync_profile_trigger on public.affiliate_redemptions;
+create trigger affiliate_redemptions_sync_profile_trigger
+  after insert or update or delete on public.affiliate_redemptions
+  for each row execute function public.affiliate_redemptions_sync_profile();
+
+do $$
+declare
+  profile_id text;
+begin
+  for profile_id in select discord_user_id from public.affiliate_profiles loop
+    perform public.sync_affiliate_profile_counts(profile_id);
+  end loop;
+end $$;

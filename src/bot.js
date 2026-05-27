@@ -1804,7 +1804,7 @@ async function handleAffiliateCommand({ interaction, storage, config, client }) 
         `\`/afiliado server codigo:${profile.code}\``
       ].join('\n'))
       .addFields(
-        { name: 'Progreso', value: `${progress.totalRedemptions}/${progress.rewardThreshold} servidores registrados en el ciclo actual.`, inline: true },
+        { name: 'Progreso', value: `${progress.progressInCycle}/${progress.rewardThreshold} servidores en este ciclo (${progress.totalRedemptions} total).`, inline: true },
         { name: 'Recompensa', value: `${profile.rewardSlots} slot Premium durante ${profile.rewardDays} dias cada ${profile.rewardThreshold} servidores.`, inline: true },
         { name: 'Te faltan', value: `${progress.remainingForNextReward || profile.rewardThreshold} servidores para el siguiente slot.`, inline: true }
       )
@@ -1863,6 +1863,7 @@ async function handleAffiliateCommand({ interaction, storage, config, client }) 
       ].join('\n'))
       .addFields(
         { name: 'Servidor', value: interaction.guild?.name ?? interaction.guildId, inline: true },
+        { name: 'Progreso', value: `${progress.progressInCycle}/${progress.rewardThreshold} en este ciclo (${progress.totalRedemptions} total).`, inline: true },
         { name: 'Recompensa', value: result.rewardPurchase ? 'Slot Premium generado.' : `Cada ${profile.rewardThreshold} servidores = ${profile.rewardSlots} slot Premium / ${profile.rewardDays} dias.`, inline: true }
       )
       .setTimestamp(new Date());
@@ -3878,6 +3879,13 @@ async function handleNaturalCloseRequest({ client, storage, message, ticket, gui
 
 async function closeTicketWithTranscript({ client, storage, voiceManager = null, channel, guild, ticket, requestedBy, requestId, closingReply, fallbackUser = null, reason }) {
   const requestedAt = new Date().toISOString();
+  scheduleTicketChannelDelete({
+    guild,
+    channelId: channel.id,
+    reason,
+    delayMs: 10_000
+  });
+
   await storage.addTranscriptMessage({
     guildId: guild.id,
     channelId: channel.id,
@@ -3888,10 +3896,14 @@ async function closeTicketWithTranscript({ client, storage, voiceManager = null,
     role: 'system',
     content: `Cierre solicitado por ${requestedBy.username}.`,
     createdAt: requestedAt
+  }).catch((error) => {
+    console.error(`Failed to record ticket close request ${channel.id}: ${compactRuntimeError(error)}`);
   });
 
   await channel.sendTyping().catch(() => {});
-  await saveTranscript(storage, closingReply, 'assistant');
+  await saveTranscript(storage, closingReply, 'assistant').catch((error) => {
+    console.error(`Failed to save closing reply transcript ${channel.id}: ${compactRuntimeError(error)}`);
+  });
 
   const closedAt = new Date().toISOString();
   const closedTicket = {
@@ -3899,23 +3911,41 @@ async function closeTicketWithTranscript({ client, storage, voiceManager = null,
     status: 'closed',
     updatedAt: closedAt
   };
-  const messages = await storage.listTranscriptMessages(channel.id);
+  await storage.updateTicket(channel.id, {
+    status: 'closed',
+    aiDisabled: false
+  }).catch((error) => {
+    console.error(`Failed to mark ticket closed before delete ${channel.id}: ${compactRuntimeError(error)}`);
+  });
+
+  const messages = await withOperationTimeout(
+    storage.listTranscriptMessages(channel.id),
+    6_000,
+    `list transcript ${channel.id}`
+  ).catch((error) => {
+    console.error(`Failed to list transcript before ticket close ${channel.id}: ${compactRuntimeError(error)}`);
+    return [];
+  });
   const guildConfig = await storage.getGuildConfig(guild.id).catch(() => null);
   const targetUser = await resolveTranscriptRecipient(client, ticket, messages) ?? fallbackUser;
   let dmStatus = 'No se pudo detectar usuario para enviar la transcripcion por MD.';
 
   if (targetUser) {
     try {
-      await sendTranscriptDm({
-        targetUser,
-        ticket: closedTicket,
-        messages,
-        guildName: guild.name,
-        guildConfig
-      });
+      await withOperationTimeout(
+        sendTranscriptDm({
+          targetUser,
+          ticket: closedTicket,
+          messages,
+          guildName: guild.name,
+          guildConfig
+        }),
+        10_000,
+        `send transcript dm ${channel.id}`
+      );
       dmStatus = `Transcripcion enviada automaticamente por MD a ${targetUser.tag}.`;
     } catch (error) {
-      console.error('Failed to DM transcript for ticket close:', error);
+      console.error(`Failed to DM transcript for ticket close ${channel.id}: ${compactRuntimeError(error)}`);
       dmStatus = `No se pudo enviar la transcripcion por MD a ${targetUser.tag}. Puede tener los MD cerrados.`;
     }
   }
@@ -3930,39 +3960,55 @@ async function closeTicketWithTranscript({ client, storage, voiceManager = null,
     role: 'system',
     content: dmStatus,
     createdAt: new Date().toISOString()
+  }).catch((error) => {
+    console.error(`Failed to record ticket close DM status ${channel.id}: ${compactRuntimeError(error)}`);
   });
-
-  await storage.updateTicket(channel.id, {
-    status: 'closed',
-    aiDisabled: false
+  await withOperationTimeout(
+    closeLinkedVoiceRoom({ guild, ticket, voiceManager, reason: `NexaDesk ticket closed by ${requestedBy.tag}` }),
+    6_000,
+    `close linked voice room ${channel.id}`
+  ).catch((error) => {
+    console.error(`Failed to close linked voice room for ticket ${channel.id}: ${compactRuntimeError(error)}`);
   });
-  await closeLinkedVoiceRoom({ guild, ticket, voiceManager, reason: `NexaDesk ticket closed by ${requestedBy.tag}` });
 
   try {
     await closingReply.edit([
       `${EMOJIS.check} Ticket cerrado.`,
       dmStatus,
-      'Este canal se eliminara en 8 segundos.'
+      'Este canal se eliminara automaticamente en unos segundos.'
     ].join('\n'));
   } catch {
     // The channel may already be gone if another ticket bot deleted it first.
   }
+}
 
-  setTimeout(async () => {
+function scheduleTicketChannelDelete({ guild, channelId, reason, delayMs = 10_000 }) {
+  const timer = setTimeout(async () => {
+    let freshChannel = null;
     try {
-      const freshChannel = await guild.channels.fetch(channel.id).catch(() => null);
-      if (freshChannel?.deletable) {
-        await freshChannel.delete(reason);
-      } else if (freshChannel) {
-        await freshChannel.send('No tengo permisos suficientes para eliminar este canal. El ticket ya quedo cerrado en NexaDesk.').catch((sendError) => {
+      freshChannel = await guild.channels.fetch(channelId).catch(() => null);
+      if (!freshChannel) {
+        console.log(`Closed ticket channel ${channelId} was already deleted.`);
+        return;
+      }
+
+      await freshChannel.delete(reason);
+      console.log(`Deleted closed ticket channel ${freshChannel.name ?? channelId} (${channelId}).`);
+    } catch (error) {
+      console.error(`Failed to delete closed ticket channel ${channelId}: ${compactRuntimeError(error)}`);
+      if (freshChannel?.isTextBased?.()) {
+        await freshChannel.send([
+          'No tengo permisos suficientes para eliminar este canal.',
+          'El ticket ya quedo cerrado en NexaDesk, pero necesito **Manage Channels** y que mi rol este por encima para borrarlo automaticamente.'
+        ].join('\n')).catch((sendError) => {
           if (isMissingAccessError(sendError) || isMissingPermissionError(sendError)) return;
-          throw sendError;
+          console.error(`Failed to send ticket delete permission warning ${channelId}: ${compactRuntimeError(sendError)}`);
         });
       }
-    } catch (error) {
-      console.error(`Failed to delete closed ticket channel ${channel.id}:`, error);
     }
-  }, 8_000).unref?.();
+  }, delayMs);
+  timer.unref?.();
+  return timer;
 }
 
 async function finalizeDeletedTicket({ client, storage, channel, ticket, voiceManager = null }) {
@@ -5878,6 +5924,18 @@ function compactRuntimeError(error) {
   const code = error?.code ?? error?.type ?? '';
   const message = String(error?.message ?? error ?? '').replace(/\s+/g, ' ').slice(0, 420);
   return [status ? `status=${status}` : null, code ? `code=${code}` : null, message].filter(Boolean).join(' ');
+}
+
+function withOperationTimeout(promise, timeoutMs, label = 'operation') {
+  let timeoutId;
+  const timeout = new Promise((_, reject) => {
+    timeoutId = setTimeout(() => {
+      const error = new Error(`${label} timed out after ${timeoutMs}ms`);
+      error.code = 'operation_timeout';
+      reject(error);
+    }, timeoutMs);
+  });
+  return Promise.race([Promise.resolve(promise), timeout]).finally(() => clearTimeout(timeoutId));
 }
 
 function isUnknownReplyReferenceError(error) {

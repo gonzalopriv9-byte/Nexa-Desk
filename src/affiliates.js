@@ -72,7 +72,9 @@ export function buildAffiliateProgress(profile = {}) {
     : normalized.rewardThreshold - remainder;
   return {
     ...normalized,
-    currentCycle: Math.floor(normalized.totalRedemptions / normalized.rewardThreshold) + 1,
+    currentCycle: normalized.totalRedemptions > 0 && remainder === 0
+      ? Math.floor(normalized.totalRedemptions / normalized.rewardThreshold)
+      : Math.floor(normalized.totalRedemptions / normalized.rewardThreshold) + 1,
     remainingForNextReward: remaining,
     progressInCycle: remainder || (normalized.totalRedemptions > 0 ? normalized.rewardThreshold : 0)
   };

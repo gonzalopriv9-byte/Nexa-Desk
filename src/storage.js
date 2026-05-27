@@ -342,7 +342,10 @@ export class JsonStorage {
     }
 
     const now = new Date().toISOString();
-    const nextTotal = profile.totalRedemptions + 1;
+    const existingOwnerRedemptions = Object.values(store.redemptions)
+      .map(normalizeAffiliateRedemption)
+      .filter((redemption) => redemption.ownerDiscordUserId === profile.discordUserId).length;
+    const nextTotal = existingOwnerRedemptions + 1;
     const rewardGranted = nextTotal % rewardThreshold === 0;
     const nextProfile = normalizeAffiliateProfile({
       ...profile,
@@ -351,7 +354,7 @@ export class JsonStorage {
       rewardSlots,
       rewardDays,
       totalRedemptions: nextTotal,
-      rewardsEarned: profile.rewardsEarned + (rewardGranted ? 1 : 0),
+      rewardsEarned: Math.floor(nextTotal / Math.max(1, rewardThreshold)),
       updatedAt: now
     });
     const redemption = normalizeAffiliateRedemption({
@@ -1075,12 +1078,16 @@ export class SupabaseStorage {
     const userId = String(discordUserId);
     const existing = await this.#getAffiliateProfileByUserId(userId);
     if (existing) {
+      const totalRedemptions = await this.#countAffiliateRedemptionsForOwner(userId)
+        .catch(() => existing.totalRedemptions);
       const next = normalizeAffiliateProfile({
         ...existing,
         username: username ?? existing.username,
         rewardThreshold,
         rewardSlots,
         rewardDays,
+        totalRedemptions,
+        rewardsEarned: Math.floor(totalRedemptions / Math.max(1, rewardThreshold)),
         updatedAt: new Date().toISOString()
       });
       const { data, error } = await this.client
@@ -1155,17 +1162,6 @@ export class SupabaseStorage {
     }
 
     const now = new Date().toISOString();
-    const nextTotal = profile.totalRedemptions + 1;
-    const rewardGranted = nextTotal % rewardThreshold === 0;
-    const nextProfile = normalizeAffiliateProfile({
-      ...profile,
-      rewardThreshold,
-      rewardSlots,
-      rewardDays,
-      totalRedemptions: nextTotal,
-      rewardsEarned: profile.rewardsEarned + (rewardGranted ? 1 : 0),
-      updatedAt: now
-    });
     const redemption = normalizeAffiliateRedemption({
       id: `affiliate-${guildId}-${Date.now()}`,
       code: profile.code,
@@ -1174,7 +1170,7 @@ export class SupabaseStorage {
       guildName,
       redeemedByUserId,
       redeemedByUsername,
-      rewardGranted,
+      rewardGranted: false,
       createdAt: now
     });
 
@@ -1193,6 +1189,19 @@ export class SupabaseStorage {
       };
     }
     if (insert.error) throw insert.error;
+
+    const nextTotal = await this.#countAffiliateRedemptionsForOwner(profile.discordUserId)
+      .catch(() => profile.totalRedemptions + 1);
+    const rewardGranted = nextTotal > 0 && nextTotal % rewardThreshold === 0;
+    const nextProfile = normalizeAffiliateProfile({
+      ...profile,
+      rewardThreshold,
+      rewardSlots,
+      rewardDays,
+      totalRedemptions: nextTotal,
+      rewardsEarned: Math.floor(nextTotal / Math.max(1, rewardThreshold)),
+      updatedAt: now
+    });
 
     const update = await this.client
       .from('affiliate_profiles')
@@ -1554,6 +1563,22 @@ export class SupabaseStorage {
     return data ? fromAffiliateProfileRow(data) : null;
   }
 
+  async #countAffiliateRedemptionsForOwner(discordUserId) {
+    const ownerId = String(discordUserId);
+    const { count, error } = await this.client
+      .from('affiliate_redemptions')
+      .select('id', { count: 'exact', head: true })
+      .eq('owner_discord_user_id', ownerId);
+    if (isMissingAffiliateTableError(error)) {
+      const store = await this.#getAffiliateFallbackStore();
+      return Object.values(store.redemptions)
+        .map(normalizeAffiliateRedemption)
+        .filter((redemption) => redemption.ownerDiscordUserId === ownerId).length;
+    }
+    if (error) throw error;
+    return Number(count ?? 0);
+  }
+
   async #getOrCreateAffiliateProfileFallback({ discordUserId, username, rewardThreshold = 7, rewardSlots = 1, rewardDays = 30 }) {
     const store = await this.#getAffiliateFallbackStore();
     const userId = String(discordUserId);
@@ -1630,7 +1655,10 @@ export class SupabaseStorage {
     }
 
     const now = new Date().toISOString();
-    const nextTotal = profile.totalRedemptions + 1;
+    const existingOwnerRedemptions = Object.values(store.redemptions)
+      .map(normalizeAffiliateRedemption)
+      .filter((redemption) => redemption.ownerDiscordUserId === profile.discordUserId).length;
+    const nextTotal = existingOwnerRedemptions + 1;
     const rewardGranted = nextTotal % rewardThreshold === 0;
     const nextProfile = normalizeAffiliateProfile({
       ...profile,
@@ -1638,7 +1666,7 @@ export class SupabaseStorage {
       rewardSlots,
       rewardDays,
       totalRedemptions: nextTotal,
-      rewardsEarned: profile.rewardsEarned + (rewardGranted ? 1 : 0),
+      rewardsEarned: Math.floor(nextTotal / Math.max(1, rewardThreshold)),
       updatedAt: now
     });
     const redemption = normalizeAffiliateRedemption({
