@@ -6,6 +6,7 @@ import os from 'node:os';
 import { AkiomaeClient } from './ai/akiomae-client.js';
 import { FallbackAiClient, createAiProvider } from './ai/fallback-ai-client.js';
 import { GroqClient } from './ai/groq-client.js';
+import { LocalSupportClient } from './ai/local-support-client.js';
 import { OllamaClient } from './ai/ollama-client.js';
 import { OpenAICompatibleClient } from './ai/openai-compatible-client.js';
 import { SupportAgent } from './ai/support-agent.js';
@@ -149,7 +150,15 @@ function createGroqFallbackClient() {
     })));
   }
 
-  return new FallbackAiClient(providers);
+  if (config.AI_LOCAL_FALLBACK_ENABLED) {
+    providers.push(createAiProvider('local-emergency', new LocalSupportClient({
+      enabled: config.AI_LOCAL_FALLBACK_ENABLED
+    })));
+  }
+
+  return new FallbackAiClient(providers, {
+    generateTimeoutMs: config.AI_PROVIDER_TIMEOUT_MS
+  });
 }
 
 function parseFallbackKeys(value) {

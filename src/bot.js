@@ -644,8 +644,18 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
         await saveTranscript(storage, reply, 'assistant');
       }
     } catch (error) {
-      console.error('AI response failed:', error);
-      const failureNotice = await sendAiFailureNotice(message);
+      console.error(`AI response failed in ${message.guild?.name ?? message.guildId}/${message.channel?.name ?? message.channelId} for ${message.author?.tag ?? message.author?.id}: ${compactRuntimeError(error)}`);
+      const emergencyAnswer = await supportAgent.buildEmergencyTicketReply?.({ message, ticket, guildConfig }).catch((fallbackError) => {
+        console.error(`Local AI emergency fallback failed in ${message.channelId}: ${compactRuntimeError(fallbackError)}`);
+        return '';
+      });
+
+      const failureNotice = emergencyAnswer
+        ? await sendTicketResponse(message, emergencyAnswer.slice(0, 1900)).catch((sendError) => {
+          console.error(`Failed to send local AI emergency fallback in ${message.channelId}: ${compactRuntimeError(sendError)}`);
+          return null;
+        })
+        : await sendAiFailureNotice(message);
       if (failureNotice) await saveTranscript(storage, failureNotice, 'assistant');
     } finally {
       activeResponses.delete(activeResponseKey);
@@ -5856,11 +5866,18 @@ async function sendTicketResponse(message, payload) {
 
 async function sendAiFailureNotice(message) {
   try {
-    return await sendTicketResponse(message, 'Ahora mismo no puedo consultar la IA. He dejado el ticket preparado para que el staff lo revise.');
+    return await sendTicketResponse(message, 'Sigo contigo, pero ahora mismo una parte del sistema esta tardando mas de lo normal. Dejo el ticket listo para que el staff lo revise si hace falta.');
   } catch (error) {
     console.error('Failed to send AI fallback notice:', error);
     return null;
   }
+}
+
+function compactRuntimeError(error) {
+  const status = error?.status ?? error?.response?.status ?? error?.cause?.status;
+  const code = error?.code ?? error?.type ?? '';
+  const message = String(error?.message ?? error ?? '').replace(/\s+/g, ' ').slice(0, 420);
+  return [status ? `status=${status}` : null, code ? `code=${code}` : null, message].filter(Boolean).join(' ');
 }
 
 function isUnknownReplyReferenceError(error) {

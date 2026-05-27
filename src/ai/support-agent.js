@@ -4,16 +4,17 @@ import { buildDiscoveryContext } from '../server-discovery.js';
 import { detectAiQualitySignalHeuristic, parseAiQualitySignalJson } from '../ai-quality.js';
 import { buildExamEvaluationInput, parseExamEvaluationJson } from '../exam-mode.js';
 import { hasVisualAttachments } from './visual-analyzer.js';
+import { LocalSupportClient } from './local-support-client.js';
 
-const SERVER_CONTEXT_MAX_CHANNELS = 12;
-const SERVER_CONTEXT_FULL_SCAN_MAX_CHANNELS = 80;
-const SERVER_CONTEXT_FETCH_LIMIT = 35;
-const SERVER_CONTEXT_FULL_SCAN_FETCH_LIMIT = 18;
+const SERVER_CONTEXT_MAX_CHANNELS = 10;
+const SERVER_CONTEXT_FULL_SCAN_MAX_CHANNELS = 45;
+const SERVER_CONTEXT_FETCH_LIMIT = 25;
+const SERVER_CONTEXT_FULL_SCAN_FETCH_LIMIT = 12;
 const SERVER_CONTEXT_MAX_SNIPPETS = 10;
 const SERVER_CONTEXT_CHANNEL_LOOKUP_SNIPPETS = 6;
-const SERVER_CONTEXT_CACHE_TTL_MS = 45_000;
-const SERVER_CONTEXT_FETCH_TIMEOUT_MS = 2600;
-const SERVER_CONTEXT_CONCURRENCY = 8;
+const SERVER_CONTEXT_CACHE_TTL_MS = 120_000;
+const SERVER_CONTEXT_FETCH_TIMEOUT_MS = 1300;
+const SERVER_CONTEXT_CONCURRENCY = 12;
 
 export class SupportAgent {
   constructor({ aiClient, storage, maxHistoryMessages, visualAnalyzer = null }) {
@@ -22,6 +23,7 @@ export class SupportAgent {
     this.maxHistoryMessages = maxHistoryMessages;
     this.visualAnalyzer = visualAnalyzer;
     this.serverKnowledgeCache = new Map();
+    this.localFallback = new LocalSupportClient({ enabled: true });
   }
 
   async answerTicketMessage({ message, ticket, guildConfig }) {
@@ -80,6 +82,24 @@ export class SupportAgent {
     }
 
     return answer;
+  }
+
+  async buildEmergencyTicketReply({ message, ticket, guildConfig }) {
+    const latestGuildConfig = await this.storage.getGuildConfig(message.guild.id).catch(() => null) ?? guildConfig;
+    const userLanguage = detectUserLanguage(message.content);
+    const system = this.#buildSystemPrompt({
+      ticket,
+      guildConfig: latestGuildConfig,
+      userLanguage,
+      intakeContext: '',
+      visualContext: '',
+      serverKnowledgeContext: ''
+    });
+
+    return this.localFallback.generate({
+      system,
+      messages: [{ role: 'user', content: formatHistoryMessage(message).slice(0, 1800) }]
+    });
   }
 
   async summarizeTicket({ ticket, guildConfig, messages = [] }) {
