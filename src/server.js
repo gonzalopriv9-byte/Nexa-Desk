@@ -5085,61 +5085,61 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
         history.replaceState(null, '', '#' + nextView);
       }
     }
-    const dashboardTourKey = 'nexadesk.dashboard.tour.v3.' + ${JSON.stringify(session.user?.id || 'anonymous')};
+    const dashboardTourKey = 'nexadesk.dashboard.tour.v4.' + ${JSON.stringify(session.user?.id || 'anonymous')};
     const dashboardUsername = ${JSON.stringify(session.user?.globalName || session.user?.username || 'owner')};
     const dashboardTourSteps = [
       {
         view: 'overview',
-        target: '#view-overview .server-score, #view-overview',
+        target: '#view-overview .view-heading, #view-overview header, #view-overview',
         section: 'Resumen',
         title: 'Hola ' + dashboardUsername + ', bienvenido al centro de control de NexaDesk',
         text: 'Te voy a enseñar rapidamente que gestiona cada zona de la dashboard para que puedas configurar soporte con IA, paneles, seguridad, premium y transcripciones sin perderte.'
       },
       {
         view: 'servers',
-        target: '#view-servers .guild-list, #view-servers',
+        target: '#view-servers .view-heading, #view-servers',
         section: 'Servidores',
         title: 'Elige que servidor gestionar',
         text: 'Selecciona un servidor para editarlo. Si NexaDesk no esta invitado, el boton Invitar abre el enlace con los permisos necesarios para que no tengas que buscar IDs.'
       },
       {
         view: 'settings',
-        target: '#view-settings form, #view-settings',
+        target: '#view-settings .view-heading, #view-settings',
         section: 'Configuracion',
         title: 'Contexto, staff y reglas del servidor',
         text: 'Aqui defines la categoria de tickets, el rol staff, el prompt de IA, normas, alianzas y Security Guard. Es donde NexaDesk aprende como debe actuar dentro de tu comunidad.'
       },
       {
         view: 'components',
-        target: '#view-components form, #view-components',
+        target: '#view-components .view-heading, #view-components',
         section: 'Componentes',
         title: 'Categorias del menu de tickets',
         text: 'Crea opciones del menu desplegable: soporte, reportes, alianzas, modo examen o voz. Tambien puedes poner preguntas previas para que el staff reciba contexto desde el primer mensaje.'
       },
       {
         view: 'panels',
-        target: '#view-panels .panel-builder, #view-panels',
+        target: '#view-panels .view-heading, #view-panels',
         section: 'Paneles',
         title: 'Publica paneles en Discord',
         text: 'Construye el panel que vera el usuario en Discord. Puedes usar boton o menu, personalizar embeds, subir imagenes, editar paneles enviados y previsualizar como quedaran.'
       },
       {
         view: 'tickets',
-        target: '#tickets, #view-tickets',
+        target: '#view-tickets .view-heading, #tickets, #view-tickets',
         section: 'Tickets',
         title: 'Transcripciones y actividad',
         text: 'Desde aqui revisas tickets recientes y abres transcripciones guardadas. Es util para auditorias, soporte posterior y para entender que esta pasando en cada servidor.'
       },
       {
         view: 'premium',
-        target: '#view-premium .premium-grid, #view-premium',
+        target: '#view-premium .view-heading, #view-premium',
         section: 'Premium',
         title: 'Funciones avanzadas por servidor',
         text: 'Gestiona slots premium, voz, automatizaciones extra y ventajas de crecimiento. Si el servidor no tiene Premium, la dashboard te indica como activarlo desde soporte.'
       },
       {
         view: 'growth',
-        target: '#view-growth .surface, #view-growth',
+        target: '#view-growth .view-heading, #view-growth',
         section: 'Crecimiento',
         title: 'Herramientas para crecer',
         text: 'Activa recomendaciones, afiliados, reviews y anuncios inteligentes. Esta zona ayuda a convertir tickets bien atendidos en confianza, actividad y nuevos servidores.'
@@ -5177,6 +5177,16 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
         return null;
       }
     }
+    function scrollDashboardTourTarget(target, view) {
+      if (!target) return;
+      const position = window.getComputedStyle(target).position;
+      if (position === 'fixed' || position === 'sticky') return;
+      const activeView = document.getElementById('view-' + view);
+      const anchor = activeView?.querySelector('.view-heading') || target;
+      const offset = window.matchMedia('(max-width: 760px)').matches ? 88 : 24;
+      const top = Math.max(0, anchor.getBoundingClientRect().top + window.scrollY - offset);
+      window.scrollTo({ top, behavior: 'smooth' });
+    }
     function renderDashboardTourStep() {
       const overlay = document.querySelector('#dashboardTour');
       if (!overlay) return;
@@ -5198,7 +5208,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
         if (!target) return;
         dashboardTourTarget = target;
         target.classList.add('tour-highlight');
-        target.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });
+        scrollDashboardTourTarget(target, view);
       }, 120);
     }
     function startDashboardTour({ force = false } = {}) {
