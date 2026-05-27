@@ -4367,6 +4367,30 @@ function renderDashboard({ session, guilds, tickets, stats }) {
     .assistant-form input { margin:0; background:#f3f3ee; color:#050505; border-color:rgba(0,0,0,.18); }
     .assistant-form input:focus { background:#fff; border-color:#050505; box-shadow:0 0 0 4px rgba(0,0,0,.08); }
     .assistant-form button { width:auto; min-width:88px; }
+    .tour-replay { position:fixed; right:218px; bottom:24px; z-index:32; width:auto; border:1px solid rgba(255,255,255,.18); background:rgba(8,8,8,.82); color:#fff; border-radius:999px; padding:12px 15px; box-shadow:0 22px 70px rgba(0,0,0,.48); backdrop-filter:blur(14px); }
+    .tour-overlay { position:fixed; inset:0; z-index:80; display:none; pointer-events:none; }
+    .tour-overlay.is-open { display:block; pointer-events:auto; }
+    .tour-dim { position:absolute; inset:0; background:radial-gradient(circle at 70% 18%, rgba(255,255,255,.14), transparent 28%), rgba(0,0,0,.7); backdrop-filter:blur(8px); }
+    .tour-card { position:fixed; right:24px; bottom:92px; z-index:84; width:min(440px, calc(100% - 32px)); border:1px solid rgba(255,255,255,.34); border-radius:22px; background:linear-gradient(145deg, rgba(255,255,255,.97), rgba(238,238,231,.94)); color:#050505; padding:18px; box-shadow:0 34px 130px rgba(0,0,0,.72), 0 0 0 1px rgba(0,0,0,.07) inset; animation:tourCardIn .34s cubic-bezier(.2,.8,.2,1) both; }
+    .tour-card::before { content:""; position:absolute; inset:0; border-radius:inherit; pointer-events:none; background:linear-gradient(135deg, rgba(255,255,255,.9), transparent 38%, rgba(0,0,0,.06)); }
+    .tour-card > * { position:relative; }
+    .tour-head { display:flex; gap:12px; align-items:center; margin-bottom:13px; }
+    .tour-avatar { display:grid; place-items:center; flex:0 0 auto; width:42px; height:42px; border-radius:14px; background:#050505; color:#fff; font-weight:950; box-shadow:0 18px 44px rgba(0,0,0,.22); }
+    .tour-head strong,.tour-head span { display:block; }
+    .tour-head span { color:#5b5b5b; font-size:13px; margin-top:3px; }
+    .tour-title { margin:0 0 8px; font-size:24px; line-height:1.05; color:#050505; }
+    .tour-text { margin:0; color:#333; line-height:1.5; font-weight:650; }
+    .tour-progress { height:7px; border-radius:999px; overflow:hidden; background:rgba(0,0,0,.1); margin:16px 0 12px; }
+    .tour-progress span { display:block; height:100%; width:0; border-radius:inherit; background:linear-gradient(90deg,#050505,#777); transition:width .25s ease; }
+    .tour-dots { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:14px; }
+    .tour-dot { width:8px; height:8px; border-radius:999px; background:rgba(0,0,0,.18); transition:width .2s ease, background .2s ease; }
+    .tour-dot.is-active { width:24px; background:#050505; }
+    .tour-actions { display:flex; justify-content:space-between; gap:8px; align-items:center; }
+    .tour-actions div { display:flex; gap:8px; }
+    .tour-actions button { width:auto; min-width:92px; border-radius:12px; }
+    .tour-skip { background:transparent; border:1px solid rgba(0,0,0,.14); color:#050505; }
+    .tour-highlight { position:relative; z-index:83 !important; border-radius:18px; outline:2px solid rgba(255,255,255,.96); outline-offset:4px; box-shadow:0 0 0 10px rgba(255,255,255,.13), 0 28px 95px rgba(255,255,255,.18) !important; }
+    .tour-highlight::after { content:""; position:absolute; inset:-10px; border-radius:inherit; pointer-events:none; border:1px solid rgba(255,255,255,.5); animation:tourPulse 1.35s ease-in-out infinite; }
     .loading { position:fixed; inset:0; z-index:60; display:grid; place-items:center; background:radial-gradient(circle at 50% 35%, rgba(255,255,255,.14), transparent 28%), rgba(5,8,10,.9); backdrop-filter:blur(14px); transition:opacity .35s ease, visibility .35s ease; }
     .loading.is-hidden { opacity:0; visibility:hidden; }
     .loader { position:relative; width:min(420px, calc(100% - 32px)); border:1px solid rgba(255,255,255,.28); background:linear-gradient(145deg, rgba(255,255,255,.1), rgba(7,18,22,.94)); border-radius:18px; padding:28px; text-align:center; overflow:hidden; box-shadow:0 30px 120px rgba(0,0,0,.55); }
@@ -4390,6 +4414,8 @@ function renderDashboard({ session, guilds, tickets, stats }) {
     @keyframes loaderPulse { 0%,100% { transform:scale(.96); box-shadow:0 0 0 0 rgba(255,255,255,.18); } 50% { transform:scale(1.04); box-shadow:0 0 0 18px rgba(255,255,255,0); } }
     @keyframes loaderSweep { from { transform:translateX(-55%); } to { transform:translateX(55%); } }
     @keyframes spin { to { transform:rotate(360deg); } }
+    @keyframes tourCardIn { from { opacity:0; transform:translateY(20px) scale(.97); filter:blur(8px); } to { opacity:1; transform:translateY(0) scale(1); filter:blur(0); } }
+    @keyframes tourPulse { 0%,100% { opacity:.24; transform:scale(.98); } 50% { opacity:.72; transform:scale(1.025); } }
     @media (prefers-reduced-motion:reduce) { body::before,body::after,.ambient-scene,.ambient-scene::before,.ambient-scene::after,.ambient-orb,.ambient-rings,.banner-frame,.banner-frame::before,.banner-frame img,.loader::after,.pulse { animation:none; transition:none; } }
     @media (max-width:1120px) { .app-shell,.workspace,.topbar,.command-center,.panel-builder,.premium-grid,.premium-market { grid-template-columns:1fr; } .sidebar { position:relative; height:auto; top:auto; } .nav-foot { position:static; margin-top:18px; } .panel-preview-wrap { position:relative; top:auto; } }
     @media (max-width:760px) {
@@ -4441,6 +4467,12 @@ function renderDashboard({ session, guilds, tickets, stats }) {
       .toast { left:12px; right:12px; bottom:82px; max-width:none; }
       .assistant-launcher { right:12px; bottom:12px; min-width:0; padding:11px 13px; }
       .assistant-panel { left:8px; right:8px; bottom:72px; width:auto; max-height:calc(100dvh - 86px); border-radius:16px; }
+      .tour-replay { right:auto; left:12px; bottom:12px; min-width:0; padding:11px 13px; }
+      .tour-card { left:10px; right:10px; bottom:74px; width:auto; max-height:calc(100dvh - 92px); overflow:auto; border-radius:18px; padding:15px; }
+      .tour-title { font-size:21px; }
+      .tour-actions { display:grid; grid-template-columns:1fr; }
+      .tour-actions div { display:grid; grid-template-columns:1fr 1fr; }
+      .tour-actions button { width:100%; }
       .assistant-form { grid-template-columns:1fr; }
       .assistant-form button { width:100%; }
       .loading { min-height:100dvh; }
@@ -4989,7 +5021,28 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       <button type="submit">Enviar</button>
     </form>
   </section>
+  <button class="tour-replay" id="tourReplay" type="button">Tutorial</button>
   <button class="assistant-launcher" id="assistantLauncher" type="button"><span>N</span> Ayuda IA</button>
+  <section class="tour-overlay" id="dashboardTour" role="dialog" aria-modal="true" aria-labelledby="tourTitle" aria-describedby="tourText">
+    <div class="tour-dim"></div>
+    <article class="tour-card">
+      <div class="tour-head">
+        <span class="tour-avatar">N</span>
+        <div><strong>Asistente de bienvenida</strong><span id="tourSection">Primer recorrido</span></div>
+      </div>
+      <h2 class="tour-title" id="tourTitle">Bienvenido a NexaDesk</h2>
+      <p class="tour-text" id="tourText">Te enseño la dashboard en menos de un minuto.</p>
+      <div class="tour-progress" aria-hidden="true"><span id="tourProgress"></span></div>
+      <div class="tour-dots" id="tourDots" aria-hidden="true"></div>
+      <div class="tour-actions">
+        <button class="tour-skip" id="tourSkip" type="button">Saltar</button>
+        <div>
+          <button class="secondary-button" id="tourBack" type="button">Atrás</button>
+          <button id="tourNext" type="button">Siguiente</button>
+        </div>
+      </div>
+    </article>
+  </section>
   <script>
     const loadingPhrases = [
       'Preparando a tu agente de confianza',
@@ -5032,6 +5085,147 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       if (updateHash && location.hash !== '#' + nextView) {
         history.replaceState(null, '', '#' + nextView);
       }
+    }
+    const dashboardTourKey = 'nexadesk.dashboard.tour.v2.' + ${JSON.stringify(session.user?.id || 'anonymous')};
+    const dashboardTourSteps = [
+      {
+        view: 'overview',
+        target: '#view-overview .server-score, #view-overview',
+        section: 'Resumen',
+        title: 'Tu centro de control',
+        text: 'Aqui ves si el servidor esta listo: categoria, staff, paneles, seguridad, premium y transcripciones. Es la vista rapida para saber que falta antes de lanzar soporte.'
+      },
+      {
+        view: 'servers',
+        target: '#view-servers .guild-list, #view-servers',
+        section: 'Servidores',
+        title: 'Elige que servidor gestionar',
+        text: 'Selecciona un servidor para editarlo. Si NexaDesk no esta invitado, el boton Invitar abre el enlace con los permisos necesarios para que no tengas que buscar IDs.'
+      },
+      {
+        view: 'settings',
+        target: '#view-settings form, #view-settings',
+        section: 'Configuracion',
+        title: 'Contexto, staff y reglas del servidor',
+        text: 'Aqui defines la categoria de tickets, el rol staff, el prompt de IA, normas, alianzas y Security Guard. Es donde NexaDesk aprende como debe actuar dentro de tu comunidad.'
+      },
+      {
+        view: 'components',
+        target: '#view-components form, #view-components',
+        section: 'Componentes',
+        title: 'Categorias del menu de tickets',
+        text: 'Crea opciones del menu desplegable: soporte, reportes, alianzas, modo examen o voz. Tambien puedes poner preguntas previas para que el staff reciba contexto desde el primer mensaje.'
+      },
+      {
+        view: 'panels',
+        target: '#view-panels .panel-builder, #view-panels',
+        section: 'Paneles',
+        title: 'Publica paneles en Discord',
+        text: 'Construye el panel que vera el usuario en Discord. Puedes usar boton o menu, personalizar embeds, subir imagenes, editar paneles enviados y previsualizar como quedaran.'
+      },
+      {
+        view: 'tickets',
+        target: '#tickets, #view-tickets',
+        section: 'Tickets',
+        title: 'Transcripciones y actividad',
+        text: 'Desde aqui revisas tickets recientes y abres transcripciones guardadas. Es util para auditorias, soporte posterior y para entender que esta pasando en cada servidor.'
+      },
+      {
+        view: 'premium',
+        target: '#view-premium .premium-grid, #view-premium',
+        section: 'Premium',
+        title: 'Funciones avanzadas por servidor',
+        text: 'Gestiona slots premium, voz, automatizaciones extra y ventajas de crecimiento. Si el servidor no tiene Premium, la dashboard te indica como activarlo desde soporte.'
+      },
+      {
+        view: 'growth',
+        target: '#view-growth .surface, #view-growth',
+        section: 'Crecimiento',
+        title: 'Herramientas para crecer',
+        text: 'Activa recomendaciones, afiliados, reviews y anuncios inteligentes. Esta zona ayuda a convertir tickets bien atendidos en confianza, actividad y nuevos servidores.'
+      },
+      {
+        view: state.activeView || 'overview',
+        target: '#assistantLauncher',
+        section: 'Ayuda IA',
+        title: 'Si te pierdes, preguntale al copiloto',
+        text: 'El boton Ayuda IA puede llevarte a secciones, rellenar configuraciones base y explicarte que hacer. Es el apoyo rapido para owners que no quieren tocar IDs ni leer docs eternas.'
+      }
+    ];
+    let dashboardTourIndex = 0;
+    let dashboardTourTarget = null;
+    function safeLocalStorageGet(key) {
+      try {
+        return localStorage.getItem(key);
+      } catch {
+        return null;
+      }
+    }
+    function safeLocalStorageSet(key, value) {
+      try {
+        localStorage.setItem(key, value);
+      } catch {}
+    }
+    function clearDashboardTourHighlight() {
+      if (dashboardTourTarget) dashboardTourTarget.classList.remove('tour-highlight');
+      dashboardTourTarget = null;
+    }
+    function findDashboardTourTarget(selector) {
+      try {
+        return document.querySelector(selector);
+      } catch {
+        return null;
+      }
+    }
+    function renderDashboardTourStep() {
+      const overlay = document.querySelector('#dashboardTour');
+      if (!overlay) return;
+      const step = dashboardTourSteps[dashboardTourIndex] || dashboardTourSteps[0];
+      const view = step.view || state.activeView || 'overview';
+      if (view !== state.activeView && document.querySelector('[data-view="' + view + '"].dashboard-view')) {
+        setActiveView(view, { updateHash: false });
+      }
+      document.querySelector('#tourSection').textContent = step.section + ' - paso ' + (dashboardTourIndex + 1) + ' de ' + dashboardTourSteps.length;
+      document.querySelector('#tourTitle').textContent = step.title;
+      document.querySelector('#tourText').textContent = step.text;
+      document.querySelector('#tourProgress').style.width = Math.round(((dashboardTourIndex + 1) / dashboardTourSteps.length) * 100) + '%';
+      document.querySelector('#tourBack').disabled = dashboardTourIndex === 0;
+      document.querySelector('#tourNext').textContent = dashboardTourIndex === dashboardTourSteps.length - 1 ? 'Terminar' : 'Siguiente';
+      document.querySelector('#tourDots').innerHTML = dashboardTourSteps.map((_, index) => '<span class="tour-dot ' + (index === dashboardTourIndex ? 'is-active' : '') + '"></span>').join('');
+      clearDashboardTourHighlight();
+      setTimeout(() => {
+        const target = findDashboardTourTarget(step.target);
+        if (!target) return;
+        dashboardTourTarget = target;
+        target.classList.add('tour-highlight');
+        target.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });
+      }, 120);
+    }
+    function startDashboardTour({ force = false } = {}) {
+      if (!force && safeLocalStorageGet(dashboardTourKey) === 'done') return;
+      setAssistantOpen(false);
+      dashboardTourIndex = 0;
+      document.querySelector('#dashboardTour')?.classList.add('is-open');
+      renderDashboardTourStep();
+    }
+    function finishDashboardTour(message = 'Tutorial completado. Siempre puedes repetirlo desde el boton Tutorial.') {
+      document.querySelector('#dashboardTour')?.classList.remove('is-open');
+      clearDashboardTourHighlight();
+      safeLocalStorageSet(dashboardTourKey, 'done');
+      showToast(message);
+    }
+    function moveDashboardTour(delta) {
+      const nextIndex = dashboardTourIndex + delta;
+      if (nextIndex >= dashboardTourSteps.length) {
+        finishDashboardTour();
+        return;
+      }
+      dashboardTourIndex = Math.max(0, nextIndex);
+      renderDashboardTourStep();
+    }
+    function maybeStartDashboardTour() {
+      if (safeLocalStorageGet(dashboardTourKey) === 'done') return;
+      setTimeout(() => startDashboardTour(), 950);
     }
     function ticketRow(ticket) {
       return '<tr><td>#' + escapeHtml(ticket.channelName) + '</td><td>' + escapeHtml(ticket.guildName) + '</td><td>' + escapeHtml(ticket.status) + '</td><td>' + escapeHtml(new Date(ticket.createdAt).toLocaleString()) + '</td><td><button class="table-action secondary-button" type="button" data-transcript-channel="' + escapeHtml(ticket.channelId) + '">Ver</button></td></tr>';
@@ -6428,6 +6622,16 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
     bindNavigationButtons();
     document.querySelector('#assistantLauncher')?.addEventListener('click', () => setAssistantOpen(true));
     document.querySelector('#assistantClose')?.addEventListener('click', () => setAssistantOpen(false));
+    document.querySelector('#tourReplay')?.addEventListener('click', () => startDashboardTour({ force: true }));
+    document.querySelector('#tourSkip')?.addEventListener('click', () => finishDashboardTour('Tutorial saltado. Puedes repetirlo cuando quieras.'));
+    document.querySelector('#tourBack')?.addEventListener('click', () => moveDashboardTour(-1));
+    document.querySelector('#tourNext')?.addEventListener('click', () => moveDashboardTour(1));
+    document.querySelector('#dashboardTour .tour-dim')?.addEventListener('click', () => finishDashboardTour('Tutorial cerrado. Puedes repetirlo cuando quieras.'));
+    window.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape' && document.querySelector('#dashboardTour')?.classList.contains('is-open')) {
+        finishDashboardTour('Tutorial cerrado. Puedes repetirlo cuando quieras.');
+      }
+    });
     document.querySelector('#assistantForm')?.addEventListener('submit', (event) => {
       event.preventDefault();
       askAssistant();
@@ -6474,6 +6678,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
     renderRecommendations(getActiveGuild());
     setActiveView((location.hash || '#overview').slice(1), { updateHash: false });
     syncGuildForm('#guildId', { inviteIfMissing: false });
+    maybeStartDashboardTour();
   </script>
 </body>
 </html>`;
