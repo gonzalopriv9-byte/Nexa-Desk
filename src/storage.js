@@ -337,9 +337,6 @@ export class JsonStorage {
       .map(normalizeAffiliateProfile)
       .find((item) => item.code === normalizedCode);
     if (!profile) throw new Error('Codigo de afiliado no encontrado.');
-    if (profile.discordUserId === String(redeemedByUserId)) {
-      throw new Error('No puedes usar tu propio codigo de afiliado en un servidor.');
-    }
 
     const now = new Date().toISOString();
     const existingOwnerRedemptions = Object.values(store.redemptions)
@@ -1157,9 +1154,6 @@ export class SupabaseStorage {
 
     const profile = await this.getAffiliateProfileByCode(code);
     if (!profile) throw new Error('Codigo de afiliado no encontrado.');
-    if (profile.discordUserId === String(redeemedByUserId)) {
-      throw new Error('No puedes usar tu propio codigo de afiliado en un servidor.');
-    }
 
     const now = new Date().toISOString();
     const redemption = normalizeAffiliateRedemption({
@@ -1650,9 +1644,6 @@ export class SupabaseStorage {
       .map(normalizeAffiliateProfile)
       .find((item) => item.code === normalizeAffiliateCode(code));
     if (!profile) throw new Error('Codigo de afiliado no encontrado.');
-    if (profile.discordUserId === String(redeemedByUserId)) {
-      throw new Error('No puedes usar tu propio codigo de afiliado en un servidor.');
-    }
 
     const now = new Date().toISOString();
     const existingOwnerRedemptions = Object.values(store.redemptions)

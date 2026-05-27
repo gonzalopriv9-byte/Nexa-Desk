@@ -1837,14 +1837,6 @@ async function handleAffiliateCommand({ interaction, storage, config, client }) 
       rewardDays: config.AFFILIATE_REWARD_DAYS
     }).catch(async (error) => {
       const message = String(error?.message ?? error);
-      if (/No puedes usar tu propio codigo/i.test(message)) {
-        await interaction.editReply([
-          `${EMOJIS.wifi} Ese codigo es tuyo, asi que no puedo registrarlo en este servidor.`,
-          'Para evitar abuso, el codigo debe usarlo otro owner en su servidor.',
-          'Si quieres conseguir recompensas, comparte tu codigo con alguien que vaya a invitar NexaDesk.'
-        ].join('\n'));
-        return null;
-      }
       if (/Codigo de afiliado no encontrado/i.test(message)) {
         await interaction.editReply([
           `${EMOJIS.wifi} No encuentro ese codigo de afiliado.`,
