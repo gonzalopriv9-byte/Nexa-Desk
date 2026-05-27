@@ -4370,7 +4370,7 @@ function renderDashboard({ session, guilds, tickets, stats }) {
     .tour-replay { position:fixed; right:218px; bottom:24px; z-index:32; width:auto; border:1px solid rgba(255,255,255,.18); background:rgba(8,8,8,.82); color:#fff; border-radius:999px; padding:12px 15px; box-shadow:0 22px 70px rgba(0,0,0,.48); backdrop-filter:blur(14px); }
     .tour-overlay { position:fixed; inset:0; z-index:80; display:none; pointer-events:none; }
     .tour-overlay.is-open { display:block; pointer-events:auto; }
-    .tour-dim { position:absolute; inset:0; background:radial-gradient(circle at 70% 18%, rgba(255,255,255,.14), transparent 28%), rgba(0,0,0,.7); backdrop-filter:blur(8px); }
+    .tour-dim { position:absolute; inset:0; background:radial-gradient(circle at 70% 18%, rgba(255,255,255,.11), transparent 28%), rgba(0,0,0,.56); }
     .tour-card { position:fixed; right:24px; bottom:92px; z-index:84; width:min(440px, calc(100% - 32px)); border:1px solid rgba(255,255,255,.34); border-radius:22px; background:linear-gradient(145deg, rgba(255,255,255,.97), rgba(238,238,231,.94)); color:#050505; padding:18px; box-shadow:0 34px 130px rgba(0,0,0,.72), 0 0 0 1px rgba(0,0,0,.07) inset; animation:tourCardIn .34s cubic-bezier(.2,.8,.2,1) both; }
     .tour-card::before { content:""; position:absolute; inset:0; border-radius:inherit; pointer-events:none; background:linear-gradient(135deg, rgba(255,255,255,.9), transparent 38%, rgba(0,0,0,.06)); }
     .tour-card > * { position:relative; }
@@ -4385,10 +4385,10 @@ function renderDashboard({ session, guilds, tickets, stats }) {
     .tour-dots { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:14px; }
     .tour-dot { width:8px; height:8px; border-radius:999px; background:rgba(0,0,0,.18); transition:width .2s ease, background .2s ease; }
     .tour-dot.is-active { width:24px; background:#050505; }
-    .tour-actions { display:flex; justify-content:space-between; gap:8px; align-items:center; }
+    .tour-actions { display:flex; justify-content:flex-end; gap:8px; align-items:center; }
     .tour-actions div { display:flex; gap:8px; }
     .tour-actions button { width:auto; min-width:92px; border-radius:12px; }
-    .tour-skip { background:transparent; border:1px solid rgba(0,0,0,.14); color:#050505; }
+    .tour-skip { display:none; }
     .tour-highlight { position:relative; z-index:83 !important; border-radius:18px; outline:2px solid rgba(255,255,255,.96); outline-offset:4px; box-shadow:0 0 0 10px rgba(255,255,255,.13), 0 28px 95px rgba(255,255,255,.18) !important; }
     .tour-highlight::after { content:""; position:absolute; inset:-10px; border-radius:inherit; pointer-events:none; border:1px solid rgba(255,255,255,.5); animation:tourPulse 1.35s ease-in-out infinite; }
     .loading { position:fixed; inset:0; z-index:60; display:grid; place-items:center; background:radial-gradient(circle at 50% 35%, rgba(255,255,255,.14), transparent 28%), rgba(5,8,10,.9); backdrop-filter:blur(14px); transition:opacity .35s ease, visibility .35s ease; }
@@ -5035,7 +5035,6 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       <div class="tour-progress" aria-hidden="true"><span id="tourProgress"></span></div>
       <div class="tour-dots" id="tourDots" aria-hidden="true"></div>
       <div class="tour-actions">
-        <button class="tour-skip" id="tourSkip" type="button">Saltar</button>
         <div>
           <button class="secondary-button" id="tourBack" type="button">Atrás</button>
           <button id="tourNext" type="button">Siguiente</button>
@@ -5086,14 +5085,15 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
         history.replaceState(null, '', '#' + nextView);
       }
     }
-    const dashboardTourKey = 'nexadesk.dashboard.tour.v2.' + ${JSON.stringify(session.user?.id || 'anonymous')};
+    const dashboardTourKey = 'nexadesk.dashboard.tour.v3.' + ${JSON.stringify(session.user?.id || 'anonymous')};
+    const dashboardUsername = ${JSON.stringify(session.user?.globalName || session.user?.username || 'owner')};
     const dashboardTourSteps = [
       {
         view: 'overview',
         target: '#view-overview .server-score, #view-overview',
         section: 'Resumen',
-        title: 'Tu centro de control',
-        text: 'Aqui ves si el servidor esta listo: categoria, staff, paneles, seguridad, premium y transcripciones. Es la vista rapida para saber que falta antes de lanzar soporte.'
+        title: 'Hola ' + dashboardUsername + ', bienvenido al centro de control de NexaDesk',
+        text: 'Te voy a enseñar rapidamente que gestiona cada zona de la dashboard para que puedas configurar soporte con IA, paneles, seguridad, premium y transcripciones sin perderte.'
       },
       {
         view: 'servers',
@@ -6623,13 +6623,11 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
     document.querySelector('#assistantLauncher')?.addEventListener('click', () => setAssistantOpen(true));
     document.querySelector('#assistantClose')?.addEventListener('click', () => setAssistantOpen(false));
     document.querySelector('#tourReplay')?.addEventListener('click', () => startDashboardTour({ force: true }));
-    document.querySelector('#tourSkip')?.addEventListener('click', () => finishDashboardTour('Tutorial saltado. Puedes repetirlo cuando quieras.'));
     document.querySelector('#tourBack')?.addEventListener('click', () => moveDashboardTour(-1));
     document.querySelector('#tourNext')?.addEventListener('click', () => moveDashboardTour(1));
-    document.querySelector('#dashboardTour .tour-dim')?.addEventListener('click', () => finishDashboardTour('Tutorial cerrado. Puedes repetirlo cuando quieras.'));
     window.addEventListener('keydown', (event) => {
       if (event.key === 'Escape' && document.querySelector('#dashboardTour')?.classList.contains('is-open')) {
-        finishDashboardTour('Tutorial cerrado. Puedes repetirlo cuando quieras.');
+        showToast('Completa el recorrido para cerrar el tutorial.');
       }
     });
     document.querySelector('#assistantForm')?.addEventListener('submit', (event) => {
