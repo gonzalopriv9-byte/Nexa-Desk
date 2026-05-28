@@ -511,6 +511,17 @@ export function createServer({ config, storage, bot, events }) {
     res.json(req.session);
   });
 
+  app.get('/api/me/dashboard-state', asyncHandler(async (req, res) => {
+    res.json(await getDashboardUserState(storage, req.session.user.id));
+  }));
+
+  app.patch('/api/me/dashboard-state', asyncHandler(async (req, res) => {
+    res.json(await updateDashboardUserState(storage, req.session.user.id, {
+      tourCompleted: req.body.tourCompleted,
+      tourVersion: req.body.tourVersion
+    }));
+  }));
+
   app.get('/api/events', (req, res) => {
     res.writeHead(200, {
       'content-type': 'text/event-stream',
@@ -1011,10 +1022,11 @@ export function createServer({ config, storage, bot, events }) {
 
   app.get('/', asyncHandler(async (req, res) => {
     const manageableGuildIds = req.session.guilds.map((guild) => guild.id);
-    const [configs, tickets, stats] = await Promise.all([
+    const [configs, tickets, stats, dashboardState] = await Promise.all([
       storage.listGuildConfigs(),
       storage.listTickets(),
-      storage.getDashboardStats(manageableGuildIds)
+      storage.getDashboardStats(manageableGuildIds),
+      getDashboardUserState(storage, req.session.user.id)
     ]);
     const installedGuildIds = await getInstalledGuildIds(bot, configs);
     const guilds = mergeUserGuilds(req.session, configs, installedGuildIds, config);
@@ -1022,7 +1034,8 @@ export function createServer({ config, storage, bot, events }) {
       session: req.session,
       guilds,
       tickets: tickets.filter((ticket) => canAccessGuild(req.session, ticket.guildId)),
-      stats: enrichDashboardStats(stats, guilds)
+      stats: enrichDashboardStats(stats, guilds),
+      dashboardState
     }));
   }));
 
@@ -1404,6 +1417,56 @@ async function recordDashboardGuildLog(storage, req, { guildId, guildName, type 
   }).catch((error) => {
     console.warn(`Could not persist dashboard guild log for ${guildId}:`, error?.message ?? error);
   });
+}
+
+async function getDashboardUserState(storage, discordUserId) {
+  const settings = await storage.getGlobalSettings().catch(() => ({}));
+  return normalizeDashboardUserState(settings.dashboardUserStates?.[String(discordUserId)]);
+}
+
+async function updateDashboardUserState(storage, discordUserId, patch = {}) {
+  const userId = String(discordUserId);
+  const settings = await storage.getGlobalSettings().catch(() => ({}));
+  const states = settings.dashboardUserStates && typeof settings.dashboardUserStates === 'object'
+    ? settings.dashboardUserStates
+    : {};
+  const current = normalizeDashboardUserState(states[userId]);
+  const now = new Date().toISOString();
+  const next = normalizeDashboardUserState({
+    ...current,
+    tourCompleted: patch.tourCompleted,
+    tourVersion: patch.tourVersion ?? current.tourVersion,
+    firstSeenAt: current.firstSeenAt || now,
+    lastSeenAt: now,
+    updatedAt: now
+  });
+  const savedStates = {
+    ...states,
+    [userId]: next
+  };
+  await storage.updateGlobalSettings({
+    dashboardUserStates: pruneDashboardUserStates(savedStates)
+  });
+  return next;
+}
+
+function normalizeDashboardUserState(value = {}) {
+  const source = value && typeof value === 'object' ? value : {};
+  return {
+    tourCompleted: Boolean(source.tourCompleted),
+    tourVersion: String(source.tourVersion || '').slice(0, 40) || null,
+    firstSeenAt: source.firstSeenAt || null,
+    lastSeenAt: source.lastSeenAt || null,
+    updatedAt: source.updatedAt || null
+  };
+}
+
+function pruneDashboardUserStates(states = {}) {
+  return Object.fromEntries(
+    Object.entries(states)
+      .filter(([userId]) => /^\d{17,20}$/.test(String(userId)))
+      .slice(-2500)
+  );
 }
 
 async function getInstalledGuildIds(bot, configs = []) {
@@ -4172,7 +4235,7 @@ function renderDashboardEmoji(name, alt = name) {
   return src ? `<img class="dash-emoji" src="${src}" alt="${escapeHtml(alt)}" loading="lazy">` : '';
 }
 
-function renderDashboard({ session, guilds, tickets, stats }) {
+function renderDashboard({ session, guilds, tickets, stats, dashboardState = {} }) {
   const guildOptions = guilds
     .map((guild) => `<option value="${escapeHtml(guild.guildId)}" data-installed="${guild.installed ? 'true' : 'false'}" data-invite-url="${escapeHtml(guild.inviteUrl)}">${escapeHtml(guild.guildName ?? guild.guildId)}${guild.installed ? '' : ' - instalar bot'}</option>`)
     .join('');
@@ -5239,7 +5302,10 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
         loadGuildLogs().catch((error) => showToast(error.message));
       }
     }
-    const dashboardTourKey = 'nexadesk.dashboard.tour.v4.' + ${JSON.stringify(session.user?.id || 'anonymous')};
+    const dashboardTourKey = 'nexadesk.dashboard.tour.completed.' + ${JSON.stringify(session.user?.id || 'anonymous')};
+    const dashboardTourLegacyKey = 'nexadesk.dashboard.tour.v4.' + ${JSON.stringify(session.user?.id || 'anonymous')};
+    const dashboardTourVersion = 'v5';
+    let dashboardTourCompleted = ${JSON.stringify(Boolean(dashboardState?.tourCompleted))};
     const dashboardUsername = ${JSON.stringify(session.user?.globalName || session.user?.username || 'owner')};
     const dashboardTourSteps = [
       {
@@ -5327,6 +5393,20 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
         localStorage.setItem(key, value);
       } catch {}
     }
+    function hasDashboardTourCompleted() {
+      return dashboardTourCompleted
+        || safeLocalStorageGet(dashboardTourKey) === 'done'
+        || safeLocalStorageGet(dashboardTourLegacyKey) === 'done';
+    }
+    function markDashboardTourCompleted() {
+      dashboardTourCompleted = true;
+      safeLocalStorageSet(dashboardTourKey, 'done');
+      fetch('/api/me/dashboard-state', {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ tourCompleted: true, tourVersion: dashboardTourVersion })
+      }).catch(() => {});
+    }
     function clearDashboardTourHighlight() {
       if (dashboardTourTarget) dashboardTourTarget.classList.remove('tour-highlight');
       dashboardTourTarget = null;
@@ -5373,7 +5453,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       }, 120);
     }
     function startDashboardTour({ force = false } = {}) {
-      if (!force && safeLocalStorageGet(dashboardTourKey) === 'done') return;
+      if (!force && hasDashboardTourCompleted()) return;
       setAssistantOpen(false);
       dashboardTourIndex = 0;
       document.querySelector('#dashboardTour')?.classList.add('is-open');
@@ -5382,7 +5462,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
     function finishDashboardTour(message = 'Tutorial completado. Siempre puedes repetirlo desde el boton Tutorial.') {
       document.querySelector('#dashboardTour')?.classList.remove('is-open');
       clearDashboardTourHighlight();
-      safeLocalStorageSet(dashboardTourKey, 'done');
+      markDashboardTourCompleted();
       showToast(message);
     }
     function moveDashboardTour(delta) {
@@ -5395,7 +5475,10 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       renderDashboardTourStep();
     }
     function maybeStartDashboardTour() {
-      if (safeLocalStorageGet(dashboardTourKey) === 'done') return;
+      if (hasDashboardTourCompleted()) {
+        if (!dashboardTourCompleted) markDashboardTourCompleted();
+        return;
+      }
       setTimeout(() => startDashboardTour(), 950);
     }
     function ticketRow(ticket) {
