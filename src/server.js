@@ -2074,7 +2074,8 @@ async function buildDashboardAssistantReply({ config, message, guild, stats, act
         'Eres el copiloto de la dashboard de NexaDesk.',
         'Responde en espanol claro, breve y accionable.',
         'Ayuda a configurar servidores Discord para tickets con IA, paneles, componentes, staff, voz Pro con STT/TTS, Modo examen, transcripciones, Security Guard, Growth Engine, Premium y mantenimiento global.',
-        'La dashboard real tiene estas secciones: Resumen, Servidores, Configuracion, Componentes, Paneles, Crecimiento, Premium y Tickets.',
+        'La dashboard real tiene estas secciones: Resumen, Servidores, Configuracion, Componentes, Paneles, Crecimiento, Premium, Tickets y Logs.',
+        'Posicionamiento clave: NexaDesk no sustituye sistemas de tickets; actua como capa IA compatible con Ticket King, XN Tickets, Guild Manager y paneles propios.',
         'En Configuracion se elige categoria, rol staff, prompt del servidor, informacion del servidor, canal/plantilla de alianzas y Security Guard.',
         'Descubrimiento inteligente escanea canales y detecta anuncios, normas, FAQ, soporte y categorias aunque usen tipografias raras.',
         'En Componentes se crean, editan y eliminan opciones del menu con preguntas previas, primer mensaje y modo Texto, Voz Pro o Modo examen.',
@@ -2089,7 +2090,7 @@ async function buildDashboardAssistantReply({ config, message, guild, stats, act
         'En Tickets se ven tickets y transcripciones guardadas.',
         'Si el usuario pide que tu metas algo, explica que puedes rellenar campos con botones de accion, pero el usuario debe revisar y guardar/publicar.',
         'No pidas IDs si la dashboard ya ofrece selectores de roles, canales y categorias.',
-        'Si recomiendas navegar, menciona una seccion exacta: Resumen, Servidores, Configuracion, Componentes, Paneles, Crecimiento, Premium o Tickets.',
+        'Si recomiendas navegar, menciona una seccion exacta: Resumen, Servidores, Configuracion, Componentes, Paneles, Crecimiento, Premium, Tickets o Logs.',
         'No inventes datos fuera del contexto recibido.'
       ].join('\n'),
       messages: [
@@ -3073,7 +3074,8 @@ function buildDocsSections(config) {
           'El bot registra slash commands globales con npm run register.',
           'Comandos clave: /setup, /ayuda, /desactivar ia, /activar ia, /ticket prioridad, /ticket cerrar, /ticket resumen, /voz crear, /globalstats, /crecimiento, /activarpremium, /mantenimiento, /seguridad configurar.',
           '/seguridad configurar acepta nivel, canal_logs, edad_minima_dias, antiflood, antilinks, automod, antibots, antialts y antinuke.',
-          'Si entra staff al ticket, NexaDesk deja de responder salvo mencion, reply o llamada directa.'
+          'Si entra staff al ticket, NexaDesk deja de responder salvo mencion, reply o llamada directa.',
+          'Diferenciacion comercial clave: NexaDesk no vende "otro bot de tickets"; vende una capa IA compatible con los sistemas que el servidor ya usa.'
         ] }
       ]
     },
@@ -3084,7 +3086,7 @@ function buildDocsSections(config) {
       blocks: [
         { type: 'table', headers: ['Flujo', 'Entrada', 'Respuesta'], rows: [
           ['Panel NexaDesk boton/menu', 'Usuario pulsa componente y responde preguntas previas.', 'Crea canal privado, guarda respuestas, saluda, revisa blacklist externa, activa IA y opcionalmente sala de voz Pro.'],
-          ['Ticket King', 'Canal ticket-[numero] con mensaje inicial de Ticket King.', 'Detecta opener, saluda una sola vez, revisa XN Protect, atiende hasta staff.'],
+          ['Ticket bots externos', 'Canal ticket-[numero] o mensaje inicial de Ticket King, XN Tickets, Guild Manager o bot similar.', 'Detecta opener, saluda una sola vez, revisa XN Protect, atiende hasta staff.'],
           ['Otros bots/categorias', 'Nuevo canal en categoria configurada por /setup o dashboard.', 'Registra ticket si encaja, guarda transcript y atiende segun prompt del servidor.'],
           ['Staff humano', 'Staff escribe, responde o toma el ticket.', 'NexaDesk pregunta si se encargan; si aceptan, IA queda en modo silencio salvo mencion directa.'],
           ['Cierre propio', '/ticket cerrar o cierre por intencion clara del usuario.', 'Guarda transcripcion, intenta enviar MD al opener, pide rating y actualiza dashboard.'],
@@ -4049,12 +4051,12 @@ function renderLogin(config) {
     <section class="intro">
       <div class="brand"><img class="brand-logo" src="/assets/nexadesk-logo.svg" alt="NexaDesk"><strong>NexaDesk</strong></div>
       <p class="eyebrow">AI ticket command center</p>
-      <h1>Soporte de Discord que sabe cuando actuar y cuando escalar.</h1>
-      <p>Gestiona paneles, categorias, prompts, transcripts y escalados de staff desde una consola limpia, conectada a Discord y lista para equipos reales.</p>
+      <h1>La capa IA para cualquier sistema de tickets.</h1>
+      <p>NexaDesk no te obliga a cambiar de bot. Trabaja encima de Ticket King, XN Tickets, Guild Manager o tus propios paneles: atiende, resume, escala, guarda transcripciones y ayuda al staff con contexto real.</p>
       <div class="feature-row">
-        <div class="feature"><strong>Contexto vivo</strong><span>La IA lee la configuracion actual del servidor antes de responder.</span></div>
-        <div class="feature"><strong>Escalado claro</strong><span>Cuando hace falta staff, NexaDesk menciona y avisa al rol correcto.</span></div>
-        <div class="feature"><strong>Paneles propios</strong><span>Crea entradas de soporte sin depender de copiar IDs manualmente.</span></div>
+        <div class="feature"><strong>Compatible con todo</strong><span>Detecta tickets externos y se une sin romper tu flujo actual.</span></div>
+        <div class="feature"><strong>Staff Copilot</strong><span>Resume el caso, estima riesgo y sugiere el siguiente paso.</span></div>
+        <div class="feature"><strong>Crecimiento medible</strong><span>NexaScore, reviews, afiliados y Premium para convertir soporte en confianza.</span></div>
       </div>
     </section>
     <aside class="login-card">
@@ -6435,7 +6437,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
         ? 'Premium activo en este servidor.'
         : 'Prepara el upgrade antes de venderlo.';
       document.querySelector('#premiumHeroText').textContent = premium.entitled
-      ? 'Configura que modulos quieres dejar activos: voz, Modo examen, IA prioritaria, smart transcripts, seguridad avanzada, Growth Engine, SLA Radar, Team Assist, alianzas y afiliados.'
+      ? 'Configura que modulos quieres dejar activos: compatibilidad con bots externos, voz, Modo examen, IA prioritaria, smart transcripts, seguridad avanzada, Growth Engine, SLA Radar, Team Assist, alianzas y afiliados.'
         : 'Puedes dejar estos modulos preparados. Cuando el owner active Premium, NexaDesk desbloqueara las funciones de mayor valor sin rehacer la configuracion.';
       const values = {
         premiumVoiceSupport: premium.voiceSupport,

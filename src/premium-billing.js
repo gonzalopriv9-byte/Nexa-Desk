@@ -2,6 +2,10 @@ export const PREMIUM_PACK_NAME = 'NexaDesk Premium Pack';
 
 export const PREMIUM_SALES_FEATURES = [
   {
+    title: 'Compatible con tu bot actual',
+    description: 'Funciona encima de Ticket King, XN Tickets, Guild Manager o paneles propios sin migraciones.'
+  },
+  {
     title: 'IA prioritaria',
     description: 'Respuestas mas naturales, menos rodeos y escalados con resumen accionable.'
   },

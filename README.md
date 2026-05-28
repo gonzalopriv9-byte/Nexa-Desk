@@ -2,11 +2,14 @@
 
 NexaDesk is a Discord support bot that watches ticket categories, joins newly-created ticket channels, and uses AI to moderate and answer support conversations.
 
+NexaDesk is not trying to replace every ticket bot. Its strongest position is being the AI support layer that works on top of the systems a server already uses: Ticket King, XN Tickets, Guild Manager, custom ticket categories, or NexaDesk panels.
+
 ## What works in this MVP
 
 - Discord bot using `discord.js`.
 - Slash command `/setup category:<category>` to select the ticket category for a server.
 - Automatic detection of new channels created inside that category.
+- External ticket compatibility layer for Ticket King, XN Tickets, Guild Manager-style ticket messages, and numbered `ticket-[number]` channels.
 - Dashboard actions to create ticket categories and publish ticket panels.
 - Ticket panel button that creates private ticket channels.
 - AI replies inside ticket channels.
@@ -333,6 +336,23 @@ Premium monetization is built into the dashboard. Configure `PAYPAL_CLIENT_ID`, 
 Voice support is a Pro feature activated by Premium slots, `/activarpremium`, or manually from Supabase. For a server, set either `plan = 'pro'` or `voice_support_enabled = true` in `guild_configs`. Optional columns `voice_category_id` and `voice_category_name` let you choose where Pro voice rooms should be created. In the dashboard, set a panel button or menu component to `Voz Pro + STT/TTS` to open a normal private text ticket with a linked private voice room.
 
 When a ticket channel registered by NexaDesk is deleted by another ticket bot, NexaDesk marks the ticket as closed, keeps the transcript available in the dashboard, and tries to DM the transcript to the opener automatically.
+
+## Competitive positioning
+
+Use this when announcing or listing NexaDesk:
+
+```text
+NexaDesk is the AI support layer for Discord tickets.
+
+Keep Ticket King, XN Tickets, Guild Manager, or your current panels. NexaDesk joins the ticket, understands server context, helps the user, escalates to staff with a clean summary, saves transcripts, and adds security signals without forcing a migration.
+```
+
+Short pitch:
+
+```text
+XN Protect protects your server. NexaDesk supports your users.
+Your ticket bot opens the channel. NexaDesk handles the conversation.
+```
 
 Growth Engine asks for a rating by DM when a ticket closes. Free servers get internal ratings and dashboard metrics. Premium servers can publish high ratings to a configured review channel and alert staff when low ratings indicate a user may leave.
 

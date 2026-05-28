@@ -379,7 +379,7 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
 
       const guildConfig = await storage.getGuildConfig(channel.guild.id);
       if (!isConfiguredTicketCategory(channel, guildConfig)) return;
-      if (isTicketKingChannel(channel)) return;
+      if (isNumberedTicketChannel(channel)) return;
       if (panelCreatedChannels.has(channel.id) || await storage.getTicket(channel.id)) return;
       if (await wasCreatedByNexaDeskPanel(channel)) return;
 
@@ -464,44 +464,55 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
       storage.getGuildConfig(guildId)
     ]);
 
-    const ticketKingDetected = (!ticket || !ticket.openedBy) && await shouldDetectTicketKingChannel(message);
-    const ticketKingOpenerId = ticketKingDetected ? await resolveTicketKingOpenerId(message) : null;
-    let ticketKingBlacklistChecked = false;
-    if (ticketKingDetected && !guildConfig) {
+    const externalTicketSource = (!ticket || !ticket.openedBy)
+      ? await detectExternalTicketSource(message)
+      : null;
+    const externalTicketDetected = Boolean(externalTicketSource);
+    const externalTicketOpenerId = externalTicketDetected
+      ? await resolveExternalTicketOpenerId(message)
+      : null;
+    let externalTicketBlacklistChecked = false;
+    if (externalTicketDetected && !guildConfig) {
       guildConfig = await storage.upsertGuildConfig(message.guild.id, {
         guildName: message.guild.name
       });
     }
 
-    if (!ticket && (isConfiguredTicketCategory(message.channel, guildConfig) || ticketKingDetected)) {
-      ticket = await createDetectedTicketRecord({ storage, channel: message.channel, openedBy: ticketKingOpenerId });
-      if (ticketKingDetected && !ticket.alreadyExists && message.author.bot) {
-        await sendTicketKingWelcomeOnce({ storage, message, guildConfig, ticketWelcomeChannels });
+    if (!ticket && (isConfiguredTicketCategory(message.channel, guildConfig) || externalTicketDetected)) {
+      ticket = await createDetectedTicketRecord({ storage, channel: message.channel, openedBy: externalTicketOpenerId });
+      if (externalTicketDetected && !ticket.alreadyExists && message.author.bot) {
+        await sendExternalTicketWelcomeOnce({
+          storage,
+          message,
+          guildConfig,
+          ticketWelcomeChannels,
+          sourceName: externalTicketSource.name
+        });
 
         ticket = await maybeAlertTicketOpenerXnProtect({
           storage,
           channel: message.channel,
           guildConfig,
           ticket,
-          openerId: ticketKingOpenerId,
+          openerId: externalTicketOpenerId,
           blacklistAlertedChannels
         });
-        ticketKingBlacklistChecked = true;
+        externalTicketBlacklistChecked = true;
       }
     }
 
-    if (ticketKingDetected && ticket && ticketKingOpenerId && !ticket.openedBy) {
-      const updatedTicket = await storage.updateTicket(ticket.channelId, { openedBy: ticketKingOpenerId });
+    if (externalTicketDetected && ticket && externalTicketOpenerId && !ticket.openedBy) {
+      const updatedTicket = await storage.updateTicket(ticket.channelId, { openedBy: externalTicketOpenerId });
       ticket = updatedTicket ?? ticket;
     }
 
-    if (ticketKingDetected && ticket && !ticketKingBlacklistChecked) {
+    if (externalTicketDetected && ticket && !externalTicketBlacklistChecked) {
       ticket = await maybeAlertTicketOpenerXnProtect({
         storage,
         channel: message.channel,
         guildConfig,
         ticket,
-        openerId: ticketKingOpenerId,
+        openerId: externalTicketOpenerId,
         blacklistAlertedChannels
       });
     }
@@ -985,7 +996,8 @@ function buildOwnerOnboardingEmbeds({ guild }) {
       {
         name: `${EMOJIS.global} Lo esencial que hace`,
         value: [
-          'Funciona con paneles propios o con otros bots de tickets.',
+          'Funciona con paneles propios o con otros bots de tickets: Ticket King, XN Tickets, Guild Manager y canales en categorias configuradas.',
+          'No tienes que migrar tu sistema actual: NexaDesk se convierte en la capa IA que atiende dentro del ticket.',
           'Usa IA con contexto del servidor, lee capturas cuando haga falta, escala a staff y guarda transcripciones.',
           'Security Guard protege contra spam, links sospechosos, bots no verificados, alts y acciones peligrosas.'
         ].join('\n')
@@ -2547,7 +2559,7 @@ async function maybeAlertXnProtectBlacklist({ storage, channel, guildConfig, tic
 
 async function maybeAlertTicketOpenerXnProtect({ storage, channel, guildConfig, ticket, openerId, blacklistAlertedChannels }) {
   if (!openerId) {
-    console.warn(`Ticket ${channel.id} detected from Ticket King, but opener could not be resolved for XN Protect check.`);
+    console.warn(`External ticket ${channel.id} detected, but opener could not be resolved for XN Protect check.`);
     return ticket;
   }
 
@@ -2825,7 +2837,11 @@ function buildHelpEmbed({ view, config, guild }) {
         },
         {
           name: `${EMOJIS.server} Si ya usas otro bot de tickets`,
-          value: 'No tienes que cambiar de sistema. Configura la categoria donde ese bot crea los canales y NexaDesk detectara los tickets nuevos.'
+          value: [
+            'No tienes que cambiar de sistema. NexaDesk actua como capa IA encima de tu bot actual.',
+            'Compatible con Ticket King, XN Tickets, Guild Manager y canales creados en categorias configuradas.',
+            'Si el canal trae mensaje inicial del bot externo, NexaDesk detecta opener, saluda una sola vez y atiende hasta que entre staff.'
+          ].join('\n')
         },
         {
           name: `${EMOJIS.wifi} Staff`,
@@ -2871,6 +2887,7 @@ function buildHelpEmbed({ view, config, guild }) {
         {
           name: `${EMOJIS.nexalogo} Funciones incluidas`,
           value: [
+            'Compatibilidad Pro con Ticket King, XN Tickets, Guild Manager y paneles propios sin migracion obligatoria.',
             'Voz Pro con STT/TTS y salas privadas vinculadas al ticket.',
             'Modo examen para oposiciones: preguntas automaticas, nota provisional y revision Premium con formulario/sala.',
             'IA prioritaria con respuestas menos genericas y mejores escalados.',
@@ -3720,16 +3737,16 @@ async function createDetectedTicketRecord({ storage, channel, openedBy = null })
   return storage.createTicket(ticket);
 }
 
-async function sendTicketKingWelcomeOnce({ storage, message, guildConfig, ticketWelcomeChannels }) {
+async function sendExternalTicketWelcomeOnce({ storage, message, guildConfig, ticketWelcomeChannels, sourceName = 'un bot externo de tickets' }) {
   if (ticketWelcomeChannels.has(message.channel.id)) return null;
   ticketWelcomeChannels.add(message.channel.id);
 
   const transcript = await storage.listTranscriptMessages(message.channel.id).catch(() => []);
-  if (transcript.some((item) => isTicketKingWelcomeContent(item.content))) return null;
+  if (transcript.some((item) => isExternalTicketWelcomeContent(item.content))) return null;
 
   const welcome = await message.channel.send([
     `${EMOJIS.nexalogo} Hola, soy **NexaDesk**.`,
-    'He detectado este ticket de Ticket King y voy a ayudarte aqui. Cuentame que necesitas y, si hace falta, avisare al staff con un resumen claro.'
+    `He detectado este ticket de ${sourceName} y voy a ayudarte aqui sin que tengas que cambiar de sistema. Cuentame que necesitas y, si hace falta, avisare al staff con un resumen claro.`
   ].join('\n'));
   await saveTranscript(storage, welcome, 'assistant');
   await sendMaintenanceTicketNotice({ storage, channel: message.channel, guildConfig });
@@ -3775,40 +3792,55 @@ async function applyMaintenanceThrottle({ storage, message, guildConfig }) {
   return true;
 }
 
-function isTicketKingWelcomeContent(content) {
-  return /he\s+detectado\s+este\s+ticket\s+de\s+ticket\s+king/i.test(String(content ?? ''));
+function isExternalTicketWelcomeContent(content) {
+  return /he\s+detectado\s+este\s+ticket\s+de\s+[\s\S]{1,120}?voy\s+a\s+ayudarte\s+aqui/i.test(String(content ?? ''));
 }
 
 function isConfiguredTicketCategory(channel, guildConfig) {
   return Boolean(channel && guildConfig?.ticketCategoryId && channel.parentId === guildConfig.ticketCategoryId);
 }
 
-async function shouldDetectTicketKingChannel(message) {
-  if (!isTicketKingChannel(message.channel)) return false;
-  if (isTicketKingSeedMessage(message)) return true;
-  if (message.author.bot) return false;
-  return hasRecentTicketKingMessage(message.channel);
+async function detectExternalTicketSource(message) {
+  if (isExternalTicketSeedMessage(message)) {
+    return identifyExternalTicketSource(message) ?? { id: 'external_ticket_bot', name: 'un bot externo de tickets' };
+  }
+
+  if (message.author.bot) return null;
+  return findRecentExternalTicketSource(message.channel);
 }
 
-function isTicketKingChannel(channel) {
+function isExternalTicketChannel(channel) {
+  const name = normalizeText(channel?.name ?? '');
+  return /^(ticket|soporte|support|ayuda|reporte|report|claim|consulta)(?:-|_|\s|$)/i.test(name)
+    || /^ticket-\d+$/i.test(channel?.name ?? '');
+}
+
+function isNumberedTicketChannel(channel) {
   return /^ticket-\d+$/i.test(channel?.name ?? '');
 }
 
-function isTicketKingSeedMessage(message) {
-  return isTicketKingChannel(message.channel) && isTicketKingBotUser(message.author);
+function isExternalTicketSeedMessage(message) {
+  return isExternalTicketChannel(message.channel)
+    && message.author?.bot
+    && message.author.id !== message.client?.user?.id
+    && looksLikeExternalTicketSeedMessage(message);
 }
 
-async function hasRecentTicketKingMessage(channel) {
+async function findRecentExternalTicketSource(channel) {
+  if (!isExternalTicketChannel(channel)) return null;
   try {
     const messages = await channel.messages.fetch({ limit: 25 });
-    return messages.some((item) => isTicketKingBotUser(item.author));
+    const seed = [...messages.values()]
+      .sort((a, b) => a.createdTimestamp - b.createdTimestamp)
+      .find(isExternalTicketSeedMessage);
+    return seed ? identifyExternalTicketSource(seed) ?? { id: 'external_ticket_bot', name: 'un bot externo de tickets' } : null;
   } catch {
-    return false;
+    return null;
   }
 }
 
-async function resolveTicketKingOpenerId(message) {
-  if (isTicketKingSeedMessage(message)) {
+async function resolveExternalTicketOpenerId(message) {
+  if (isExternalTicketSeedMessage(message)) {
     return extractTicketOpenerIdFromBotMessage(message);
   }
 
@@ -3816,7 +3848,7 @@ async function resolveTicketKingOpenerId(message) {
     const messages = await message.channel.messages.fetch({ limit: 25 });
     const seedMessage = [...messages.values()]
       .sort((a, b) => a.createdTimestamp - b.createdTimestamp)
-      .find((item) => isTicketKingSeedMessage(item));
+      .find((item) => isExternalTicketSeedMessage(item));
     return seedMessage ? extractTicketOpenerIdFromBotMessage(seedMessage) : null;
   } catch {
     return null;
@@ -3853,9 +3885,48 @@ function buildMessageSearchText(message) {
     .join('\n');
 }
 
-function isTicketKingBotUser(user) {
-  if (!user?.bot) return false;
-  const haystack = [
+function identifyExternalTicketSource(message) {
+  const botName = buildBotNameHaystack(message.author);
+  const text = normalizeText(buildMessageSearchText(message));
+
+  if (/\bticket\s*king\b/.test(botName) || botName.includes('ticketking') || /\bticket\s*king\b/i.test(text)) {
+    return { id: 'ticket_king', name: 'Ticket King' };
+  }
+
+  if (/\bxn\s*(?:tickets?|protect)\b/.test(botName) || /\bxn\s*(?:tickets?|protect)\b/i.test(text)) {
+    return { id: 'xn_tickets', name: 'XN Tickets' };
+  }
+
+  if (/\bguild\s*manager\b/.test(botName) || /\bguild\s*manager\b/i.test(text)) {
+    return { id: 'guild_manager', name: 'Guild Manager' };
+  }
+
+  if (looksLikeExternalTicketSeedMessage(message)) {
+    const cleanName = String(message.author?.username ?? 'bot externo').replace(/[^\p{L}\p{N}\s._-]/gu, '').trim();
+    return { id: 'external_ticket_bot', name: cleanName || 'un bot externo de tickets' };
+  }
+
+  return null;
+}
+
+function looksLikeExternalTicketSeedMessage(message) {
+  if (!message?.author?.bot || message.author.id === message.client?.user?.id) return false;
+  const text = normalizeText(buildMessageSearchText(message));
+  if (!text) return false;
+  return [
+    /\bticket\s+abierto\b/i,
+    /\b(?:ha\s+creado|creo|abierto|opened|created).{0,80}\bticket\b/i,
+    /\bticket.{0,80}(?:abierto|creado|opened|created)\b/i,
+    /\b(?:cerrar|reclamar|claim|close)\s+ticket\b/i,
+    /\b\/close\b/i,
+    /\bxn\s*tickets?\b/i,
+    /\bticket\s+king\b/i
+  ].some((pattern) => pattern.test(text));
+}
+
+function buildBotNameHaystack(user) {
+  if (!user?.bot) return '';
+  return [
     user.username,
     user.globalName,
     user.tag,
@@ -3865,8 +3936,6 @@ function isTicketKingBotUser(user) {
     .join(' ')
     .toLowerCase()
     .replace(/[-_]/g, ' ');
-
-  return /\bticket\s*king\b/.test(haystack) || haystack.includes('ticketking');
 }
 
 function isMissingPermissionError(error) {

@@ -569,6 +569,8 @@ export class SupportAgent {
       `Funciones premium del servidor:\n${premiumContext}`,
       [
         'Guia operativa de NexaDesk Dashboard:',
+        '- Posicionamiento: NexaDesk no obliga a cambiar de bot de tickets; actua como capa IA encima de Ticket King, XN Tickets, Guild Manager o paneles propios.',
+        '- Si preguntan por XN Tickets o bots similares, explica que NexaDesk puede convivir con ellos detectando tickets externos y aportando IA, resumen, escalado, transcripciones y seguridad.',
         '- Para eliminar un panel: Dashboard > Paneles > Paneles de este servidor > Eliminar panel.',
         '- Para editar un panel enviado: Dashboard > Paneles > Paneles de este servidor > Editar panel enviado.',
         '- Para editar o eliminar componentes: Dashboard > Componentes > Componentes activos > Editar/Eliminar.',
