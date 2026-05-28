@@ -16,6 +16,7 @@ import { normalizeMaintenanceState } from './maintenance.js';
 import { normalizeTicketComponent } from './panel-options.js';
 import { DEFAULT_PREMIUM_MODULES, PREMIUM_ADDONS, PREMIUM_SALES_FEATURES, getPremiumCheckoutConfig } from './premium-billing.js';
 import { isPremiumEntitled, normalizePremiumConfig, summarizePremiumConfig } from './premium.js';
+import { addManualPendingItem, buildLaunchPatch, buildReleaseState } from './release-gates.js';
 import { normalizeSecurityConfig, summarizeSecurityConfig } from './security.js';
 import { buildTranscriptFileName, buildTranscriptText } from './transcripts.js';
 
@@ -76,7 +77,7 @@ export function createServer({ config, storage, bot, events }) {
   }));
 
   app.get('/robots.txt', (_req, res) => {
-    res.type('text/plain').send('User-agent: *\nDisallow: /docs\nDisallow: /admin\nDisallow: /api\n');
+    res.type('text/plain').send('User-agent: *\nDisallow: /docs\nDisallow: /admin\nDisallow: /owner\nDisallow: /api\n');
   });
 
   app.get('/terms', (_req, res) => {
@@ -485,6 +486,42 @@ export function createServer({ config, storage, bot, events }) {
     req.session = session;
     next();
   });
+
+  app.get('/owner', requireGlobalAdmin, asyncHandler(async (req, res) => {
+    const settings = await storage.getGlobalSettings().catch(() => ({}));
+    res.type('html').send(renderOwnerReleasePanel({
+      session: req.session,
+      releaseState: buildReleaseState(settings.releaseControl, { isOwner: true })
+    }));
+  }));
+
+  app.get('/owner/api/release', requireGlobalAdmin, asyncHandler(async (req, res) => {
+    const settings = await storage.getGlobalSettings().catch(() => ({}));
+    res.json({ release: buildReleaseState(settings.releaseControl, { isOwner: true }) });
+  }));
+
+  app.post('/owner/api/release/pending', requireGlobalAdmin, asyncHandler(async (req, res) => {
+    const settings = await storage.getGlobalSettings().catch(() => ({}));
+    const releaseControl = addManualPendingItem(settings.releaseControl, {
+      title: req.body.title,
+      description: req.body.description,
+      type: req.body.type
+    }, { createdBy: req.session.user.username || req.session.user.id });
+    const saved = await storage.updateGlobalSettings({ releaseControl });
+    events?.publish?.('release.pending.created', buildReleaseState(saved.releaseControl, { isOwner: true }));
+    res.json({ release: buildReleaseState(saved.releaseControl, { isOwner: true }) });
+  }));
+
+  app.post('/owner/api/release/launch', requireGlobalAdmin, asyncHandler(async (req, res) => {
+    const settings = await storage.getGlobalSettings().catch(() => ({}));
+    const releaseControl = buildLaunchPatch(settings.releaseControl, {
+      launchedBy: req.session.user.username || req.session.user.id
+    });
+    const saved = await storage.updateGlobalSettings({ releaseControl });
+    const state = buildReleaseState(saved.releaseControl, { isOwner: true });
+    events?.publish?.('release.launched', state);
+    res.json({ release: state });
+  }));
 
   app.get('/invite/:guildId', requireGuildAccess, (req, res) => {
     res.redirect(buildBotInviteUrl(config, req.params.guildId));
@@ -1022,11 +1059,12 @@ export function createServer({ config, storage, bot, events }) {
 
   app.get('/', asyncHandler(async (req, res) => {
     const manageableGuildIds = req.session.guilds.map((guild) => guild.id);
-    const [configs, tickets, stats, dashboardState] = await Promise.all([
+    const [configs, tickets, stats, dashboardState, settings] = await Promise.all([
       storage.listGuildConfigs(),
       storage.listTickets(),
       storage.getDashboardStats(manageableGuildIds),
-      getDashboardUserState(storage, req.session.user.id)
+      getDashboardUserState(storage, req.session.user.id),
+      storage.getGlobalSettings().catch(() => ({}))
     ]);
     const installedGuildIds = await getInstalledGuildIds(bot, configs);
     const guilds = mergeUserGuilds(req.session, configs, installedGuildIds, config);
@@ -1035,7 +1073,8 @@ export function createServer({ config, storage, bot, events }) {
       guilds,
       tickets: tickets.filter((ticket) => canAccessGuild(req.session, ticket.guildId)),
       stats: enrichDashboardStats(stats, guilds),
-      dashboardState
+      dashboardState,
+      releaseState: buildReleaseState(settings.releaseControl, { isOwner: req.session.user.id === GLOBAL_BLACKLIST_ADMIN_USER_ID })
     }));
   }));
 
@@ -1252,6 +1291,10 @@ function normalizeError(error) {
 
 function requireGlobalAdmin(req, res, next) {
   if (req.session?.user?.id !== GLOBAL_BLACKLIST_ADMIN_USER_ID) {
+    if (req.path === '/owner') {
+      res.status(403).type('html').send(renderOwnerForbidden());
+      return;
+    }
     res.status(403).json({ error: 'Global admin only.' });
     return;
   }
@@ -2899,6 +2942,221 @@ function renderAdminPanel({ config, session, snapshot }) {
   });
 }
 
+function renderOwnerReleasePanel({ session, releaseState }) {
+  const pendingFeatures = releaseState.pendingFeatures ?? [];
+  const manualItems = releaseState.manualPendingItems ?? [];
+  const history = releaseState.launchHistory ?? [];
+  return `<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NexaDesk Owner Release Center</title>
+  <style>
+    :root { color-scheme:dark; --bg:#030303; --card:rgba(255,255,255,.055); --line:rgba(255,255,255,.16); --text:#f7f7f7; --muted:#a8a8a8; --gold:#e8c66a; --ok:#8dffb2; --bad:#ff7777; }
+    * { box-sizing:border-box; }
+    body { margin:0; min-height:100vh; font-family:"Segoe UI",ui-sans-serif,system-ui,sans-serif; color:var(--text); background:radial-gradient(circle at 22% 0%, rgba(255,255,255,.13), transparent 30%), repeating-linear-gradient(90deg, rgba(255,255,255,.045) 0 1px, transparent 1px 82px), repeating-linear-gradient(0deg, rgba(255,255,255,.025) 0 1px, transparent 1px 82px), var(--bg); }
+    main { width:min(1180px, calc(100vw - 28px)); margin:0 auto; padding:34px 0 48px; }
+    .hero { min-height:260px; border:1px solid var(--line); border-radius:34px; padding:34px; background:linear-gradient(135deg, rgba(255,255,255,.10), rgba(255,255,255,.025)); box-shadow:0 24px 80px rgba(0,0,0,.42); position:relative; overflow:hidden; }
+    .hero:after { content:""; position:absolute; inset:auto -10% -50% 45%; height:270px; background:radial-gradient(circle, rgba(232,198,106,.23), transparent 62%); filter:blur(6px); }
+    .eyebrow { color:var(--gold); text-transform:uppercase; letter-spacing:.22em; font-size:12px; font-weight:900; }
+    h1 { margin:14px 0 10px; font-size:clamp(38px, 7vw, 82px); line-height:.9; letter-spacing:-.07em; max-width:820px; }
+    p { color:var(--muted); line-height:1.65; }
+    .hero p { max-width:720px; font-size:18px; }
+    .actions { display:flex; gap:12px; flex-wrap:wrap; margin-top:24px; }
+    button, a.button { border:0; border-radius:16px; padding:14px 18px; font-weight:950; cursor:pointer; text-decoration:none; display:inline-flex; align-items:center; justify-content:center; color:#050505; background:#fff; transition:transform .18s ease, box-shadow .18s ease; }
+    button:hover, a.button:hover { transform:translateY(-2px); box-shadow:0 18px 48px rgba(255,255,255,.12); }
+    .secondary { background:rgba(255,255,255,.08); border:1px solid var(--line); color:var(--text); }
+    .danger { background:linear-gradient(135deg, var(--gold), #fff1ad); color:#080808; }
+    .grid { display:grid; grid-template-columns:1.1fr .9fr; gap:18px; margin-top:18px; }
+    .card { border:1px solid var(--line); border-radius:26px; padding:22px; background:var(--card); backdrop-filter:blur(18px); box-shadow:0 18px 54px rgba(0,0,0,.25); }
+    .card h2 { margin:0 0 8px; font-size:25px; letter-spacing:-.04em; }
+    .list { display:grid; gap:12px; margin-top:16px; }
+    .item { padding:14px; border:1px solid rgba(255,255,255,.12); border-radius:18px; background:rgba(0,0,0,.2); }
+    .item strong { display:block; font-size:16px; margin-bottom:4px; }
+    .item small { color:var(--muted); }
+    .pill { display:inline-flex; align-items:center; gap:6px; border:1px solid rgba(255,255,255,.14); background:rgba(255,255,255,.08); border-radius:999px; padding:7px 10px; color:#d8d8d8; font-size:12px; font-weight:900; text-transform:uppercase; letter-spacing:.08em; margin-top:8px; }
+    .status { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; margin-top:22px; }
+    .stat { border:1px solid var(--line); border-radius:18px; padding:14px; background:rgba(0,0,0,.2); }
+    .stat span { color:var(--muted); display:block; font-size:12px; text-transform:uppercase; letter-spacing:.12em; font-weight:900; }
+    .stat strong { display:block; margin-top:4px; font-size:28px; }
+    form { display:grid; gap:12px; margin-top:12px; }
+    label { display:grid; gap:7px; color:#d8d8d8; font-weight:800; }
+    input, textarea, select { width:100%; border:1px solid var(--line); border-radius:16px; background:rgba(0,0,0,.42); color:var(--text); padding:13px 14px; font:inherit; outline:none; }
+    textarea { min-height:120px; resize:vertical; }
+    .toast { position:fixed; right:18px; bottom:18px; max-width:360px; border:1px solid var(--line); border-radius:18px; background:#fff; color:#050505; padding:14px 16px; font-weight:900; box-shadow:0 18px 60px rgba(0,0,0,.36); opacity:0; transform:translateY(12px); transition:.2s ease; }
+    .toast.show { opacity:1; transform:none; }
+    @media (max-width: 820px) { .grid { grid-template-columns:1fr; } .status { grid-template-columns:1fr; } .hero { padding:24px; border-radius:24px; } }
+  </style>
+</head>
+<body>
+<main>
+  <section class="hero">
+    <div class="eyebrow">Owner-only release center</div>
+    <h1>Publica funciones cuando tu digas.</h1>
+    <p>Todo lo nuevo puede quedar en pruebas internas: los comandos solo los usa el owner, las secciones nuevas muestran “Estamos trabajando en esta parte” y el boton de lanzamiento abre la funcion para todos.</p>
+    <div class="actions">
+      <button class="danger" id="launchButton" type="button">${releaseState.hasPending ? 'Lanzar actualizacion' : 'No hay cambios pendientes'}</button>
+      <a class="button secondary" href="/">Volver a dashboard</a>
+    </div>
+    <div class="status">
+      <div class="stat"><span>Pendientes codigo</span><strong id="pendingFeatureCount">${pendingFeatures.length}</strong></div>
+      <div class="stat"><span>Notas pendientes</span><strong id="manualPendingCount">${manualItems.length}</strong></div>
+      <div class="stat"><span>Ultimo lanzamiento</span><strong id="lastLaunch">${escapeHtml(formatOwnerDate(releaseState.lastLaunchAt))}</strong></div>
+    </div>
+  </section>
+
+  <section class="grid">
+    <article class="card">
+      <h2>Cola de lanzamiento</h2>
+      <p>Estas son las funciones declaradas en codigo como “pendientes” y las notas que quieras agrupar en la proxima release.</p>
+      <div class="list" id="pendingList">${renderOwnerPendingList(releaseState)}</div>
+    </article>
+    <article class="card">
+      <h2>Anadir nota pendiente</h2>
+      <p>Usalo para dejar registrado lo que estamos preparando aunque aun no tenga comando o seccion propia.</p>
+      <form id="pendingForm">
+        <label>Tipo
+          <select name="type">
+            <option value="feature">Funcion</option>
+            <option value="dashboard">Dashboard</option>
+            <option value="command">Comando</option>
+            <option value="fix">Fix</option>
+          </select>
+        </label>
+        <label>Titulo
+          <input name="title" maxlength="90" placeholder="Ej: Nuevo modulo de...">
+        </label>
+        <label>Descripcion
+          <textarea name="description" maxlength="500" placeholder="Que incluye y que debe estar listo antes de publicarlo"></textarea>
+        </label>
+        <button type="submit">Guardar como pendiente</button>
+      </form>
+    </article>
+  </section>
+
+  <section class="card" style="margin-top:18px;">
+    <h2>Historial</h2>
+    <div class="list" id="historyList">${renderOwnerHistoryList(history)}</div>
+  </section>
+</main>
+<div class="toast" id="toast"></div>
+<script>
+  const toast = document.querySelector('#toast');
+  function showToast(text) {
+    toast.textContent = text;
+    toast.classList.add('show');
+    setTimeout(() => toast.classList.remove('show'), 2600);
+  }
+  async function refresh() {
+    const res = await fetch('/owner/api/release');
+    const body = await res.json();
+    location.reload();
+  }
+  document.querySelector('#pendingForm').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const data = Object.fromEntries(new FormData(event.currentTarget).entries());
+    const res = await fetch('/owner/api/release/pending', {
+      method:'POST',
+      headers:{'content-type':'application/json'},
+      body:JSON.stringify(data)
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      showToast(body.error || 'No pude guardar la nota.');
+      return;
+    }
+    showToast('Actualizacion pendiente guardada.');
+    setTimeout(refresh, 500);
+  });
+  document.querySelector('#launchButton').addEventListener('click', async () => {
+    if (!confirm('¿Lanzar ahora todas las funciones y notas pendientes para todo el mundo?')) return;
+    const res = await fetch('/owner/api/release/launch', { method:'POST' });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      showToast(body.error || 'No pude lanzar la actualizacion.');
+      return;
+    }
+    showToast('Actualizacion lanzada. Todo lo pendiente queda publico.');
+    setTimeout(refresh, 700);
+  });
+</script>
+</body>
+</html>`;
+}
+
+function renderOwnerForbidden() {
+  return `<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NexaDesk Owner Only</title>
+  <style>
+    body { margin:0; min-height:100vh; display:grid; place-items:center; font-family:"Segoe UI",ui-sans-serif,system-ui,sans-serif; background:#030303; color:#fff; }
+    main { width:min(620px, calc(100vw - 28px)); border:1px solid rgba(255,255,255,.16); border-radius:28px; padding:32px; background:rgba(255,255,255,.055); box-shadow:0 28px 80px rgba(0,0,0,.4); text-align:center; }
+    h1 { margin:0; font-size:clamp(38px, 9vw, 72px); letter-spacing:-.08em; }
+    p { color:#aaa; line-height:1.6; }
+    a { display:inline-flex; margin-top:14px; padding:13px 16px; border-radius:16px; background:#fff; color:#050505; text-decoration:none; font-weight:950; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Owner only.</h1>
+    <p>Esta zona controla lanzamientos internos de NexaDesk. Solo el owner global puede entrar con login de Discord.</p>
+    <a href="/">Volver</a>
+  </main>
+</body>
+</html>`;
+}
+
+function renderOwnerPendingList(releaseState) {
+  const items = [
+    ...(releaseState.pendingFeatures ?? []).map((feature) => ({
+      title: feature.title,
+      description: feature.description,
+      type: feature.type,
+      meta: [
+        feature.commands?.length ? `Comandos: /${feature.commands.join(', /')}` : null,
+        feature.dashboardViews?.length ? `Dashboard: ${feature.dashboardViews.join(', ')}` : null,
+        feature.dashboardPaths?.length ? `Rutas: ${feature.dashboardPaths.join(', ')}` : null
+      ].filter(Boolean).join(' · ') || 'Pendiente en codigo'
+    })),
+    ...(releaseState.manualPendingItems ?? []).map((item) => ({
+      title: item.title,
+      description: item.description,
+      type: item.type,
+      meta: `Anadido por ${item.createdBy} · ${formatOwnerDate(item.createdAt)}`
+    }))
+  ];
+  if (!items.length) return '<p>No hay nada pendiente. La proxima funcion que declaremos en codigo aparecera aqui automaticamente.</p>';
+  return items.map((item) => `
+    <div class="item">
+      <span class="pill">${escapeHtml(item.type)}</span>
+      <strong>${escapeHtml(item.title)}</strong>
+      <small>${escapeHtml(item.description || item.meta)}</small>
+      ${item.description ? `<small style="display:block;margin-top:6px;">${escapeHtml(item.meta)}</small>` : ''}
+    </div>
+  `).join('');
+}
+
+function renderOwnerHistoryList(history = []) {
+  if (!history.length) return '<p>No hay lanzamientos registrados todavia.</p>';
+  return history.slice(0, 12).map((item) => `
+    <div class="item">
+      <strong>${escapeHtml(item.title || 'Lanzamiento')}</strong>
+      <small>${escapeHtml(formatOwnerDate(item.launchedAt))} · ${escapeHtml(item.launchedBy || 'owner')}</small>
+      <small style="display:block;margin-top:6px;">Features: ${(item.featureIds ?? []).length} · Notas: ${(item.manualItems ?? []).length}</small>
+    </div>
+  `).join('');
+}
+
+function formatOwnerDate(value) {
+  const time = Date.parse(value ?? '');
+  if (!Number.isFinite(time)) return 'Nunca';
+  return new Date(time).toLocaleString('es-ES');
+}
+
 function renderDocsVault({ config, session }) {
   const docs = buildDocsSections(config);
   const issuedAt = session.iat ? new Date(session.iat).toLocaleString('es-ES') : 'sesion actual';
@@ -3030,6 +3288,7 @@ function buildDocsSections(config) {
           'Modo mantenimiento global se activa con /mantenimiento o desde /admin; ralentiza solo servidores Free y avisa al abrir tickets.',
           'Smart Discovery recorre todos los canales de cada servidor instalado, normaliza tipografias raras y detecta anuncios, normas, FAQ, soporte y categorias candidatas.',
           'El canal de anuncios detectado es destino de broadcast: todo mensaje publicado en ANNOUNCEMENT_SOURCE_CHANNEL_ID dentro de ANNOUNCEMENT_SOURCE_GUILD_ID se replica ahi.',
+          'Release Control: toda funcion nueva debe declararse en src/release-gates.js. Mientras no este lanzada desde /owner, sus comandos quedan owner-only y las secciones nuevas de dashboard con data-release-feature muestran "Estamos trabajando en esta parte".',
           '/docs es una zona oculta: no aparece en la UI, requiere TOTP y no debe contener secretos en claro.',
           `/admin es el command room oculto: se entra con codigo temporal generado por /code, limitado al rol ${config.ADMIN_CODE_ROLE_ID}, usa cookie separada y permite ver datos globales live y activar/desactivar mantenimiento.`
         ] }
@@ -4237,7 +4496,7 @@ function renderDashboardEmoji(name, alt = name) {
   return src ? `<img class="dash-emoji" src="${src}" alt="${escapeHtml(alt)}" loading="lazy">` : '';
 }
 
-function renderDashboard({ session, guilds, tickets, stats, dashboardState = {} }) {
+function renderDashboard({ session, guilds, tickets, stats, dashboardState = {}, releaseState = buildReleaseState() }) {
   const guildOptions = guilds
     .map((guild) => `<option value="${escapeHtml(guild.guildId)}" data-installed="${guild.installed ? 'true' : 'false'}" data-invite-url="${escapeHtml(guild.inviteUrl)}">${escapeHtml(guild.guildName ?? guild.guildId)}${guild.installed ? '' : ' - instalar bot'}</option>`)
     .join('');
@@ -4330,6 +4589,10 @@ function renderDashboard({ session, guilds, tickets, stats, dashboardState = {} 
     .view-stage { position:relative; min-height:520px; }
     .dashboard-view { display:none; animation:viewIn .34s cubic-bezier(.2,.8,.2,1) both; }
     .dashboard-view.is-active { display:block; }
+    .release-wip { min-height:360px; display:grid; place-items:center; text-align:center; border:1px solid rgba(255,255,255,.16); border-radius:32px; background:radial-gradient(circle at 50% 0%, rgba(255,255,255,.13), transparent 32%), rgba(0,0,0,.72); box-shadow:inset 0 0 0 1px rgba(255,255,255,.04), 0 28px 80px rgba(0,0,0,.32); padding:34px; }
+    .release-wip h2 { margin:0; font-size:clamp(34px, 6vw, 76px); letter-spacing:-.08em; text-transform:uppercase; }
+    .release-wip p { max-width:620px; margin:14px auto 0; color:var(--muted); font-size:18px; line-height:1.6; }
+    .release-wip .wip-pill { display:inline-flex; margin-bottom:14px; padding:8px 12px; border-radius:999px; border:1px solid rgba(255,255,255,.22); color:#050505; background:#fff; font-weight:950; text-transform:uppercase; letter-spacing:.1em; font-size:12px; }
     .is-hidden { display:none !important; }
     .view-heading { display:flex; align-items:end; justify-content:space-between; gap:16px; margin:0 0 14px; }
     .view-heading p { margin:4px 0 0; }
@@ -5287,7 +5550,22 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
     };
     const guildConfigs = ${JSON.stringify(guilds)};
     const dashboardEmojis = ${JSON.stringify(getDashboardEmojiUrls())};
+    const releaseState = ${toInlineJson(releaseState)};
     let guildMeta = {};
+    function isReleasedFeature(featureId) {
+      if (!featureId || releaseState?.isOwner) return true;
+      const feature = (releaseState.features || []).find((item) => item.id === featureId);
+      return !feature || feature.released;
+    }
+    function applyReleaseGates() {
+      document.querySelectorAll('[data-release-feature]').forEach((section) => {
+        const featureId = section.dataset.releaseFeature;
+        if (isReleasedFeature(featureId) || section.dataset.releaseLocked === 'true') return;
+        const feature = (releaseState.features || []).find((item) => item.id === featureId) || {};
+        section.dataset.releaseLocked = 'true';
+        section.innerHTML = '<div class="release-wip"><div><span class="wip-pill">Preview en desarrollo</span><h2>Estamos trabajando en esta parte</h2><p>' + escapeHtml(feature.title || 'Nueva funcion de NexaDesk') + ' todavia esta en pruebas internas. El owner global puede probarla antes del lanzamiento publico y publicarla desde /owner cuando este lista.</p></div></div>';
+      });
+    }
     function setActiveView(view, { updateHash = true } = {}) {
       const nextView = document.querySelector('[data-view="' + view + '"].dashboard-view') ? view : 'overview';
       state.activeView = nextView;
@@ -6998,6 +7276,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
     renderGrowthPanel(getActiveGuild());
     renderReadinessChecklist(getActiveGuild());
     renderRecommendations(getActiveGuild());
+    applyReleaseGates();
     setActiveView((location.hash || '#overview').slice(1), { updateHash: false });
     syncGuildForm('#guildId', { inviteIfMissing: false });
     maybeStartDashboardTour();

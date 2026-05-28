@@ -25,6 +25,7 @@ NexaDesk is not trying to replace every ticket bot. Its strongest position is be
 - Automatic transcript delivery when another ticket bot closes a ticket by deleting the channel.
 - Global bot metrics with `/globalstats`.
 - Growth Engine with post-ticket ratings, dashboard satisfaction metrics, premium public reviews, and Churn Radar alerts.
+- Owner-only release control at `/owner`: new commands can stay owner-only and new dashboard sections can show a public "we are working on this" placeholder until the owner launches the update.
 - Optional visual-proof analysis for images and sampled video frames when the server AI prompt asks for visual evidence.
 - Local JSON storage for fast development.
 - Ollama-compatible AI client prepared for a Raspberry Pi.
@@ -77,6 +78,14 @@ Public status page:
 ```text
 https://your-render-service.onrender.com/status
 ```
+
+Owner release center:
+
+```text
+https://your-render-service.onrender.com/owner
+```
+
+New public-facing work should be declared in `src/release-gates.js`. Until the owner launches the update from `/owner`, matching commands stay restricted to the global owner and dashboard sections tagged with `data-release-feature="<feature-id>"` render a work-in-progress screen for normal users.
 
 `/status` shows bot health, Discord/runtime metrics, HA leader state, components, and owner messages in real time. It is public for users, but only the global owner through Discord OAuth or an active `/admin` rotating-code session can edit the status and publish messages. Status edits are stored in global settings and broadcast through Server-Sent Events.
 

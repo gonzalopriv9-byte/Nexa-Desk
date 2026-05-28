@@ -57,6 +57,7 @@ import {
 import { buildFeedbackStats, formatRatingStars, normalizeGrowthConfig } from './growth.js';
 import { DEFAULT_PREMIUM_MODULES, PREMIUM_SALES_FEATURES, getPremiumCheckoutConfig } from './premium-billing.js';
 import { isPremiumEntitled, normalizePremiumConfig } from './premium.js';
+import { buildReleaseState, findPendingFeatureByCommand } from './release-gates.js';
 import { SecurityManager, SECURITY_LEVELS, normalizeSecurityConfig, normalizeSecurityLevel, summarizeSecurityConfig } from './security.js';
 import { analyzeGuildChannelsForDiscovery, hasUsefulDiscovery, normalizeChannelNameForDiscovery, normalizeDiscoveryConfig } from './server-discovery.js';
 import { buildTranscriptFileName, buildTranscriptText } from './transcripts.js';
@@ -212,6 +213,8 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
       }
 
       if (!interaction.isChatInputCommand()) return;
+
+      if (await shouldBlockPendingCommand({ interaction, storage })) return;
 
       if (interaction.commandName === 'setup') {
         if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
@@ -735,6 +738,26 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
   });
 
   return client;
+}
+
+async function shouldBlockPendingCommand({ interaction, storage }) {
+  if (!interaction?.isChatInputCommand?.()) return false;
+  if (interaction.user?.id === PREMIUM_ADMIN_USER_ID) return false;
+
+  const settings = await storage.getGlobalSettings().catch(() => ({}));
+  const releaseState = buildReleaseState(settings.releaseControl);
+  const pendingFeature = findPendingFeatureByCommand(releaseState, interaction.commandName);
+  if (!pendingFeature) return false;
+
+  await interaction.reply({
+    ephemeral: true,
+    content: [
+      `${EMOJIS.wifi} **Estamos trabajando en esta funcion.**`,
+      `**${pendingFeature.title}** todavia esta en pruebas internas de NexaDesk.`,
+      'El owner global puede probarla antes del lanzamiento publico. Cuando se publique desde `/owner`, quedara disponible para todos.'
+    ].join('\n')
+  });
+  return true;
 }
 
 function isClientReadyForDiscordRest(client) {
