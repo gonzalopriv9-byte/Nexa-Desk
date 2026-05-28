@@ -10,6 +10,16 @@ export const NEXT_RELEASE_FEATURES = [
     commands: [],
     defaultReleased: true,
     createdAt: '2026-05-28'
+  },
+  {
+    id: 'v15-launch-pack',
+    title: 'NexaDesk V1.5 Launch Pack',
+    description: 'Seccion visual V1.5 en dashboard y comando /novedades para anunciar la release con funciones listas para video.',
+    type: 'release',
+    dashboardViews: ['v15'],
+    commands: ['novedades'],
+    defaultReleased: false,
+    createdAt: '2026-05-28'
   }
 ];
 

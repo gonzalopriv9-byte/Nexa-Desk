@@ -2117,7 +2117,7 @@ async function buildDashboardAssistantReply({ config, message, guild, stats, act
         'Eres el copiloto de la dashboard de NexaDesk.',
         'Responde en espanol claro, breve y accionable.',
         'Ayuda a configurar servidores Discord para tickets con IA, paneles, componentes, staff, voz Pro con STT/TTS, Modo examen, transcripciones, Security Guard, Growth Engine, Premium y mantenimiento global.',
-        'La dashboard real tiene estas secciones: Resumen, Servidores, Configuracion, Componentes, Paneles, Crecimiento, Premium, Tickets y Logs.',
+        'La dashboard real tiene estas secciones: Resumen, Servidores, Configuracion, Componentes, Paneles, Crecimiento, V1.5, Premium, Tickets y Logs.',
         'Posicionamiento clave: NexaDesk no sustituye sistemas de tickets; actua como capa IA compatible con Ticket King, XN Tickets, Guild Manager y paneles propios.',
         'En Configuracion se elige categoria, rol staff, prompt del servidor, informacion del servidor, canal/plantilla de alianzas y Security Guard.',
         'Descubrimiento inteligente escanea canales y detecta anuncios, normas, FAQ, soporte y categorias aunque usen tipografias raras.',
@@ -2133,7 +2133,7 @@ async function buildDashboardAssistantReply({ config, message, guild, stats, act
         'En Tickets se ven tickets y transcripciones guardadas.',
         'Si el usuario pide que tu metas algo, explica que puedes rellenar campos con botones de accion, pero el usuario debe revisar y guardar/publicar.',
         'No pidas IDs si la dashboard ya ofrece selectores de roles, canales y categorias.',
-        'Si recomiendas navegar, menciona una seccion exacta: Resumen, Servidores, Configuracion, Componentes, Paneles, Crecimiento, Premium, Tickets o Logs.',
+        'Si recomiendas navegar, menciona una seccion exacta: Resumen, Servidores, Configuracion, Componentes, Paneles, Crecimiento, V1.5, Premium, Tickets o Logs.',
         'No inventes datos fuera del contexto recibido.'
       ].join('\n'),
       messages: [
@@ -2301,6 +2301,7 @@ function suggestDashboardActions(message, guild) {
   }
 
   if (lower.includes('crecimiento') || lower.includes('growth') || lower.includes('review') || lower.includes('valoracion') || lower.includes('reseña') || lower.includes('resena') || lower.includes('churn')) add('Abrir Crecimiento', 'growth');
+  if (lower.includes('v1.5') || lower.includes('version') || lower.includes('video') || lower.includes('lanzamiento') || lower.includes('release') || lower.includes('novedad')) add('Abrir V1.5', 'v15');
   if (lower.includes('premium') || lower.includes('pro') || lower.includes('voz') || lower.includes('voice') || lower.includes('branding') || lower.includes('analitica') || lower.includes('insight')) add('Abrir Premium', 'premium');
   if (lower.includes('examen') || lower.includes('oposicion') || lower.includes('postulacion')) {
     add('Crear examen', 'panels');
@@ -3408,7 +3409,9 @@ function buildDocsSections(config) {
       summary: 'Funciones vendibles y flujo administrativo.',
       blocks: [
         { type: 'list', items: [
-          'Dashboard: Resumen, Servidores, Configuracion, Componentes, Paneles, Crecimiento, Premium y Tickets.',
+          'Dashboard: Resumen, Servidores, Configuracion, Componentes, Paneles, Crecimiento, V1.5, Premium, Tickets y Logs.',
+          'V1.5 Launch Pack incluye la seccion #v15, el comando /novedades y material listo para video: problema, compatibilidad, IA con contexto, escalado, seguridad y Premium.',
+          'Release Control mantiene /novedades y #v15 como preview privada hasta que el owner pulse Lanzar actualizacion desde /owner.',
           'Configuracion incluye Descubrimiento inteligente para reescanear canales y usar anuncios/normas/FAQ como contexto operativo.',
           'Los anuncios globales salen del canal central configurado y llegan al canal de anuncios detectado de cada servidor; por defecto no replica menciones para evitar @everyone accidental.',
           'Paneles soportan boton unico o menu desplegable con 2+ componentes.',
@@ -4593,6 +4596,35 @@ function renderDashboard({ session, guilds, tickets, stats, dashboardState = {},
     .release-wip h2 { margin:0; font-size:clamp(34px, 6vw, 76px); letter-spacing:-.08em; text-transform:uppercase; }
     .release-wip p { max-width:620px; margin:14px auto 0; color:var(--muted); font-size:18px; line-height:1.6; }
     .release-wip .wip-pill { display:inline-flex; margin-bottom:14px; padding:8px 12px; border-radius:999px; border:1px solid rgba(255,255,255,.22); color:#050505; background:#fff; font-weight:950; text-transform:uppercase; letter-spacing:.1em; font-size:12px; }
+    #view-v15 { --v15-gold:#f5d36f; --v15-blue:#b9dcff; }
+    .v15-hero { position:relative; min-height:420px; overflow:hidden; border:1px solid rgba(255,255,255,.18); border-radius:28px; padding:34px; background:radial-gradient(circle at 12% 0%, rgba(255,255,255,.2), transparent 28%), radial-gradient(circle at 88% 18%, rgba(245,211,111,.14), transparent 28%), linear-gradient(135deg, rgba(24,24,24,.92), rgba(3,3,3,.88)); box-shadow:0 36px 140px rgba(0,0,0,.5), 0 0 0 1px rgba(255,255,255,.045) inset; }
+    .v15-hero::before { content:""; position:absolute; inset:-30% auto -30% -18%; width:42%; background:linear-gradient(90deg, transparent, rgba(255,255,255,.22), transparent); filter:blur(16px); transform:skewX(-18deg); animation:bannerScan 6.4s ease-in-out infinite; pointer-events:none; }
+    .v15-hero::after { content:"V1.5"; position:absolute; right:-18px; bottom:-38px; color:rgba(255,255,255,.055); font-size:clamp(90px, 19vw, 230px); font-weight:950; letter-spacing:-.1em; line-height:.8; pointer-events:none; }
+    .v15-hero-content { position:relative; z-index:1; max-width:880px; }
+    .v15-pill { display:inline-flex; align-items:center; gap:8px; border:1px solid rgba(245,211,111,.38); border-radius:999px; padding:8px 12px; color:#080704; background:linear-gradient(135deg, #fff9d2, var(--v15-gold)); font-weight:950; letter-spacing:.08em; text-transform:uppercase; font-size:12px; box-shadow:0 0 42px rgba(245,211,111,.16); }
+    .v15-title { margin-top:20px; font-size:clamp(44px, 8vw, 104px); line-height:.86; letter-spacing:-.09em; max-width:920px; }
+    .v15-subtitle { max-width:720px; color:#d7d7d7; font-size:clamp(17px, 2vw, 23px); margin-top:18px; }
+    .v15-actions { display:flex; flex-wrap:wrap; gap:10px; margin-top:24px; }
+    .v15-actions a,.v15-actions button { width:auto; display:inline-flex; align-items:center; justify-content:center; border-radius:999px; padding:12px 16px; text-decoration:none; font-weight:950; }
+    .v15-actions a { color:#050505; background:#fff; }
+    .v15-actions .ghost { color:#fff; border:1px solid rgba(255,255,255,.22); background:rgba(255,255,255,.055); }
+    .v15-strip { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; margin-top:28px; }
+    .v15-strip div { border:1px solid rgba(255,255,255,.14); border-radius:16px; padding:13px; background:rgba(255,255,255,.055); backdrop-filter:blur(14px); }
+    .v15-strip strong,.v15-strip span { display:block; }
+    .v15-strip span { color:var(--muted); font-size:13px; margin-top:4px; line-height:1.4; }
+    .v15-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:14px; margin-top:16px; }
+    .v15-card { position:relative; overflow:hidden; border:1px solid rgba(255,255,255,.15); border-radius:20px; padding:18px; background:linear-gradient(145deg, rgba(255,255,255,.095), rgba(255,255,255,.025)); box-shadow:0 24px 82px rgba(0,0,0,.24); transition:transform .28s ease, border-color .28s ease, background .28s ease; }
+    .v15-card:hover { transform:translateY(-3px); border-color:rgba(255,255,255,.32); background:linear-gradient(145deg, rgba(255,255,255,.13), rgba(255,255,255,.035)); }
+    .v15-card b { display:inline-grid; place-items:center; width:34px; height:34px; border-radius:11px; color:#050505; background:#fff; margin-bottom:14px; }
+    .v15-card h3 { font-size:20px; }
+    .v15-card p { font-size:14px; }
+    .v15-timeline { display:grid; gap:10px; margin-top:16px; counter-reset:v15; }
+    .v15-scene { counter-increment:v15; display:grid; grid-template-columns:54px minmax(0,1fr) 120px; gap:14px; align-items:center; border:1px solid rgba(255,255,255,.13); border-radius:16px; padding:14px; background:rgba(255,255,255,.045); }
+    .v15-scene::before { content:counter(v15); display:grid; place-items:center; width:38px; height:38px; border-radius:12px; color:#050505; background:#fff; font-weight:950; }
+    .v15-scene strong,.v15-scene span { display:block; }
+    .v15-scene span { color:var(--muted); margin-top:3px; line-height:1.42; }
+    .v15-scene small { justify-self:end; color:#050505; background:var(--v15-gold); border-radius:999px; padding:7px 10px; font-weight:950; }
+    .v15-video-box { border:1px solid rgba(255,255,255,.16); border-radius:22px; padding:20px; background:radial-gradient(circle at 0% 0%, rgba(245,211,111,.16), transparent 26%), rgba(255,255,255,.045); }
     .is-hidden { display:none !important; }
     .view-heading { display:flex; align-items:end; justify-content:space-between; gap:16px; margin:0 0 14px; }
     .view-heading p { margin:4px 0 0; }
@@ -4877,7 +4909,7 @@ function renderDashboard({ session, guilds, tickets, stats, dashboardState = {},
     @keyframes tourCardIn { from { opacity:0; transform:translateY(20px) scale(.97); filter:blur(8px); } to { opacity:1; transform:translateY(0) scale(1); filter:blur(0); } }
     @keyframes tourPulse { 0%,100% { opacity:.24; transform:scale(.98); } 50% { opacity:.72; transform:scale(1.025); } }
     @media (prefers-reduced-motion:reduce) { body::before,body::after,.ambient-scene,.ambient-scene::before,.ambient-scene::after,.ambient-orb,.ambient-rings,.banner-frame,.banner-frame::before,.banner-frame img,.loader::after,.pulse { animation:none; transition:none; } }
-    @media (max-width:1120px) { .app-shell,.workspace,.topbar,.command-center,.panel-builder,.premium-grid,.premium-market { grid-template-columns:1fr; } .sidebar { position:relative; height:auto; top:auto; } .nav-foot { position:static; margin-top:18px; } .panel-preview-wrap { position:relative; top:auto; } }
+    @media (max-width:1120px) { .app-shell,.workspace,.topbar,.command-center,.panel-builder,.premium-grid,.premium-market,.v15-grid,.v15-strip { grid-template-columns:1fr; } .sidebar { position:relative; height:auto; top:auto; } .nav-foot { position:static; margin-top:18px; } .panel-preview-wrap { position:relative; top:auto; } .v15-scene { grid-template-columns:44px minmax(0,1fr); } .v15-scene small { justify-self:start; grid-column:2; } }
     @media (max-width:760px) {
       body { overflow-x:hidden; background-size:auto; }
       .app-shell { width:100%; gap:12px; padding:0 10px 96px; }
@@ -4969,6 +5001,7 @@ function renderDashboard({ session, guilds, tickets, stats, dashboardState = {},
     <a class="nav-link" href="#components" data-view="components"><span class="nav-icon">${renderDashboardEmoji('check', 'Componentes')}</span><span>Componentes</span></a>
     <a class="nav-link" href="#panels" data-view="panels"><span class="nav-icon">${renderDashboardEmoji('global', 'Paneles')}</span><span>Paneles</span></a>
     <a class="nav-link" href="#growth" data-view="growth"><span class="nav-icon">${renderDashboardEmoji('rightArrow', 'Crecimiento')}</span><span>Crecimiento</span></a>
+    <a class="nav-link" href="#v15" data-view="v15"><span class="nav-icon">${renderDashboardEmoji('nexalogo', 'V1.5')}</span><span>V1.5</span></a>
     <a class="nav-link" href="#premium" data-view="premium"><span class="nav-icon">${renderDashboardEmoji('check', 'Premium')}</span><span>Premium</span></a>
     <a class="nav-link" href="#tickets" data-view="tickets"><span class="nav-icon">${renderDashboardEmoji('wifi', 'Tickets')}</span><span>Tickets</span></a>
     <a class="nav-link" href="#logs" data-view="logs"><span class="nav-icon">${renderDashboardEmoji('ban', 'Logs')}</span><span>Logs</span></a>
@@ -5344,6 +5377,50 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
           </article>
         </section>
       </section>
+      <section class="dashboard-view" id="view-v15" data-view="v15" data-release-feature="v15-launch-pack">
+        <div class="view-heading">
+          <div><h2>V1.5 Launch Pack</h2><p>Material visual, narrativa de lanzamiento y nuevas piezas para que el video venda NexaDesk en segundos.</p></div>
+        </div>
+        <section class="v15-hero">
+          <div class="v15-hero-content">
+            <span class="v15-pill">${renderDashboardEmoji('nexalogo', 'V1.5')} Preview owner-only</span>
+            <h2 class="v15-title">No cambies tu sistema de tickets. Hazlo inteligente.</h2>
+            <p class="v15-subtitle">NexaDesk V1.5 se posiciona como la capa IA que entra en cualquier ticket, entiende el contexto, protege el servidor y deja al staff entrar solo cuando importa.</p>
+            <div class="v15-actions">
+              <a href="/owner">Lanzar desde /owner</a>
+              <a class="ghost" href="#premium" data-go-view="premium">Ver Premium</a>
+              <a class="ghost" href="/status" target="_blank" rel="noopener">Estado publico</a>
+            </div>
+            <div class="v15-strip">
+              <div><strong>52+ servidores</strong><span>Escala real para mostrar traccion.</span></div>
+              <div><strong>Sin migracion</strong><span>Funciona con Ticket King, XN Tickets, Guild Manager y paneles propios.</span></div>
+              <div><strong>IA + staff</strong><span>Responde, resume, escala y deja transcripcion.</span></div>
+              <div><strong>Premium vendible</strong><span>Voz, examen, SLA Radar, Growth Engine y afiliados.</span></div>
+            </div>
+          </div>
+        </section>
+        <section class="v15-grid">
+          <article class="v15-card"><b>${renderDashboardEmoji('global', 'IA')}</b><h3>Contexto real</h3><p>La IA usa prompt del servidor, preguntas previas, transcripcion por voz, imagenes y pistas de canales para responder sin inventar.</p></article>
+          <article class="v15-card"><b>${renderDashboardEmoji('ban', 'Seguridad')}</b><h3>Security Guard+</h3><p>Anti-flood, anti-links, XN Protect Automod, blacklist global como aviso manual, anti-nuke y logs detallados por servidor.</p></article>
+          <article class="v15-card"><b>${renderDashboardEmoji('check', 'Examen')}</b><h3>Modo examen</h3><p>Tickets de postulacion con preguntas, nota provisional, revision humana y opcion Premium de formulario + sala de voz.</p></article>
+          <article class="v15-card"><b>${renderDashboardEmoji('wifi', 'Voz')}</b><h3>Voz Pro</h3><p>Soporte por voz con sala privada, STT/TTS, respuesta hablada y transcripcion para que el staff no pierda contexto.</p></article>
+          <article class="v15-card"><b>${renderDashboardEmoji('server', 'Growth')}</b><h3>Growth Engine</h3><p>Feedback post-ticket, reviews publicas, Churn Radar, afiliados y Premium slots para convertir soporte en crecimiento.</p></article>
+          <article class="v15-card"><b>${renderDashboardEmoji('rightArrow', 'Release')}</b><h3>Release Control</h3><p>Las funciones nuevas quedan en preview. El owner las prueba y pulsa Lanzar actualizacion cuando esten listas.</p></article>
+        </section>
+        <section class="v15-video-box">
+          <div class="section-heading">
+            <div><h2>Guion rapido para el video V1.5</h2><p>Escenas pensadas para grabar una pieza muy profesional y directa.</p></div>
+          </div>
+          <div class="v15-timeline">
+            <div class="v15-scene"><div><strong>Problema</strong><span>Tickets abiertos durante horas, staff saturado y usuarios repitiendo lo mismo.</span></div><small>0:00</small></div>
+            <div class="v15-scene"><div><strong>Compatibilidad</strong><span>Mostrar un ticket de Ticket King donde NexaDesk entra sin cambiar el sistema existente.</span></div><small>0:08</small></div>
+            <div class="v15-scene"><div><strong>IA con contexto</strong><span>La dashboard guarda normas, prompt, preguntas previas y pruebas visuales para responder mejor.</span></div><small>0:18</small></div>
+            <div class="v15-scene"><div><strong>Escalado humano</strong><span>La IA detecta cuando hace falta staff, menciona el rol y entrega resumen limpio.</span></div><small>0:30</small></div>
+            <div class="v15-scene"><div><strong>Seguridad</strong><span>Security Guard bloquea spam, links sospechosos y deja logs accionables para el owner.</span></div><small>0:42</small></div>
+            <div class="v15-scene"><div><strong>Premium</strong><span>Voz Pro, Modo examen, Growth Engine y afiliados como razon clara para pagar.</span></div><small>0:55</small></div>
+          </div>
+        </section>
+      </section>
       <section class="dashboard-view" id="view-premium" data-view="premium">
         <div class="view-heading">
           <div><h2>Premium</h2><p>Compra un pack de 3 servidores por 3€ y activalo directamente desde la dashboard.</p></div>
@@ -5650,6 +5727,13 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
         section: 'Crecimiento',
         title: 'Herramientas para crecer',
         text: 'Activa recomendaciones, afiliados, reviews y anuncios inteligentes. Esta zona ayuda a convertir tickets bien atendidos en confianza, actividad y nuevos servidores.'
+      },
+      {
+        view: 'v15',
+        target: '#view-v15 .view-heading, #view-v15',
+        section: 'V1.5',
+        title: 'Zona de lanzamiento y video',
+        text: 'Aqui tienes el resumen comercial de la version, escenas recomendadas para el video y las funciones que quedan preparadas hasta que las publiques desde /owner.'
       },
       {
         view: state.activeView || 'overview',

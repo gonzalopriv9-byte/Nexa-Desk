@@ -26,6 +26,7 @@ NexaDesk is not trying to replace every ticket bot. Its strongest position is be
 - Global bot metrics with `/globalstats`.
 - Growth Engine with post-ticket ratings, dashboard satisfaction metrics, premium public reviews, and Churn Radar alerts.
 - Owner-only release control at `/owner`: new commands can stay owner-only and new dashboard sections can show a public "we are working on this" placeholder until the owner launches the update.
+- V1.5 Launch Pack: dashboard section `#v15` and `/novedades` command prepared behind release control for launch/video material.
 - Optional visual-proof analysis for images and sampled video frames when the server AI prompt asks for visual evidence.
 - Local JSON storage for fast development.
 - Ollama-compatible AI client prepared for a Raspberry Pi.
@@ -86,6 +87,8 @@ https://your-render-service.onrender.com/owner
 ```
 
 New public-facing work should be declared in `src/release-gates.js`. Until the owner launches the update from `/owner`, matching commands stay restricted to the global owner and dashboard sections tagged with `data-release-feature="<feature-id>"` render a work-in-progress screen for normal users.
+
+The V1.5 launch pack is declared as `v15-launch-pack`. Before launch, only the global owner can use `/novedades` and see the full `#v15` dashboard section. After launching from `/owner`, both become public.
 
 `/status` shows bot health, Discord/runtime metrics, HA leader state, components, and owner messages in real time. It is public for users, but only the global owner through Discord OAuth or an active `/admin` rotating-code session can edit the status and publish messages. Status edits are stored in global settings and broadcast through Server-Sent Events.
 

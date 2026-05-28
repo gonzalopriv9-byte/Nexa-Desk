@@ -368,6 +368,10 @@ const commands = [
     )
     .toJSON(),
   new SlashCommandBuilder()
+    .setName('novedades')
+    .setDescription('Muestra las novedades preparadas para NexaDesk V1.5.')
+    .toJSON(),
+  new SlashCommandBuilder()
     .setName('ayuda')
     .setDescription('Abre la guia interactiva de NexaDesk.')
     .toJSON()
