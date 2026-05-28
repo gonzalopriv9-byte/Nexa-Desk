@@ -347,6 +347,11 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
         return;
       }
 
+      if (interaction.commandName === 'message-owner') {
+        await handleMessageOwnerCommand({ interaction, storage, client });
+        return;
+      }
+
       if (interaction.commandName === 'code') {
         await handleAdminCodeCommand({ interaction, storage, config });
         return;
@@ -1963,6 +1968,95 @@ async function handleDmOwnerCommand({ interaction, storage, client, config }) {
 
   await interaction.editReply([
     `${EMOJIS.check} Onboarding reenviado para **${guild.name}**.`,
+    ...results.map((line) => `- ${line}`)
+  ].join('\n'));
+}
+
+async function handleMessageOwnerCommand({ interaction, storage, client }) {
+  if (interaction.user.id !== PREMIUM_ADMIN_USER_ID) {
+    await interaction.reply({
+      content: 'Este comando solo puede usarlo el owner autorizado de NexaDesk.',
+      ephemeral: true
+    });
+    return;
+  }
+
+  const guildId = (interaction.options.getString('serverid') ?? interaction.options.getString('servidor') ?? '').trim();
+  const customMessage = (interaction.options.getString('message') ?? interaction.options.getString('mensaje') ?? '').trim().slice(0, 1800);
+  if (!/^\d{17,20}$/.test(guildId)) {
+    await interaction.reply({ content: 'Pon un ID de servidor valido.', ephemeral: true });
+    return;
+  }
+  if (!customMessage) {
+    await interaction.reply({ content: 'Pon el mensaje que quieres enviar al owner/instalador.', ephemeral: true });
+    return;
+  }
+
+  await interaction.deferReply({ ephemeral: true });
+  const guild = await client.guilds.fetch(guildId).catch(() => null);
+  if (!guild) {
+    await interaction.editReply('No encuentro ese servidor. Comprueba que NexaDesk siga dentro y que el ID sea correcto.');
+    return;
+  }
+
+  const existing = await storage.getGuildConfig(guildId).catch(() => null);
+  const installer = await fetchBotInstallerInfo(guild).catch(() => null);
+  if (installer) {
+    await storage.upsertGuildConfig(guildId, {
+      guildName: guild.name,
+      addedByUserId: installer.userId,
+      addedByUsername: installer.username,
+      addedAt: installer.addedAt,
+      addedByDetectedAt: new Date().toISOString()
+    }).catch(() => {});
+  }
+
+  const ownerMember = await guild.fetchOwner().catch(() => null);
+  const targets = new Map();
+  if (ownerMember?.user) targets.set(ownerMember.user.id, { user: ownerMember.user, label: 'owner' });
+  const installerId = installer?.userId ?? existing?.addedByUserId;
+  if (installerId && !targets.has(installerId)) {
+    const installerUser = await client.users.fetch(installerId).catch(() => null);
+    if (installerUser) targets.set(installerUser.id, { user: installerUser, label: 'instalador' });
+  }
+
+  if (!targets.size) {
+    await interaction.editReply('No pude resolver ni owner ni instalador para mandar el MD.');
+    return;
+  }
+
+  const embed = new EmbedBuilder()
+    .setColor(0xffffff)
+    .setTitle(`${EMOJIS.nexalogo} Mensaje importante de NexaDesk`)
+    .setDescription(customMessage)
+    .addFields(
+      { name: 'Servidor', value: `${guild.name} (${guild.id})`, inline: false },
+      { name: 'Enviado por', value: `${interaction.user.tag ?? interaction.user.username} (${interaction.user.id})`, inline: false }
+    )
+    .setFooter({ text: 'NexaDesk Owner Message' })
+    .setTimestamp(new Date());
+
+  const results = [];
+  for (const { user, label } of targets.values()) {
+    await user.send({ embeds: [embed] })
+      .then(() => results.push(`${label}: enviado a ${user.tag ?? user.username}`))
+      .catch((error) => results.push(`${label}: fallo (${error?.code ?? error?.message ?? 'DM cerrado'})`));
+  }
+
+  await storage.addGuildLog?.({
+    guildId: guild.id,
+    guildName: guild.name,
+    type: 'owner_message',
+    severity: results.some((line) => line.includes('fallo')) ? 'warning' : 'success',
+    title: 'MD personalizado enviado a owner/instalador',
+    message: customMessage,
+    actorId: interaction.user.id,
+    actorName: interaction.user.tag ?? interaction.user.username,
+    metadata: { results }
+  }).catch((error) => console.warn(`Could not persist owner message log for ${guild.id}:`, error?.message ?? error));
+
+  await interaction.editReply([
+    `${EMOJIS.check} Mensaje procesado para **${guild.name}**.`,
     ...results.map((line) => `- ${line}`)
   ].join('\n'));
 }

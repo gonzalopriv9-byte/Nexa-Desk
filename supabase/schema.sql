@@ -151,6 +151,32 @@ create index if not exists ai_quality_signals_severity_idx on public.ai_quality_
 create index if not exists ai_quality_signals_resolved_idx on public.ai_quality_signals (resolved);
 create index if not exists ai_quality_signals_created_at_idx on public.ai_quality_signals (created_at desc);
 
+create table if not exists public.guild_logs (
+  id text primary key,
+  guild_id text not null,
+  guild_name text,
+  type text not null default 'system',
+  severity text not null default 'info',
+  title text not null,
+  message text,
+  actor_id text,
+  actor_name text,
+  target_id text,
+  target_name text,
+  channel_id text,
+  channel_name text,
+  metadata jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists guild_logs_guild_id_idx on public.guild_logs (guild_id);
+create index if not exists guild_logs_type_idx on public.guild_logs (type);
+create index if not exists guild_logs_severity_idx on public.guild_logs (severity);
+create index if not exists guild_logs_actor_id_idx on public.guild_logs (actor_id);
+create index if not exists guild_logs_target_id_idx on public.guild_logs (target_id);
+create index if not exists guild_logs_channel_id_idx on public.guild_logs (channel_id);
+create index if not exists guild_logs_created_at_idx on public.guild_logs (created_at desc);
+
 create table if not exists public.premium_purchases (
   id text primary key,
   discord_user_id text not null,

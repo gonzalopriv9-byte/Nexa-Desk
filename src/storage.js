@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { createClient } from '@supabase/supabase-js';
 import {
   addDays,
@@ -37,6 +38,7 @@ export class JsonStorage {
     this.blacklistEvidenceFile = path.join(dataDir, 'global-blacklist-evidence.json');
     this.feedbackFile = path.join(dataDir, 'ticket-feedback.json');
     this.aiQualitySignalsFile = path.join(dataDir, 'ai-quality-signals.json');
+    this.guildLogsFile = path.join(dataDir, 'guild-logs.json');
     this.premiumPurchasesFile = path.join(dataDir, 'premium-purchases.json');
     this.premiumActivationsFile = path.join(dataDir, 'premium-activations.json');
   }
@@ -51,6 +53,7 @@ export class JsonStorage {
     await this.#ensureJson(this.blacklistEvidenceFile, {});
     await this.#ensureJson(this.feedbackFile, {});
     await this.#ensureJson(this.aiQualitySignalsFile, {});
+    await this.#ensureJson(this.guildLogsFile, {});
     await this.#ensureJson(this.premiumPurchasesFile, {});
     await this.#ensureJson(this.premiumActivationsFile, {});
   }
@@ -94,6 +97,18 @@ export class JsonStorage {
     };
     await this.#writeJson(this.ticketsFile, tickets);
     this.events?.publish('ticket.created', tickets[ticket.channelId]);
+    await this.addGuildLog({
+      guildId: tickets[ticket.channelId].guildId,
+      guildName: tickets[ticket.channelId].guildName,
+      type: 'ticket',
+      severity: 'info',
+      title: 'Ticket detectado',
+      message: `NexaDesk detecto o creo el ticket #${tickets[ticket.channelId].channelName ?? tickets[ticket.channelId].channelId}.`,
+      channelId: tickets[ticket.channelId].channelId,
+      channelName: tickets[ticket.channelId].channelName,
+      targetId: tickets[ticket.channelId].openedBy,
+      metadata: { status: tickets[ticket.channelId].status, categoryId: tickets[ticket.channelId].categoryId }
+    }).catch(() => {});
     return { ...tickets[ticket.channelId], alreadyExists: false };
   }
 
@@ -223,6 +238,24 @@ export class JsonStorage {
     return signals
       .filter((item) => !guildIdSet.size || guildIdSet.has(item.guildId))
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+
+  async addGuildLog(entry) {
+    const logs = await this.#readJson(this.guildLogsFile);
+    const normalized = normalizeGuildLog(entry);
+    const guildLogs = logs[normalized.guildId] ?? [];
+    logs[normalized.guildId] = [normalized, ...guildLogs].slice(0, 1000);
+    await this.#writeJson(this.guildLogsFile, logs);
+    this.events?.publish('guild.log.created', normalized);
+    return normalized;
+  }
+
+  async listGuildLogs(guildId, { limit = 150 } = {}) {
+    const logs = await this.#readJson(this.guildLogsFile);
+    return (logs[String(guildId)] ?? [])
+      .map(normalizeGuildLog)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .slice(0, clampNumber(limit, 1, 500));
   }
 
   async recordPremiumPurchase(purchase) {
@@ -725,6 +758,18 @@ export class SupabaseStorage {
     if (usedCompatibleTicketSchema) await this.#rememberTicketCompatibility(ticket.channelId, next);
     const saved = this.#mergeTicketCompatibility(fromTicketRow(data));
     this.events?.publish('ticket.created', saved);
+    await this.addGuildLog({
+      guildId: saved.guildId,
+      guildName: saved.guildName,
+      type: 'ticket',
+      severity: 'info',
+      title: 'Ticket detectado',
+      message: `NexaDesk detecto o creo el ticket #${saved.channelName ?? saved.channelId}.`,
+      channelId: saved.channelId,
+      channelName: saved.channelName,
+      targetId: saved.openedBy,
+      metadata: { status: saved.status, categoryId: saved.categoryId }
+    }).catch(() => {});
     return { ...saved, alreadyExists: false };
   }
 
@@ -937,6 +982,35 @@ export class SupabaseStorage {
     if (isMissingAiQualitySignalTableError(error)) return [];
     if (error) throw error;
     return data.map(fromAiQualitySignalRow);
+  }
+
+  async addGuildLog(entry) {
+    const normalized = normalizeGuildLog(entry);
+    const { data, error } = await this.client
+      .from('guild_logs')
+      .insert(toGuildLogRow(normalized))
+      .select()
+      .single();
+    if (isMissingGuildLogsTableError(error)) {
+      console.warn('guild_logs table missing; server log not persisted. Run supabase/schema.sql.');
+      return { ...normalized, notPersisted: true };
+    }
+    if (error) throw error;
+    const saved = fromGuildLogRow(data);
+    this.events?.publish('guild.log.created', saved);
+    return saved;
+  }
+
+  async listGuildLogs(guildId, { limit = 150 } = {}) {
+    const { data, error } = await this.client
+      .from('guild_logs')
+      .select('*')
+      .eq('guild_id', String(guildId))
+      .order('created_at', { ascending: false })
+      .limit(clampNumber(limit, 1, 500));
+    if (isMissingGuildLogsTableError(error)) return [];
+    if (error) throw error;
+    return data.map(fromGuildLogRow);
   }
 
   async getBlacklistEntry(value) {
@@ -2106,6 +2180,85 @@ function fromAiQualitySignalRow(row) {
   });
 }
 
+function normalizeGuildLog(entry = {}) {
+  const source = entry && typeof entry === 'object' ? entry : {};
+  const metadata = source.metadata && typeof source.metadata === 'object' && !Array.isArray(source.metadata)
+    ? source.metadata
+    : {};
+  return {
+    id: source.id ? String(source.id) : `log-${Date.now()}-${crypto.randomUUID()}`,
+    guildId: String(source.guildId ?? source.guild_id ?? ''),
+    guildName: source.guildName ? String(source.guildName).slice(0, 120) : null,
+    type: normalizeLogType(source.type),
+    severity: normalizeLogSeverity(source.severity),
+    title: String(source.title ?? 'Evento NexaDesk').slice(0, 160),
+    message: String(source.message ?? source.description ?? '').slice(0, 3000),
+    actorId: source.actorId ? String(source.actorId) : null,
+    actorName: source.actorName ? String(source.actorName).slice(0, 120) : null,
+    targetId: source.targetId ? String(source.targetId) : null,
+    targetName: source.targetName ? String(source.targetName).slice(0, 160) : null,
+    channelId: source.channelId ? String(source.channelId) : null,
+    channelName: source.channelName ? String(source.channelName).slice(0, 120) : null,
+    metadata,
+    createdAt: source.createdAt ?? source.created_at ?? new Date().toISOString()
+  };
+}
+
+function toGuildLogRow(entry) {
+  const normalized = normalizeGuildLog(entry);
+  return {
+    id: normalized.id,
+    guild_id: normalized.guildId,
+    guild_name: normalized.guildName,
+    type: normalized.type,
+    severity: normalized.severity,
+    title: normalized.title,
+    message: normalized.message,
+    actor_id: normalized.actorId,
+    actor_name: normalized.actorName,
+    target_id: normalized.targetId,
+    target_name: normalized.targetName,
+    channel_id: normalized.channelId,
+    channel_name: normalized.channelName,
+    metadata: normalized.metadata,
+    created_at: normalized.createdAt
+  };
+}
+
+function fromGuildLogRow(row) {
+  return normalizeGuildLog({
+    id: row.id,
+    guildId: row.guild_id,
+    guildName: row.guild_name,
+    type: row.type,
+    severity: row.severity,
+    title: row.title,
+    message: row.message,
+    actorId: row.actor_id,
+    actorName: row.actor_name,
+    targetId: row.target_id,
+    targetName: row.target_name,
+    channelId: row.channel_id,
+    channelName: row.channel_name,
+    metadata: row.metadata,
+    createdAt: row.created_at
+  });
+}
+
+function normalizeLogType(value) {
+  const normalized = String(value ?? '').toLowerCase().trim();
+  if (['security', 'ticket', 'config', 'panel', 'component', 'premium', 'growth', 'owner_message', 'system'].includes(normalized)) return normalized;
+  return 'system';
+}
+
+function normalizeLogSeverity(value) {
+  const normalized = String(value ?? '').toLowerCase().trim();
+  if (['debug', 'info', 'success', 'warning', 'critical'].includes(normalized)) return normalized;
+  if (['warn', 'medium'].includes(normalized)) return 'warning';
+  if (['error', 'danger', 'high'].includes(normalized)) return 'critical';
+  return 'info';
+}
+
 function toBlacklistRow(entry) {
   const normalized = normalizeBlacklistEntry(entry);
   return {
@@ -2319,6 +2472,10 @@ function isMissingAiQualitySignalTableError(error) {
   return Boolean(error && /ai_quality_signals|relation .* does not exist|schema cache/i.test(String(error.message ?? '')));
 }
 
+function isMissingGuildLogsTableError(error) {
+  return Boolean(error && /guild_logs|relation .* does not exist|schema cache/i.test(String(error.message ?? '')));
+}
+
 function isMissingPremiumBillingTableError(error) {
   return Boolean(error && /premium_purchases|premium_slot_activations|expires_at|relation .* does not exist|schema cache/i.test(String(error.message ?? '')));
 }
@@ -2331,6 +2488,12 @@ function isExpiredDate(value) {
   if (!value) return false;
   const time = Date.parse(value);
   return Number.isFinite(time) && time <= Date.now();
+}
+
+function clampNumber(value, min, max) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return min;
+  return Math.max(min, Math.min(max, Math.trunc(number)));
 }
 
 function scoreTranscriptMessageForTerms(message, terms = []) {

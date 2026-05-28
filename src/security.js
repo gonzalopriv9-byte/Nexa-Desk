@@ -2,7 +2,8 @@ import {
   AuditLogEvent,
   ChannelType,
   EmbedBuilder,
-  PermissionFlagsBits
+  PermissionFlagsBits,
+  UserFlagsBitField
 } from 'discord.js';
 import { DISCORD_EMOJIS as EMOJIS } from './emojis.js';
 
@@ -511,15 +512,18 @@ export class SecurityManager {
       const topGgDecision = await this.shouldBanBotBecauseMissingTopGg(member.user);
       if (!topGgDecision.shouldBan) {
         if (topGgDecision.lookup?.status !== 'listed') {
+          const discordVerified = topGgDecision.lookup?.status === 'discord_verified';
           await this.sendSecurityLog({
             guild: member.guild,
             config: security,
-            title: 'Anti-bots sin verificacion Top.gg',
-            description: `Ha entrado el bot ${member.user.tag}, pero NexaDesk no pudo confirmar su estado en Top.gg. No se banea sin certeza.`,
+            title: discordVerified ? 'Bot verificado por Discord permitido' : 'Anti-bots sin verificacion Top.gg',
+            description: discordVerified
+              ? `Ha entrado el bot verificado ${member.user.tag}. Top.gg puede devolver falsos negativos en bots grandes, asi que NexaDesk no lo sanciona.`
+              : `Ha entrado el bot ${member.user.tag}, pero NexaDesk no pudo confirmar su estado en Top.gg. No se banea sin certeza.`,
             fields: [
               { name: 'Bot', value: `${member.user.tag} (${member.user.id})`, inline: true },
               { name: 'Top.gg', value: describeTopGgLookup(topGgDecision.lookup) },
-              { name: 'Accion', value: 'Permitido temporalmente. Revisa manualmente si no reconoces este bot.' }
+              { name: 'Accion', value: discordVerified ? 'Permitido: verificado por Discord.' : 'Permitido temporalmente. Revisa manualmente si no reconoces este bot.' }
             ],
             important: false
           });
@@ -925,6 +929,13 @@ export class SecurityManager {
         }
       };
     }
+    const verifiedLookup = await this.lookupDiscordVerifiedBot(user);
+    if (verifiedLookup.status === 'discord_verified') {
+      return {
+        shouldBan: false,
+        lookup: verifiedLookup
+      };
+    }
     const lookup = await this.lookupTopGgBot(user.id);
     return {
       shouldBan: lookup.status === 'not_listed',
@@ -934,6 +945,21 @@ export class SecurityManager {
 
   isSecurityLabBot(userId) {
     return Boolean(userId && this.securityLabBotIds.has(String(userId)));
+  }
+
+  async lookupDiscordVerifiedBot(user) {
+    const fetched = await user.fetch(true).catch(() => user);
+    const flags = fetched?.flags ?? user?.flags;
+    const isVerified = Boolean(
+      flags?.has?.(UserFlagsBitField.Flags.VerifiedBot)
+      || (Number(flags?.bitfield ?? 0) & UserFlagsBitField.Flags.VerifiedBot)
+    );
+    return isVerified
+      ? {
+          status: 'discord_verified',
+          reason: 'Bot verificado por Discord. Top.gg puede devolver falsos 404 en bots grandes; NexaDesk no banea sin riesgo real.'
+        }
+      : { status: 'not_discord_verified', reason: 'Bot no verificado por Discord.' };
   }
 
   async lookupTopGgBot(botId) {
@@ -1019,6 +1045,21 @@ export class SecurityManager {
       const owner = await guild.fetchOwner().catch(() => null);
       await owner?.send({ embeds: [embed] }).catch(() => null);
     }
+
+    await this.storage.addGuildLog?.({
+      guildId: guild.id,
+      guildName: guild.name,
+      type: 'security',
+      severity: important ? 'critical' : 'warning',
+      title,
+      message: description,
+      metadata: {
+        fields: fields.filter((field) => field?.name && field?.value).slice(0, 8),
+        logChannelId: config.logChannelId || null
+      }
+    }).catch((error) => {
+      console.warn(`Could not persist security log for ${guild.id}:`, error?.message ?? error);
+    });
   }
 }
 
@@ -1044,6 +1085,7 @@ function describeTopGgLookup(lookup) {
   if (lookup.status === 'listed') return lookup.reason || 'Bot listado en Top.gg.';
   if (lookup.status === 'not_listed') return lookup.reason || 'Bot no listado en Top.gg.';
   if (lookup.status === 'lab_allowlisted') return lookup.reason || 'Bot de laboratorio autorizado.';
+  if (lookup.status === 'discord_verified') return lookup.reason || 'Bot verificado por Discord.';
   return lookup.reason || 'Estado Top.gg desconocido.';
 }
 

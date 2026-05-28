@@ -312,6 +312,24 @@ const commands = [
     )
     .toJSON(),
   new SlashCommandBuilder()
+    .setName('message-owner')
+    .setDescription('Envia un MD personalizado al owner y al usuario que agrego NexaDesk.')
+    .addStringOption((option) =>
+      option
+        .setName('serverid')
+        .setDescription('ID del servidor al que se enviara el mensaje.')
+        .setRequired(true)
+    )
+    .addStringOption((option) =>
+      option
+        .setName('message')
+        .setDescription('Mensaje personalizado que recibiran por MD.')
+        .setMinLength(2)
+        .setMaxLength(1800)
+        .setRequired(true)
+    )
+    .toJSON(),
+  new SlashCommandBuilder()
     .setName('code')
     .setDescription('Genera un codigo temporal de un solo uso para entrar a /admin.')
     .toJSON(),

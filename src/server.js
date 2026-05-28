@@ -637,6 +637,17 @@ export function createServer({ config, storage, bot, events }) {
       guildName: guild?.name ?? req.body.guildName,
       activatedBy: req.session.user.id
     });
+    await recordDashboardGuildLog(storage, req, {
+      guildId,
+      guildName: guild?.name ?? req.body.guildName,
+      type: 'premium',
+      severity: result.alreadyActive ? 'info' : 'success',
+      title: result.alreadyActive ? 'Premium ya estaba activo' : 'Premium activado desde dashboard',
+      message: result.alreadyActive
+        ? 'El usuario intento activar Premium, pero el servidor ya tenia un slot activo.'
+        : 'Se consumio un slot Premium y se activo el servidor desde la dashboard.',
+      metadata: { discordUserId: req.session.user.id, activation: result.activation ?? null }
+    });
     const configs = await storage.listGuildConfigs();
     const installedGuildIds = await getInstalledGuildIds(bot, configs);
     const guilds = mergeUserGuilds(req.session, configs, installedGuildIds, config);
@@ -750,6 +761,11 @@ export function createServer({ config, storage, bot, events }) {
     res.json(await storage.listTicketFeedback([req.params.guildId]));
   }));
 
+  app.get('/api/guilds/:guildId/logs', requireGuildAccess, asyncHandler(async (req, res) => {
+    const limit = Math.min(Math.max(Number.parseInt(req.query.limit ?? '180', 10) || 180, 1), 500);
+    res.json(await storage.listGuildLogs(req.params.guildId, { limit }));
+  }));
+
   app.post('/api/uploads/panel-image', requireDashboardSession, asyncHandler(async (req, res) => {
     const upload = await saveDashboardImageUpload({
       fileName: req.body.fileName,
@@ -766,7 +782,17 @@ export function createServer({ config, storage, bot, events }) {
       res.status(501).json({ error: 'Smart discovery is not available in this runtime.' });
       return;
     }
-    res.json(await bot.refreshGuildDiscovery({ guildId: req.params.guildId, reason: 'dashboard' }));
+    const updated = await bot.refreshGuildDiscovery({ guildId: req.params.guildId, reason: 'dashboard' });
+    await recordDashboardGuildLog(storage, req, {
+      guildId: req.params.guildId,
+      guildName: updated.guildName,
+      type: 'config',
+      severity: 'info',
+      title: 'Smart Discovery ejecutado desde dashboard',
+      message: 'NexaDesk reescaneo canales para detectar anuncios, normas, FAQ, soporte y categorias utiles.',
+      metadata: { discovery: updated.discovery ?? null }
+    });
+    res.json(updated);
   }));
 
   app.post('/api/guilds/:guildId', requireGuildAccess, asyncHandler(async (req, res) => {
@@ -791,6 +817,15 @@ export function createServer({ config, storage, bot, events }) {
       patch.premium = normalizePremiumConfig(req.body.premium, { ...(existing ?? {}), ...patch });
     }
     const updated = await storage.upsertGuildConfig(req.params.guildId, patch);
+    await recordDashboardGuildLog(storage, req, {
+      guildId: req.params.guildId,
+      guildName: updated.guildName,
+      type: req.body.premium ? 'premium' : req.body.growth ? 'growth' : req.body.security ? 'security' : 'config',
+      severity: 'success',
+      title: 'Configuracion actualizada desde dashboard',
+      message: 'Se guardaron cambios de configuracion del servidor.',
+      metadata: { changedKeys: Object.keys(patch) }
+    });
     res.json(updated);
   }));
 
@@ -799,6 +834,14 @@ export function createServer({ config, storage, bot, events }) {
       const updated = await bot.createTicketCategory({
         guildId: req.params.guildId,
         name: req.body.name || 'NexaDesk Tickets'
+      });
+      await recordDashboardGuildLog(storage, req, {
+        guildId: req.params.guildId,
+        guildName: updated.guildName,
+        type: 'config',
+        severity: 'success',
+        title: 'Categoria creada desde dashboard',
+        message: `Se creo o preparo una categoria de tickets: ${req.body.name || 'NexaDesk Tickets'}.`
       });
       res.json(updated);
     } catch (error) {
@@ -816,6 +859,15 @@ export function createServer({ config, storage, bot, events }) {
         ...(existing?.components ?? []),
         component
       ]
+    });
+    await recordDashboardGuildLog(storage, req, {
+      guildId: req.params.guildId,
+      guildName: updated.guildName,
+      type: 'component',
+      severity: 'success',
+      title: 'Componente creado',
+      message: `Se creo el componente "${component.label}" para paneles de tickets.`,
+      metadata: { componentId: component.id, ticketMode: component.ticketMode }
     });
     res.json(updated);
   }));
@@ -842,6 +894,15 @@ export function createServer({ config, storage, bot, events }) {
     });
     await bot.refreshTicketPanels?.({ guildId: req.params.guildId }).catch((error) => {
       console.warn(`Could not refresh panels after component update in ${req.params.guildId}:`, error?.message ?? error);
+    });
+    await recordDashboardGuildLog(storage, req, {
+      guildId: req.params.guildId,
+      guildName: updated.guildName,
+      type: 'component',
+      severity: 'success',
+      title: 'Componente actualizado',
+      message: `Se actualizo el componente "${component.label}" y se intentaron sincronizar paneles publicados.`,
+      metadata: { componentId: component.id, previousLabel: previous.label, ticketMode: component.ticketMode }
     });
     res.json(updated);
   }));
@@ -876,12 +937,30 @@ export function createServer({ config, storage, bot, events }) {
     await bot.refreshTicketPanels?.({ guildId: req.params.guildId }).catch((error) => {
       console.warn(`Could not refresh panels after component delete in ${req.params.guildId}:`, error?.message ?? error);
     });
+    await recordDashboardGuildLog(storage, req, {
+      guildId: req.params.guildId,
+      guildName: updated.guildName,
+      type: 'component',
+      severity: 'warning',
+      title: 'Componente eliminado',
+      message: `Se elimino el componente "${component.label}". Los paneles de menu afectados fueron sincronizados.`,
+      metadata: { componentId: component.id, affectedPanels: affectedPanels.map((panel) => panel.messageId || panel.title).filter(Boolean) }
+    });
     res.json(updated);
   }));
 
   app.post('/api/guilds/:guildId/panels', requireGuildAccess, asyncHandler(async (req, res) => {
     try {
       const updated = await bot.createTicketPanel(buildPanelRequestPayload(req));
+      await recordDashboardGuildLog(storage, req, {
+        guildId: req.params.guildId,
+        guildName: updated.guildName,
+        type: 'panel',
+        severity: 'success',
+        title: 'Panel publicado',
+        message: `Se publico un panel de tickets "${req.body.title || 'Centro de soporte'}".`,
+        metadata: { channelId: req.body.channelId, panelType: req.body.panelType, ticketMode: req.body.ticketMode }
+      });
       res.json(updated);
     } catch (error) {
       res.status(400).json({ error: error.message });
@@ -894,6 +973,15 @@ export function createServer({ config, storage, bot, events }) {
         ...buildPanelRequestPayload(req),
         messageId: req.params.messageId
       });
+      await recordDashboardGuildLog(storage, req, {
+        guildId: req.params.guildId,
+        guildName: updated.guildName,
+        type: 'panel',
+        severity: 'success',
+        title: 'Panel actualizado',
+        message: `Se actualizo el panel enviado "${req.body.title || req.params.messageId}".`,
+        metadata: { messageId: req.params.messageId, channelId: req.body.channelId, panelType: req.body.panelType }
+      });
       res.json(updated);
     } catch (error) {
       res.status(400).json({ error: error.message });
@@ -905,6 +993,15 @@ export function createServer({ config, storage, bot, events }) {
       const updated = await bot.deleteTicketPanel({
         guildId: req.params.guildId,
         messageId: req.params.messageId
+      });
+      await recordDashboardGuildLog(storage, req, {
+        guildId: req.params.guildId,
+        guildName: updated.guildName,
+        type: 'panel',
+        severity: 'warning',
+        title: 'Panel eliminado',
+        message: `Se elimino el panel publicado con mensaje ${req.params.messageId}.`,
+        metadata: { messageId: req.params.messageId }
       });
       res.json(updated);
     } catch (error) {
@@ -1288,6 +1385,25 @@ function canManageGuild(guild) {
 
 function canAccessGuild(session, guildId) {
   return session.guilds.some((guild) => guild.id === guildId);
+}
+
+async function recordDashboardGuildLog(storage, req, { guildId, guildName, type = 'config', severity = 'info', title, message, metadata = {} }) {
+  await storage.addGuildLog?.({
+    guildId,
+    guildName,
+    type,
+    severity,
+    title,
+    message,
+    actorId: req.session?.user?.id,
+    actorName: req.session?.user?.username,
+    metadata: {
+      source: 'dashboard',
+      ...metadata
+    }
+  }).catch((error) => {
+    console.warn(`Could not persist dashboard guild log for ${guildId}:`, error?.message ?? error);
+  });
 }
 
 async function getInstalledGuildIds(bot, configs = []) {
@@ -4344,6 +4460,22 @@ function renderDashboard({ session, guilds, tickets, stats }) {
     .transcript-message.assistant { border-color:rgba(255,255,255,.28); background:rgba(255,255,255,.07); }
     .transcript-meta { display:flex; justify-content:space-between; gap:12px; color:var(--muted); font-size:12px; margin-bottom:7px; }
     .transcript-content { white-space:pre-wrap; overflow-wrap:anywhere; line-height:1.45; }
+    .log-toolbar { display:grid; grid-template-columns:1fr auto; gap:12px; align-items:end; margin-bottom:14px; }
+    .log-toolbar select { margin:0; }
+    .log-list { display:grid; gap:10px; }
+    .log-entry { position:relative; display:grid; gap:10px; border:1px solid var(--line); border-radius:14px; padding:14px; background:linear-gradient(135deg, rgba(255,255,255,.065), rgba(255,255,255,.025)); overflow:hidden; }
+    .log-entry::before { content:""; position:absolute; inset:0 auto 0 0; width:4px; background:#fff; opacity:.8; }
+    .log-entry.warning::before { background:#f4c95d; }
+    .log-entry.critical::before { background:#ff5f57; }
+    .log-entry.success::before { background:#7cff6b; }
+    .log-head { display:flex; justify-content:space-between; gap:12px; align-items:flex-start; }
+    .log-head strong { display:block; color:var(--text); }
+    .log-head span,.log-message,.log-meta { color:var(--muted); }
+    .log-badges { display:flex; flex-wrap:wrap; gap:6px; }
+    .log-badge { display:inline-flex; align-items:center; gap:5px; border:1px solid rgba(255,255,255,.16); border-radius:999px; padding:5px 8px; background:rgba(255,255,255,.06); color:var(--text); font-size:12px; font-weight:850; }
+    .log-message { line-height:1.45; white-space:pre-wrap; overflow-wrap:anywhere; }
+    .log-meta { display:flex; flex-wrap:wrap; gap:8px; font-size:12px; }
+    .log-meta span { border:1px solid rgba(255,255,255,.1); border-radius:999px; padding:5px 8px; background:rgba(0,0,0,.22); }
     .live { color:var(--ok); }
     .toast { position:fixed; right:24px; bottom:88px; z-index:30; max-width:min(420px, calc(100% - 32px)); border:1px solid var(--line); border-radius:14px; background:#101010; color:var(--text); padding:14px 16px; box-shadow:0 22px 70px rgba(0,0,0,.55); transform:translateY(18px); opacity:0; pointer-events:none; transition:opacity .25s ease, transform .25s ease; }
     .toast.is-visible { opacity:1; transform:translateY(0); }
@@ -4440,6 +4572,7 @@ function renderDashboard({ session, guilds, tickets, stats }) {
       p { font-size:14px; }
       .topbar,.workspace,.command-center,.panel-builder { gap:12px; margin-bottom:12px; }
       .view-heading,.section-heading,.ticket-tools,.transcript-head { display:grid; align-items:start; gap:10px; }
+      .log-toolbar,.log-head { grid-template-columns:1fr; display:grid; }
       .active-server { margin-bottom:12px; }
       form,.control-grid,.stats,.server-status,.server-score,.mini-grid,.discovery-grid,.panel-fields,.form-section,.readiness-checklist,.recommendation-grid,.premium-feature-grid,.premium-toggle,.premium-wallet,.premium-activation-row { grid-template-columns:1fr; }
       input,select,textarea { font-size:16px; min-height:44px; }
@@ -4510,6 +4643,7 @@ function renderDashboard({ session, guilds, tickets, stats }) {
     <a class="nav-link" href="#growth" data-view="growth"><span class="nav-icon">${renderDashboardEmoji('rightArrow', 'Crecimiento')}</span><span>Crecimiento</span></a>
     <a class="nav-link" href="#premium" data-view="premium"><span class="nav-icon">${renderDashboardEmoji('check', 'Premium')}</span><span>Premium</span></a>
     <a class="nav-link" href="#tickets" data-view="tickets"><span class="nav-icon">${renderDashboardEmoji('wifi', 'Tickets')}</span><span>Tickets</span></a>
+    <a class="nav-link" href="#logs" data-view="logs"><span class="nav-icon">${renderDashboardEmoji('ban', 'Logs')}</span><span>Logs</span></a>
     <div class="nav-foot">
       <div class="nav-legal"><a href="/terms" target="_blank" rel="noopener">Terms</a><a href="/privacy" target="_blank" rel="noopener">Privacy</a></div>
       <form method="post" action="/logout"><button class="secondary-button" type="submit">Cerrar sesion</button></form>
@@ -4994,6 +5128,21 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       </aside>
     </section>
       </section>
+      <section class="dashboard-view" id="view-logs" data-view="logs">
+        <div class="view-heading">
+          <div><h2>Logs del servidor</h2><p>Auditoria detallada de seguridad, tickets, paneles, premium, mensajes owner y cambios importantes.</p></div>
+          <button class="secondary-button table-action" type="button" onclick="loadGuildLogs()">Actualizar logs</button>
+        </div>
+        <section class="surface" id="logs">
+          <div class="log-toolbar">
+            <label>Servidor activo<select id="logsGuildId" required>${guildOptions}</select></label>
+            <button class="quick-action" type="button" onclick="loadGuildLogs()">Refrescar</button>
+          </div>
+          <div class="log-list" id="guildLogList">
+            <p class="notice">Selecciona un servidor para cargar sus logs.</p>
+          </div>
+        </section>
+      </section>
     </div>
   </main>
   </div>
@@ -5067,6 +5216,8 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       stats: ${JSON.stringify(stats)},
       premiumAccount: null,
       activeTranscriptChannelId: null,
+      activeLogGuildId: null,
+      guildLogs: [],
       activeView: 'overview'
     };
     const guildConfigs = ${JSON.stringify(guilds)};
@@ -5083,6 +5234,9 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       });
       if (updateHash && location.hash !== '#' + nextView) {
         history.replaceState(null, '', '#' + nextView);
+      }
+      if (nextView === 'logs') {
+        loadGuildLogs().catch((error) => showToast(error.message));
       }
     }
     const dashboardTourKey = 'nexadesk.dashboard.tour.v4.' + ${JSON.stringify(session.user?.id || 'anonymous')};
@@ -5129,6 +5283,13 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
         section: 'Tickets',
         title: 'Transcripciones y actividad',
         text: 'Desde aqui revisas tickets recientes y abres transcripciones guardadas. Es util para auditorias, soporte posterior y para entender que esta pasando en cada servidor.'
+      },
+      {
+        view: 'logs',
+        target: '#view-logs .view-heading, #logs, #view-logs',
+        section: 'Logs',
+        title: 'Auditoria detallada por servidor',
+        text: 'Aqui el owner ve decisiones de Security Guard, avisos importantes, acciones de premium, mensajes enviados al owner y eventos que ayudan a entender que hizo NexaDesk.'
       },
       {
         view: 'premium',
@@ -5286,6 +5447,65 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       document.querySelector('#transcriptBody').innerHTML = messages.length
         ? messages.map((message) => '<article class="transcript-message ' + escapeHtml(message.role || '') + '"><div class="transcript-meta"><strong>' + escapeHtml(message.authorName || message.role || 'Desconocido') + '</strong><span>' + escapeHtml(new Date(message.createdAt).toLocaleString()) + '</span></div><div class="transcript-content">' + escapeHtml(message.content || '') + '</div></article>').join('')
         : '<p class="notice">Este ticket aun no tiene mensajes guardados.</p>';
+    }
+    async function loadGuildLogs(guildId = document.querySelector('#logsGuildId')?.value || document.querySelector('#guildId')?.value) {
+      if (!guildId) return;
+      state.activeLogGuildId = guildId;
+      const target = document.querySelector('#guildLogList');
+      if (target) target.innerHTML = '<p class="notice">Cargando logs del servidor...</p>';
+      const logs = await getJson('/api/guilds/' + guildId + '/logs?limit=220');
+      state.guildLogs = logs;
+      renderGuildLogs(logs);
+    }
+    function renderGuildLogs(logs = state.guildLogs) {
+      const target = document.querySelector('#guildLogList');
+      if (!target) return;
+      if (!logs.length) {
+        target.innerHTML = '<p class="notice">Aun no hay logs para este servidor. Cuando Security Guard actue, se envie un mensaje owner o cambie algo relevante, aparecera aqui.</p>';
+        return;
+      }
+      target.innerHTML = logs.map((log) => {
+        const badges = [
+          formatLogType(log.type),
+          formatLogSeverity(log.severity)
+        ].filter(Boolean);
+        const meta = [
+          log.actorName || log.actorId ? 'Actor: ' + (log.actorName || log.actorId) : null,
+          log.targetName || log.targetId ? 'Objetivo: ' + (log.targetName || log.targetId) : null,
+          log.channelName || log.channelId ? 'Canal: #' + (log.channelName || log.channelId) : null
+        ].filter(Boolean);
+        const fields = Array.isArray(log.metadata?.fields)
+          ? log.metadata.fields.slice(0, 4).map((field) => field.name + ': ' + field.value)
+          : [];
+        return '<article class="log-entry ' + escapeHtml(log.severity || 'info') + '">' +
+          '<div class="log-head"><div><strong>' + escapeHtml(log.title || 'Evento NexaDesk') + '</strong><span>' + escapeHtml(new Date(log.createdAt).toLocaleString()) + '</span></div><div class="log-badges">' + badges.map((badge) => '<span class="log-badge">' + escapeHtml(badge) + '</span>').join('') + '</div></div>' +
+          '<div class="log-message">' + escapeHtml(log.message || '') + '</div>' +
+          (meta.length ? '<div class="log-meta">' + meta.map((item) => '<span>' + escapeHtml(item) + '</span>').join('') + '</div>' : '') +
+          (fields.length ? '<div class="log-meta">' + fields.map((item) => '<span>' + escapeHtml(item).slice(0, 220) + '</span>').join('') + '</div>' : '') +
+          '</article>';
+      }).join('');
+    }
+    function formatLogType(type) {
+      return ({
+        security: 'Security Guard',
+        ticket: 'Ticket',
+        config: 'Configuracion',
+        panel: 'Panel',
+        component: 'Componente',
+        premium: 'Premium',
+        growth: 'Growth',
+        owner_message: 'MD Owner',
+        system: 'Sistema'
+      })[type] || 'Sistema';
+    }
+    function formatLogSeverity(severity) {
+      return ({
+        debug: 'Debug',
+        info: 'Info',
+        success: 'Correcto',
+        warning: 'Aviso',
+        critical: 'Critico'
+      })[severity] || 'Info';
     }
     function renderStats() {
       const stats = state.stats;
@@ -5867,7 +6087,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       const guildId = document.querySelector(sourceId).value;
       const guild = getGuildConfig(guildId);
       resetPanelEditor({ keepFields: true });
-      for (const selector of ['#guildId', '#categoryGuildId', '#componentGuildId', '#panelGuildId', '#growthGuildId', '#premiumGuildId']) {
+      for (const selector of ['#guildId', '#categoryGuildId', '#componentGuildId', '#panelGuildId', '#growthGuildId', '#premiumGuildId', '#logsGuildId']) {
         const element = document.querySelector(selector);
         if (element && element.value !== guildId) element.value = guildId;
       }
@@ -5880,6 +6100,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
         renderGuildLoadError(guildId, error.message);
         showToast(error.message);
       });
+      if (state.activeView === 'logs') loadGuildLogs(guildId).catch((error) => showToast(error.message));
     }
     async function saveConfig(event) {
       event.preventDefault();
@@ -6606,6 +6827,14 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       refreshStats().catch(() => {});
       renderGrowthPanel(getActiveGuild());
     });
+    source.addEventListener('guild.log.created', (event) => {
+      const message = JSON.parse(event.data);
+      document.querySelector('#lastSync').textContent = new Date().toLocaleTimeString();
+      if (state.activeView === 'logs' && message.payload?.guildId === (document.querySelector('#logsGuildId')?.value || document.querySelector('#guildId')?.value)) {
+        state.guildLogs = [message.payload, ...state.guildLogs.filter((log) => log.id !== message.payload.id)].slice(0, 220);
+        renderGuildLogs();
+      }
+    });
     source.addEventListener('premium.purchase.recorded', () => {
       document.querySelector('#lastSync').textContent = new Date().toLocaleTimeString();
       refreshPremiumAccount().catch(() => {});
@@ -6620,7 +6849,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       document.querySelector('#liveState').textContent = 'Reconectando';
       document.querySelector('#liveState').className = '';
     };
-    for (const selector of ['#guildId', '#categoryGuildId', '#componentGuildId', '#panelGuildId', '#growthGuildId', '#premiumGuildId']) {
+    for (const selector of ['#guildId', '#categoryGuildId', '#componentGuildId', '#panelGuildId', '#growthGuildId', '#premiumGuildId', '#logsGuildId']) {
       document.querySelector(selector)?.addEventListener('change', () => syncGuildForm(selector));
     }
     document.querySelectorAll('.nav-link[data-view]').forEach((link) => {
