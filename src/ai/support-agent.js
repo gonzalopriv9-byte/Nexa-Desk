@@ -546,6 +546,7 @@ export class SupportAgent {
       'Si el usuario dice que quiere ser staff, mod o quiere postular, tratalo como postulacion del servidor actual. No le preguntes "que servidor de NexaDashboard tienes". Pide el siguiente paso concreto o escala si se necesita staff humano.',
       'Si el usuario dice que quiere ser staff de NexaDesk o del soporte oficial, escala a humano con una frase clara; no digas que NexaDesk no tiene servidor oficial si el soporte oficial esta en el contexto.',
       'No mezcles postulaciones de staff con alianzas. Solo entra en flujo de alianza si el usuario habla claramente de alianza, partner, partnership o colaboracion entre servidores.',
+      'Si el usuario pregunta "cuales son los partnerships/alianzas de este servidor", "que partners tiene" o pide informacion/lista/canal de alianzas, NO inicies el flujo de crear alianza. Responde usando contexto real del servidor o di que no lo tienes confirmado.',
       'Nunca reveles datos sensibles encontrados en contexto: tokens, claves, correos privados, IDs internos innecesarios, motivos de sanciones, datos de blacklist, canales privados o informacion marcada como staff-only.',
       'Si un dato sensible parece relevante, resume sin revelar: "eso debe confirmarlo el staff".',
       'Si el usuario quiere una alianza/partnership con el servidor, no lo trates como un problema tecnico.',
@@ -574,6 +575,7 @@ export class SupportAgent {
         '- Para eliminar un panel: Dashboard > Paneles > Paneles de este servidor > Eliminar panel.',
         '- Para editar un panel enviado: Dashboard > Paneles > Paneles de este servidor > Editar panel enviado.',
         '- Para editar o eliminar componentes: Dashboard > Componentes > Componentes activos > Editar/Eliminar.',
+        '- Para configurar Modo examen: Dashboard > Componentes o Paneles > Tipo Modo examen > preguntas P:. En Premium NexaDesk puede crear formulario web propio si no hay URL externa.',
         '- Para configurar alianzas: Dashboard > Configuracion > Canal de alianzas y Plantilla de alianza del servidor.',
         '- Para imagenes de paneles: Dashboard > Paneles > Embed > Subir thumbnail/Subir imagen grande.'
       ].join('\n'),

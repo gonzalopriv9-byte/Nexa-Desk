@@ -23,6 +23,7 @@ export function normalizeExamState(value = {}) {
     answers: Array.isArray(source.answers) ? source.answers.map(normalizeExamAnswer).filter(Boolean).slice(0, 40) : [],
     currentIndex: Math.max(0, Number.parseInt(source.currentIndex ?? 0, 10) || 0),
     formUrl: cleanUrl(source.formUrl),
+    formToken: cleanString(source.formToken, '', 120),
     reviewEnabled: Boolean(source.reviewEnabled),
     passScore: clampNumber(source.passScore, 0, 10, DEFAULT_PASS_SCORE),
     startedAt: source.startedAt || null,

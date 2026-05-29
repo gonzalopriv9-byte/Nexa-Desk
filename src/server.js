@@ -11,6 +11,7 @@ import { GroqClient } from './ai/groq-client.js';
 import { GLOBAL_BLACKLIST_ADMIN_USER_ID, buildGlobalBanCode, isBlacklistEntryActive, parseBlacklistDuration } from './blacklist.js';
 import { normalizeTotpSecret, verifyTotpCode } from './docs-auth.js';
 import { discordEmojiUrl } from './emojis.js';
+import { buildExamAnswerRecord, buildHeuristicExamEvaluation, formatExamEvaluation, normalizeExamState } from './exam-mode.js';
 import { normalizeGrowthConfig } from './growth.js';
 import { normalizeMaintenanceState } from './maintenance.js';
 import { normalizeTicketComponent } from './panel-options.js';
@@ -101,6 +102,93 @@ export function createServer({ config, storage, bot, events }) {
       sections: buildPrivacySections()
     }));
   });
+
+  app.get('/exam/:channelId', asyncHandler(async (req, res) => {
+    const ticket = await storage.getTicket(req.params.channelId).catch(() => null);
+    const guildConfig = ticket?.guildId ? await storage.getGuildConfig(ticket.guildId).catch(() => null) : null;
+    const state = normalizeExamState(ticket?.examState);
+    const token = String(req.query.token ?? '');
+    res.type('html').send(renderExamPage({
+      ticket,
+      guildConfig,
+      state,
+      token,
+      error: validateWebExamAccess({ ticket, guildConfig, state, token })
+    }));
+  }));
+
+  app.post('/exam/:channelId', asyncHandler(async (req, res) => {
+    const ticket = await storage.getTicket(req.params.channelId).catch(() => null);
+    const guildConfig = ticket?.guildId ? await storage.getGuildConfig(ticket.guildId).catch(() => null) : null;
+    const state = normalizeExamState(ticket?.examState);
+    const token = String(req.query.token ?? req.body.token ?? '');
+    const error = validateWebExamAccess({ ticket, guildConfig, state, token });
+    if (error) {
+      res.status(error.status).type('html').send(renderExamPage({ ticket, guildConfig, state, token, error }));
+      return;
+    }
+
+    if (state.status === 'completed') {
+      res.type('html').send(renderExamPage({ ticket, guildConfig, state, token, submitted: true }));
+      return;
+    }
+
+    const now = new Date().toISOString();
+    const answers = state.questions.map((question, index) => buildExamAnswerRecord({
+      question,
+      answer: String(req.body[`answer_${index}`] ?? '').trim(),
+      askedAt: state.startedAt
+    }));
+    const completedState = normalizeExamState({
+      ...state,
+      answers,
+      warnings: [...state.warnings, ...answers.flatMap((answer) => answer.flags ?? [])].slice(0, 20),
+      currentIndex: state.questions.length,
+      status: 'completed',
+      completedAt: now
+    });
+    const evaluation = buildHeuristicExamEvaluation(completedState, {
+      passScore: completedState.passScore,
+      examState: completedState
+    });
+    const finalState = normalizeExamState({
+      ...completedState,
+      evaluation
+    });
+
+    const resultText = formatExamEvaluation(evaluation, finalState);
+    await storage.updateTicket(ticket.channelId, {
+      status: evaluation.manualReviewRecommended ? 'exam_review_recommended' : 'exam_completed',
+      examState: finalState
+    });
+    await storage.addTranscriptMessage({
+      guildId: ticket.guildId,
+      channelId: ticket.channelId,
+      messageId: `web-exam-${Date.now()}`,
+      authorId: ticket.openedBy || 'web-exam',
+      authorName: 'Examen web NexaDesk',
+      authorBot: false,
+      role: 'user',
+      content: [
+        'Examen completado desde formulario web Premium.',
+        resultText
+      ].join('\n'),
+      createdAt: now
+    }).catch((logError) => console.warn(`Could not persist web exam transcript for ${ticket.channelId}:`, logError?.message ?? logError));
+
+    await bot?.sendChannelMessage?.({
+      channelId: ticket.channelId,
+      payload: {
+        content: [
+          'NexaDesk: Examen web completado.',
+          resultText
+        ].join('\n').slice(0, 1900),
+        allowedMentions: { parse: [] }
+      }
+    }).catch((sendError) => console.warn(`Could not send web exam result to ticket ${ticket.channelId}:`, sendError?.message ?? sendError));
+
+    res.type('html').send(renderExamPage({ ticket, guildConfig, state: finalState, token, submitted: true }));
+  }));
 
   app.get('/status', asyncHandler(async (req, res) => {
     const snapshot = await buildStatusSnapshot({ storage, bot });
@@ -2189,7 +2277,7 @@ function buildDashboardAssistantFallback({ message, guild, stats, activeView, ac
       ? 'Ve a Crecimiento para activar feedback por MD, elegir canal de reviews y convertir valoraciones altas en prueba social. Si activas Churn Radar, el staff recibe alertas cuando alguien queda insatisfecho.'
       : 'Ve a Crecimiento para preparar feedback post-ticket. Las reviews publicas y Churn Radar se desbloquean con Premium.';
   } else if (lower.includes('examen') || lower.includes('oposicion') || lower.includes('postulacion')) {
-    reply += 'Para crear Modo examen, ve a Componentes o Paneles, elige "Modo examen" y pega preguntas en formato P:. En Free NexaDesk pregunta, corrige y permite revision humana. En Premium puedes poner URL de formulario y activar revision supervisada con sala de voz.';
+    reply += 'Para crear Modo examen, ve a Componentes o Paneles, elige "Modo examen" y pega preguntas en formato P:. En Free NexaDesk pregunta dentro del ticket. En Premium genera un formulario web propio de NexaDesk y puede abrir sala de voz para revision supervisada.';
   } else if (lower.includes('premium') || lower.includes('pro') || lower.includes('voz') || lower.includes('voice') || lower.includes('branding') || lower.includes('analitica') || lower.includes('insight')) {
     reply += isPremiumEntitled(guild)
       ? 'Ve a Premium para activar o pausar Voz Pro, Modo examen supervisado, IA prioritaria, transcripciones inteligentes, Security Plus, SLA Radar, Auto-config Pro, Alianzas Pro, Team Assist, Growth Engine, Affiliate Boost, branding e informes por servidor.'
@@ -5220,8 +5308,8 @@ function renderDashboard({ session, guilds, tickets, stats, dashboardState = {},
             </select></label>
             <label class="span-2">Preguntas antes de crear el ticket<textarea id="componentQuestions" placeholder="Una pregunta por linea. Maximo 5.&#10;Ej: Cual es tu nick?&#10;Describe el problema"></textarea></label>
             <div class="span-2 form-section compact is-hidden" id="componentExamSettings">
-              <div class="section-label"><strong>Modo examen</strong><span>En Free corrige preguntas dentro del ticket. En Premium puede abrir revision con formulario y sala de voz.</span></div>
-              <label class="span-2">URL del formulario externo Premium<input id="componentExamFormUrl" placeholder="https://forms.gle/..."></label>
+              <div class="section-label"><strong>Modo examen</strong><span>En Free corrige preguntas dentro del ticket. En Premium genera formulario web NexaDesk y puede abrir revision con sala de voz.</span></div>
+              <label class="span-2">URL externa opcional Premium<input id="componentExamFormUrl" placeholder="Opcional: https://forms.gle/... (si lo dejas vacio, NexaDesk crea formulario web)"></label>
               <label>Revision Premium<select id="componentExamReviewEnabled"><option value="false">No, corregir por preguntas</option><option value="true">Si, sala de voz + formulario</option></select></label>
               <label>Nota minima<input id="componentExamPassScore" type="number" min="0" max="10" step="0.5" value="6"></label>
               <p class="notice span-2">Preguntas en formato recomendado: <strong>P: ¿Cuantos años tienes?</strong>. Puedes poner hasta 40 preguntas. Si activas revision Premium, el formulario se abre fuera de Discord y el staff supervisa pantalla manualmente.</p>
@@ -5268,9 +5356,9 @@ Antes de empezar, he guardado tus respuestas para que el staff tenga contexto.</
                 </select></label>
               </div>
               <div class="form-section is-hidden" id="panelExamSettings">
-                <div class="section-label"><strong>Modo examen</strong><span>Preguntas automáticas o revisión Premium con formulario externo</span></div>
+                <div class="section-label"><strong>Modo examen</strong><span>Preguntas automaticas o revision Premium con formulario web NexaDesk</span></div>
                 <label class="span-2">Preguntas del examen<textarea id="panelExamQuestions" placeholder="P: ¿Cuantos años tienes?&#10;P: ¿Cuanto llevas roleando?&#10;P: ¿Como resolverias un conflicto entre usuarios?"></textarea></label>
-                <label class="span-2">URL del formulario externo Premium<input id="panelExamFormUrl" placeholder="https://forms.gle/..."></label>
+                <label class="span-2">URL externa opcional Premium<input id="panelExamFormUrl" placeholder="Opcional: https://forms.gle/... (si lo dejas vacio, NexaDesk crea formulario web)"></label>
                 <label>Revision Premium<select id="panelExamReviewEnabled"><option value="false">No, corregir por preguntas</option><option value="true">Si, sala de voz + formulario</option></select></label>
                 <label>Nota minima<input id="panelExamPassScore" type="number" min="0" max="10" step="0.5" value="6"></label>
               </div>
@@ -5402,7 +5490,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
         <section class="v15-grid">
           <article class="v15-card"><b>${renderDashboardEmoji('global', 'IA')}</b><h3>Contexto real</h3><p>La IA usa prompt del servidor, preguntas previas, transcripcion por voz, imagenes y pistas de canales para responder sin inventar.</p></article>
           <article class="v15-card"><b>${renderDashboardEmoji('ban', 'Seguridad')}</b><h3>Security Guard+</h3><p>Anti-flood, anti-links, XN Protect Automod, blacklist global como aviso manual, anti-nuke y logs detallados por servidor.</p></article>
-          <article class="v15-card"><b>${renderDashboardEmoji('check', 'Examen')}</b><h3>Modo examen</h3><p>Tickets de postulacion con preguntas, nota provisional, revision humana y opcion Premium de formulario + sala de voz.</p></article>
+          <article class="v15-card"><b>${renderDashboardEmoji('check', 'Examen')}</b><h3>Modo examen</h3><p>Tickets de postulacion con preguntas, nota provisional, revision humana y opcion Premium de formulario web NexaDesk + sala de voz.</p></article>
           <article class="v15-card"><b>${renderDashboardEmoji('wifi', 'Voz')}</b><h3>Voz Pro</h3><p>Soporte por voz con sala privada, STT/TTS, respuesta hablada y transcripcion para que el staff no pierda contexto.</p></article>
           <article class="v15-card"><b>${renderDashboardEmoji('server', 'Growth')}</b><h3>Growth Engine</h3><p>Feedback post-ticket, reviews publicas, Churn Radar, afiliados y Premium slots para convertir soporte en crecimiento.</p></article>
           <article class="v15-card"><b>${renderDashboardEmoji('rightArrow', 'Release')}</b><h3>Release Control</h3><p>Las funciones nuevas quedan en preview. El owner las prueba y pulsa Lanzar actualizacion cuando esten listas.</p></article>
@@ -5472,7 +5560,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
             </div>
             <div class="premium-feature-grid">
               <div class="premium-feature"><strong>Voz Pro</strong><span>Tickets con sala privada, STT/TTS y transcripcion en el canal.</span></div>
-              <div class="premium-feature"><strong>Modo examen</strong><span>Oposiciones con preguntas automaticas, nota provisional y revision supervisada con formulario.</span></div>
+              <div class="premium-feature"><strong>Modo examen</strong><span>Oposiciones con preguntas automaticas, formulario web propio, nota provisional y revision supervisada.</span></div>
               <div class="premium-feature"><strong>IA prioritaria</strong><span>Respuestas mas proactivas, checklist de datos y escalados mejor resumidos.</span></div>
               <div class="premium-feature"><strong>Smart transcripts</strong><span>Resumen ejecutivo, puntos clave y descarga lista para staff.</span></div>
               <div class="premium-feature"><strong>Security Plus</strong><span>Anti-scam IA, senales de riesgo y alertas mas visibles para staff.</span></div>
@@ -7380,6 +7468,92 @@ function toInlineJson(value) {
     .replaceAll('&', '\\u0026')
     .replaceAll('\u2028', '\\u2028')
     .replaceAll('\u2029', '\\u2029');
+}
+
+function validateWebExamAccess({ ticket, guildConfig, state, token }) {
+  if (!ticket) {
+    return { status: 404, title: 'Examen no encontrado', message: 'Este enlace no corresponde a un ticket de examen activo.' };
+  }
+  if (!state.enabled || state.mode !== 'premium_review') {
+    return { status: 403, title: 'Examen no disponible', message: 'Este ticket no tiene el formulario web Premium activo.' };
+  }
+  if (!isPremiumEntitled(guildConfig ?? {})) {
+    return { status: 403, title: 'Premium requerido', message: 'El formulario web de examen solo esta disponible en servidores Premium.' };
+  }
+  if (!state.formToken || token !== state.formToken) {
+    return { status: 403, title: 'Codigo de examen invalido', message: 'El enlace de examen no es valido o ha caducado. Vuelve al ticket y usa el enlace enviado por NexaDesk.' };
+  }
+  if (!state.questions.length) {
+    return { status: 422, title: 'Sin preguntas configuradas', message: 'Este examen no tiene preguntas guardadas. El staff debe revisar la configuracion del panel.' };
+  }
+  return null;
+}
+
+function renderExamPage({ ticket, guildConfig, state, token, error = null, submitted = false }) {
+  const evaluation = state?.evaluation;
+  const resultHtml = evaluation
+    ? `<div class="result"><h2>Resultado provisional</h2><p><strong>${Number(evaluation.score ?? 0).toFixed(1)}/10</strong> - ${evaluation.passed ? 'apto provisional' : 'no apto provisional'}</p><p>${escapeHtml(evaluation.summary ?? '')}</p></div>`
+    : '';
+  const questionsHtml = (state?.questions ?? []).map((question, index) => `
+    <label class="question">
+      <span>${index + 1}. ${escapeHtml(question)}</span>
+      <textarea name="answer_${index}" required minlength="2" maxlength="2200" placeholder="Responde con tus propias palabras...">${escapeHtml(state.answers?.[index]?.answer ?? '')}</textarea>
+    </label>
+  `).join('');
+  const completed = submitted || state?.status === 'completed';
+  return `<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>NexaDesk Exam Mode</title>
+  <style>
+    :root { color-scheme: dark; --bg:#050505; --card:#101010; --line:#2c2c2c; --text:#f7f7f7; --muted:#a7a7a7; --gold:#f4c95d; }
+    * { box-sizing:border-box; }
+    body { margin:0; min-height:100vh; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: radial-gradient(circle at 20% 10%, rgba(244,201,93,.16), transparent 28%), linear-gradient(135deg, #020202, #111 48%, #050505); color:var(--text); }
+    body:before { content:""; position:fixed; inset:0; background-image: linear-gradient(rgba(255,255,255,.04) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.04) 1px, transparent 1px); background-size:48px 48px; mask-image: radial-gradient(circle at center, black, transparent 78%); pointer-events:none; }
+    main { width:min(920px, calc(100% - 28px)); margin:0 auto; padding:42px 0 64px; position:relative; z-index:1; }
+    .hero { border:1px solid var(--line); border-radius:30px; padding:28px; background:rgba(16,16,16,.78); box-shadow:0 30px 90px rgba(0,0,0,.42); backdrop-filter: blur(16px); }
+    .eyebrow { color:var(--gold); letter-spacing:.14em; text-transform:uppercase; font-size:12px; font-weight:800; }
+    h1 { margin:.35rem 0 .6rem; font-size:clamp(34px, 7vw, 74px); line-height:.9; letter-spacing:-.06em; }
+    p { color:var(--muted); font-size:17px; line-height:1.55; }
+    form, .result, .error { margin-top:22px; border:1px solid var(--line); border-radius:24px; padding:22px; background:rgba(255,255,255,.035); }
+    .question { display:block; margin:0 0 18px; }
+    .question span { display:block; margin-bottom:8px; font-weight:800; }
+    textarea { width:100%; min-height:130px; resize:vertical; border:1px solid #3b3b3b; border-radius:18px; background:#060606; color:var(--text); padding:14px; font:inherit; outline:none; }
+    textarea:focus { border-color:var(--gold); box-shadow:0 0 0 3px rgba(244,201,93,.16); }
+    button { width:100%; border:0; border-radius:18px; padding:16px 18px; background:var(--gold); color:#050505; font-weight:950; font-size:16px; cursor:pointer; }
+    button:hover { filter:brightness(1.08); transform:translateY(-1px); }
+    .meta { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; margin-top:18px; }
+    .meta div { border:1px solid var(--line); border-radius:16px; padding:12px; color:var(--muted); }
+    .meta strong { display:block; color:var(--text); }
+    .error { border-color:#8b3535; background:rgba(255,95,87,.08); }
+    .ok { border-color:rgba(244,201,93,.55); background:rgba(244,201,93,.08); }
+    @media (max-width:720px) { .meta { grid-template-columns:1fr; } .hero { padding:20px; border-radius:22px; } }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="hero">
+      <div class="eyebrow">NexaDesk Premium Exam Mode</div>
+      <h1>Examen web seguro</h1>
+      <p>Responde desde aqui con calma. NexaDesk guardara tus respuestas en el ticket y dara una nota provisional para que el staff pueda revisarla.</p>
+      <div class="meta">
+        <div><strong>${escapeHtml(guildConfig?.guildName ?? ticket?.guildName ?? 'Servidor')}</strong>Servidor</div>
+        <div><strong>#${escapeHtml(ticket?.channelName ?? 'ticket')}</strong>Ticket</div>
+        <div><strong>${escapeHtml(String(state?.passScore ?? 6))}/10</strong>Nota minima</div>
+      </div>
+      ${error ? `<div class="error"><h2>${escapeHtml(error.title)}</h2><p>${escapeHtml(error.message)}</p></div>` : ''}
+      ${completed ? `<div class="result ok"><h2>Examen enviado</h2><p>Las respuestas ya han quedado guardadas. Vuelve a Discord para ver el resultado y pedir revision humana si lo necesitas.</p></div>${resultHtml}` : ''}
+      ${!error && !completed ? `<form method="post" action="/exam/${encodeURIComponent(ticket.channelId)}?token=${encodeURIComponent(token)}">
+        ${questionsHtml}
+        <input type="hidden" name="token" value="${escapeHtml(token)}">
+        <button type="submit">Enviar examen</button>
+      </form>` : ''}
+    </section>
+  </main>
+</body>
+</html>`;
 }
 
 function escapeHtml(value = '') {

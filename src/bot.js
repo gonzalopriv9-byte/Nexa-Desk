@@ -13,9 +13,12 @@ import {
   ModalBuilder,
   Partials,
   PermissionFlagsBits,
+  StringSelectMenuBuilder,
+  StringSelectMenuOptionBuilder,
   TextInputBuilder,
   TextInputStyle
 } from 'discord.js';
+import crypto from 'node:crypto';
 import {
   buildAffiliateProgress,
   normalizeAffiliateCode,
@@ -176,6 +179,16 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
         return;
       }
 
+      if (interaction.isButton() && interaction.customId.startsWith('nexadesk:report:reject:')) {
+        await handleReportRejectButton({ interaction, storage });
+        return;
+      }
+
+      if (interaction.isStringSelectMenu() && interaction.customId.startsWith('nexadesk:report:action:')) {
+        await handleReportActionSelect({ interaction, storage });
+        return;
+      }
+
       if (interaction.isStringSelectMenu() && interaction.customId.startsWith('nexadesk:select_ticket_component')) {
         const guildConfig = await storage.getGuildConfig(interaction.guildId);
         const panel = findPanelForInteraction(guildConfig, interaction);
@@ -317,6 +330,11 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
 
       if (interaction.commandName === 'diagnostico') {
         await handleDiagnosticsCommand({ interaction, storage, client, supportAgent });
+        return;
+      }
+
+      if (interaction.commandName === 'reporte') {
+        await handleReportCommand({ interaction, storage });
         return;
       }
 
@@ -3197,7 +3215,7 @@ async function createTicketFromConfiguredSource({ interaction, storage, guildCon
   const canUsePremiumExamReview = isExamTicketMode(ticketMode)
     && isPremiumEntitled(guildConfig)
     && examConfig?.reviewEnabled
-    && Boolean(examConfig?.formUrl);
+    && Boolean(examConfig?.formUrl || examConfig?.questions?.length);
   if (isExamTicketMode(ticketMode) && !canUsePremiumExamReview && !examConfig?.questions?.length) {
     await interaction.reply({
       content: [
@@ -3366,7 +3384,10 @@ function getExamConfigForTicketSource(panel, component) {
 
 async function startExamTicket({ interaction, storage, channel, ticket, guildConfig, panel, component, examConfig, config, voiceManager = null }) {
   const premium = isPremiumEntitled(guildConfig);
-  const reviewEnabled = premium && examConfig.reviewEnabled && Boolean(examConfig.formUrl);
+  const formToken = crypto.randomUUID().replaceAll('-', '');
+  const internalFormUrl = examConfig.questions.length ? buildInternalExamFormUrl(config, ticket.channelId, formToken) : '';
+  const formUrl = examConfig.formUrl || internalFormUrl;
+  const reviewEnabled = premium && examConfig.reviewEnabled && Boolean(formUrl);
   const now = new Date().toISOString();
   const state = normalizeExamState({
     enabled: true,
@@ -3375,7 +3396,8 @@ async function startExamTicket({ interaction, storage, channel, ticket, guildCon
     questions: examConfig.questions,
     currentIndex: 0,
     answers: [],
-    formUrl: examConfig.formUrl,
+    formUrl,
+    formToken,
     reviewEnabled,
     passScore: examConfig.passScore,
     startedAt: now,
@@ -3397,7 +3419,7 @@ async function startExamTicket({ interaction, storage, channel, ticket, guildCon
           .setTitle(`${EMOJIS.nexalogo} Modo examen con revision Premium`)
           .setDescription([
             `${interaction.user}, he preparado el examen supervisado.`,
-            `Formulario: ${examConfig.formUrl}`,
+            `Formulario: ${formUrl}`,
             '',
             'Entra a la sala de voz, abre el formulario y comparte pantalla para que el staff pueda supervisar.',
             'Importante: Discord no permite a los bots leer directamente la imagen de una pantalla compartida. NexaDesk deja la sala, la guia por voz y el aviso al staff; la supervision visual la confirma una persona.'
@@ -3482,6 +3504,11 @@ async function startExamTicket({ interaction, storage, channel, ticket, guildCon
   const firstQuestion = await channel.send(buildExamQuestionPrompt(state));
   await saveTranscript(storage, firstQuestion, 'assistant');
   return updated;
+}
+
+function buildInternalExamFormUrl(config, channelId, token) {
+  const base = String(config.DASHBOARD_PUBLIC_URL || PUBLIC_DASHBOARD_URL).replace(/\/+$/, '');
+  return `${base}/exam/${encodeURIComponent(channelId)}?token=${encodeURIComponent(token)}`;
 }
 
 async function tryMoveExamCandidateToVoice(interaction, voiceChannel) {
@@ -4833,6 +4860,318 @@ async function handleDiagnosticsCommand({ interaction, storage, client, supportA
   await interaction.editReply({ embeds: [embed], components: [row] });
 }
 
+async function handleReportCommand({ interaction, storage }) {
+  if (!interaction.inGuild()) {
+    await interaction.reply({ content: 'Los reportes solo se pueden enviar dentro de un servidor.', ephemeral: true });
+    return;
+  }
+
+  const target = interaction.options.getUser('usuario', true);
+  const reason = interaction.options.getString('razon', true).trim().slice(0, 900);
+  const moderatorNote = interaction.options.getString('mensaje_moderador')?.trim().slice(0, 700) || '';
+  const proofs = ['prueba', 'prueba_2', 'prueba_3']
+    .map((name) => interaction.options.getAttachment(name))
+    .filter(Boolean);
+
+  if (!proofs.length) {
+    await interaction.reply({ content: 'Sube al menos una prueba visual como archivo. No acepto enlaces para evitar pruebas manipuladas.', ephemeral: true });
+    return;
+  }
+
+  const invalidProof = proofs.find((proof) => !isVisualReportProof(proof));
+  if (invalidProof) {
+    await interaction.reply({
+      content: `La prueba **${invalidProof.name ?? invalidProof.id}** no parece imagen o video. Sube una captura, imagen o clip directamente desde Discord.`,
+      ephemeral: true
+    });
+    return;
+  }
+
+  await interaction.deferReply({ ephemeral: true });
+  const guildConfig = await storage.getGuildConfig(interaction.guildId).catch(() => null);
+  const reportChannel = await findModerationReportChannel(interaction.guild, guildConfig);
+  if (!reportChannel) {
+    await interaction.editReply([
+      `${EMOJIS.ban} No encuentro un canal interno de moderacion donde enviar este reporte.`,
+      'Crea o configura un canal tipo `mods`, `reportes`, `staff-logs` o activa un canal de logs en `/seguridad configurar canal_logs:`.'
+    ].join('\n'));
+    return;
+  }
+
+  const reportId = `report-${Date.now()}-${interaction.id.slice(-6)}`;
+  const reportEmbed = buildReportEmbed({
+    reportId,
+    guild: interaction.guild,
+    reporter: interaction.user,
+    target,
+    reason,
+    moderatorNote,
+    proofs,
+    sourceChannel: interaction.channel
+  });
+  const staffMention = guildConfig?.staffRoleId ? `<@&${guildConfig.staffRoleId}> ` : '';
+  const reportMessage = await reportChannel.send({
+    content: `${staffMention}${EMOJIS.ban} Nuevo reporte recibido desde ${interaction.channel}.`,
+    embeds: [reportEmbed],
+    components: buildReportReviewComponents({ targetId: target.id, reporterId: interaction.user.id }),
+    allowedMentions: guildConfig?.staffRoleId ? { roles: [guildConfig.staffRoleId] } : { parse: [] }
+  });
+
+  await storage.addGuildLog?.({
+    guildId: interaction.guildId,
+    guildName: interaction.guild.name,
+    type: 'user_report',
+    severity: 'warning',
+    title: 'Reporte de usuario enviado a moderacion',
+    message: reason,
+    actorId: interaction.user.id,
+    actorName: interaction.user.tag ?? interaction.user.username,
+    targetId: target.id,
+    targetName: target.tag ?? target.username,
+    channelId: interaction.channelId,
+    channelName: interaction.channel?.name,
+    metadata: {
+      reportId,
+      reportChannelId: reportChannel.id,
+      reportMessageId: reportMessage.id,
+      proofCount: proofs.length,
+      moderatorNote
+    }
+  }).catch((error) => console.warn(`Could not persist user report log in ${interaction.guildId}:`, error?.message ?? error));
+
+  await interaction.editReply({
+    embeds: [
+      new EmbedBuilder()
+        .setColor(0xf4c95d)
+        .setTitle(`${EMOJIS.check} Usuario reportado correctamente`)
+        .setDescription('Usuario reportado correctamente, pronto recibiras una respuesta.')
+        .addFields(
+          { name: 'Usuario reportado', value: `${target} (${target.id})`, inline: false },
+          { name: 'Canal de revision', value: `${reportChannel}`, inline: false }
+        )
+        .setFooter({ text: 'NexaDesk Report System' })
+        .setTimestamp(new Date())
+    ]
+  });
+}
+
+async function handleReportRejectButton({ interaction, storage }) {
+  const guildConfig = await storage.getGuildConfig(interaction.guildId).catch(() => null);
+  if (!canReviewReport(interaction, guildConfig)) {
+    await interaction.reply({ content: 'Solo staff o usuarios con permisos de moderacion pueden revisar reportes.', ephemeral: true });
+    return;
+  }
+
+  const { targetId, reporterId } = parseReportCustomId(interaction.customId);
+  await markReportMessageReviewed({
+    interaction,
+    storage,
+    status: 'Reporte rechazado',
+    color: 0x8a8a8a,
+    action: 'reject',
+    targetId,
+    reporterId
+  });
+}
+
+async function handleReportActionSelect({ interaction, storage }) {
+  const guildConfig = await storage.getGuildConfig(interaction.guildId).catch(() => null);
+  if (!canReviewReport(interaction, guildConfig)) {
+    await interaction.reply({ content: 'Solo staff o usuarios con permisos de moderacion pueden tomar accion sobre reportes.', ephemeral: true });
+    return;
+  }
+
+  const action = interaction.values?.[0];
+  const { targetId, reporterId } = parseReportCustomId(interaction.customId);
+  if (action === 'warn') {
+    const targetUser = await interaction.client.users.fetch(targetId).catch(() => null);
+    await targetUser?.send([
+      `${EMOJIS.ban} Has recibido una advertencia en **${interaction.guild.name}**.`,
+      'Un reporte fue revisado por moderacion. Si crees que es un error, habla con el staff del servidor.'
+    ].join('\n')).catch(() => null);
+    await markReportMessageReviewed({
+      interaction,
+      storage,
+      status: 'Warn aplicado',
+      color: 0xf4c95d,
+      action: 'warn',
+      targetId,
+      reporterId
+    });
+    return;
+  }
+
+  if (action === 'ban') {
+    try {
+      await interaction.guild.members.ban(targetId, {
+        reason: `NexaDesk reporte revisado por ${interaction.user.tag ?? interaction.user.username}`
+      });
+    } catch (error) {
+      await interaction.reply({
+        content: `No pude banear a ese usuario: ${String(error?.message ?? error).slice(0, 300)}`,
+        ephemeral: true
+      });
+      return;
+    }
+
+    await markReportMessageReviewed({
+      interaction,
+      storage,
+      status: 'Ban aplicado',
+      color: 0xff5f57,
+      action: 'ban',
+      targetId,
+      reporterId
+    });
+  }
+}
+
+function isVisualReportProof(attachment) {
+  const contentType = String(attachment?.contentType ?? '').toLowerCase();
+  const name = String(attachment?.name ?? attachment?.url ?? '').toLowerCase();
+  return contentType.startsWith('image/')
+    || contentType.startsWith('video/')
+    || /\.(?:png|jpe?g|webp|gif|mp4|mov|webm)$/i.test(name);
+}
+
+function buildReportEmbed({ reportId, guild, reporter, target, reason, moderatorNote, proofs, sourceChannel }) {
+  const proofLines = proofs.map((proof, index) => `${index + 1}. [${proof.name ?? `Prueba ${index + 1}`}](${proof.url})`).join('\n');
+  const embed = new EmbedBuilder()
+    .setColor(0xf4c95d)
+    .setTitle(`${EMOJIS.ban} Nuevo reporte de usuario`)
+    .setDescription('Un usuario ha enviado un reporte con pruebas adjuntas. Revisadlo antes de aplicar sanciones.')
+    .addFields(
+      { name: 'ID reporte', value: reportId, inline: false },
+      { name: 'Servidor', value: `${guild.name} (${guild.id})`, inline: false },
+      { name: 'Reportado', value: `${target} (${target.id})`, inline: false },
+      { name: 'Reportado por', value: `${reporter} (${reporter.id})`, inline: false },
+      { name: 'Razon', value: reason || 'Sin razon indicada.', inline: false },
+      { name: 'Mensaje para moderador', value: moderatorNote || 'No indicado.', inline: false },
+      { name: 'Canal origen', value: `${sourceChannel ?? 'No indicado'}`, inline: false },
+      { name: 'Pruebas visuales', value: proofLines.slice(0, 1000), inline: false }
+    )
+    .setFooter({ text: 'NexaDesk Report System' })
+    .setTimestamp(new Date());
+  const firstImage = proofs.find((proof) => String(proof.contentType ?? '').startsWith('image/'));
+  if (firstImage?.url) embed.setImage(firstImage.url);
+  return embed;
+}
+
+function buildReportReviewComponents({ targetId, reporterId, disabled = false }) {
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`nexadesk:report:reject:${targetId}:${reporterId}`)
+        .setLabel('Rechazar')
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(disabled)
+    ),
+    new ActionRowBuilder().addComponents(
+      new StringSelectMenuBuilder()
+        .setCustomId(`nexadesk:report:action:${targetId}:${reporterId}`)
+        .setPlaceholder('Tomar Accion')
+        .setDisabled(disabled)
+        .addOptions(
+          new StringSelectMenuOptionBuilder()
+            .setLabel('Warn')
+            .setDescription('Enviar advertencia al usuario reportado.')
+            .setValue('warn'),
+          new StringSelectMenuOptionBuilder()
+            .setLabel('Ban')
+            .setDescription('Banear al usuario reportado del servidor.')
+            .setValue('ban')
+        )
+    )
+  ];
+}
+
+async function markReportMessageReviewed({ interaction, storage, status, color, action, targetId, reporterId }) {
+  const embed = interaction.message.embeds?.[0]
+    ? EmbedBuilder.from(interaction.message.embeds[0])
+    : new EmbedBuilder().setTitle('Reporte NexaDesk');
+  embed
+    .setColor(color)
+    .addFields({ name: 'Estado', value: `${status} por ${interaction.user} (${interaction.user.id})`, inline: false })
+    .setTimestamp(new Date());
+
+  await interaction.update({
+    embeds: [embed],
+    components: buildReportReviewComponents({ targetId, reporterId, disabled: true })
+  });
+
+  await storage.addGuildLog?.({
+    guildId: interaction.guildId,
+    guildName: interaction.guild?.name,
+    type: `user_report_${action}`,
+    severity: action === 'ban' ? 'critical' : action === 'warn' ? 'warning' : 'info',
+    title: status,
+    message: `Reporte revisado por ${interaction.user.tag ?? interaction.user.username}`,
+    actorId: interaction.user.id,
+    actorName: interaction.user.tag ?? interaction.user.username,
+    targetId,
+    channelId: interaction.channelId,
+    channelName: interaction.channel?.name,
+    metadata: {
+      reporterId,
+      reportMessageId: interaction.message.id
+    }
+  }).catch((error) => console.warn(`Could not persist report action log in ${interaction.guildId}:`, error?.message ?? error));
+}
+
+function parseReportCustomId(customId = '') {
+  const [, , , targetId = '', reporterId = ''] = String(customId).split(':');
+  return { targetId, reporterId };
+}
+
+function canReviewReport(interaction, guildConfig) {
+  return Boolean(
+    interaction.memberPermissions?.has(PermissionFlagsBits.BanMembers)
+    || interaction.memberPermissions?.has(PermissionFlagsBits.ModerateMembers)
+    || interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)
+    || isConfiguredStaffMember(interaction.member, interaction.user, guildConfig)
+  );
+}
+
+async function findModerationReportChannel(guild, guildConfig) {
+  const security = normalizeSecurityConfig(guildConfig?.security);
+  const configuredLogChannel = security.logChannelId
+    ? await guild.channels.fetch(security.logChannelId).catch(() => null)
+    : null;
+  if (isUsableReportChannel(configuredLogChannel, guild)) return configuredLogChannel;
+
+  const channels = await guild.channels.fetch().catch(() => new Map());
+  const candidates = [...channels.values()]
+    .filter((channel) => isUsableReportChannel(channel, guild))
+    .map((channel) => ({ channel, score: scoreModerationChannel(channel, guildConfig, guild) }))
+    .filter((item) => item.score >= 45)
+    .sort((a, b) => b.score - a.score);
+
+  return candidates[0]?.channel ?? null;
+}
+
+function isUsableReportChannel(channel, guild) {
+  if (!channel || !channel.isTextBased?.() || typeof channel.send !== 'function') return false;
+  if (![ChannelType.GuildText, ChannelType.GuildAnnouncement].includes(channel.type)) return false;
+  const botMember = guild.members.me;
+  const permissions = botMember ? channel.permissionsFor(botMember) : channel.permissionsFor(guild.client.user);
+  return !permissions || (permissions.has(PermissionFlagsBits.ViewChannel) && permissions.has(PermissionFlagsBits.SendMessages));
+}
+
+function scoreModerationChannel(channel, guildConfig, guild) {
+  const name = normalizeChannelNameForDiscovery(channel.name ?? '');
+  let score = 0;
+  if (/\b(?:mod|mods|moderacion|moderation|staff|admin|admins|reportes|reports|denuncias|sanciones|logs|stafflogs|security|seguridad)\b/u.test(name)) score += 50;
+  if (/\b(?:public|general|chat|ticket|tickets|alianza|partners|anuncios|avisos|bienvenida)\b/u.test(name)) score -= 35;
+  const everyoneOverwrite = channel.permissionOverwrites?.cache?.get(guild.roles.everyone.id);
+  if (everyoneOverwrite?.deny?.has?.(PermissionFlagsBits.ViewChannel)) score += 35;
+  const staffOverwrite = guildConfig?.staffRoleId
+    ? channel.permissionOverwrites?.cache?.get(guildConfig.staffRoleId)
+    : null;
+  if (staffOverwrite?.allow?.has?.(PermissionFlagsBits.ViewChannel)) score += 20;
+  if (channel.parent?.name && /\b(?:staff|mod|admin|moderacion|logs|security)\b/u.test(normalizeChannelNameForDiscovery(channel.parent.name))) score += 20;
+  return score;
+}
+
 function buildGuildOperationalScore(guildConfig, { installed = false } = {}) {
   const security = normalizeSecurityConfig(guildConfig?.security);
   const checks = [
@@ -5538,6 +5877,10 @@ async function resolveAllianceTicketFlow({ message, storage, guildConfig, ticket
 
   const transcript = await storage.listTranscriptMessages(message.channel.id).catch(() => []);
   let allianceState = parseAllianceState(transcript);
+  if (allianceState.started && isAllianceInfoQuestion(message.content) && !allianceState.userTemplate) {
+    await markAllianceState(storage, message.channel, 'cancelled', 'info_question');
+    return { type: 'none' };
+  }
   const allianceContext = isAllianceIntent(message.content)
     || allianceState.started
     || recentMessages.some((item) => !item.author.bot && isAllianceIntent(item.content));
@@ -5947,9 +6290,24 @@ async function fetchRecentChannelMessages(channel, limit = 20) {
 
 function isAllianceIntent(content) {
   const normalized = normalizeText(content);
+  if (isAllianceInfoQuestion(normalized)) return false;
   return /\balianz(?:a|as)\b/.test(normalized)
     || /\bpartner(?:ship)?s?\b/.test(normalized)
     || /\bcolaboracion\b/.test(normalized);
+}
+
+function isAllianceInfoQuestion(content) {
+  const normalized = normalizeText(content);
+  const talksAboutAlliance = /\b(?:alianz(?:a|as)|partner(?:ship)?s?|colaboracion(?:es)?)\b/.test(normalized);
+  if (!talksAboutAlliance) return false;
+  if (/\b(?:quiero|queria|me\s+gustaria|hacer|realizar|proponer|solicitar|mandar|enviar|ofrecer|crear|tramitar)\b.*\b(?:alianz(?:a|as)|partner(?:ship)?s?|colaboracion(?:es)?)\b/.test(normalized)) {
+    return false;
+  }
+  return [
+    /\b(?:cuales?|que|donde|ver|listar|muestrame|mostrar|saber|conocer)\b.*\b(?:alianz(?:a|as)|partner(?:ship)?s?|colaboracion(?:es)?)\b/,
+    /\b(?:alianz(?:a|as)|partner(?:ship)?s?|colaboracion(?:es)?)\b.*\b(?:de\s+este\s+servidor|del\s+servidor|tiene|hay|actual(?:es)?|lista|canal|canales|ejemplos?)\b/,
+    /\b(?:quienes|con\s+quien)\b.*\b(?:alianz(?:a|as)|partner(?:ship)?s?|colaboracion(?:es)?)\b/
+  ].some((pattern) => pattern.test(normalized));
 }
 
 function isAllianceTemplateMessage(content, { templateRequested = false } = {}) {
@@ -6079,6 +6437,8 @@ async function maybeMirrorGlobalAnnouncement({ client, storage, config, message 
   if (message.author?.id === client.user?.id) return false;
   if (message.guild.id !== config.ANNOUNCEMENT_SOURCE_GUILD_ID) return false;
   if (message.channel.id !== config.ANNOUNCEMENT_SOURCE_CHANNEL_ID) return false;
+  console.log(`Global announcement ${message.id} ignored: announcement mirroring is retired in this build.`);
+  return true;
 
   if (!hasMirrorableAnnouncementContent(message)) {
     console.log(`Global announcement ${message.id} skipped: empty content.`);
@@ -6351,6 +6711,14 @@ export async function createTicketCategory(client, storage, { guildId, name }) {
     ticketCategoryId: category.id,
     ticketCategoryName: category.name
   });
+}
+
+export async function sendChannelMessage(client, { channelId, payload }) {
+  const channel = await client.channels.fetch(channelId);
+  if (!channel?.isTextBased?.() || typeof channel.send !== 'function') {
+    throw new Error('El canal no existe o no permite enviar mensajes.');
+  }
+  return channel.send(payload);
 }
 
 async function scanInstalledGuildsForDiscovery({ client, storage, supportAgent = null }) {

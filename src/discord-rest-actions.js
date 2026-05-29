@@ -186,6 +186,13 @@ export function createDiscordRestActions({ config, storage }) {
       requireBotToken(botToken);
       const guilds = await rest.get(Routes.userGuilds());
       return guilds.map((guild) => guild.id);
+    },
+
+    async sendChannelMessage({ channelId, payload }) {
+      requireBotToken(botToken);
+      return rest.post(Routes.channelMessages(channelId), {
+        body: payload
+      });
     }
   };
 }

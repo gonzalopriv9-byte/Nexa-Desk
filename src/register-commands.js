@@ -126,6 +126,49 @@ const commands = [
     .setDescription('Audita si NexaDesk esta listo para operar en este servidor.')
     .toJSON(),
   new SlashCommandBuilder()
+    .setName('reporte')
+    .setDescription('Envia un reporte privado al equipo de moderacion.')
+    .addUserOption((option) =>
+      option
+        .setName('usuario')
+        .setDescription('Usuario a reportar.')
+        .setRequired(true)
+    )
+    .addStringOption((option) =>
+      option
+        .setName('razon')
+        .setDescription('Motivo del reporte.')
+        .setMinLength(4)
+        .setMaxLength(900)
+        .setRequired(true)
+    )
+    .addAttachmentOption((option) =>
+      option
+        .setName('prueba')
+        .setDescription('Prueba visual obligatoria subida como archivo.')
+        .setRequired(true)
+    )
+    .addAttachmentOption((option) =>
+      option
+        .setName('prueba_2')
+        .setDescription('Prueba visual adicional opcional.')
+        .setRequired(false)
+    )
+    .addAttachmentOption((option) =>
+      option
+        .setName('prueba_3')
+        .setDescription('Prueba visual adicional opcional.')
+        .setRequired(false)
+    )
+    .addStringOption((option) =>
+      option
+        .setName('mensaje_moderador')
+        .setDescription('Mensaje opcional para el moderador.')
+        .setMaxLength(700)
+        .setRequired(false)
+    )
+    .toJSON(),
+  new SlashCommandBuilder()
     .setName('crecimiento')
     .setDescription('Gestiona Growth Engine: feedback, reviews y alertas premium.')
     .addSubcommand((subcommand) =>

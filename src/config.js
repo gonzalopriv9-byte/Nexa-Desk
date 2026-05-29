@@ -82,7 +82,7 @@ const schema = z.object({
   AI_VIDEO_FRAME_COUNT: z.coerce.number().int().min(1).max(5).default(3),
   AI_VIDEO_MAX_BYTES: z.coerce.number().int().min(1_000_000).max(100_000_000).default(25_000_000),
   AI_AUTO_REPLY: envBoolean.default(true),
-  ANNOUNCEMENT_MIRROR_ENABLED: envBoolean.default(true),
+  ANNOUNCEMENT_MIRROR_ENABLED: envBoolean.default(false),
   ANNOUNCEMENT_SOURCE_GUILD_ID: z.string().default('1483534853524947112'),
   ANNOUNCEMENT_SOURCE_CHANNEL_ID: z.string().default('1499807075021095015'),
   ANNOUNCEMENT_MIRROR_ALLOW_MENTIONS: envBoolean.default(false),

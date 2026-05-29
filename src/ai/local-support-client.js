@@ -43,6 +43,10 @@ function buildSupportFallback({ system, messages, lastUser }) {
     return reply.staffApplication;
   }
 
+  if (isAllianceInfoQuestion(text)) {
+    return reply.allianceInfo;
+  }
+
   if (/\b(alianza|partner|partnership|colaboraci[oó]n)\b/iu.test(text)) {
     return reply.alliance;
   }
@@ -142,6 +146,7 @@ function getLocalizedReplies(language) {
       panels: 'To delete panels, open the dashboard, choose your server, go to Panels, then use the delete option on the published panel. If it does not appear, staff should check your dashboard permissions.',
       image: 'I received the image. If it is not readable, send a clearer screenshot or paste the exact error text so I can continue without guessing.',
       staffApplication: 'If you want to apply for staff, tell me the role or area you want and I will help prepare the application or call staff if this server handles it manually.',
+      allianceInfo: 'I will check the real server channels and context before answering that. I will not start the alliance request flow unless you explicitly want to create one.',
       alliance: 'For an alliance, send your server template with the invite, member count, theme, what you offer and a contact person. I will keep it organized for staff.',
       report: 'I can help with the report. Send the user involved, what happened, when it happened and any screenshots or proof you have.',
       problem: 'I can help. Tell me what you were trying to do, what error appeared and, if possible, send a screenshot or the exact text of the error.',
@@ -156,6 +161,7 @@ function getLocalizedReplies(language) {
     panels: 'Para eliminar paneles: entra en la dashboard, elige tu servidor, ve a Paneles y usa la opcion de eliminar en el panel publicado. Si no aparece, el staff debe revisar tus permisos en la dashboard.',
     image: 'He recibido la imagen. Si no se lee bien, mandame una captura mas clara o copia el texto exacto del error para seguir sin inventar.',
     staffApplication: 'Si quieres postular a staff, dime el area o rol al que quieres entrar y te ayudo a preparar la postulacion; si el servidor lo gestiona manualmente, aviso al staff.',
+    allianceInfo: 'Voy a revisar los canales y el contexto real del servidor antes de responder eso. No abrire el flujo de alianza salvo que me digas claramente que quieres crear una.',
     alliance: 'Para una alianza, enviame la plantilla de tu servidor con invitacion, miembros, tematica, que ofreceis y contacto responsable. La dejo ordenada para revision.',
     report: 'Te ayudo con el reporte. Pasame el usuario implicado, que ocurrio, cuando paso y capturas o pruebas si las tienes.',
     problem: 'Te ayudo. Dime que estabas intentando hacer, que error salio y, si puedes, envia captura o el texto exacto del fallo.',
@@ -190,6 +196,20 @@ function detectQualityCategory(text = '') {
 function isStaffRequest(text = '') {
   return /\b(humano|staff|moderador|mod|owner|admin|responsable|menciona|mencionales|llama|avis(a|e))\b/iu.test(text)
     && /\b(quiero|necesito|puedes|podrias|porfa|porfavor|manual|ayuda|asistencia|hablar|llamar|avisar)\b/iu.test(text);
+}
+
+function isAllianceInfoQuestion(text = '') {
+  const normalized = normalizeText(text).toLowerCase();
+  const talksAboutAlliance = /\b(?:alianz(?:a|as)|partner(?:ship)?s?|colaboraci[oó]n(?:es)?)\b/iu.test(normalized);
+  if (!talksAboutAlliance) return false;
+  if (/\b(?:quiero|queria|me\s+gustaria|hacer|realizar|proponer|solicitar|mandar|enviar|ofrecer|crear|tramitar)\b.*\b(?:alianz(?:a|as)|partner(?:ship)?s?|colaboraci[oó]n(?:es)?)\b/iu.test(normalized)) {
+    return false;
+  }
+  return [
+    /\b(?:cuales?|que|donde|ver|listar|muestrame|mostrar|saber|conocer)\b.*\b(?:alianz(?:a|as)|partner(?:ship)?s?|colaboraci[oó]n(?:es)?)\b/iu,
+    /\b(?:alianz(?:a|as)|partner(?:ship)?s?|colaboraci[oó]n(?:es)?)\b.*\b(?:de\s+este\s+servidor|del\s+servidor|tiene|hay|actual(?:es)?|lista|canal|canales|ejemplos?)\b/iu,
+    /\b(?:quienes|con\s+quien)\b.*\b(?:alianz(?:a|as)|partner(?:ship)?s?|colaboraci[oó]n(?:es)?)\b/iu
+  ].some((pattern) => pattern.test(normalized));
 }
 
 function normalizeText(value = '') {
