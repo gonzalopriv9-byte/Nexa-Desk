@@ -12,14 +12,32 @@ export const NEXT_RELEASE_FEATURES = [
     createdAt: '2026-05-28'
   },
   {
-    id: 'v15-launch-pack',
-    title: 'NexaDesk V1.5 Launch Pack',
-    description: 'Seccion visual V1.5 en dashboard y comando /novedades para anunciar la release con funciones listas para video.',
-    type: 'release',
-    dashboardViews: ['v15'],
+    id: 'v15-release-notes',
+    title: 'NexaDesk V1.5 - anuncio /novedades',
+    description: 'Comando /novedades para anunciar la version 1.5 cuando el owner la publique desde /owner.',
+    type: 'command',
     commands: ['novedades'],
     defaultReleased: false,
     createdAt: '2026-05-28'
+  },
+  {
+    id: 'v15-web-exam-mode',
+    title: 'Modo examen web Premium',
+    description: 'Configuracion de examenes desde la dashboard, tickets de postulacion, correccion IA y revision humana/Premium.',
+    type: 'premium',
+    dashboardViews: ['components', 'panels'],
+    commands: [],
+    defaultReleased: false,
+    createdAt: '2026-05-30'
+  },
+  {
+    id: 'v15-report-command',
+    title: 'Sistema /reporte',
+    description: 'Comando /reporte con usuario, razon, pruebas visuales, mensaje opcional y botones de revision para staff.',
+    type: 'command',
+    commands: ['reporte'],
+    defaultReleased: false,
+    createdAt: '2026-05-30'
   }
 ];
 

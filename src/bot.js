@@ -783,6 +783,13 @@ async function shouldBlockPendingCommand({ interaction, storage }) {
   return true;
 }
 
+async function getPendingReleaseFeature({ storage, featureId, userId }) {
+  if (userId === PREMIUM_ADMIN_USER_ID) return null;
+  const settings = await storage.getGlobalSettings().catch(() => ({}));
+  const releaseState = buildReleaseState(settings.releaseControl);
+  return (releaseState.features ?? []).find((feature) => feature.id === featureId && !feature.released) ?? null;
+}
+
 function isClientReadyForDiscordRest(client) {
   return Boolean(client?.isReady?.() && client?.token);
 }
@@ -2700,7 +2707,7 @@ async function handleReleaseNotesCommand({ interaction, storage, config }) {
   const settings = await storage.getGlobalSettings().catch(() => ({}));
   const isOwner = interaction.user.id === PREMIUM_ADMIN_USER_ID;
   const releaseState = buildReleaseState(settings.releaseControl, { isOwner });
-  const feature = releaseState.features.find((item) => item.id === 'v15-launch-pack');
+  const feature = releaseState.features.find((item) => item.id === 'v15-release-notes');
   const isReleased = Boolean(feature?.released);
 
   await interaction.reply({
@@ -2765,14 +2772,14 @@ function buildV15ReleaseEmbed({ config, guild, isReleased }) {
 
 function buildV15ReleaseComponents({ config }) {
   const dashboardBase = config.DASHBOARD_PUBLIC_URL || PUBLIC_DASHBOARD_URL;
-  const v15Url = new URL('/#v15', dashboardBase).toString();
+  const dashboardUrl = new URL('/', dashboardBase).toString();
   const premiumUrl = new URL('/#premium', dashboardBase).toString();
   return [
     new ActionRowBuilder().addComponents(
       new ButtonBuilder()
-        .setLabel('Ver V1.5')
+        .setLabel('Abrir dashboard')
         .setStyle(ButtonStyle.Link)
-        .setURL(v15Url),
+        .setURL(dashboardUrl),
       new ButtonBuilder()
         .setLabel('Premium')
         .setStyle(ButtonStyle.Link)
@@ -3212,6 +3219,24 @@ async function createTicketFromConfiguredSource({ interaction, storage, guildCon
   const examConfig = isExamTicketMode(ticketMode)
     ? getExamConfigForTicketSource(normalizedPanel, normalizedComponent)
     : null;
+  if (isExamTicketMode(ticketMode)) {
+    const pendingExamFeature = await getPendingReleaseFeature({
+      storage,
+      featureId: 'v15-web-exam-mode',
+      userId: interaction.user?.id
+    });
+    if (pendingExamFeature) {
+      await interaction.reply({
+        content: [
+          `${EMOJIS.wifi} **Estamos trabajando en esta parte.**`,
+          `**${pendingExamFeature.title}** sigue en pruebas internas de NexaDesk.`,
+          'Cuando el owner global lance la 1.5 desde `/owner`, los tickets de examen quedaran disponibles para todos.'
+        ].join('\n'),
+        ephemeral: true
+      });
+      return;
+    }
+  }
   const canUsePremiumExamReview = isExamTicketMode(ticketMode)
     && isPremiumEntitled(guildConfig)
     && examConfig?.reviewEnabled
