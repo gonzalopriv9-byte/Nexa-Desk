@@ -20,8 +20,12 @@ export class LocalSupportClient {
 function buildSupportFallback({ system, messages, lastUser }) {
   const text = normalizeText(lastUser);
   const context = normalizeText(messages.map((message) => message.content).join('\n'));
-  const language = detectFallbackLanguage(text, system);
+  const language = detectFallbackLanguage(text, context);
   const reply = getLocalizedReplies(language);
+
+  if (isLanguageSwitchRequest(text)) {
+    return reply.languageSwitch;
+  }
 
   if (isStaffRequest(text)) {
     return `[ESCALATE] ${reply.staff}`;
@@ -57,6 +61,14 @@ function buildSupportFallback({ system, messages, lastUser }) {
 
   if (/\b(error|fallo|problema|no\s+funciona|bug|issue)\b/iu.test(text)) {
     return reply.problem;
+  }
+
+  if (/\b(afk|vengo|vuelvo|regreso|un\s+momento|ahora\s+vengo|ya\s+vengo)\b/iu.test(text)) {
+    return reply.waiting;
+  }
+
+  if (/^(vale|ok|okay|dale|perfecto|gracias|ty|thanks)[!.?\s]*$/iu.test(text)) {
+    return reply.ack;
   }
 
   if (/^(hola|buenas|hey|hi|hello|buenos dias|buenas tardes)[!.?\s]*$/iu.test(text)) {
@@ -139,6 +151,25 @@ function buildJsonFallback({ system, lastUser }) {
 }
 
 function getLocalizedReplies(language) {
+  if (language === 'zh') {
+    return {
+      staff: '我会联系人工工作人员，因为这个情况需要人工处理。',
+      crisis: '我会立刻升级给人工处理。请先远离危险，并马上联系当地紧急服务或身边可信任的人。',
+      panels: '要删除面板，请打开仪表盘，选择服务器，进入 Panels/Paneles，然后使用已发布面板旁边的删除选项。',
+      image: '我已收到图片。如果看不清，请发送更清晰的截图或复制错误文字，我会继续帮你判断。',
+      staffApplication: '如果你想申请 staff，请告诉我你想申请的岗位或区域；如果需要人工审核，我会联系 staff。',
+      allianceInfo: '我会先查看服务器真实频道和上下文，不会在你没有明确要求时启动联盟申请流程。',
+      alliance: '如果要申请联盟，请发送你的服务器模板，包括邀请链接、成员数量、主题、你们提供什么以及负责人联系方式。',
+      report: '我可以帮你整理举报。请发送相关用户、发生了什么、时间，以及截图或证据。',
+      problem: '我可以帮你。请告诉我你原本想做什么、出现了什么错误；如果可以，请发送截图或错误文字。',
+      waiting: '没问题，我会在这里等你。你回来后把下一条关键信息发给我，我继续处理。',
+      ack: '好的，我还在。你准备好后把下一步信息发给我。',
+      languageSwitch: '好的，我会用中文回复。请告诉我你需要什么，我会继续帮你。',
+      greeting: '你好，我在。告诉我你需要什么，我会帮你处理这个 ticket。',
+      generic: '我在。请把最关键的信息发给我，我会根据现有内容继续处理，不会乱猜。'
+    };
+  }
+
   if (language === 'en') {
     return {
       staff: 'I will bring a human staff member in because this needs manual attention.',
@@ -150,6 +181,9 @@ function getLocalizedReplies(language) {
       alliance: 'For an alliance, send your server template with the invite, member count, theme, what you offer and a contact person. I will keep it organized for staff.',
       report: 'I can help with the report. Send the user involved, what happened, when it happened and any screenshots or proof you have.',
       problem: 'I can help. Tell me what you were trying to do, what error appeared and, if possible, send a screenshot or the exact text of the error.',
+      waiting: 'No problem, I will wait here. When you come back, send the next detail and I will continue.',
+      ack: 'Perfect, I am still here. Send me the next detail whenever you are ready.',
+      languageSwitch: 'Perfect, I will answer in English from now on. Tell me what you need and I will continue.',
       greeting: 'Hi, I am here. Tell me what you need and I will help you with this ticket.',
       generic: 'I am with you. Send me the key detail of what happened and I will continue from there without guessing.'
     };
@@ -165,6 +199,9 @@ function getLocalizedReplies(language) {
     alliance: 'Para una alianza, enviame la plantilla de tu servidor con invitacion, miembros, tematica, que ofreceis y contacto responsable. La dejo ordenada para revision.',
     report: 'Te ayudo con el reporte. Pasame el usuario implicado, que ocurrio, cuando paso y capturas o pruebas si las tienes.',
     problem: 'Te ayudo. Dime que estabas intentando hacer, que error salio y, si puedes, envia captura o el texto exacto del fallo.',
+    waiting: 'Sin problema, te espero por aqui. Cuando vuelvas, mandame el siguiente detalle y continuo.',
+    ack: 'Perfecto, sigo atento. Cuando quieras, pasame el siguiente detalle.',
+    languageSwitch: 'Perfecto, te respondere en español a partir de ahora. Dime que necesitas y seguimos.',
     greeting: 'Hola, estoy aqui. Dime que necesitas y te ayudo con este ticket.',
     generic: 'Sigo contigo. Pasame el detalle principal de lo que ocurre y avanzo desde ahi sin inventar.'
   };
@@ -178,10 +215,21 @@ function expectsJson(system = '') {
   return /JSON valido|SOLO JSON|Responde SOLO JSON|schema exacto|esquema exacto/iu.test(system);
 }
 
-function detectFallbackLanguage(text = '', system = '') {
-  const source = `${text}\n${system}`;
-  if (/\b(hello|hi|what|how|where|when|why|help|server|ticket|staff)\b/iu.test(source)) return 'en';
+function detectFallbackLanguage(text = '', context = '') {
+  const latest = normalizeText(text).toLowerCase();
+  const recent = normalizeText(context).toLowerCase();
+
+  if (/[\u4E00-\u9FFF]/u.test(latest)) return 'zh';
+  if (/\b(espanol|español|castellano|que hables en espanol|que hables en español|habla en espanol|habla en español)\b/iu.test(latest)) return 'es';
+  if (/[¿¡ñáéíóúü]/iu.test(latest)) return 'es';
+  if (/\b(hola|buenas|vale|gracias|necesito|puedes|podrias|porfa|servidor|ticket|ayuda|problema|fallo|error|staff|moderador|alianza|reporte|examen|vengo|regreso|ahora|afk)\b/iu.test(latest)) return 'es';
+  if (/\b(hello|hi|what|how|where|when|why|help|server|ticket|staff|thanks|need|could|please)\b/iu.test(latest)) return 'en';
+  if (/\b(hola|buenas|gracias|necesito|servidor|ticket|ayuda|problema)\b/iu.test(recent)) return 'es';
   return 'es';
+}
+
+function isLanguageSwitchRequest(text = '') {
+  return /\b(que\s+hables\s+en\s+espanol|que\s+hables\s+en\s+español|habla\s+en\s+espanol|habla\s+en\s+español|responde\s+en\s+espanol|responde\s+en\s+español|speak\s+spanish|speak\s+english|answer\s+in\s+english|中文|chinese)\b/iu.test(text);
 }
 
 function detectQualityCategory(text = '') {

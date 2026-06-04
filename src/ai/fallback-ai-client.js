@@ -73,7 +73,7 @@ export function createAiProvider(name, client) {
 
 function shouldFallbackAiError(error) {
   const status = error?.status ?? error?.response?.status ?? error?.cause?.status;
-  if ([401, 403, 408, 409, 425, 429, 500, 502, 503, 504].includes(Number(status))) return true;
+  if ([401, 403, 408, 409, 413, 425, 429, 500, 502, 503, 504].includes(Number(status))) return true;
 
   const message = [
     error?.code,

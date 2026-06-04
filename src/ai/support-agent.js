@@ -6,15 +6,19 @@ import { buildExamEvaluationInput, parseExamEvaluationJson } from '../exam-mode.
 import { hasVisualAttachments } from './visual-analyzer.js';
 import { LocalSupportClient } from './local-support-client.js';
 
-const SERVER_CONTEXT_MAX_CHANNELS = 10;
-const SERVER_CONTEXT_FULL_SCAN_MAX_CHANNELS = 45;
-const SERVER_CONTEXT_FETCH_LIMIT = 25;
-const SERVER_CONTEXT_FULL_SCAN_FETCH_LIMIT = 12;
-const SERVER_CONTEXT_MAX_SNIPPETS = 10;
-const SERVER_CONTEXT_CHANNEL_LOOKUP_SNIPPETS = 6;
+const SERVER_CONTEXT_MAX_CHANNELS = 6;
+const SERVER_CONTEXT_FULL_SCAN_MAX_CHANNELS = 18;
+const SERVER_CONTEXT_FETCH_LIMIT = 10;
+const SERVER_CONTEXT_FULL_SCAN_FETCH_LIMIT = 6;
+const SERVER_CONTEXT_MAX_SNIPPETS = 5;
+const SERVER_CONTEXT_CHANNEL_LOOKUP_SNIPPETS = 4;
 const SERVER_CONTEXT_CACHE_TTL_MS = 120_000;
 const SERVER_CONTEXT_FETCH_TIMEOUT_MS = 1300;
-const SERVER_CONTEXT_CONCURRENCY = 12;
+const SERVER_CONTEXT_CONCURRENCY = 8;
+const AI_HISTORY_MESSAGE_LIMIT = 8;
+const AI_HISTORY_MESSAGE_CHARS = 650;
+const AI_CONTEXT_TEXT_CHARS = 1600;
+const AI_SERVER_KNOWLEDGE_CHARS = 2800;
 
 export class SupportAgent {
   constructor({ aiClient, storage, maxHistoryMessages, visualAnalyzer = null }) {
@@ -498,12 +502,12 @@ export class SupportAgent {
   }
 
   #buildSystemPrompt({ ticket, guildConfig, userLanguage, intakeContext, visualContext, serverKnowledgeContext }) {
-    const serverInfo = guildConfig.serverInfo?.trim() || 'No hay informacion adicional configurada todavia.';
-    const serverPrompt = guildConfig.serverPrompt?.trim() || 'No hay prompt personalizado configurado.';
-    const discoveryContext = buildDiscoveryContext(guildConfig.discovery);
-    const ticketIntake = intakeContext?.trim() || 'No hay respuestas previas de formulario para este ticket.';
-    const visualEvidence = visualContext?.trim() || 'No hay pruebas visuales analizadas en este turno.';
-    const serverKnowledge = serverKnowledgeContext?.trim()
+    const serverInfo = limitContextText(guildConfig.serverInfo?.trim(), AI_CONTEXT_TEXT_CHARS) || 'No hay informacion adicional configurada todavia.';
+    const serverPrompt = limitContextText(guildConfig.serverPrompt?.trim(), AI_CONTEXT_TEXT_CHARS) || 'No hay prompt personalizado configurado.';
+    const discoveryContext = limitContextText(buildDiscoveryContext(guildConfig.discovery), 900);
+    const ticketIntake = limitContextText(intakeContext?.trim(), 900) || 'No hay respuestas previas de formulario para este ticket.';
+    const visualEvidence = limitContextText(visualContext?.trim(), 900) || 'No hay pruebas visuales analizadas en este turno.';
+    const serverKnowledge = limitContextText(serverKnowledgeContext?.trim(), AI_SERVER_KNOWLEDGE_CHARS)
       || 'No se encontro contexto adicional relevante en mensajes recientes/transcripciones del servidor.';
     const premium = normalizePremiumConfig(guildConfig.premium, guildConfig);
     const premiumContext = isPremiumEntitled(guildConfig)
@@ -595,7 +599,7 @@ export class SupportAgent {
       .filter((item) => (item.content?.trim() || item.attachments?.size) && !isDiscordVoiceMirrorMessage(item))
       .map((item) => ({
         role: item.author.bot ? 'assistant' : 'user',
-        content: formatHistoryMessage(item).slice(0, 1800),
+        content: formatHistoryMessage(item).slice(0, AI_HISTORY_MESSAGE_CHARS),
         createdAt: item.createdTimestamp ?? 0
       }));
 
@@ -603,7 +607,7 @@ export class SupportAgent {
       .filter((item) => ['user', 'assistant'].includes(item.role) && String(item.content ?? '').trim())
       .map((item) => ({
         role: item.role === 'assistant' ? 'assistant' : 'user',
-        content: formatStoredTranscriptMessage(item).slice(0, 1800),
+        content: formatStoredTranscriptMessage(item).slice(0, AI_HISTORY_MESSAGE_CHARS),
         createdAt: Date.parse(item.createdAt ?? '') || 0
       }));
 
@@ -616,7 +620,7 @@ export class SupportAgent {
         seen.add(key);
         return true;
       })
-      .slice(-this.maxHistoryMessages)
+      .slice(-Math.min(this.maxHistoryMessages, AI_HISTORY_MESSAGE_LIMIT))
       .map(({ role, content }) => ({ role, content }));
   }
 
@@ -702,7 +706,7 @@ export class SupportAgent {
     return snippets
       .map((snippet, index) => `${index + 1}. ${snippet.source}: ${snippet.text}`)
       .join('\n')
-      .slice(0, 6500);
+      .slice(0, AI_SERVER_KNOWLEDGE_CHARS);
   }
 
   async #searchRecentGuildMessages({ message, guildConfig, terms, searchMode, cacheKey }) {
@@ -1090,7 +1094,7 @@ function applyLanguageGuard(messages, userLanguage, latestMessage) {
       role: 'user',
       content: [
         '[NexaDesk internal turn selector: answer the latest user message below, not an older message.]',
-        formatHistoryMessage(latestMessage).slice(0, 1800),
+        formatHistoryMessage(latestMessage).slice(0, 900),
         `[NexaDesk internal language rule: ${userLanguage.instruction}]`,
         '[This rule overrides previous ticket history and server context for this reply.]'
       ].join('\n')
@@ -1432,6 +1436,13 @@ function normalizeKnowledgeText(value = '') {
     .replace(/[^\p{L}\p{N}#@_-]+/gu, ' ')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+function limitContextText(value = '', maxLength = 1000) {
+  const text = String(value ?? '').replace(/\s+/g, ' ').trim();
+  if (!text) return '';
+  if (text.length <= maxLength) return text;
+  return `${text.slice(0, Math.max(0, maxLength - 80)).trim()} ... [contexto recortado para responder rapido]`;
 }
 
 function redactSensitiveContext(value = '') {

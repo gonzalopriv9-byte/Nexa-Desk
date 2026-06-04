@@ -3532,8 +3532,24 @@ async function startExamTicket({ interaction, storage, channel, ticket, guildCon
 }
 
 function buildInternalExamFormUrl(config, channelId, token) {
-  const base = String(config.DASHBOARD_PUBLIC_URL || PUBLIC_DASHBOARD_URL).replace(/\/+$/, '');
+  const base = getPublicDashboardBaseUrl(config);
   return `${base}/exam/${encodeURIComponent(channelId)}?token=${encodeURIComponent(token)}`;
+}
+
+function getPublicDashboardBaseUrl(config) {
+  const configured = String(config.DASHBOARD_PUBLIC_URL || '').trim();
+  try {
+    const url = new URL(configured || PUBLIC_DASHBOARD_URL);
+    const host = url.hostname.toLowerCase();
+    const isLocalHost = ['localhost', '127.0.0.1', '0.0.0.0'].includes(host);
+    const isPrivateLan = /^10\./.test(host)
+      || /^192\.168\./.test(host)
+      || /^172\.(1[6-9]|2\d|3[01])\./.test(host);
+    if (isLocalHost || isPrivateLan) return PUBLIC_DASHBOARD_URL.replace(/\/+$/, '');
+    return url.toString().replace(/\/+$/, '');
+  } catch {
+    return PUBLIC_DASHBOARD_URL.replace(/\/+$/, '');
+  }
 }
 
 async function tryMoveExamCandidateToVoice(interaction, voiceChannel) {
