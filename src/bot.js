@@ -73,6 +73,7 @@ const PREMIUM_ADMIN_USER_ID = '1352652366330986526';
 const ALLIANCE_MARKER = '[NexaDesk alliance]';
 const CRISIS_MARKER = '[NexaDesk crisis]';
 const STAFF_HANDOFF_MARKER = '[NexaDesk staff handoff]';
+const STAFF_ESCALATION_MARKER = '[NexaDesk staff escalation]';
 
 export function createBot({ config, storage, supportAgent, voiceManager = null }) {
   const intents = [
@@ -633,10 +634,14 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
       }
 
       if (isUserRequestingStaff(message.content)) {
+        const publicAnswer = [
+          `${message.author}, he avisado al staff para que entre a ayudarte directamente.`,
+          'Les dejo este ticket preparado con el contexto para que puedan revisarlo sin perder tiempo.'
+        ].join('\n');
         const escalation = {
           shouldEscalate: true,
           reason: 'El usuario solicita asistencia manual de staff.',
-          publicAnswer: 'El usuario solicita asistencia manual de staff.'
+          publicAnswer
         };
         const shouldMentionStaff = await registerTicketEscalation({ storage, message, guildConfig, ticket, reason: escalation.reason });
         const latestTicket = await storage.getTicket(message.channel.id);
@@ -5840,6 +5845,7 @@ function parseEscalation(answer) {
 
 function looksLikeEscalation(answer) {
   return [
+    /\b(?:necesito|requiere|hace\s+falta)\s+(?:asistencia|ayuda|atencion)\s+(?:humana|manual|del\s+staff|de\s+staff)\b/i,
     /\bnecesito\s+(?:involucrar|avisar|contactar|derivar|escalar)\s+(?:a|al|con)\s+(?:un\s+)?(?:staff|moderador|humano|responsable)\b/i,
     /\bnecesito\s+que\s+(?:un\s+)?(?:staff|moderador|humano|responsable)\b.*\b(?:revise|atienda|ayude|intervenga|mire)\b/i,
     /\b(?:requiere|necesita)\s+(?:intervencion|revision|atencion)\s+(?:humana|manual|personalizada|del\s+staff)\b/i,
@@ -6405,9 +6411,10 @@ function isAllianceCancelRequest(content) {
 function isUserRequestingStaff(content) {
   const normalized = normalizeText(content);
   return [
-    /\basistencia\s+manual\b/,
+    /\b(?:asistencia|aistencia|asisten(?:c|s)ia|ayuda|atencion)\s+(?:manual|humana|de\s+staff|del\s+staff)\b/,
+    /\b(?:quiero|necesito|ocupo|requiero)\s+(?:un\s+)?(?:humano|staff|moderador|responsable|persona)\b/,
     /\b(?:necesito|podria|puedes|podrias|quiero\s+hablar\s+con|pasame\s+con)\b.*\b(staff|moderador(?:es)?|humano|responsable)\b/,
-    /\b(?:menciona(?:s|r)?|avisa(?:s|r)?|llama(?:s|r)?|contacta(?:s|r)?)\b.*\b(staff|moderador(?:es)?|humano|responsable)\b/,
+    /\b(?:menciona(?:s|r)?|pinguea(?:s|r)?|pinge?a(?:s|r)?|avisa(?:s|r)?|llama(?:s|r)?|contacta(?:s|r)?)\b.*\b(staff|moderador(?:es)?|humano|responsable)\b/,
     /\b(?:staff|moderador(?:es)?|humano|responsable)\b.*\b(?:por\s+favor|porfa|urgente|ayuda|venir|venga|atienda)\b/,
     /\bmanual\s+(?:support|assistance|help)\b/,
     /\b(?:need|want|call|notify|contact|bring|get)\b.*\b(staff|moderator|human|admin)\b/,
@@ -6637,17 +6644,46 @@ function isUnknownReplyReferenceError(error) {
 }
 
 async function registerTicketEscalation({ storage, message, guildConfig, ticket, reason }) {
-  if (isTicketEscalated(ticket)) return false;
+  const alreadyEscalated = isTicketEscalated(ticket);
+  const alreadyMentionedStaff = guildConfig.staffRoleId
+    ? await hasStaffEscalationMarker(storage, message.channel.id)
+    : true;
+
+  if (alreadyEscalated && alreadyMentionedStaff) return false;
 
   if (guildConfig.staffRoleId) {
     await notifyStaffRole(message, guildConfig, ticket, reason);
+    await markStaffEscalation(storage, message, reason);
   }
 
-  await storage.updateTicket(ticket.channelId, {
-    status: 'escalated'
-  });
+  if (!alreadyEscalated) {
+    await storage.updateTicket(ticket.channelId, {
+      status: 'escalated'
+    });
+  }
 
   return Boolean(guildConfig.staffRoleId);
+}
+
+async function hasStaffEscalationMarker(storage, channelId) {
+  const transcript = await storage.listTranscriptMessages(channelId).catch(() => []);
+  return transcript.some((item) => String(item?.content ?? '').includes(STAFF_ESCALATION_MARKER));
+}
+
+async function markStaffEscalation(storage, message, reason) {
+  await storage.addTranscriptMessage({
+    guildId: message.guild.id,
+    channelId: message.channel.id,
+    messageId: `staff-escalation-${message.id}-${Date.now()}`,
+    authorId: message.client.user?.id,
+    authorName: message.client.user?.username ?? 'NexaDesk',
+    authorBot: true,
+    role: 'system',
+    content: `${STAFF_ESCALATION_MARKER} ${String(reason ?? '').slice(0, 500)}`,
+    createdAt: new Date().toISOString()
+  }).catch((error) => {
+    console.error(`Failed to save staff escalation marker in ${message.channel.id}:`, error);
+  });
 }
 
 async function notifyStaffRole(message, guildConfig, ticket, reason) {
