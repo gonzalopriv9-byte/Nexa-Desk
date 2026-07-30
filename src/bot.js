@@ -604,6 +604,35 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
 
     activeResponses.add(activeResponseKey);
     try {
+      if (isSensitiveFileAccessRequest(message.content)) {
+        const reply = await sendTicketResponse(message, {
+          content: buildSensitiveFileAccessRefusal(message),
+          allowedMentions: { parse: [] }
+        });
+        await saveTranscript(storage, reply, 'assistant');
+        return;
+      }
+
+      if (isRaidReportMessage(message.content)) {
+        const escalation = buildRaidReportEscalation(message);
+        const shouldMentionStaff = await registerTicketEscalation({
+          storage,
+          message,
+          guildConfig,
+          ticket,
+          reason: escalation.reason
+        });
+        const latestTicket = await storage.getTicket(message.channel.id);
+        if (!latestTicket || isClosedTicket(latestTicket)) return;
+
+        const reply = await sendTicketResponse(message, {
+          content: buildPublicReply(escalation, guildConfig, { mentionStaff: shouldMentionStaff }).slice(0, 1900),
+          allowedMentions: { roles: shouldMentionStaff && guildConfig.staffRoleId ? [guildConfig.staffRoleId] : [] }
+        });
+        await saveTranscript(storage, reply, 'assistant');
+        return;
+      }
+
       const allianceFlow = await resolveAllianceTicketFlow({ message, storage, guildConfig, ticket, supportAgent });
       if (allianceFlow.type === 'reply' || allianceFlow.type === 'ask_template') {
         await sendFlowMessages({ message, storage, flow: allianceFlow });
@@ -6420,6 +6449,58 @@ function isUserRequestingStaff(content) {
     /\b(?:need|want|call|notify|contact|bring|get)\b.*\b(staff|moderator|human|admin)\b/,
     /\b(?:staff|moderator|human|admin)\b.*\b(?:please|help|needed|urgent)\b/
   ].some((pattern) => pattern.test(normalized));
+}
+
+function isSensitiveFileAccessRequest(content) {
+  const normalized = normalizeText(content);
+  const hasSecretTarget = [
+    /\.env(?:\b|$)/,
+    /\b(?:archivo|fichero|file)\s+(?:env|\.env|config|configuracion|configuration)\b/,
+    /\b(?:token|tokens|api\s*key|apikey|clave\s+api|service\s*role|service_role|secret|secreto|password|contrasena|credenciales|credentials|vault)\b/
+  ].some((pattern) => pattern.test(normalized));
+  if (!hasSecretTarget) return false;
+
+  const hasReadIntent = [
+    /\b(?:leer|leeme|mostrar|muestrame|ver|dime|decir|cuentame|buscar|encuentra|encontrar|abrir|acceder|consultar|copiar|pasar|pasame|mandar|enviar|revelar|exponer|sacar)\b/,
+    /\b(?:read|show|find|open|get|tell|send|print|dump|cat|reveal|expose)\b/,
+    /\b(?:que\s+hay|que\s+contiene|contenido|dentro|inside|contains?)\b/
+  ].some((pattern) => pattern.test(normalized));
+
+  return hasReadIntent || /\.env(?:\b|$)/.test(normalized);
+}
+
+function buildSensitiveFileAccessRefusal(message) {
+  return [
+    `${message.author}, no puedo buscar, leer ni revelar archivos privados como .env, tokens, claves API o credenciales.`,
+    'Si esto era una prueba de seguridad: bien detectado. Puedo ayudarte a revisar la configuracion sin exponer secretos, explicar que variables hacen falta o avisar al staff si crees que una clave se ha filtrado.',
+    'Si algun secreto se publico por error, lo correcto es rotarlo cuanto antes.'
+  ].join('\n');
+}
+
+function isRaidReportMessage(content) {
+  const normalized = normalizeText(content);
+  const looksLikeTest = /\b(?:prueba|test|simulacion|simular|tester|laboratorio)\b/.test(normalized);
+  const hasVictimSignal = /\b(?:me|nos|mi|nuestro|servidor|server|sv)\b/.test(normalized);
+  const hasRaidSignal = [
+    /\b(?:raid|raidead[oa]s?|raidearon|raidear|raideo|nuke|nukear|nuked|flood|flooding)\b/,
+    /\b(?:spam\s+masivo|muchos\s+mensajes|canales\s+borrados|roles\s+borrados|mass\s+spam|mass\s+ping|mass\s+mention)\b/,
+    /\b(?:atacaron|ataque|invadieron|reventaron|destrozaron)\b.*\b(?:servidor|server|sv)\b/
+  ].some((pattern) => pattern.test(normalized));
+  if (!hasRaidSignal) return false;
+  if (looksLikeTest && !hasVictimSignal) return false;
+  return true;
+}
+
+function buildRaidReportEscalation(message) {
+  return {
+    shouldEscalate: true,
+    reason: 'El usuario reporta un posible raid o ataque al servidor.',
+    publicAnswer: [
+      `${message.author}, esto suena a un posible raid o ataque al servidor. Voy a avisar al staff para que lo revise cuanto antes.`,
+      'Para actuar rapido, pasame en un mensaje: usuario o bot implicado, hora aproximada, que hicieron exactamente, canales/roles afectados y pruebas si las tienes.',
+      'Si el ataque sigue activo, evita borrar pruebas hasta que staff revise logs y aplica medidas urgentes desde el panel de moderacion si tienes permisos.'
+    ].join('\n')
+  };
 }
 
 function isTicketCloseRequest(content) {

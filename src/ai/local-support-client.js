@@ -27,6 +27,10 @@ function buildSupportFallback({ system, messages, lastUser }) {
     return reply.languageSwitch;
   }
 
+  if (isSensitiveAccessRequest(text)) {
+    return reply.secret ?? getLocalizedReplies('en').secret;
+  }
+
   if (isStaffRequest(text)) {
     return `[ESCALATE] ${reply.staff}`;
   }
@@ -47,6 +51,10 @@ function buildSupportFallback({ system, messages, lastUser }) {
     return reply.staffApplication;
   }
 
+  if (isRaidReport(text)) {
+    return `[ESCALATE] ${reply.raid ?? getLocalizedReplies('en').raid}`;
+  }
+
   if (isAllianceInfoQuestion(text)) {
     return reply.allianceInfo;
   }
@@ -55,7 +63,7 @@ function buildSupportFallback({ system, messages, lastUser }) {
     return reply.alliance;
   }
 
-  if (/\b(acoso|amenaza|insulto|reportar|reporte|abuso|harassment|threat|report)\b/iu.test(text)) {
+  if (/\b(acoso|amenaza|insulto|reportar|reporte|abuso|raid|raidead[oa]|nuke|flood|spam\s+masivo|harassment|threat|report)\b/iu.test(text)) {
     return reply.report;
   }
 
@@ -185,6 +193,8 @@ function getLocalizedReplies(language) {
       ack: 'Perfect, I am still here. Send me the next detail whenever you are ready.',
       languageSwitch: 'Perfect, I will answer in English from now on. Tell me what you need and I will continue.',
       greeting: 'Hi, I am here. Tell me what you need and I will help you with this ticket.',
+      secret: 'I cannot search, read or reveal private files such as .env, tokens, API keys or credentials. If this is a security test, good catch: I can help review variable names or rotation steps safely.',
+      raid: 'This sounds like a possible raid or server attack. I will bring staff in. Send the user/bot involved, approximate time, what they did, affected channels/roles and any screenshots or proof you have.',
       generic: 'I am with you. Send me the key detail of what happened and I will continue from there without guessing.'
     };
   }
@@ -203,6 +213,8 @@ function getLocalizedReplies(language) {
     ack: 'Perfecto, sigo atento. Cuando quieras, pasame el siguiente detalle.',
     languageSwitch: 'Perfecto, te respondere en español a partir de ahora. Dime que necesitas y seguimos.',
     greeting: 'Hola, estoy aqui. Dime que necesitas y te ayudo con este ticket.',
+    secret: 'No puedo buscar, leer ni revelar archivos privados como .env, tokens, claves API o credenciales. Si esto era una prueba de seguridad, bien detectado: puedo ayudarte a revisar la configuracion sin exponer secretos o a rotar claves.',
+    raid: 'Esto suena a un posible raid o ataque al servidor. Voy a avisar al staff. Pasame usuario o bot implicado, hora aproximada, que hicieron, canales/roles afectados y pruebas si las tienes.',
     generic: 'Sigo contigo. Pasame el detalle principal de lo que ocurre y avanzo desde ahi sin inventar.'
   };
 }
@@ -244,6 +256,35 @@ function detectQualityCategory(text = '') {
 function isStaffRequest(text = '') {
   return /\b(humano|staff|moderador|mod|owner|admin|responsable|menciona|mencionales|llama|avis(a|e))\b/iu.test(text)
     && /\b(quiero|necesito|puedes|podrias|porfa|porfavor|manual|ayuda|asistencia|hablar|llamar|avisar)\b/iu.test(text);
+}
+
+function isSensitiveAccessRequest(text = '') {
+  const hasSecretTarget = [
+    /\.env(?:\b|$)/iu,
+    /\b(?:archivo|fichero|file)\s+(?:env|\.env|config|configuracion|configuration)\b/iu,
+    /\b(?:token|tokens|api\s*key|apikey|clave\s+api|service\s*role|service_role|secret|secreto|password|contrasena|contrase.?a|credenciales|credentials|vault)\b/iu
+  ].some((pattern) => pattern.test(text));
+  if (!hasSecretTarget) return false;
+
+  return [
+    /\b(?:leer|leeme|mostrar|muestrame|ver|dime|decir|cuentame|buscar|encuentra|encontrar|abrir|acceder|consultar|copiar|pasar|pasame|mandar|enviar|revelar|exponer|sacar)\b/iu,
+    /\b(?:read|show|find|open|get|tell|send|print|dump|cat|reveal|expose)\b/iu,
+    /\b(?:que\s+hay|que\s+contiene|contenido|dentro|inside|contains?)\b/iu,
+    /\.env(?:\b|$)/iu
+  ].some((pattern) => pattern.test(text));
+}
+
+function isRaidReport(text = '') {
+  const looksLikeTest = /\b(?:prueba|test|simulacion|simular|tester|laboratorio)\b/iu.test(text);
+  const hasVictimSignal = /\b(?:me|nos|mi|nuestro|servidor|server|sv)\b/iu.test(text);
+  const hasRaidSignal = [
+    /\b(?:raid|raidead[oa]s?|raidearon|raidear|raideo|nuke|nukear|nuked|flood|flooding)\b/iu,
+    /\b(?:spam\s+masivo|muchos\s+mensajes|canales\s+borrados|roles\s+borrados|mass\s+spam|mass\s+ping|mass\s+mention)\b/iu,
+    /\b(?:atacaron|ataque|invadieron|reventaron|destrozaron)\b.*\b(?:servidor|server|sv)\b/iu
+  ].some((pattern) => pattern.test(text));
+  if (!hasRaidSignal) return false;
+  if (looksLikeTest && !hasVictimSignal) return false;
+  return true;
 }
 
 function isAllianceInfoQuestion(text = '') {
