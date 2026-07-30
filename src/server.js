@@ -20,6 +20,7 @@ import { isPremiumEntitled, normalizePremiumConfig, summarizePremiumConfig } fro
 import { addManualPendingItem, buildLaunchPatch, buildReleaseState } from './release-gates.js';
 import { normalizeSecurityConfig, summarizeSecurityConfig } from './security.js';
 import { buildTranscriptFileName, buildTranscriptText } from './transcripts.js';
+import { normalizeWelcomeConfig } from './welcome.js';
 
 const DISCORD_API = 'https://discord.com/api/v10';
 const MANAGE_GUILD = 0x20n;
@@ -897,6 +898,12 @@ export function createServer({ config, storage, bot, events }) {
     res.json(await storage.listTicketFeedback([req.params.guildId]));
   }));
 
+  app.get('/api/guilds/:guildId/ai-quality', requireGuildAccess, asyncHandler(async (req, res) => {
+    res.json(typeof storage.listAiQualitySignals === 'function'
+      ? await storage.listAiQualitySignals([req.params.guildId])
+      : []);
+  }));
+
   app.get('/api/guilds/:guildId/logs', requireGuildAccess, asyncHandler(async (req, res) => {
     const limit = Math.min(Math.max(Number.parseInt(req.query.limit ?? '180', 10) || 180, 1), 500);
     res.json(await storage.listGuildLogs(req.params.guildId, { limit }));
@@ -940,6 +947,7 @@ export function createServer({ config, storage, bot, events }) {
     }
     if (req.body.security) patch.security = normalizeSecurityConfig(req.body.security);
     if (req.body.growth) patch.growth = normalizeGrowthConfig(req.body.growth);
+    if (req.body.welcome) patch.welcome = normalizeWelcomeConfig(req.body.welcome);
     if (req.body.alliance) {
       patch.allianceChannelId = req.body.alliance.channelId;
       patch.allianceChannelName = req.body.alliance.channelName;
@@ -956,7 +964,7 @@ export function createServer({ config, storage, bot, events }) {
     await recordDashboardGuildLog(storage, req, {
       guildId: req.params.guildId,
       guildName: updated.guildName,
-      type: req.body.premium ? 'premium' : req.body.growth ? 'growth' : req.body.security ? 'security' : 'config',
+      type: req.body.premium ? 'premium' : req.body.growth || req.body.welcome ? 'growth' : req.body.security ? 'security' : 'config',
       severity: 'success',
       title: 'Configuracion actualizada desde dashboard',
       message: 'Se guardaron cambios de configuracion del servidor.',
@@ -1648,6 +1656,7 @@ function enrichDashboardStats(stats, guilds) {
     aiReadyGuilds: guilds.filter((guild) => guild.serverPrompt || guild.serverInfo).length,
     securityReadyGuilds: guilds.filter((guild) => normalizeSecurityConfig(guild.security).enabled).length,
     growthReadyGuilds: guilds.filter((guild) => normalizeGrowthConfig(guild.growth).enabled).length,
+    welcomeReadyGuilds: guilds.filter((guild) => normalizeWelcomeConfig(guild.welcome).enabled).length,
     proGuilds: guilds.filter(isPremiumEntitled).length,
     panels: guilds.reduce((total, guild) => total + (guild.panels?.length ?? 0), 0)
   };
@@ -1716,6 +1725,7 @@ async function buildAdminSnapshot({ storage, bot }) {
       premiumEntitled: isPremiumEntitled(guild),
       securitySummary: summarizeSecurityConfig(normalizeSecurityConfig(guild.security)),
       growth: normalizeGrowthConfig(guild.growth),
+      welcome: normalizeWelcomeConfig(guild.welcome),
       componentsCount: guild.components?.length ?? 0,
       panelsCount: guild.panels?.length ?? 0
     }))
@@ -2028,6 +2038,7 @@ function buildEmptyDashboardStats() {
     aiReadyGuilds: 0,
     securityReadyGuilds: 0,
     growthReadyGuilds: 0,
+    welcomeReadyGuilds: 0,
     voiceRooms: 0,
     proGuilds: 0,
     feedbackCount: 0,
@@ -2276,6 +2287,8 @@ function buildDashboardAssistantFallback({ message, guild, stats, activeView, ac
     reply += isPremiumEntitled(guild)
       ? 'Ve a Crecimiento para activar feedback por MD, elegir canal de reviews y convertir valoraciones altas en prueba social. Si activas Churn Radar, el staff recibe alertas cuando alguien queda insatisfecho.'
       : 'Ve a Crecimiento para preparar feedback post-ticket. Las reviews publicas y Churn Radar se desbloquean con Premium.';
+  } else if (lower.includes('bienvenida') || lower.includes('welcome') || lower.includes('onboarding') || lower.includes('entrar al servidor') || lower.includes('nuevo miembro')) {
+    reply += 'Ve a Bienvenida. Alli puedes activar un mensaje publico, un MD opcional y un rol automatico para miembros nuevos usando variables como {user}, {username} y {server}.';
   } else if (lower.includes('examen') || lower.includes('oposicion') || lower.includes('postulacion')) {
     reply += 'Para crear Modo examen, ve a Componentes o Paneles, elige "Modo examen" y pega preguntas en formato P:. En Free NexaDesk pregunta dentro del ticket. En Premium genera un formulario web propio de NexaDesk y puede abrir sala de voz para revision supervisada.';
   } else if (lower.includes('premium') || lower.includes('pro') || lower.includes('voz') || lower.includes('voice') || lower.includes('branding') || lower.includes('analitica') || lower.includes('insight')) {
@@ -2389,6 +2402,7 @@ function suggestDashboardActions(message, guild) {
   }
 
   if (lower.includes('crecimiento') || lower.includes('growth') || lower.includes('review') || lower.includes('valoracion') || lower.includes('reseña') || lower.includes('resena') || lower.includes('churn')) add('Abrir Crecimiento', 'growth');
+  if (lower.includes('bienvenida') || lower.includes('welcome') || lower.includes('onboarding') || lower.includes('entrar al servidor') || lower.includes('nuevo miembro')) add('Abrir Bienvenida', 'welcome');
   if (lower.includes('v1.5') || lower.includes('version') || lower.includes('video') || lower.includes('lanzamiento') || lower.includes('release') || lower.includes('novedad')) add('Abrir Premium', 'premium');
   if (lower.includes('premium') || lower.includes('pro') || lower.includes('voz') || lower.includes('voice') || lower.includes('branding') || lower.includes('analitica') || lower.includes('insight')) add('Abrir Premium', 'premium');
   if (lower.includes('examen') || lower.includes('oposicion') || lower.includes('postulacion')) {
@@ -2480,6 +2494,7 @@ function getGuildMissingSteps(guild = {}) {
   if (!guild.staffRoleId) steps.push({ label: 'asignar el rol de staff', actionLabel: 'Elegir Staff', view: 'settings' });
   if (!guild.serverPrompt && !guild.serverInfo) steps.push({ label: 'anadir contexto para la IA', actionLabel: 'Escribir Contexto IA', view: 'settings' });
   if (!normalizeSecurityConfig(guild.security).enabled) steps.push({ label: 'activar Security Guard', actionLabel: 'Configurar Seguridad', view: 'settings' });
+  if (!normalizeWelcomeConfig(guild.welcome).enabled) steps.push({ label: 'activar Welcome Center', actionLabel: 'Configurar Bienvenida', view: 'welcome' });
   if (!(guild.components?.length)) steps.push({ label: 'crear componentes para menus', actionLabel: 'Crear Componentes', view: 'components' });
   if (!(guild.panels?.length)) steps.push({ label: 'publicar un panel de tickets', actionLabel: 'Publicar Panel', view: 'panels' });
   return steps;
@@ -2494,6 +2509,7 @@ function summarizeGuildForAssistant(guild = {}) {
     hasAiContext: Boolean(guild.serverPrompt || guild.serverInfo),
     security: summarizeSecurityConfig(normalizeSecurityConfig(guild.security)),
     growth: normalizeGrowthConfig(guild.growth),
+    welcome: normalizeWelcomeConfig(guild.welcome),
     premium: summarizePremiumConfig(guild),
     panels: guild.panels?.length ?? 0,
     components: guild.components?.length ?? 0
@@ -4694,7 +4710,7 @@ function renderDashboard({ session, guilds, tickets, stats, dashboardState = {},
     .stat strong { display:block; font-size:28px; }
     .stat small { display:block; margin-top:6px; }
     .stat span, label, th, dt, small { color:var(--muted); }
-    .command-center { display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px; margin-bottom:16px; }
+    .command-center { display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:12px; margin-bottom:16px; }
     .insight-card { position:relative; border:1px solid rgba(255,255,255,.14); border-radius:16px; padding:16px; background:linear-gradient(145deg, rgba(255,255,255,.1), rgba(255,255,255,.025)); backdrop-filter:blur(18px); box-shadow:0 18px 64px rgba(0,0,0,.22); overflow:hidden; }
     .insight-card::after { content:""; position:absolute; inset:auto -30% -60% 28%; height:160px; background:radial-gradient(circle, rgba(255,255,255,.15), transparent 65%); opacity:.7; }
     .insight-card strong { display:block; font-size:24px; margin-top:8px; }
@@ -4745,6 +4761,17 @@ function renderDashboard({ session, guilds, tickets, stats, dashboardState = {},
     .discovery-item { border:1px solid var(--soft-line); border-radius:13px; padding:12px; background:linear-gradient(145deg, rgba(255,255,255,.07), rgba(255,255,255,.025)); }
     .discovery-item span { display:block; color:var(--muted); font-size:12px; margin-bottom:5px; }
     .discovery-item strong { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .welcome-preview { display:grid; gap:12px; }
+    .welcome-bubble { border:1px solid var(--soft-line); border-radius:18px; padding:14px; background:linear-gradient(145deg, rgba(255,255,255,.08), rgba(255,255,255,.025)); box-shadow:inset 0 0 0 1px rgba(255,255,255,.03); }
+    .welcome-bubble strong,.welcome-bubble span { display:block; }
+    .welcome-bubble span { margin-top:7px; color:var(--muted); line-height:1.55; white-space:pre-wrap; }
+    .security-playbook { grid-column:1 / -1; display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; }
+    .security-playbook div { border:1px solid var(--soft-line); border-radius:14px; padding:12px; background:linear-gradient(145deg, rgba(255,255,255,.07), rgba(255,255,255,.025)); }
+    .security-playbook strong,.security-playbook span { display:block; }
+    .security-playbook span { color:var(--muted); font-size:13px; margin-top:5px; line-height:1.35; }
+    .feedback-card.is-positive { border-color:rgba(82,255,166,.32); }
+    .feedback-card.is-warning { border-color:rgba(255,205,82,.34); background:linear-gradient(135deg, rgba(255,205,82,.09), rgba(255,255,255,.025)); }
+    .feedback-card.is-critical { border-color:rgba(255,82,82,.42); background:linear-gradient(135deg, rgba(255,82,82,.12), rgba(255,255,255,.025)); }
     .premium-grid { display:grid; grid-template-columns:minmax(320px,.92fr) minmax(0,1.08fr); gap:16px; align-items:start; }
     #view-premium { --gold:#f4c95d; --gold-2:#b98724; --gold-glow:rgba(244,201,93,.24); }
     #view-premium .surface,#view-premium .control-card { border-color:rgba(244,201,93,.28); box-shadow:0 24px 95px rgba(95,61,8,.18); }
@@ -5064,7 +5091,7 @@ function renderDashboard({ session, guilds, tickets, stats, dashboardState = {},
       .view-heading,.section-heading,.ticket-tools,.transcript-head { display:grid; align-items:start; gap:10px; }
       .log-toolbar,.log-head { grid-template-columns:1fr; display:grid; }
       .active-server { margin-bottom:12px; }
-      form,.control-grid,.stats,.server-status,.server-score,.mini-grid,.discovery-grid,.panel-fields,.form-section,.readiness-checklist,.recommendation-grid,.premium-feature-grid,.premium-toggle,.premium-wallet,.premium-activation-row { grid-template-columns:1fr; }
+      form,.control-grid,.stats,.server-status,.server-score,.mini-grid,.discovery-grid,.panel-fields,.form-section,.security-playbook,.readiness-checklist,.recommendation-grid,.premium-feature-grid,.premium-toggle,.premium-wallet,.premium-activation-row { grid-template-columns:1fr; }
       input,select,textarea { font-size:16px; min-height:44px; }
       .sidebar { scroll-snap-type:x proximity; scrollbar-width:none; }
       .sidebar::-webkit-scrollbar { display:none; }
@@ -5131,6 +5158,7 @@ function renderDashboard({ session, guilds, tickets, stats, dashboardState = {},
     <a class="nav-link" href="#components" data-view="components"><span class="nav-icon">${renderDashboardEmoji('check', 'Componentes')}</span><span>Componentes</span></a>
     <a class="nav-link" href="#panels" data-view="panels"><span class="nav-icon">${renderDashboardEmoji('global', 'Paneles')}</span><span>Paneles</span></a>
     <a class="nav-link" href="#growth" data-view="growth"><span class="nav-icon">${renderDashboardEmoji('rightArrow', 'Crecimiento')}</span><span>Crecimiento</span></a>
+    <a class="nav-link" href="#welcome" data-view="welcome"><span class="nav-icon">${renderDashboardEmoji('check', 'Bienvenida')}</span><span>Bienvenida</span></a>
     <a class="nav-link" href="#premium" data-view="premium"><span class="nav-icon">${renderDashboardEmoji('check', 'Premium')}</span><span>Premium</span></a>
     <a class="nav-link" href="#tickets" data-view="tickets"><span class="nav-icon">${renderDashboardEmoji('wifi', 'Tickets')}</span><span>Tickets</span></a>
     <a class="nav-link" href="#logs" data-view="logs"><span class="nav-icon">${renderDashboardEmoji('ban', 'Logs')}</span><span>Logs</span></a>
@@ -5172,6 +5200,7 @@ function renderDashboard({ session, guilds, tickets, stats, dashboardState = {},
             <div><span>${renderDashboardEmoji('check', 'Premium')}Premium</span><strong id="activePremium">Free</strong></div>
             <div><span>${renderDashboardEmoji('nexalogo', 'Transcripciones')}Transcripciones</span><strong id="activeTranscripts">0</strong></div>
             <div><span>${renderDashboardEmoji('global', 'Anuncios')}Anuncios</span><strong id="activeAnnouncements">No detectado</strong></div>
+            <div><span>${renderDashboardEmoji('check', 'Bienvenida')}Bienvenida</span><strong id="activeWelcome">Off</strong></div>
           </div>
           <div class="server-score">
             <div>
@@ -5219,6 +5248,15 @@ function renderDashboard({ session, guilds, tickets, stats, dashboardState = {},
               <div><strong id="growthReadyCount">${stats.growthReadyGuilds ?? 0}</strong><small>Growth Engine listo</small></div>
             </div>
           </article>
+          <article class="insight-card">
+            <p class="kicker">Security comercial</p>
+            <div class="mini-grid">
+              <div><strong id="securityCoverageRate">0%</strong><small>Cobertura instalada</small></div>
+              <div><strong id="securityModulesAvg">0</strong><small>Modulos activos</small></div>
+              <div><strong id="welcomeReadyCount">${stats.welcomeReadyGuilds ?? 0}</strong><small>Welcome Centers</small></div>
+              <div><strong id="securityPitchScore">Seguro</strong><small>Mensaje para vender</small></div>
+            </div>
+          </article>
         </section>
         <div class="quick-actions" aria-label="Acciones rapidas">
           <button class="quick-action" type="button" data-go-view="settings">Configurar IA y staff</button>
@@ -5226,6 +5264,7 @@ function renderDashboard({ session, guilds, tickets, stats, dashboardState = {},
           <button class="quick-action" type="button" data-go-view="components">Crear menu de tickets</button>
           <button class="quick-action" type="button" data-go-view="panels">Publicar panel</button>
           <button class="quick-action" type="button" data-go-view="growth">Activar Growth Engine</button>
+          <button class="quick-action" type="button" data-go-view="welcome">Configurar bienvenida</button>
           <button class="quick-action" type="button" data-go-view="premium">Gestionar Premium</button>
           <button class="quick-action" type="button" data-go-view="tickets">Ver transcripciones</button>
         </div>
@@ -5322,6 +5361,11 @@ function renderDashboard({ session, guilds, tickets, stats, dashboardState = {},
               <option value="true">Activo</option>
               <option value="false">Desactivado</option>
             </select></label>
+            <div class="security-playbook">
+              <div><strong id="securityCoverageLabel">0/6 modulos</strong><span>Cobertura activa del escudo para vender seguridad real al owner.</span></div>
+              <div><strong id="securityBotPolicyLabel">Top.gg seguro</strong><span>Anti-bots visual: permite bots listados/confiables y avisa cuando falta verificacion.</span></div>
+              <div><strong id="securityRiskLabel">Riesgo controlado</strong><span>Resumen comercial del nivel actual para explicar que protege NexaDesk.</span></div>
+            </div>
             <p class="notice span-2">Anti-bots solo banea bots que Top.gg confirme como no listados. Anti-nuke tambien detecta rafagas de canales, permisos y cambios del servidor; puede limpiar canales nuevos y aplicar lockdown rapido solo sobre canales afectados. Para cobertura completa, actualiza permisos con View Audit Log, Manage Channels, Manage Messages, Moderate Members, Kick Members y Ban Members.</p>
             <button class="span-2" type="submit">Guardar Security Guard</button>
           </form>
@@ -5504,6 +5548,54 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
             </div>
             <div class="feedback-list" id="growthFeedbackList"><p class="notice">Aun no hay valoraciones para este servidor.</p></div>
           </article>
+          <article class="control-card">
+            <div class="card-head"><span class="step">IA</span><div><h2>Radar de feedback IA</h2><p>Senales rapidas desde MD cuando la IA fue clara o necesita revision.</p></div></div>
+            <div class="mini-grid">
+              <div><strong id="aiQualityTotal">0</strong><small>Senales IA</small></div>
+              <div><strong id="aiQualityBad">0</strong><small>A revisar</small></div>
+              <div><strong id="aiQualityGood">0</strong><small>Claras</small></div>
+              <div><strong id="aiQualityCritical">0</strong><small>Criticas</small></div>
+            </div>
+            <div class="feedback-list" id="aiQualityList"><p class="notice">Aun no hay feedback rapido de IA.</p></div>
+          </article>
+        </section>
+      </section>
+      <section class="dashboard-view" id="view-welcome" data-view="welcome">
+        <div class="view-heading">
+          <div><h2>Bienvenida</h2><p>Configura el primer contacto de los nuevos miembros sin saturar tickets.</p></div>
+        </div>
+        <section class="control-grid" id="welcome">
+          <article class="control-card wide">
+            <div class="card-head"><span class="step">W</span><div><h2>Welcome Center</h2><p>Mensaje publico, MD opcional y rol automatico al entrar. Ideal para servidores que quieren una primera impresion limpia.</p></div></div>
+            <form onsubmit="return saveWelcome(event)">
+              <select id="welcomeGuildId" hidden required>${guildOptions}</select>
+              <label>Estado<select id="welcomeEnabled"><option value="false">Pausado</option><option value="true">Activo</option></select></label>
+              <label>Canal de bienvenida<select id="welcomeChannelId"></select></label>
+              <label>Rol automatico<select id="welcomeRoleId"></select></label>
+              <label>MD de bienvenida<select id="welcomeDmEnabled"><option value="false">No enviar MD</option><option value="true">Enviar MD</option></select></label>
+              <label class="span-2">Mensaje publico<textarea id="welcomeMessage" placeholder="Bienvenido {user} a {server}. Abre un ticket si necesitas ayuda."></textarea></label>
+              <label class="span-2">Mensaje privado opcional<textarea id="welcomeDmMessage" placeholder="Gracias por entrar a {server}, {username}. Si necesitas ayuda, abre un ticket."></textarea></label>
+              <p class="notice span-2">Variables disponibles: <code>{user}</code> menciona al usuario, <code>{username}</code> pone su nombre y <code>{server}</code> pone el nombre del servidor. El bot nunca menciona roles en la bienvenida para evitar abuso.</p>
+              <button class="span-2" type="submit">Guardar Welcome Center</button>
+            </form>
+          </article>
+          <article class="control-card">
+            <div class="card-head"><span class="step">PV</span><div><h2>Preview</h2><p>Asi se vera la bienvenida antes de guardarla.</p></div></div>
+            <div class="welcome-preview">
+              <div class="welcome-bubble">
+                <strong>Mensaje publico</strong>
+                <span id="welcomePublicPreview">Activa un servidor para ver la preview.</span>
+              </div>
+              <div class="welcome-bubble">
+                <strong>MD privado</strong>
+                <span id="welcomeDmPreview">MD pausado.</span>
+              </div>
+              <div class="welcome-bubble">
+                <strong>Estado operativo</strong>
+                <span id="welcomeOpsPreview">Sin configurar.</span>
+              </div>
+            </div>
+          </article>
         </section>
       </section>
       <section class="dashboard-view" id="view-premium" data-view="premium">
@@ -5652,6 +5744,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       <button class="assistant-chip" type="button" data-assistant-prompt="Mete una configuracion de seguridad recomendada">Seguridad</button>
       <button class="assistant-chip" type="button" data-assistant-prompt="Como activo Growth Engine y reviews publicas?">Crecimiento</button>
       <button class="assistant-chip" type="button" data-assistant-prompt="Como creo un panel de Modo examen para oposiciones?">Modo examen</button>
+      <button class="assistant-chip" type="button" data-assistant-prompt="Como configuro la bienvenida de nuevos miembros?">Bienvenida</button>
       <button class="assistant-chip" type="button" data-assistant-prompt="Que funciones premium puedo activar aqui?">Premium</button>
       <button class="assistant-chip" type="button" data-assistant-prompt="Donde veo las transcripciones?">Transcripciones</button>
     </div>
@@ -5828,6 +5921,13 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
         section: 'Crecimiento',
         title: 'Herramientas para crecer',
         text: 'Activa recomendaciones, afiliados, reviews y anuncios inteligentes. Esta zona ayuda a convertir tickets bien atendidos en confianza, actividad y nuevos servidores.'
+      },
+      {
+        view: 'welcome',
+        target: '#view-welcome .view-heading, #view-welcome',
+        section: 'Bienvenida',
+        title: 'Cuida el primer contacto',
+        text: 'Configura un mensaje publico, un MD opcional y un rol automatico para que cada nuevo miembro entienda donde pedir ayuda sin abrir tickets innecesarios.'
       },
       {
         view: state.activeView || 'overview',
@@ -6076,6 +6176,13 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       document.querySelector('#securityReadyCount').textContent = stats.securityReadyGuilds || 0;
       document.querySelector('#voiceRoomCount').textContent = stats.voiceRooms || 0;
       document.querySelector('#growthReadyCount').textContent = stats.growthReadyGuilds || 0;
+      document.querySelector('#welcomeReadyCount').textContent = stats.welcomeReadyGuilds || 0;
+      const securityCoverageRate = (stats.installedGuilds || 0)
+        ? Math.round(((stats.securityReadyGuilds || 0) / (stats.installedGuilds || 1)) * 100)
+        : 0;
+      document.querySelector('#securityCoverageRate').textContent = securityCoverageRate + '%';
+      document.querySelector('#securityModulesAvg').textContent = String(computeAverageSecurityModules());
+      document.querySelector('#securityPitchScore').textContent = securityCoverageRate >= 70 ? 'Fuerte' : securityCoverageRate >= 35 ? 'En progreso' : 'Activar';
     }
     async function refreshStats() {
       state.stats = await getJson('/api/stats');
@@ -6240,12 +6347,13 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
         { key: 'context', label: 'Contexto IA', done: Boolean(guild.serverPrompt || guild.serverInfo), view: 'settings' },
         { key: 'security', label: 'Security Guard', done: Boolean(guild.security?.enabled), view: 'settings' },
         { key: 'growth', label: 'Growth Engine', done: Boolean(normalizeGrowth(guild).enabled), view: 'growth' },
+        { key: 'welcome', label: 'Welcome Center', done: Boolean(normalizeWelcome(guild).enabled), view: 'welcome' },
         { key: 'components', label: 'Componentes', done: Boolean(guild.components?.length), view: 'components' },
         { key: 'panels', label: 'Panel publicado', done: Boolean(guild.panels?.length), view: 'panels' }
       ];
     }
     function getGuildScore(guild = {}) {
-      const weights = { installed:10, category:15, announcements:5, staff:15, context:20, security:15, growth:8, components:10, panels:15 };
+      const weights = { installed:10, category:15, announcements:5, staff:15, context:20, security:15, growth:8, welcome:6, components:10, panels:15 };
       const readiness = getGuildReadiness(guild).map((item) => ({ ...item, weight: weights[item.key] || 10 }));
       const total = readiness.reduce((sum, item) => sum + item.weight, 0);
       const done = readiness.reduce((sum, item) => sum + (item.done ? item.weight : 0), 0);
@@ -6322,6 +6430,19 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
         reviewChannelName: raw.reviewChannelName || ''
       };
     }
+    function normalizeWelcome(guild = {}) {
+      const raw = guild.welcome || {};
+      return {
+        enabled: raw.enabled === true,
+        channelId: raw.channelId || '',
+        channelName: raw.channelName || '',
+        message: raw.message || 'Bienvenido {user} a {server}. Si necesitas ayuda, abre un ticket y NexaDesk te guiara paso a paso.',
+        dmEnabled: raw.dmEnabled === true,
+        dmMessage: raw.dmMessage || 'Gracias por entrar a {server}. Si tienes dudas, abre un ticket y el equipo te ayudara con NexaDesk.',
+        roleId: raw.roleId || '',
+        roleName: raw.roleName || ''
+      };
+    }
     function formatPremiumState(guild = {}) {
       const premium = normalizePremium(guild);
       if (premium.entitled) return String(guild.plan || 'pro').toUpperCase();
@@ -6330,6 +6451,12 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
     function formatTranscriptState(guild = {}) {
       if (!guild?.guildId) return '0';
       return String(state.tickets.filter((ticket) => ticket.guildId === guild.guildId).length);
+    }
+    function formatWelcomeState(guild = {}) {
+      const welcome = normalizeWelcome(guild);
+      if (!welcome.enabled) return 'Off';
+      if (welcome.channelName) return '#' + welcome.channelName;
+      return welcome.dmEnabled ? 'MD activo' : 'Activo';
     }
     function formatDiscoveredChannel(name, fallback = 'No detectado') {
       return name ? '#' + name : fallback;
@@ -6394,11 +6521,40 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
         antiNuke: raw.antiNuke !== false
       };
     }
+    function countSecurityModules(security = {}) {
+      return ['antiFlood', 'antiScamLinks', 'antiOffensive', 'antiBot', 'antiAlt', 'antiNuke']
+        .filter((key) => security[key] !== false).length;
+    }
+    function computeAverageSecurityModules() {
+      const secured = guildConfigs
+        .map((guild) => normalizeSecurity(guild))
+        .filter((security) => security.enabled);
+      if (!secured.length) return 0;
+      return Math.round((secured.reduce((sum, security) => sum + countSecurityModules(security), 0) / secured.length) * 10) / 10;
+    }
     function formatSecurityState(guild = {}) {
       const security = normalizeSecurity(guild);
       if (!security.enabled) return 'Off';
       const map = { low: 'Bajo', medium: 'Intermedio', high: 'Alto' };
       return map[security.level] || 'Activo';
+    }
+    function renderSecurityCommercialPanel(guild = getActiveGuild()) {
+      const security = normalizeSecurity(guild || {});
+      const modules = countSecurityModules(security);
+      const coverage = document.querySelector('#securityCoverageLabel');
+      const policy = document.querySelector('#securityBotPolicyLabel');
+      const risk = document.querySelector('#securityRiskLabel');
+      if (coverage) coverage.textContent = security.enabled ? modules + '/6 modulos' : 'Escudo pausado';
+      if (policy) policy.textContent = security.antiBot ? 'Top.gg + whitelist visual' : 'Anti-bots pausado';
+      if (risk) {
+        risk.textContent = !security.enabled
+          ? 'Riesgo alto'
+          : security.level === 'high'
+            ? 'Modo anti-raid'
+            : security.level === 'medium'
+              ? 'Riesgo controlado'
+              : 'Proteccion suave';
+      }
     }
     function renderReadinessChecklist(guild = getActiveGuild()) {
       renderServerScore(guild);
@@ -6423,6 +6579,8 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
         staff: 'wifi',
         context: 'nexalogo',
         security: 'ban',
+        growth: 'rightArrow',
+        welcome: 'check',
         components: 'check',
         panels: 'rightArrow'
       }[key] || 'rightArrow';
@@ -6455,6 +6613,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
         context: { title: 'Dale contexto a la IA', text: 'Anade reglas, FAQ, tono, limites y si debe pedir pruebas visuales. Esto mejora mucho las respuestas.', view: 'settings', action: 'Escribir prompt' },
         security: { title: 'Activa Security Guard', text: 'Protege el servidor con anti-flood, anti-links IA, anti-bots, anti-alts, anti-nuke de canales/config y lockdown quirurgico solo en canales afectados.', view: 'settings', action: 'Configurar seguridad' },
         growth: { title: 'Activa Growth Engine', text: 'Pide valoraciones al cerrar tickets y convierte el buen soporte en reviews, prueba social y oportunidades de crecimiento.', view: 'growth', action: 'Abrir crecimiento' },
+        welcome: { title: 'Prepara Welcome Center', text: 'Cuida la primera impresion con mensaje de bienvenida, MD opcional y rol automatico sin tocar comandos.', view: 'welcome', action: 'Configurar bienvenida' },
         components: { title: 'Crea opciones de menu', text: 'Los componentes separan tipos de ticket, preguntas previas y mensajes iniciales personalizados.', view: 'components', action: 'Crear componente' },
         panels: { title: 'Publica un panel', text: 'Ya puedes publicar un panel en un canal visible para que los usuarios abran tickets desde Discord.', view: 'panels', action: 'Publicar panel' }
       };
@@ -6466,11 +6625,11 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       });
     }
     function setConfigurationDisabled(disabled) {
-      for (const selector of ['#ticketCategoryId', '#staffRoleId', '#serverPrompt', '#serverInfo', '#allianceChannelId', '#allianceTemplate', '#categoryName', '#securityEnabled', '#securityLevel', '#securityLogChannelId', '#securityMinAccountAgeDays', '#securityAntiFlood', '#securityAntiScamLinks', '#securityAntiOffensive', '#securityAntiBot', '#securityAntiAlt', '#securityAntiNuke', '#componentLabel', '#componentEmoji', '#componentDescription', '#componentTicketCategoryId', '#componentTicketMode', '#componentQuestions', '#componentExamFormUrl', '#componentExamReviewEnabled', '#componentExamPassScore', '#componentWelcomeMessage', '#panelType', '#panelSelectPlaceholder', '#panelComponentIds', '#panelChannelId', '#panelTicketCategoryId', '#panelTicketMode', '#panelExamQuestions', '#panelExamFormUrl', '#panelExamReviewEnabled', '#panelExamPassScore', '#panelButtonLabel', '#panelButtonStyle', '#panelButtonEmoji', '#panelTitle', '#panelEmbedColor', '#panelAuthorName', '#panelAuthorIconUrl', '#panelDescription', '#panelThumbnailUrl', '#panelImageUrl', '#panelThumbnailFile', '#panelImageFile', '#panelFooterText', '#panelWelcomeMessage', '#growthEnabled', '#growthFeedbackDm', '#growthPublicReviews', '#growthReviewChannelId', '#growthTestimonialMinRating', '#growthLowRatingAlerts', '#growthInviteCta', '#premiumVoiceSupport', '#premiumPriorityAi', '#premiumSmartTranscripts', '#premiumSecurityPlus', '#premiumCustomBranding', '#premiumWeeklyInsights', '#premiumGrowthEngine', '#premiumPublicReviews', '#premiumChurnRadar', '#premiumConversionInsights', '#premiumSlaRadar', '#premiumAutoSetupPlus', '#premiumAllianceAutomation', '#premiumTeamAssist', '#premiumAnalytics', '#premiumAffiliateBoost']) {
+      for (const selector of ['#ticketCategoryId', '#staffRoleId', '#serverPrompt', '#serverInfo', '#allianceChannelId', '#allianceTemplate', '#categoryName', '#securityEnabled', '#securityLevel', '#securityLogChannelId', '#securityMinAccountAgeDays', '#securityAntiFlood', '#securityAntiScamLinks', '#securityAntiOffensive', '#securityAntiBot', '#securityAntiAlt', '#securityAntiNuke', '#componentLabel', '#componentEmoji', '#componentDescription', '#componentTicketCategoryId', '#componentTicketMode', '#componentQuestions', '#componentExamFormUrl', '#componentExamReviewEnabled', '#componentExamPassScore', '#componentWelcomeMessage', '#panelType', '#panelSelectPlaceholder', '#panelComponentIds', '#panelChannelId', '#panelTicketCategoryId', '#panelTicketMode', '#panelExamQuestions', '#panelExamFormUrl', '#panelExamReviewEnabled', '#panelExamPassScore', '#panelButtonLabel', '#panelButtonStyle', '#panelButtonEmoji', '#panelTitle', '#panelEmbedColor', '#panelAuthorName', '#panelAuthorIconUrl', '#panelDescription', '#panelThumbnailUrl', '#panelImageUrl', '#panelThumbnailFile', '#panelImageFile', '#panelFooterText', '#panelWelcomeMessage', '#growthEnabled', '#growthFeedbackDm', '#growthPublicReviews', '#growthReviewChannelId', '#growthTestimonialMinRating', '#growthLowRatingAlerts', '#growthInviteCta', '#welcomeEnabled', '#welcomeChannelId', '#welcomeRoleId', '#welcomeDmEnabled', '#welcomeMessage', '#welcomeDmMessage', '#premiumVoiceSupport', '#premiumPriorityAi', '#premiumSmartTranscripts', '#premiumSecurityPlus', '#premiumCustomBranding', '#premiumWeeklyInsights', '#premiumGrowthEngine', '#premiumPublicReviews', '#premiumChurnRadar', '#premiumConversionInsights', '#premiumSlaRadar', '#premiumAutoSetupPlus', '#premiumAllianceAutomation', '#premiumTeamAssist', '#premiumAnalytics', '#premiumAffiliateBoost']) {
         const element = document.querySelector(selector);
         if (element) element.disabled = disabled;
       }
-      document.querySelectorAll('#settings button, #components button, #panels button, #view-growth button, #view-premium button').forEach((button) => {
+      document.querySelectorAll('#settings button, #components button, #panels button, #view-growth button, #view-welcome button, #view-premium button').forEach((button) => {
         if (button.classList.contains('premium-billing-action')) return;
         button.disabled = disabled;
       });
@@ -6492,6 +6651,8 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       document.querySelector('#panelTicketCategoryId').innerHTML = '<option>Instala NexaDesk para cargar categorias</option>';
       document.querySelector('#panelComponentIds').innerHTML = '<option>Crea componentes primero</option>';
       document.querySelector('#growthReviewChannelId').innerHTML = '<option>Instala NexaDesk para cargar canales</option>';
+      document.querySelector('#welcomeChannelId').innerHTML = '<option>Instala NexaDesk para cargar canales</option>';
+      document.querySelector('#welcomeRoleId').innerHTML = '<option>Instala NexaDesk para cargar roles</option>';
       document.querySelector('#activeCategory').textContent = 'Bot no instalado';
       document.querySelector('#activeStaff').textContent = 'Bot no instalado';
       document.querySelector('#activePanels').textContent = String(guild.panels?.length ?? 0);
@@ -6499,10 +6660,13 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       document.querySelector('#activePremium').textContent = formatPremiumState(guild);
       document.querySelector('#activeTranscripts').textContent = formatTranscriptState(guild);
       document.querySelector('#activeAnnouncements').textContent = formatDiscoveredChannel(guild.discovery?.announcementChannelName);
+      document.querySelector('#activeWelcome').textContent = formatWelcomeState(guild);
       renderComponentHistory(guild);
       renderPanelHistory(guild);
       renderPremiumPanel(guild);
       renderGrowthPanel(guild);
+      renderWelcomePanel(guild);
+      renderSecurityCommercialPanel(guild);
       renderDiscoverySummary(guild);
       renderReadinessChecklist(guild);
       renderRecommendations(guild);
@@ -6526,6 +6690,8 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       document.querySelector('#panelTicketCategoryId').innerHTML = '<option>No se pudieron cargar categorias</option>';
       document.querySelector('#panelComponentIds').innerHTML = '<option>No se pudieron cargar componentes</option>';
       document.querySelector('#growthReviewChannelId').innerHTML = '<option>No se pudieron cargar canales</option>';
+      document.querySelector('#welcomeChannelId').innerHTML = '<option>No se pudieron cargar canales</option>';
+      document.querySelector('#welcomeRoleId').innerHTML = '<option>No se pudieron cargar roles</option>';
       document.querySelector('#activeCategory').textContent = 'Token requerido';
       document.querySelector('#activeStaff').textContent = 'Token requerido';
       document.querySelector('#activePanels').textContent = String(guild.panels?.length ?? 0);
@@ -6533,10 +6699,13 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       document.querySelector('#activePremium').textContent = formatPremiumState(guild);
       document.querySelector('#activeTranscripts').textContent = formatTranscriptState(guild);
       document.querySelector('#activeAnnouncements').textContent = formatDiscoveredChannel(guild.discovery?.announcementChannelName);
+      document.querySelector('#activeWelcome').textContent = formatWelcomeState(guild);
       renderComponentHistory(guild);
       renderPanelHistory(guild);
       renderPremiumPanel(guild);
       renderGrowthPanel(guild);
+      renderWelcomePanel(guild);
+      renderSecurityCommercialPanel(guild);
       renderDiscoverySummary(guild);
       renderReadinessChecklist(guild);
       renderRecommendations(guild);
@@ -6577,6 +6746,8 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       document.querySelector('#securityLogChannelId').innerHTML = '<option value="">Sin canal de logs</option>' + textChannels.map((channel) => '<option value="' + channel.id + '">#' + escapeHtml(channel.name) + '</option>').join('');
       document.querySelector('#allianceChannelId').innerHTML = '<option value="">Sin canal de alianzas</option>' + textChannels.map((channel) => '<option value="' + channel.id + '">#' + escapeHtml(channel.name) + '</option>').join('');
       document.querySelector('#growthReviewChannelId').innerHTML = '<option value="">Sin canal de reviews</option>' + textChannels.map((channel) => '<option value="' + channel.id + '">#' + escapeHtml(channel.name) + '</option>').join('');
+      document.querySelector('#welcomeChannelId').innerHTML = '<option value="">Sin canal publico</option>' + textChannels.map((channel) => '<option value="' + channel.id + '">#' + escapeHtml(channel.name) + '</option>').join('');
+      document.querySelector('#welcomeRoleId').innerHTML = '<option value="">Sin rol automatico</option>' + meta.roles.map((role) => '<option value="' + role.id + '">' + escapeHtml(role.name) + '</option>').join('');
       document.querySelector('#panelComponentIds').innerHTML = (config.components || []).length
         ? config.components.map((component) => '<option value="' + escapeHtml(component.id) + '">' + escapeHtml(component.label + ' - ' + formatTicketMode(component.ticketMode)) + '</option>').join('')
         : '<option value="">Crea componentes primero</option>';
@@ -6609,6 +6780,13 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       document.querySelector('#growthTestimonialMinRating').value = growth.testimonialMinRating;
       document.querySelector('#growthLowRatingAlerts').value = growth.lowRatingAlerts ? 'true' : 'false';
       document.querySelector('#growthInviteCta').value = growth.inviteCta ? 'true' : 'false';
+      const welcome = normalizeWelcome(config);
+      document.querySelector('#welcomeEnabled').value = welcome.enabled ? 'true' : 'false';
+      document.querySelector('#welcomeChannelId').value = welcome.channelId || '';
+      document.querySelector('#welcomeRoleId').value = welcome.roleId || '';
+      document.querySelector('#welcomeDmEnabled').value = welcome.dmEnabled ? 'true' : 'false';
+      document.querySelector('#welcomeMessage').value = welcome.message;
+      document.querySelector('#welcomeDmMessage').value = welcome.dmMessage;
       document.querySelector('#activeCategory').textContent = config.ticketCategoryName || selectedOptionText('#ticketCategoryId') || 'Sin configurar';
       const staffOption = document.querySelector('#staffRoleId')?.selectedOptions?.[0];
       document.querySelector('#activeStaff').textContent = staffOption?.value ? staffOption.textContent : 'Sin configurar';
@@ -6617,10 +6795,13 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       document.querySelector('#activePremium').textContent = formatPremiumState(config);
       document.querySelector('#activeTranscripts').textContent = formatTranscriptState(config);
       document.querySelector('#activeAnnouncements').textContent = formatDiscoveredChannel(config.discovery?.announcementChannelName);
+      document.querySelector('#activeWelcome').textContent = formatWelcomeState(config);
       renderComponentHistory(config);
       renderPanelHistory(config);
       renderPremiumPanel(config);
       renderGrowthPanel(config);
+      renderWelcomePanel(config);
+      renderSecurityCommercialPanel(config);
       renderDiscoverySummary(config);
       renderReadinessChecklist(config);
       renderRecommendations(config);
@@ -6636,7 +6817,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       const guildId = document.querySelector(sourceId).value;
       const guild = getGuildConfig(guildId);
       resetPanelEditor({ keepFields: true });
-      for (const selector of ['#guildId', '#categoryGuildId', '#componentGuildId', '#panelGuildId', '#growthGuildId', '#premiumGuildId', '#logsGuildId']) {
+      for (const selector of ['#guildId', '#categoryGuildId', '#componentGuildId', '#panelGuildId', '#growthGuildId', '#welcomeGuildId', '#premiumGuildId', '#logsGuildId']) {
         const element = document.querySelector(selector);
         if (element && element.value !== guildId) element.value = guildId;
       }
@@ -6755,6 +6936,70 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
         renderGuildSelectors(guildId);
         refreshStats().catch(() => {});
         showToast('Growth Engine guardado.');
+      }
+      return false;
+    }
+    function renderWelcomePanel(guild = getActiveGuild()) {
+      const welcome = normalizeWelcome(guild || {});
+      const values = {
+        welcomeEnabled: welcome.enabled,
+        welcomeDmEnabled: welcome.dmEnabled
+      };
+      for (const [id, value] of Object.entries(values)) {
+        const element = document.querySelector('#' + id);
+        if (element) element.value = value ? 'true' : 'false';
+      }
+      if (document.querySelector('#welcomeChannelId')) document.querySelector('#welcomeChannelId').value = welcome.channelId || '';
+      if (document.querySelector('#welcomeRoleId')) document.querySelector('#welcomeRoleId').value = welcome.roleId || '';
+      if (document.querySelector('#welcomeMessage')) document.querySelector('#welcomeMessage').value = welcome.message;
+      if (document.querySelector('#welcomeDmMessage')) document.querySelector('#welcomeDmMessage').value = welcome.dmMessage;
+      renderWelcomePreview(guild);
+    }
+    function renderWelcomePreview(guild = getActiveGuild()) {
+      const welcome = normalizeWelcome(guild || {});
+      const serverName = guild?.guildName || 'tu servidor';
+      const sampleUser = '@NuevoUsuario';
+      const format = (text) => String(text || '')
+        .replaceAll('{user}', sampleUser)
+        .replaceAll('{username}', 'NuevoUsuario')
+        .replaceAll('{server}', serverName)
+        .slice(0, 900);
+      const channelName = selectedOptionText('#welcomeChannelId') || welcome.channelName;
+      const roleName = selectedOptionText('#welcomeRoleId') || welcome.roleName;
+      const publicPreview = document.querySelector('#welcomePublicPreview');
+      const dmPreview = document.querySelector('#welcomeDmPreview');
+      const opsPreview = document.querySelector('#welcomeOpsPreview');
+      if (publicPreview) publicPreview.textContent = welcome.enabled ? format(document.querySelector('#welcomeMessage')?.value || welcome.message) : 'Welcome Center pausado.';
+      if (dmPreview) dmPreview.textContent = (document.querySelector('#welcomeDmEnabled')?.value === 'true') ? format(document.querySelector('#welcomeDmMessage')?.value || welcome.dmMessage) : 'MD privado pausado.';
+      if (opsPreview) {
+        opsPreview.textContent = [
+          welcome.enabled ? 'Activo' : 'Pausado',
+          channelName ? 'Canal: #' + channelName : 'Sin canal publico',
+          roleName ? 'Rol: ' + roleName : 'Sin rol automatico'
+        ].join(' · ');
+      }
+    }
+    async function saveWelcome(event) {
+      event.preventDefault();
+      const guildId = document.querySelector('#welcomeGuildId')?.value || document.querySelector('#guildId').value;
+      const updated = await postJson('/api/guilds/' + guildId, {
+        welcome: {
+          enabled: document.querySelector('#welcomeEnabled').value === 'true',
+          channelId: document.querySelector('#welcomeChannelId').value,
+          channelName: selectedOptionText('#welcomeChannelId'),
+          roleId: document.querySelector('#welcomeRoleId').value,
+          roleName: selectedOptionText('#welcomeRoleId'),
+          message: document.querySelector('#welcomeMessage').value,
+          dmEnabled: document.querySelector('#welcomeDmEnabled').value === 'true',
+          dmMessage: document.querySelector('#welcomeDmMessage').value
+        }
+      }).catch((error) => showToast(error.message));
+      if (updated) {
+        const index = guildConfigs.findIndex((guild) => guild.guildId === guildId);
+        if (index >= 0) guildConfigs[index] = { ...guildConfigs[index], ...updated };
+        renderGuildSelectors(guildId);
+        refreshStats().catch(() => {});
+        showToast('Welcome Center guardado.');
       }
       return false;
     }
@@ -6947,13 +7192,19 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       document.querySelector('#growthTestimonialMinRating').value = growth.testimonialMinRating;
       if (guild?.guildId) {
         loadGrowthFeedback(guild.guildId).catch(() => renderGrowthFeedback([]));
+        loadAiQualitySignals(guild.guildId).catch(() => renderAiQualitySignals([]));
       } else {
         renderGrowthFeedback([]);
+        renderAiQualitySignals([]);
       }
     }
     async function loadGrowthFeedback(guildId) {
       const feedback = await getJson('/api/guilds/' + guildId + '/feedback');
       renderGrowthFeedback(feedback);
+    }
+    async function loadAiQualitySignals(guildId) {
+      const signals = await getJson('/api/guilds/' + guildId + '/ai-quality');
+      renderAiQualitySignals(signals);
     }
     function renderGrowthFeedback(feedback = []) {
       const ratings = feedback.map((item) => Number(item.rating)).filter((rating) => rating >= 1 && rating <= 5);
@@ -6973,6 +7224,25 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
     function formatRating(rating) {
       const safe = Math.min(Math.max(Number.parseInt(rating || 0, 10) || 0, 0), 5);
       return '[' + '+'.repeat(safe) + '-'.repeat(5 - safe) + '] ' + safe + '/5';
+    }
+    function renderAiQualitySignals(signals = []) {
+      const good = signals.filter((item) => item.detectedBy === 'dm_feedback' && item.resolved).length;
+      const bad = signals.filter((item) => !item.resolved && item.detectedBy === 'dm_feedback').length;
+      const critical = signals.filter((item) => ['critical', 'high'].includes(String(item.severity || '').toLowerCase())).length;
+      document.querySelector('#aiQualityTotal').textContent = String(signals.length);
+      document.querySelector('#aiQualityBad').textContent = String(bad);
+      document.querySelector('#aiQualityGood').textContent = String(good);
+      document.querySelector('#aiQualityCritical').textContent = String(critical);
+      const target = document.querySelector('#aiQualityList');
+      if (!target) return;
+      target.innerHTML = signals.length
+        ? signals.slice(0, 12).map((item) => {
+            const severity = String(item.severity || 'medium').toLowerCase();
+            const style = item.resolved ? 'is-positive' : ['critical', 'high'].includes(severity) ? 'is-critical' : 'is-warning';
+            const label = item.resolved ? 'IA clara' : (item.category || 'IA a revisar');
+            return '<article class="feedback-card ' + style + '"><strong>' + escapeHtml(label) + ' · ' + escapeHtml(severity) + '</strong><span>#' + escapeHtml(item.channelName || item.channelId || 'ticket') + ' - ' + escapeHtml(item.username || item.userId || 'usuario') + '</span><span>' + escapeHtml(item.reason || 'Sin motivo') + '</span><span>' + escapeHtml(new Date(item.createdAt).toLocaleString()) + '</span></article>';
+          }).join('')
+        : '<p class="notice">Aun no hay feedback rapido de IA.</p>';
     }
     function renderPanelComponentPicker(guild = getActiveGuild()) {
       const picker = document.querySelector('#panelComponentPicker');
@@ -7384,6 +7654,10 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       refreshStats().catch(() => {});
       renderGrowthPanel(getActiveGuild());
     });
+    source.addEventListener('ai.quality.signal', () => {
+      document.querySelector('#lastSync').textContent = new Date().toLocaleTimeString();
+      renderGrowthPanel(getActiveGuild());
+    });
     source.addEventListener('guild.log.created', (event) => {
       const message = JSON.parse(event.data);
       document.querySelector('#lastSync').textContent = new Date().toLocaleTimeString();
@@ -7406,7 +7680,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       document.querySelector('#liveState').textContent = 'Reconectando';
       document.querySelector('#liveState').className = '';
     };
-    for (const selector of ['#guildId', '#categoryGuildId', '#componentGuildId', '#panelGuildId', '#growthGuildId', '#premiumGuildId', '#logsGuildId']) {
+    for (const selector of ['#guildId', '#categoryGuildId', '#componentGuildId', '#panelGuildId', '#growthGuildId', '#welcomeGuildId', '#premiumGuildId', '#logsGuildId']) {
       document.querySelector(selector)?.addEventListener('change', () => syncGuildForm(selector));
     }
     document.querySelectorAll('.nav-link[data-view]').forEach((link) => {
@@ -7459,6 +7733,10 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       document.querySelector(selector)?.addEventListener('input', updatePanelPreview);
       document.querySelector(selector)?.addEventListener('change', updatePanelPreview);
     }
+    for (const selector of ['#welcomeEnabled', '#welcomeChannelId', '#welcomeRoleId', '#welcomeDmEnabled', '#welcomeMessage', '#welcomeDmMessage']) {
+      document.querySelector(selector)?.addEventListener('input', () => renderWelcomePreview(getActiveGuild()));
+      document.querySelector(selector)?.addEventListener('change', () => renderWelcomePreview(getActiveGuild()));
+    }
     document.querySelector('#panelThumbnailFile')?.addEventListener('change', (event) => uploadPanelImage(event.target, '#panelThumbnailUrl'));
     document.querySelector('#panelImageFile')?.addEventListener('change', (event) => uploadPanelImage(event.target, '#panelImageUrl'));
     bindTranscriptButtons();
@@ -7468,6 +7746,8 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
     renderPremiumAccount();
     refreshPremiumAccount().catch((error) => showToast(error.message));
     renderGrowthPanel(getActiveGuild());
+    renderWelcomePanel(getActiveGuild());
+    renderSecurityCommercialPanel(getActiveGuild());
     renderReadinessChecklist(getActiveGuild());
     renderRecommendations(getActiveGuild());
     applyReleaseGates();

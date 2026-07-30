@@ -65,6 +65,7 @@ import { SecurityManager, SECURITY_LEVELS, normalizeSecurityConfig, normalizeSec
 import { analyzeGuildChannelsForDiscovery, hasUsefulDiscovery, normalizeChannelNameForDiscovery, normalizeDiscoveryConfig } from './server-discovery.js';
 import { buildTranscriptFileName, buildTranscriptText } from './transcripts.js';
 import { createTicketFlowCard } from './welcome-card.js';
+import { formatWelcomeTemplate as formatMemberWelcomeTemplate, normalizeWelcomeConfig } from './welcome.js';
 import { XNPROTECT_BLACKLIST_CREDIT, checkXnProtectGlobalBan } from './xnprotect-blacklist.js';
 
 const BOT_INVITE_PERMISSIONS = '1099780451478';
@@ -178,6 +179,11 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
 
       if (interaction.isButton() && interaction.customId.startsWith('nexadesk:feedback:')) {
         await handleTicketFeedbackButton({ interaction, storage, client, activeFeedbackRatings });
+        return;
+      }
+
+      if (interaction.isButton() && interaction.customId.startsWith('nexadesk:ai_feedback:')) {
+        await handleAiFeedbackButton({ interaction, storage });
         return;
       }
 
@@ -744,6 +750,9 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
     await securityManager.handleMemberAdd(member).catch((error) => {
       console.error(`Security member join guard failed in ${member.guild.id}:`, error);
     });
+    await handleWelcomeMemberAdd({ member, storage }).catch((error) => {
+      console.error(`Welcome Center failed in ${member.guild.id}:`, error);
+    });
   });
 
   client.on(Events.GuildMemberRemove, async (member) => {
@@ -974,6 +983,69 @@ async function handleGuildJoin({ guild, storage, config }) {
         .catch((error) => console.warn(`Could not send affiliate DM to installer ${installerUser.tag}:`, error?.message ?? error));
     }
   }
+}
+
+async function handleWelcomeMemberAdd({ member, storage }) {
+  if (!member?.guild || member.user?.bot) return;
+  const guildConfig = await storage.getGuildConfig(member.guild.id).catch(() => null);
+  const welcome = normalizeWelcomeConfig(guildConfig?.welcome);
+  if (!welcome.enabled) return;
+
+  const actions = [];
+  if (welcome.roleId) {
+    const role = await member.guild.roles.fetch(welcome.roleId).catch(() => null);
+    if (role && member.guild.members.me?.permissions.has(PermissionFlagsBits.ManageRoles)) {
+      const added = await member.roles.add(role, 'NexaDesk Welcome Center role').then(() => true).catch(() => false);
+      actions.push(added ? `Rol aplicado: ${role.name}` : `No pude aplicar rol: ${role.name}`);
+    } else {
+      actions.push('Rol no aplicado: falta permiso Manage Roles o el rol no existe.');
+    }
+  }
+
+  if (welcome.channelId) {
+    const channel = await member.guild.channels.fetch(welcome.channelId).catch(() => null);
+    if (channel?.isTextBased?.()) {
+      const content = formatMemberWelcomeTemplate(welcome.message, {
+        userMention: `${member}`,
+        username: member.user.username,
+        serverName: member.guild.name
+      });
+      const sent = await channel.send({
+        content,
+        allowedMentions: { users: [member.id], roles: [] }
+      }).then(() => true).catch(() => false);
+      actions.push(sent ? `Mensaje publico enviado en #${channel.name}` : `No pude enviar mensaje en #${channel.name}`);
+    } else {
+      actions.push('Mensaje publico no enviado: canal de bienvenida no valido.');
+    }
+  }
+
+  if (welcome.dmEnabled) {
+    const dmText = formatMemberWelcomeTemplate(welcome.dmMessage, {
+      userMention: member.user.username,
+      username: member.user.username,
+      serverName: member.guild.name
+    });
+    const dmSent = await member.send(dmText).then(() => true).catch(() => false);
+    actions.push(dmSent ? 'MD de bienvenida enviado.' : 'MD no enviado: usuario con privados cerrados.');
+  }
+
+  await storage.addGuildLog?.({
+    guildId: member.guild.id,
+    guildName: member.guild.name,
+    type: 'growth',
+    severity: 'info',
+    title: 'Welcome Center ejecutado',
+    message: `${member.user.tag} entro al servidor y NexaDesk proceso la bienvenida configurada.`,
+    actorId: member.user.id,
+    actorName: member.user.tag,
+    metadata: {
+      welcome,
+      actions
+    }
+  }).catch((error) => {
+    console.warn(`Could not persist welcome log for ${member.guild.id}:`, error?.message ?? error);
+  });
 }
 
 async function sendOwnerOnboardingDm({ user, guild, config, prefix }) {
@@ -4501,7 +4573,7 @@ async function sendTranscriptDm({ targetUser, ticket, messages, guildName, guild
   await targetUser.send({
     content: content.join('\n'),
     files: [attachment],
-    components: shouldAskFeedback ? buildFeedbackComponents(ticket.channelId) : []
+    components: shouldAskFeedback ? buildTranscriptFeedbackComponents(ticket.channelId) : []
   });
 }
 
@@ -4515,6 +4587,29 @@ function buildFeedbackComponents(channelId, { disabled = false, selectedRating =
           .setDisabled(disabled)
           .setStyle(selectedRating === rating ? ButtonStyle.Primary : rating >= 4 ? ButtonStyle.Success : rating <= 2 ? ButtonStyle.Danger : ButtonStyle.Secondary)
       )
+    )
+  ];
+}
+
+function buildTranscriptFeedbackComponents(channelId, {
+  disabled = false,
+  selectedRating = null,
+  aiDisabled = false,
+  selectedAiVerdict = null
+} = {}) {
+  return [
+    ...buildFeedbackComponents(channelId, { disabled, selectedRating }),
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`nexadesk:ai_feedback:${channelId}:good`)
+        .setLabel(selectedAiVerdict === 'good' ? 'IA clara guardada' : 'IA clara')
+        .setDisabled(aiDisabled)
+        .setStyle(ButtonStyle.Success),
+      new ButtonBuilder()
+        .setCustomId(`nexadesk:ai_feedback:${channelId}:bad`)
+        .setLabel(selectedAiVerdict === 'bad' ? 'Reporte IA guardado' : 'Reportar IA')
+        .setDisabled(aiDisabled)
+        .setStyle(ButtonStyle.Danger)
     )
   ];
 }
@@ -4588,7 +4683,7 @@ async function acknowledgeFeedbackButton(interaction, { channelId, rating, alrea
     rating,
     alreadySaved
   });
-  const components = buildFeedbackComponents(channelId, {
+  const components = buildTranscriptFeedbackComponents(channelId, {
     disabled: true,
     selectedRating: rating
   });
@@ -4610,6 +4705,116 @@ async function acknowledgeFeedbackButton(interaction, { channelId, rating, alrea
       console.error(`Failed to acknowledge feedback interaction ${interaction.customId}:`, error);
     });
   }
+}
+
+async function handleAiFeedbackButton({ interaction, storage }) {
+  const [, , channelId, verdict] = interaction.customId.split(':');
+  const ticket = await storage.getTicket(channelId).catch(() => null);
+  if (!ticket) {
+    await replyToFeedbackInteraction(interaction, 'No encuentro el ticket asociado a este feedback de IA.');
+    return;
+  }
+
+  if (ticket.openedBy && interaction.user.id !== ticket.openedBy) {
+    await replyToFeedbackInteraction(interaction, 'Solo la persona que abrio el ticket puede enviar feedback de IA.');
+    return;
+  }
+
+  const normalizedVerdict = verdict === 'good' ? 'good' : 'bad';
+  const transcript = await storage.listTranscriptMessages(channelId).catch(() => []);
+  const previousAiMessage = [...transcript].reverse().find((entry) => entry.role === 'assistant' || entry.authorBot);
+  const id = `ai-feedback-${channelId}-${interaction.user.id}`;
+  const positive = normalizedVerdict === 'good';
+  const reason = positive
+    ? 'El usuario marco desde MD que la respuesta de IA fue clara.'
+    : 'El usuario reporto desde MD que la respuesta de IA necesita revision.';
+
+  await storage.addAiQualitySignal?.({
+    id,
+    guildId: ticket.guildId,
+    guildName: ticket.guildName,
+    channelId,
+    channelName: ticket.channelName,
+    messageId: interaction.message?.id,
+    userId: interaction.user.id,
+    username: interaction.user.username,
+    category: positive ? 'general' : 'wrong_answer',
+    severity: positive ? 'low' : 'medium',
+    sentiment: positive ? 'satisfied' : 'frustrated',
+    confidence: 100,
+    reason,
+    userMessage: `Feedback rapido de IA desde MD: ${positive ? 'IA clara' : 'Reportar IA'}.`,
+    previousAiMessage: previousAiMessage?.content?.slice(0, 2400),
+    detectedBy: 'dm_feedback',
+    resolved: positive,
+    createdAt: new Date().toISOString()
+  }).catch((error) => {
+    console.error(`Failed to save AI feedback ${id}:`, error);
+  });
+
+  await storage.addGuildLog?.({
+    guildId: ticket.guildId,
+    guildName: ticket.guildName,
+    type: 'growth',
+    severity: positive ? 'success' : 'warning',
+    title: positive ? 'Feedback IA positivo' : 'Feedback IA a revisar',
+    message: positive
+      ? `${interaction.user.username} marco la IA como clara en #${ticket.channelName ?? channelId}.`
+      : `${interaction.user.username} reporto una respuesta IA a revisar en #${ticket.channelName ?? channelId}.`,
+    actorId: interaction.user.id,
+    actorName: interaction.user.username,
+    channelId,
+    channelName: ticket.channelName,
+    metadata: { verdict: normalizedVerdict, ticketId: ticket.channelId }
+  }).catch(() => {});
+
+  await acknowledgeAiFeedbackButton(interaction, {
+    channelId,
+    verdict: normalizedVerdict
+  });
+}
+
+async function acknowledgeAiFeedbackButton(interaction, { channelId, verdict }) {
+  const selectedRating = extractRatingFromFeedbackContent(interaction.message?.content ?? '');
+  const content = buildAiFeedbackAcknowledgementContent(interaction.message?.content ?? '', verdict);
+  const components = buildTranscriptFeedbackComponents(channelId, {
+    disabled: Boolean(selectedRating),
+    selectedRating,
+    aiDisabled: true,
+    selectedAiVerdict: verdict
+  });
+
+  if (!interaction.deferred && !interaction.replied && typeof interaction.update === 'function') {
+    try {
+      await interaction.update({ content, components });
+      return;
+    } catch (error) {
+      console.error(`Failed to update AI feedback message ${interaction.customId}:`, error);
+    }
+  }
+
+  await replyToFeedbackInteraction(
+    interaction,
+    verdict === 'good'
+      ? `${EMOJIS.check} Gracias. He guardado que la IA fue clara.`
+      : `${EMOJIS.wifi} Gracias. He enviado esta respuesta IA al radar de mejoras.`
+  ).catch((error) => {
+    console.error(`Failed to acknowledge AI feedback interaction ${interaction.customId}:`, error);
+  });
+}
+
+function buildAiFeedbackAcknowledgementContent(content, verdict) {
+  const base = String(content ?? '').trim();
+  if (/Feedback IA (?:guardado|registrado)/i.test(base)) return base;
+  const line = verdict === 'good'
+    ? `${EMOJIS.check} Feedback IA guardado: respuesta clara.`
+    : `${EMOJIS.wifi} Feedback IA guardado: el owner podra revisarlo en Growth Engine.`;
+  return [base, line].filter(Boolean).join('\n\n');
+}
+
+function extractRatingFromFeedbackContent(content) {
+  const match = String(content ?? '').match(/\[(?:\+|-){5}\]\s+([1-5])\/5/);
+  return match ? Number.parseInt(match[1], 10) : null;
 }
 
 async function deferFeedbackInteraction(interaction) {

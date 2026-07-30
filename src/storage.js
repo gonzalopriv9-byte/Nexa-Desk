@@ -22,6 +22,7 @@ import {
 } from './premium-billing.js';
 import { isPremiumEntitled, normalizePremiumConfig } from './premium.js';
 import { normalizeSecurityConfig } from './security.js';
+import { normalizeWelcomeConfig } from './welcome.js';
 import { normalizeDiscoveryConfig } from './server-discovery.js';
 
 const GLOBAL_SETTINGS_GUILD_ID = '__nexadesk_global__';
@@ -1869,6 +1870,7 @@ function fromGuildRow(row) {
     addedAt: panelStore.install.addedAt,
     addedByDetectedAt: panelStore.install.detectedAt,
     growth: panelStore.growth,
+    welcome: panelStore.welcome,
     premium: normalizePremiumConfig(panelStore.premium, {
       plan: row.plan ?? 'free',
       voiceSupportEnabled: row.voice_support_enabled ?? false
@@ -1892,6 +1894,7 @@ function toGuildPanelStore(guild) {
     premium: normalizePremiumConfig(guild.premium, guild),
     autoConfig: normalizeAutoConfig(guild.autoConfig),
     growth: normalizeGrowthConfig(guild.growth),
+    welcome: normalizeWelcomeConfig(guild.welcome),
     alliance: normalizeAllianceConfig(guild),
     allianceDetection: normalizeAllianceDetection(guild.allianceDetection),
     install: normalizeInstallMetadata(guild),
@@ -1908,6 +1911,7 @@ function fromGuildPanelStore(value) {
       premium: normalizePremiumConfig(),
       autoConfig: normalizeAutoConfig(),
       growth: normalizeGrowthConfig(),
+      welcome: normalizeWelcomeConfig(),
       alliance: normalizeAllianceConfig(),
       allianceDetection: normalizeAllianceDetection(),
       install: normalizeInstallMetadata(),
@@ -1923,6 +1927,7 @@ function fromGuildPanelStore(value) {
       premium: normalizePremiumConfig(value.premium),
       autoConfig: normalizeAutoConfig(value.autoConfig),
       growth: normalizeGrowthConfig(value.growth),
+      welcome: normalizeWelcomeConfig(value.welcome),
       alliance: normalizeAllianceConfig(value.alliance),
       allianceDetection: normalizeAllianceDetection(value.allianceDetection),
       install: normalizeInstallMetadata(value.install),
@@ -1937,6 +1942,7 @@ function fromGuildPanelStore(value) {
     premium: normalizePremiumConfig(),
     autoConfig: normalizeAutoConfig(),
     growth: normalizeGrowthConfig(),
+    welcome: normalizeWelcomeConfig(),
     alliance: normalizeAllianceConfig(),
     allianceDetection: normalizeAllianceDetection(),
     install: normalizeInstallMetadata(),
