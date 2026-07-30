@@ -232,10 +232,12 @@ async function startHighAvailabilityBot({ bot, storage, config }) {
     const settings = await storage.getGlobalSettings();
     const lease = settings?.botLease && typeof settings.botLease === 'object' ? settings.botLease : {};
     const expiresAt = Date.parse(lease.expiresAt ?? '');
+    const primaryLastSeenAt = Date.parse(lease.primaryLastSeenAt ?? '');
     return {
       ownerId: lease.ownerId ? String(lease.ownerId) : '',
       claimToken: lease.claimToken ? String(lease.claimToken) : '',
       updatedAt: lease.updatedAt ?? null,
+      primaryLastSeenAt: Number.isFinite(primaryLastSeenAt) ? primaryLastSeenAt : 0,
       expiresAt: Number.isFinite(expiresAt) ? expiresAt : 0,
       raw: lease
     };
@@ -249,6 +251,8 @@ async function startHighAvailabilityBot({ bot, storage, config }) {
         ...previous,
         ownerId: instanceId,
         claimToken: token,
+        primaryInstanceId: primaryInstanceId || previous.primaryInstanceId || '',
+        primaryLastSeenAt: isPrimaryInstance ? new Date(now).toISOString() : previous.primaryLastSeenAt,
         hostname: os.hostname(),
         pid: process.pid,
         updatedAt: new Date(now).toISOString(),
@@ -294,6 +298,13 @@ async function startHighAvailabilityBot({ bot, storage, config }) {
 
   async function renewLeadership() {
     const lease = await readLease();
+    if (!isPrimaryInstance && primarySeenRecently(lease)) {
+      await releaseLocalBot(`primary ${primaryInstanceId} is alive`);
+      if (lease.ownerId === instanceId) {
+        await releaseStandbyLeaseForPrimary(lease.raw);
+      }
+      return;
+    }
     if (lease.ownerId && lease.ownerId !== instanceId && lease.expiresAt > Date.now()) {
       await releaseLocalBot(`lease owned by ${lease.ownerId}`);
       return;
@@ -316,6 +327,13 @@ async function startHighAvailabilityBot({ bot, storage, config }) {
     const expired = !lease.ownerId || lease.expiresAt <= Date.now();
     const ownsLease = lease.ownerId === instanceId;
     const canRecoverFromStandby = isPrimaryInstance && lease.ownerId && lease.ownerId !== instanceId && lease.ownerId !== primaryInstanceId;
+    if (!isPrimaryInstance && primarySeenRecently(lease)) {
+      if (ownsLease) {
+        await releaseLocalBot(`primary ${primaryInstanceId} is alive`);
+        await releaseStandbyLeaseForPrimary(lease.raw);
+      }
+      return;
+    }
     if (ownsLease && renewTimer) return;
     if (ownsLease || expired || canRecoverFromStandby) {
       if (expired && lease.ownerId && lease.ownerId !== instanceId) {
@@ -365,6 +383,26 @@ async function startHighAvailabilityBot({ bot, storage, config }) {
         releasedBy: instanceId,
         releasedAt: new Date().toISOString(),
         releaseReason: `login_failed:${error?.message ?? 'unknown'}`,
+        expiresAt: new Date().toISOString()
+      }
+    }).catch(() => {});
+  }
+
+  function primarySeenRecently(lease) {
+    if (!primaryInstanceId || isPrimaryInstance) return false;
+    if (lease.ownerId === primaryInstanceId && lease.expiresAt > Date.now()) return true;
+    const graceMs = Math.max(config.BOT_LEASE_TTL_MS * 3, 45000);
+    return lease.primaryLastSeenAt > 0 && Date.now() - lease.primaryLastSeenAt < graceMs;
+  }
+
+  async function releaseStandbyLeaseForPrimary(previous = {}) {
+    await storage.updateGlobalSettings({
+      botLease: {
+        ...previous,
+        ownerId: '',
+        releasedBy: instanceId,
+        releasedAt: new Date().toISOString(),
+        releaseReason: `primary_alive:${primaryInstanceId}`,
         expiresAt: new Date().toISOString()
       }
     }).catch(() => {});
