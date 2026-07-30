@@ -1,5 +1,5 @@
 import { config } from './config.js';
-import { createStorage } from './storage.js';
+import { createStorage, JsonStorage } from './storage.js';
 import { AppEvents } from './events.js';
 import crypto from 'node:crypto';
 import os from 'node:os';
@@ -25,8 +25,7 @@ process.on('uncaughtException', (error) => {
 });
 
 const events = new AppEvents();
-const storage = createStorage(config, events);
-await storage.init();
+const storage = await createInitializedStorage(config, events);
 
 const aiClient = createAiClient();
 const visualAnalyzer = createVisualAnalyzer();
@@ -171,6 +170,49 @@ function parseFallbackKeys(value) {
 
 function hasGroqProvider() {
   return Boolean(config.GROQ_API_KEY || parseFallbackKeys(config.GROQ_FALLBACK_API_KEYS).length);
+}
+
+async function createInitializedStorage(config, events) {
+  const storage = createStorage(config, events);
+  try {
+    await storage.init();
+    if (config.SUPABASE_URL && config.SUPABASE_SERVICE_ROLE_KEY) {
+      await withStartupTimeout(
+        storage.getGlobalSettings(),
+        4500,
+        'Supabase startup check'
+      );
+    }
+    return storage;
+  } catch (error) {
+    if (!config.SUPABASE_URL || !config.SUPABASE_SERVICE_ROLE_KEY) throw error;
+
+    console.error('Supabase is unavailable during startup. Falling back to local JSON storage so NexaDesk can keep running.', compactStartupError(error));
+    const fallback = new JsonStorage(config.DATA_DIR, events);
+    await fallback.init();
+    return fallback;
+  }
+}
+
+function withStartupTimeout(promise, timeoutMs, label) {
+  let timeoutId;
+  const timeout = new Promise((_, reject) => {
+    timeoutId = setTimeout(() => {
+      const error = new Error(`${label} timed out after ${timeoutMs}ms`);
+      error.code = 'startup_timeout';
+      reject(error);
+    }, timeoutMs);
+  });
+
+  return Promise.race([Promise.resolve(promise), timeout]).finally(() => clearTimeout(timeoutId));
+}
+
+function compactStartupError(error) {
+  return {
+    message: error?.message ?? String(error),
+    code: error?.code ?? error?.cause?.code ?? '',
+    status: error?.status ?? error?.response?.status ?? ''
+  };
 }
 
 async function startHighAvailabilityBot({ bot, storage, config }) {
