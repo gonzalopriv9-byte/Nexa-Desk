@@ -215,6 +215,12 @@ export class JsonStorage {
     return normalized;
   }
 
+  async getTicketFeedback(id) {
+    const feedbackById = await this.#readJson(this.feedbackFile);
+    const feedback = feedbackById[id];
+    return feedback ? normalizeTicketFeedback(feedback) : null;
+  }
+
   async listTicketFeedback(guildIds = []) {
     const guildIdSet = new Set(guildIds);
     const feedback = Object.values(await this.#readJson(this.feedbackFile)).map(normalizeTicketFeedback);
@@ -939,6 +945,17 @@ export class SupabaseStorage {
     const saved = fromFeedbackRow(data);
     this.events?.publish('ticket.feedback', saved);
     return saved;
+  }
+
+  async getTicketFeedback(id) {
+    const { data, error } = await this.client
+      .from('ticket_feedback')
+      .select('*')
+      .eq('id', id)
+      .maybeSingle();
+    if (isMissingFeedbackTableError(error)) return null;
+    if (error) throw error;
+    return data ? fromFeedbackRow(data) : null;
   }
 
   async listTicketFeedback(guildIds = []) {

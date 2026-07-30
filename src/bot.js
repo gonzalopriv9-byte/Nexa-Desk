@@ -99,6 +99,7 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
   });
 
   const activeResponses = new Set();
+  const activeFeedbackRatings = new Set();
   const panelCreatedChannels = new Set();
   const blacklistAlertedChannels = new Set();
   const ticketWelcomeChannels = new Set();
@@ -176,7 +177,7 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
       }
 
       if (interaction.isButton() && interaction.customId.startsWith('nexadesk:feedback:')) {
-        await handleTicketFeedbackButton({ interaction, storage, client });
+        await handleTicketFeedbackButton({ interaction, storage, client, activeFeedbackRatings });
         return;
       }
 
@@ -4504,20 +4505,21 @@ async function sendTranscriptDm({ targetUser, ticket, messages, guildName, guild
   });
 }
 
-function buildFeedbackComponents(channelId) {
+function buildFeedbackComponents(channelId, { disabled = false, selectedRating = null } = {}) {
   return [
     new ActionRowBuilder().addComponents(
       [1, 2, 3, 4, 5].map((rating) =>
         new ButtonBuilder()
           .setCustomId(`nexadesk:feedback:${channelId}:${rating}`)
           .setLabel(String(rating))
-          .setStyle(rating >= 4 ? ButtonStyle.Success : rating <= 2 ? ButtonStyle.Danger : ButtonStyle.Secondary)
+          .setDisabled(disabled)
+          .setStyle(selectedRating === rating ? ButtonStyle.Primary : rating >= 4 ? ButtonStyle.Success : rating <= 2 ? ButtonStyle.Danger : ButtonStyle.Secondary)
       )
     )
   ];
 }
 
-async function handleTicketFeedbackButton({ interaction, storage, client }) {
+async function handleTicketFeedbackButton({ interaction, storage, client, activeFeedbackRatings }) {
   const [, , channelId, ratingValue] = interaction.customId.split(':');
   const rating = Number.parseInt(ratingValue, 10);
   const ticket = await storage.getTicket(channelId).catch(() => null);
@@ -4526,26 +4528,103 @@ async function handleTicketFeedbackButton({ interaction, storage, client }) {
     return;
   }
 
+  if (!Number.isFinite(rating) || rating < 1 || rating > 5) {
+    await replyToFeedbackInteraction(interaction, 'Esta valoracion no es valida.');
+    return;
+  }
+
   if (ticket.openedBy && interaction.user.id !== ticket.openedBy) {
     await replyToFeedbackInteraction(interaction, 'Solo la persona que abrio el ticket puede valorar esta atencion.');
     return;
   }
 
-  const guildConfig = await storage.getGuildConfig(ticket.guildId).catch(() => null);
-  const feedback = await storage.addTicketFeedback({
-    id: `feedback-${channelId}-${interaction.user.id}`,
-    guildId: ticket.guildId,
-    guildName: ticket.guildName ?? guildConfig?.guildName,
-    channelId,
-    channelName: ticket.channelName,
-    userId: interaction.user.id,
-    username: interaction.user.username,
+  const feedbackId = `feedback-${channelId}-${interaction.user.id}`;
+  if (activeFeedbackRatings?.has(feedbackId)) {
+    await deferFeedbackInteraction(interaction);
+    return;
+  }
+
+  activeFeedbackRatings?.add(feedbackId);
+  try {
+    const existingFeedback = typeof storage.getTicketFeedback === 'function'
+      ? await storage.getTicketFeedback(feedbackId).catch((error) => {
+          console.error(`Failed to check existing feedback ${feedbackId}:`, error);
+          return null;
+        })
+      : null;
+    if (existingFeedback) {
+      await acknowledgeFeedbackButton(interaction, {
+        channelId,
+        rating: existingFeedback.rating,
+        alreadySaved: true
+      });
+      return;
+    }
+
+    const guildConfig = await storage.getGuildConfig(ticket.guildId).catch(() => null);
+    const feedback = await storage.addTicketFeedback({
+      id: feedbackId,
+      guildId: ticket.guildId,
+      guildName: ticket.guildName ?? guildConfig?.guildName,
+      channelId,
+      channelName: ticket.channelName,
+      userId: interaction.user.id,
+      username: interaction.user.username,
+      rating,
+      source: 'dm_rating'
+    });
+
+    await acknowledgeFeedbackButton(interaction, { channelId, rating: feedback.rating });
+    if (!feedback.notPersisted) {
+      await maybePublishFeedbackReview({ client, storage, feedback, ticket, guildConfig });
+    }
+  } finally {
+    activeFeedbackRatings?.delete(feedbackId);
+  }
+}
+
+async function acknowledgeFeedbackButton(interaction, { channelId, rating, alreadySaved = false }) {
+  const content = buildFeedbackAcknowledgementContent(interaction.message?.content ?? '', {
     rating,
-    source: 'dm_rating'
+    alreadySaved
+  });
+  const components = buildFeedbackComponents(channelId, {
+    disabled: true,
+    selectedRating: rating
   });
 
-  await replyToFeedbackInteraction(interaction, `${EMOJIS.check} Gracias. Valoracion guardada: ${formatRatingStars(feedback.rating)}.`);
-  await maybePublishFeedbackReview({ client, storage, feedback, ticket, guildConfig });
+  if (!interaction.deferred && !interaction.replied && typeof interaction.update === 'function') {
+    try {
+      await interaction.update({ content, components });
+      return;
+    } catch (error) {
+      console.error(`Failed to update feedback message ${interaction.customId}:`, error);
+    }
+  }
+
+  if (!interaction.deferred && !interaction.replied) {
+    await replyToFeedbackInteraction(
+      interaction,
+      `${EMOJIS.check} Valoracion guardada: ${formatRatingStars(rating)}.`
+    ).catch((error) => {
+      console.error(`Failed to acknowledge feedback interaction ${interaction.customId}:`, error);
+    });
+  }
+}
+
+async function deferFeedbackInteraction(interaction) {
+  if (interaction.deferred || interaction.replied || typeof interaction.deferUpdate !== 'function') return;
+  await interaction.deferUpdate().catch((error) => {
+    console.error(`Failed to defer repeated feedback interaction ${interaction.customId}:`, error);
+  });
+}
+
+function buildFeedbackAcknowledgementContent(content, { rating, alreadySaved = false }) {
+  const base = String(content ?? '').trim();
+  if (/Valoracion (?:guardada|registrada)/i.test(base)) return base;
+
+  const line = `${EMOJIS.check} ${alreadySaved ? 'Valoracion ya registrada' : 'Gracias. Valoracion guardada'}: ${formatRatingStars(rating)}.`;
+  return [base, line].filter(Boolean).join('\n\n');
 }
 
 async function replyToFeedbackInteraction(interaction, content) {
@@ -5808,14 +5887,13 @@ function applyBotPresence(client) {
   }
 }
 
-function buildBotPresence(client = null) {
-  const guildCount = client?.guilds?.cache?.size ?? 0;
+function buildBotPresence() {
   return {
     status: 'online',
     afk: false,
     activities: [
       {
-        name: `How can I help you today? | Ayudando en ${guildCount} servidores`,
+        name: 'How can I help you today?',
         type: ActivityType.Playing
       }
     ]
