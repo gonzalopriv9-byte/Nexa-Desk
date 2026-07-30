@@ -3737,7 +3737,6 @@ function renderAccessGateMarkup({ title = 'Verificando acceso seguro', copy = 'C
       </div>
       <div class="gate-progress"><span></span></div>
     </div>
-    <button class="gate-skip" type="button" id="gateSkip">Saltar</button>
   </section>`;
 }
 
@@ -3767,7 +3766,6 @@ function renderAccessGateScript() {
         }, 2100);
         window.setTimeout(() => gate.classList.add('is-brand'), 3050);
         window.setTimeout(finishGate, 5100);
-        document.querySelector('#gateSkip')?.addEventListener('click', finishGate);
       }
     })();
   </script>`;
@@ -4389,7 +4387,6 @@ function renderLogin(config) {
       </div>
       <div class="gate-progress"><span></span></div>
     </div>
-    <button class="gate-skip" type="button" id="gateSkip">Saltar</button>
   </section>
   <div class="loading" id="loading">
     <div class="loader">
@@ -4448,7 +4445,6 @@ function renderLogin(config) {
       }, 2100);
       window.setTimeout(() => gate.classList.add('is-brand'), 3050);
       window.setTimeout(finishGate, 5100);
-      document.querySelector('#gateSkip')?.addEventListener('click', finishGate);
     }
     let phraseIndex = 0;
     const phrase = document.querySelector('#loadingPhrase');
@@ -4552,7 +4548,6 @@ function renderDiscordAuthComplete(session) {
       <p class="phrase" id="authPhrase">Conectando tu centro de mando</p>
     </section>
   </main>
-  <button class="skip" type="button" id="enterNow">Entrar ahora</button>
   <script>
     const phrases = [
       'Conectando tu centro de mando',
@@ -4564,7 +4559,6 @@ function renderDiscordAuthComplete(session) {
     let index = 0;
     const phrase = document.querySelector('#authPhrase');
     const go = () => { window.location.replace('/'); };
-    document.querySelector('#enterNow')?.addEventListener('click', go);
     window.setInterval(() => {
       index = (index + 1) % phrases.length;
       if (phrase) phrase.textContent = phrases[index];
@@ -4970,6 +4964,80 @@ function renderDashboard({ session, guilds, tickets, stats, dashboardState = {},
     @keyframes spin { to { transform:rotate(360deg); } }
     @keyframes tourCardIn { from { opacity:0; transform:translateY(20px) scale(.97); filter:blur(8px); } to { opacity:1; transform:translateY(0) scale(1); filter:blur(0); } }
     @keyframes tourPulse { 0%,100% { opacity:.24; transform:scale(.98); } 50% { opacity:.72; transform:scale(1.025); } }
+    :root {
+      --ease-out-pro:cubic-bezier(.16, 1, .3, 1);
+      --ease-spring:cubic-bezier(.22, 1.35, .34, 1);
+      --surface-pro:linear-gradient(145deg, rgba(255,255,255,.115), rgba(255,255,255,.034) 46%, rgba(255,255,255,.018));
+      --surface-pro-hover:linear-gradient(145deg, rgba(255,255,255,.16), rgba(255,255,255,.05) 48%, rgba(255,255,255,.026));
+      --hairline:rgba(255,255,255,.18);
+      --hairline-strong:rgba(255,255,255,.34);
+    }
+    html { scroll-behavior:smooth; }
+    body { background:#020202; text-rendering:geometricPrecision; -webkit-font-smoothing:antialiased; }
+    body::before { opacity:.72; background-size:76px 76px; mask-image:linear-gradient(to bottom, rgba(0,0,0,.9), rgba(0,0,0,.72) 55%, rgba(0,0,0,.18)); }
+    body::after { opacity:.92; background:radial-gradient(circle at 18% 8%, rgba(255,255,255,.12), transparent 24%), radial-gradient(circle at 82% 0%, rgba(255,255,255,.08), transparent 26%), linear-gradient(180deg, rgba(255,255,255,.04), transparent 28%, rgba(0,0,0,.32)); }
+    ::selection { color:#050505; background:#fff; }
+    .app-shell { width:min(1540px, calc(100% - 56px)); grid-template-columns:248px minmax(0,1fr); gap:28px; padding-top:28px; padding-bottom:70px; }
+    main { animation:dashboardEnter .78s var(--ease-out-pro) both; }
+    main.is-switching .dashboard-view.is-active { animation:viewSwitchPro .46s var(--ease-out-pro) both; }
+    .sidebar { top:28px; height:calc(100vh - 56px); border-radius:30px; padding:18px; border-color:rgba(255,255,255,.2); background:linear-gradient(165deg, rgba(255,255,255,.105), rgba(18,18,18,.68) 28%, rgba(2,2,2,.82)); box-shadow:0 36px 120px rgba(0,0,0,.55), 0 0 0 1px rgba(255,255,255,.045) inset; overflow:hidden; }
+    .sidebar::before { content:""; position:absolute; inset:-120px -70px auto auto; width:220px; height:220px; border-radius:50%; background:rgba(255,255,255,.13); filter:blur(58px); opacity:.62; pointer-events:none; animation:sidebarGlow 8s ease-in-out infinite alternate; }
+    .sidebar > * { position:relative; z-index:1; }
+    .nav-brand { margin-bottom:20px; }
+    .brand-logo { border-radius:18px; box-shadow:0 18px 54px rgba(255,255,255,.08), 0 0 0 1px rgba(255,255,255,.18) inset; }
+    .nav-link { min-height:45px; border-radius:16px; padding:11px 13px; letter-spacing:.01em; position:relative; overflow:hidden; }
+    .nav-link::after { content:""; position:absolute; inset:0; background:linear-gradient(100deg, transparent 0%, rgba(255,255,255,.16) 42%, transparent 74%); transform:translateX(-130%); opacity:0; pointer-events:none; }
+    .nav-link:hover::after,.nav-link.is-active::after { animation:softShimmer 1.8s var(--ease-out-pro) both; }
+    .nav-link:hover,.nav-link.is-active { border-color:rgba(255,255,255,.56); background:linear-gradient(135deg, rgba(255,255,255,.18), rgba(255,255,255,.052)); transform:translateX(5px); }
+    .nav-icon { width:22px; display:grid; place-items:center; }
+    .dashboard-banner-frame { border-radius:28px; height:180px; margin-bottom:18px; border-color:rgba(255,255,255,.16); box-shadow:0 32px 110px rgba(0,0,0,.5); }
+    .dashboard-banner-frame::after { content:""; position:absolute; inset:0; pointer-events:none; background:linear-gradient(90deg, rgba(255,255,255,.06), transparent 26%, transparent 72%, rgba(255,255,255,.08)); mix-blend-mode:screen; }
+    header { border:1px solid rgba(255,255,255,.14); border-radius:30px; padding:28px; background:linear-gradient(145deg, rgba(255,255,255,.105), rgba(255,255,255,.028)); box-shadow:0 34px 120px rgba(0,0,0,.42), 0 0 0 1px rgba(255,255,255,.03) inset; overflow:hidden; }
+    header::before { opacity:.75; filter:blur(56px); }
+    h1 { letter-spacing:-.065em; }
+    h2,.tour-title { letter-spacing:-.035em; }
+    .topbar { grid-template-columns:minmax(0,1fr) minmax(300px,360px); gap:20px; margin-bottom:22px; }
+    .hero-panel,.surface,.stat,.active-server,.control-card,.insight-card,.premium-buy-card,.install-banner,.server-score { border-radius:24px; border-color:var(--hairline); background:var(--surface-pro); box-shadow:0 30px 110px rgba(0,0,0,.38), 0 0 0 1px rgba(255,255,255,.038) inset; backdrop-filter:blur(26px) saturate(1.22); }
+    .hero-panel { padding:24px; }
+    .surface,.control-card,.active-server,.stat { transition:transform .38s var(--ease-out-pro), border-color .38s ease, box-shadow .38s ease, background .38s ease; }
+    .surface:hover,.control-card:hover,.active-server:hover,.stat:hover { transform:translateY(-3px); border-color:var(--hairline-strong); background:var(--surface-pro-hover); box-shadow:0 42px 140px rgba(0,0,0,.46), 0 0 42px rgba(255,255,255,.055) inset; }
+    .dashboard-view.is-active .surface,.dashboard-view.is-active .control-card,.dashboard-view.is-active .stat,.dashboard-view.is-active .active-server,.dashboard-view.is-active .insight-card { animation:proCardIn .58s var(--ease-out-pro) both; }
+    .dashboard-view.is-active .surface:nth-of-type(2),.dashboard-view.is-active .control-card:nth-of-type(2),.dashboard-view.is-active .stat:nth-of-type(2) { animation-delay:.045s; }
+    .dashboard-view.is-active .surface:nth-of-type(3),.dashboard-view.is-active .control-card:nth-of-type(3),.dashboard-view.is-active .stat:nth-of-type(3) { animation-delay:.09s; }
+    .view-heading,.section-heading { margin-bottom:18px; }
+    .view-heading h2,.section-heading h2 { font-size:clamp(26px, 3.2vw, 42px); line-height:.98; }
+    input,select,textarea { border-radius:16px; border-color:rgba(255,255,255,.18); background:rgba(0,0,0,.46); transition:border-color .22s ease, box-shadow .22s ease, background .22s ease, transform .22s ease; }
+    input:hover,select:hover,textarea:hover { border-color:rgba(255,255,255,.3); background:rgba(0,0,0,.54); }
+    input:focus,select:focus,textarea:focus { border-color:#fff; box-shadow:0 0 0 4px rgba(255,255,255,.095), 0 0 32px rgba(255,255,255,.07); background:#050505; }
+    button,.login-button,.transcript-download { border-radius:16px; transition:transform .22s var(--ease-out-pro), box-shadow .22s ease, border-color .22s ease, background .22s ease; }
+    button:hover,.login-button:hover,.transcript-download:hover { transform:translateY(-2px); box-shadow:0 18px 50px rgba(0,0,0,.34); }
+    button:active,.login-button:active,.transcript-download:active { transform:translateY(0) scale(.985); }
+    .secondary-button { background:rgba(255,255,255,.06); border-color:rgba(255,255,255,.22); }
+    .guild-pill,.component-card,.component-choice,.panel-card,.log-entry,.transcript-message { border-radius:18px; transition:transform .28s var(--ease-out-pro), border-color .28s ease, background .28s ease; }
+    .guild-pill:hover,.component-card:hover,.component-choice:hover,.panel-card:hover,.log-entry:hover { transform:translateY(-2px); border-color:rgba(255,255,255,.34); }
+    .premium-blocked { border-radius:30px; }
+    #view-premium .surface,#view-premium .control-card,#view-premium .premium-buy-card { background:linear-gradient(145deg, rgba(244,201,93,.18), rgba(255,255,255,.055) 40%, rgba(0,0,0,.54)); }
+    .toast,.assistant-panel,.assistant-launcher,.tour-replay { border-radius:22px; }
+    .loading { background:radial-gradient(circle at 50% 42%, rgba(255,255,255,.16), transparent 28%), radial-gradient(circle at 20% 14%, rgba(255,255,255,.1), transparent 24%), rgba(0,0,0,.88); backdrop-filter:blur(24px) saturate(1.18); }
+    .loader { border-radius:30px; background:linear-gradient(145deg, rgba(255,255,255,.15), rgba(12,12,12,.93)); box-shadow:0 40px 150px rgba(0,0,0,.64), 0 0 0 1px rgba(255,255,255,.05) inset; }
+    .tour-overlay { --spot-x:50vw; --spot-y:34vh; }
+    .tour-dim { background:radial-gradient(circle at var(--spot-x) var(--spot-y), rgba(255,255,255,.03) 0 120px, rgba(0,0,0,.28) 205px, rgba(0,0,0,.84) 100%), radial-gradient(circle at 72% 12%, rgba(255,255,255,.08), transparent 30%); backdrop-filter:none; }
+    .tour-card { border-radius:30px; padding:22px; background:linear-gradient(145deg, rgba(255,255,255,.99), rgba(238,238,232,.97)); box-shadow:0 40px 150px rgba(0,0,0,.72), 0 0 0 1px rgba(0,0,0,.08) inset; }
+    .tour-avatar { width:52px; height:52px; border-radius:18px; }
+    .tour-actions { justify-content:space-between; }
+    .tour-actions::before { content:"Recorrido obligatorio"; color:#555; font-weight:850; font-size:12px; text-transform:uppercase; letter-spacing:.11em; align-self:center; }
+    .tour-skip,.gate-skip,.skip { display:none !important; }
+    .tour-highlight { outline:2px solid #fff; outline-offset:7px; box-shadow:0 0 0 16px rgba(255,255,255,.14), 0 32px 110px rgba(255,255,255,.18), 0 0 0 1px rgba(0,0,0,.7) inset !important; filter:none !important; }
+    * { scrollbar-color:rgba(255,255,255,.34) rgba(255,255,255,.05); }
+    *::-webkit-scrollbar { width:10px; height:10px; }
+    *::-webkit-scrollbar-track { background:rgba(255,255,255,.04); border-radius:999px; }
+    *::-webkit-scrollbar-thumb { background:rgba(255,255,255,.25); border-radius:999px; border:2px solid rgba(0,0,0,.65); }
+    *::-webkit-scrollbar-thumb:hover { background:rgba(255,255,255,.44); }
+    @keyframes dashboardEnter { from { opacity:0; transform:translateY(22px) scale(.99); filter:blur(10px); } to { opacity:1; transform:translateY(0) scale(1); filter:blur(0); } }
+    @keyframes viewSwitchPro { from { opacity:0; transform:translateY(18px) scale(.992); filter:blur(10px); } to { opacity:1; transform:translateY(0) scale(1); filter:blur(0); } }
+    @keyframes proCardIn { from { opacity:0; transform:translateY(26px) scale(.985); filter:blur(12px); } to { opacity:1; transform:translateY(0) scale(1); filter:blur(0); } }
+    @keyframes softShimmer { 0% { opacity:0; transform:translateX(-140%); } 35% { opacity:.9; } 100% { opacity:0; transform:translateX(140%); } }
+    @keyframes sidebarGlow { from { transform:translate3d(0,0,0) scale(.92); opacity:.38; } to { transform:translate3d(-32px,54px,0) scale(1.16); opacity:.72; } }
     @media (prefers-reduced-motion:reduce) { body::before,body::after,.ambient-scene,.ambient-scene::before,.ambient-scene::after,.ambient-orb,.ambient-rings,.banner-frame,.banner-frame::before,.banner-frame img,.loader::after,.pulse { animation:none; transition:none; } }
     @media (max-width:1120px) { .app-shell,.workspace,.topbar,.command-center,.panel-builder,.premium-grid,.premium-market { grid-template-columns:1fr; } .sidebar { position:relative; height:auto; top:auto; } .nav-foot { position:static; margin-top:18px; } .panel-preview-wrap { position:relative; top:auto; } }
     @media (max-width:760px) {
@@ -5671,6 +5739,14 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
     function setActiveView(view, { updateHash = true } = {}) {
       const nextView = document.querySelector('[data-view="' + view + '"].dashboard-view') ? view : 'overview';
       state.activeView = nextView;
+      const mainEl = document.querySelector('main');
+      if (mainEl) {
+        mainEl.classList.remove('is-switching');
+        void mainEl.offsetWidth;
+        mainEl.classList.add('is-switching');
+        window.clearTimeout(window.__nexaViewSwitchTimer);
+        window.__nexaViewSwitchTimer = window.setTimeout(() => mainEl.classList.remove('is-switching'), 520);
+      }
       document.querySelectorAll('.dashboard-view').forEach((section) => {
         section.classList.toggle('is-active', section.dataset.view === nextView);
       });
@@ -5830,8 +5906,16 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
         const target = findDashboardTourTarget(step.target);
         if (!target) return;
         dashboardTourTarget = target;
+        const rect = target.getBoundingClientRect();
+        overlay.style.setProperty('--spot-x', Math.round(rect.left + rect.width / 2) + 'px');
+        overlay.style.setProperty('--spot-y', Math.round(rect.top + rect.height / 2) + 'px');
         target.classList.add('tour-highlight');
         scrollDashboardTourTarget(target, view);
+        window.setTimeout(() => {
+          const updated = target.getBoundingClientRect();
+          overlay.style.setProperty('--spot-x', Math.round(updated.left + updated.width / 2) + 'px');
+          overlay.style.setProperty('--spot-y', Math.round(updated.top + updated.height / 2) + 'px');
+        }, 360);
       }, 120);
     }
     function startDashboardTour({ force = false } = {}) {
