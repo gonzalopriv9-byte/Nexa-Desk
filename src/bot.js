@@ -4944,6 +4944,12 @@ async function handleDiagnosticsCommand({ interaction, storage, client, supportA
   const security = normalizeSecurityConfig(guildConfig?.security);
   const premium = normalizePremiumConfig(guildConfig?.premium, guildConfig ?? {});
   const discovery = normalizeDiscoveryConfig(guildConfig?.discovery);
+  const intelligence = buildGuildIntelligenceReport({
+    guild: interaction.guild,
+    guildConfig,
+    activeTickets,
+    todayTickets
+  });
 
   const embed = new EmbedBuilder()
     .setColor(operational.score >= 80 ? 0xffffff : operational.score >= 55 ? 0xffcc00 : 0xff5f57)
@@ -4988,6 +4994,18 @@ async function handleDiagnosticsCommand({ interaction, storage, client, supportA
           `Categoria sugerida: **${discovery.suggestedTicketCategoryName ?? 'No detectada'}**`
         ].join('\n'),
         inline: true
+      },
+      {
+        name: `${EMOJIS.server} Inteligencia del servidor`,
+        value: intelligence.summaryLines.join('\n'),
+        inline: true
+      },
+      {
+        name: `${EMOJIS.check} Oportunidades recomendadas`,
+        value: intelligence.opportunities.length
+          ? intelligence.opportunities.map((item) => `- ${item}`).join('\n')
+          : 'No veo oportunidades criticas ahora mismo. Mantén transcripciones y feedback activos para seguir optimizando.',
+        inline: false
       },
       {
         name: `${EMOJIS.rightArrow} Siguiente mejor accion`,
@@ -5397,6 +5415,63 @@ function buildGuildOperationalScore(guildConfig, { installed = false } = {}) {
       : 'Necesita setup basico antes de confiarle soporte real.';
 
   return { score, checks, missing, summary };
+}
+
+function buildGuildIntelligenceReport({ guild, guildConfig, activeTickets = [], todayTickets = 0 }) {
+  const channels = [...(guild?.channels?.cache?.values?.() ?? [])];
+  const textChannels = channels.filter((channel) => channel.type === ChannelType.GuildText || channel.type === ChannelType.GuildAnnouncement);
+  const voiceChannels = channels.filter((channel) => channel.type === ChannelType.GuildVoice);
+  const categories = channels.filter((channel) => channel.type === ChannelType.GuildCategory);
+  const botsCached = [...(guild?.members?.cache?.values?.() ?? [])].filter((member) => member.user?.bot).length;
+  const totalMembers = Number(guild?.memberCount ?? guild?.members?.cache?.size ?? 0);
+  const humanEstimate = Math.max(0, totalMembers - botsCached);
+  const membersPerOpenTicket = activeTickets.length && humanEstimate
+    ? Math.max(1, Math.round(humanEstimate / activeTickets.length))
+    : null;
+  const supportChannelSignals = textChannels.filter((channel) =>
+    /\b(?:soporte|support|ticket|tickets|ayuda|help|dudas|faq|reportes|reports|alianzas|partners|staff)\b/u
+      .test(normalizeChannelNameForDiscovery(channel.name ?? ''))
+  ).length;
+  const privateChannels = textChannels.filter((channel) => {
+    const everyoneOverwrite = channel.permissionOverwrites?.cache?.get?.(guild.roles.everyone.id);
+    return Boolean(everyoneOverwrite?.deny?.has?.(PermissionFlagsBits.ViewChannel));
+  }).length;
+  const hasStaff = Boolean(guildConfig?.staffRoleId);
+  const hasContext = Boolean(guildConfig?.serverPrompt || guildConfig?.serverInfo);
+  const security = normalizeSecurityConfig(guildConfig?.security);
+  const hasPanel = Boolean(guildConfig?.panels?.length);
+  const hasComponents = Boolean(guildConfig?.components?.length);
+  const sizeLabel = totalMembers >= 1000
+    ? 'Comunidad grande'
+    : totalMembers >= 250
+      ? 'Comunidad en crecimiento'
+      : 'Comunidad pequena/mediana';
+
+  const summaryLines = [
+    `Miembros: **${formatNumber(totalMembers)}** (${sizeLabel})`,
+    `Canales: **${textChannels.length} texto**, **${voiceChannels.length} voz**, **${categories.length} categorias**`,
+    `Tickets activos: **${activeTickets.length}**${membersPerOpenTicket ? ` (~1 por cada ${membersPerOpenTicket} miembros)` : ''}`,
+    `Canales privados: **${privateChannels}** - Senales soporte: **${supportChannelSignals}**`
+  ];
+
+  const opportunities = [];
+  if (!hasContext) opportunities.push('Anadir contexto IA con normas, FAQ y tono del servidor para reducir preguntas repetidas.');
+  if (!hasStaff) opportunities.push('Configurar rol staff para que los escalados lleguen a la gente correcta.');
+  if (!security.enabled) opportunities.push('Activar Security Guard antes de llevar NexaDesk a servidores con mucha gente.');
+  if (!hasComponents) opportunities.push('Crear componentes con preguntas previas para que cada ticket llegue con contexto desde el primer mensaje.');
+  if (!hasPanel) opportunities.push('Publicar al menos un panel profesional con menu o boton para que los usuarios no dependan de staff.');
+  if (todayTickets >= 8) opportunities.push('Hay bastante volumen hoy: conviene revisar transcripciones y activar Growth Engine para medir satisfaccion.');
+  if (totalMembers >= 500 && !isPremiumEntitled(guildConfig ?? {})) opportunities.push('Servidor grande detectado: Premium puede venderse aqui por voz, examenes, SLA Radar y transcripciones inteligentes.');
+  if (supportChannelSignals >= 4 && !guildConfig?.discovery?.faqChannelId) opportunities.push('Hay muchos canales de soporte/info; ejecuta diagnostico o autoconfig para que NexaDesk los use como contexto.');
+
+  return {
+    summaryLines,
+    opportunities: opportunities.slice(0, 5)
+  };
+}
+
+function formatNumber(value) {
+  return new Intl.NumberFormat('es-ES').format(Number(value ?? 0));
 }
 
 async function sendFlowMessages({ message, storage, flow }) {
