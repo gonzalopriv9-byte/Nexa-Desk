@@ -2445,11 +2445,11 @@ function buildSecurityStatusEmbed({ guild, security }) {
           `Anti-bots Top.gg: **${config.antiBot ? 'on' : 'off'}**`,
           `Anti-alts: **${config.antiAlt ? 'on' : 'off'}** (${config.minAccountAgeDays} dias)`,
           `Anti-nuke: **${config.antiNuke ? 'on' : 'off'}** (${config.nukeLimit} acciones/${config.nukeWindowSeconds}s)`,
-          `Canales/config: **${config.antiNuke ? 'vigilado' : 'off'}** (creaciones masivas, permisos y cambios del servidor)`
+          `Canales/config/webhooks: **${config.antiNuke ? 'vigilado' : 'off'}** (bots personales, apps externas, permisos y cambios del servidor)`
         ].join('\n')
       },
       { name: `${EMOJIS.wifi} Logs`, value: config.logChannelId ? `<#${config.logChannelId}>` : 'Sin canal de logs. Se avisara al owner por MD cuando sea importante.', inline: true },
-      { name: `${EMOJIS.ban} Permisos recomendados`, value: 'View Audit Log, Manage Messages, Moderate Members, Kick Members y Ban Members.' }
+      { name: `${EMOJIS.ban} Permisos recomendados`, value: 'View Audit Log, Manage Channels, Manage Webhooks, Manage Roles, Manage Messages, Moderate Members, Kick Members y Ban Members.' }
     )
     .setFooter({ text: 'NexaDesk Security Guard' })
     .setTimestamp(new Date());

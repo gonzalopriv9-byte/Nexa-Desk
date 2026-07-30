@@ -26,6 +26,19 @@ const LOCKDOWN_CHANNEL_TYPES = new Set([
   ChannelType.GuildMedia,
   ChannelType.GuildCategory
 ]);
+const DANGEROUS_ROLE_PERMISSIONS = [
+  ['Administrator', PermissionFlagsBits.Administrator],
+  ['Manage Guild', PermissionFlagsBits.ManageGuild],
+  ['Manage Channels', PermissionFlagsBits.ManageChannels],
+  ['Manage Roles', PermissionFlagsBits.ManageRoles],
+  ['Manage Webhooks', PermissionFlagsBits.ManageWebhooks],
+  ['Ban Members', PermissionFlagsBits.BanMembers],
+  ['Kick Members', PermissionFlagsBits.KickMembers],
+  ['Mention Everyone', PermissionFlagsBits.MentionEveryone],
+  ['Manage Messages', PermissionFlagsBits.ManageMessages],
+  ['Manage Threads', PermissionFlagsBits.ManageThreads],
+  ['Moderate Members', PermissionFlagsBits.ModerateMembers]
+];
 
 export const SECURITY_LEVELS = {
   low: {
@@ -140,7 +153,7 @@ export function summarizeSecurityConfig(config = {}) {
     security.antiOffensive ? 'XN Automod' : null,
     security.antiBot ? 'Anti-bots Top.gg' : null,
     security.antiAlt ? 'Anti-alts' : null,
-    security.antiNuke ? 'Anti-nuke canales/config' : null
+    security.antiNuke ? 'Anti-nuke canales/config/webhooks' : null
   ].filter(Boolean);
   return `${SECURITY_LEVELS[security.level].label}: ${enabled.join(', ') || 'solo logs'}`;
 }
@@ -161,11 +174,15 @@ export class SecurityManager {
   }
 
   async handleMessageCreate(message) {
-    if (!message.guild || message.webhookId || message.author?.id === this.client.user?.id) return false;
+    if (!message.guild || message.author?.id === this.client.user?.id) return false;
 
     const guildConfig = await this.storage.getGuildConfig(message.guild.id);
     const security = normalizeSecurityConfig(guildConfig?.security);
     if (!security.enabled) return false;
+
+    if (message.webhookId) {
+      return this.handleWebhookMessageCreate({ message, guildConfig, security });
+    }
 
     const urls = extractMessageUrls(message);
     if (security.antiScamLinks && urls.length) {
@@ -225,6 +242,90 @@ export class SecurityManager {
         { name: 'Canal', value: `${message.channel}`, inline: true },
         { name: 'Mensajes detectados', value: `${bucket.length}/${security.floodLimit}`, inline: true },
         { name: 'Borrados', value: String(deleted), inline: true },
+        { name: 'Aislamiento', value: isolation }
+      ],
+      important: true
+    });
+
+    return true;
+  }
+
+  async handleWebhookMessageCreate({ message, guildConfig, security }) {
+    if (!security.antiFlood && !security.antiScamLinks && !security.antiOffensive) return false;
+
+    const key = `${message.guild.id}:webhook:${message.webhookId}`;
+    const now = Date.now();
+    const windowMs = security.floodWindowSeconds * 1000;
+    const bucket = (this.messageBuckets.get(key) ?? []).filter((entry) => now - entry.at <= windowMs);
+    const content = normalizeContent(message.content);
+    bucket.push({
+      at: now,
+      content,
+      messageId: message.id,
+      channelId: message.channelId,
+      webhookId: message.webhookId
+    });
+    this.messageBuckets.set(key, bucket);
+
+    const repeated = Boolean(content && bucket.filter((entry) => entry.content === content).length >= 2);
+    const flooding = bucket.length >= Math.max(3, Math.min(security.floodLimit, 4));
+    const massMention = security.antiFlood && isMassMentionMessage(message);
+    const urls = extractMessageUrls(message);
+
+    let linkAnalysis = null;
+    if (security.antiScamLinks && urls.length) {
+      linkAnalysis = await this.reviewMessageLinks({ message, guildConfig, urls });
+    }
+
+    let offensiveAnalysis = null;
+    if (security.antiOffensive && message.content && !shouldSkipAutomodContent(message.content)) {
+      offensiveAnalysis = await reviewXnProtectAutomod(message.content);
+    }
+
+    let spamAnalysis = null;
+    if (security.antiFlood && (shouldReviewSpamContent(message) || repeated || flooding || massMention)) {
+      spamAnalysis = await this.reviewSpamContent({ message, guildConfig });
+    }
+
+    const risky = Boolean(
+      massMention
+      || repeated
+      || flooding
+      || shouldBlockLinkThreat(linkAnalysis)
+      || offensiveAnalysis?.malicious
+      || shouldBlockSpamThreat(spamAnalysis)
+    );
+    if (!risky) return false;
+
+    const deleted = await this.deleteWebhookBurstMessages(message, bucket, security);
+    const webhookAction = await this.deleteWebhookSource(
+      message,
+      `NexaDesk Security Guard: webhook usado para ${massMention ? 'mention spam' : 'spam/raid'}`
+    );
+    const auditEntry = await this.findRecentWebhookAuditEntry(message);
+    const executor = auditEntry?.executor;
+    const isolation = executor && !this.isTrustedExecutor(message.guild, executor.id)
+      ? await this.isolateSensitiveExecutor({
+          guild: message.guild,
+          executor,
+          security,
+          reason: 'NexaDesk Security Guard: webhook o app externa usada para spam/raid',
+          topGgDecision: executor.bot ? await this.shouldBanBotBecauseMissingTopGg(executor) : null
+        })
+      : 'No pude identificar al creador del webhook en audit logs. Webhook neutralizado si Discord lo permitio.';
+
+    await this.sendSecurityLog({
+      guild: message.guild,
+      config: security,
+      title: 'Webhook o app externa bloqueada',
+      description: `${message.author?.tag ?? 'Webhook'} publico contenido sospechoso usando webhook/app externa. NexaDesk limpio la rafaga e intento neutralizar el origen.`,
+      fields: [
+        { name: 'Canal', value: `${message.channel}`, inline: true },
+        { name: 'Webhook', value: `${message.webhookId}`, inline: true },
+        executor ? { name: 'Ejecutor', value: `${executor.tag} (${executor.id})`, inline: true } : null,
+        { name: 'Motivo', value: buildWebhookThreatReason({ massMention, repeated, flooding, linkAnalysis, offensiveAnalysis, spamAnalysis }) },
+        { name: 'Mensajes borrados', value: String(deleted), inline: true },
+        { name: 'Webhook', value: webhookAction, inline: true },
         { name: 'Aislamiento', value: isolation }
       ],
       important: true
@@ -444,6 +545,54 @@ export class SecurityManager {
     return deleted;
   }
 
+  async deleteWebhookBurstMessages(message, bucket, security) {
+    const windowMs = Math.max(security.floodWindowSeconds * 1000, 8000);
+    const cutoff = Date.now() - windowMs;
+    const channelIds = new Set([
+      message.channelId,
+      ...bucket.map((entry) => entry.channelId).filter(Boolean)
+    ]);
+
+    let deleted = 0;
+    for (const channelId of channelIds) {
+      const channel = await message.guild.channels.fetch(channelId).catch(() => null);
+      if (!channel?.isTextBased?.()) continue;
+
+      const recent = await channel.messages.fetch({ limit: 100 }).catch(() => null);
+      if (!recent?.size) continue;
+
+      const targets = recent.filter((item) => (
+        item.webhookId === message.webhookId
+        && item.createdTimestamp >= cutoff
+        && item.deletable
+      ));
+      if (!targets.size) continue;
+
+      if (channel.bulkDelete && targets.size > 1) {
+        const removed = await channel.bulkDelete(targets, true).catch(() => null);
+        if (removed?.size) {
+          deleted += removed.size;
+          continue;
+        }
+      }
+
+      const results = await Promise.allSettled([...targets.values()].map((item) => item.delete()));
+      deleted += results.filter((result) => result.status === 'fulfilled').length;
+    }
+
+    return deleted;
+  }
+
+  async deleteWebhookSource(message, reason) {
+    if (!message.guild.members.me?.permissions.has(PermissionFlagsBits.ManageWebhooks)) {
+      return 'No pude eliminarlo: falta Manage Webhooks.';
+    }
+    const webhook = await message.fetchWebhook?.().catch(() => null);
+    if (!webhook) return 'No pude obtener el webhook desde Discord.';
+    const deleted = await webhook.delete(reason).then(() => true).catch(() => false);
+    return deleted ? 'Webhook eliminado.' : 'No pude eliminar el webhook por permisos o propiedad.';
+  }
+
   async isolateFloodActor(message, security, { repeated, flooding, repeatWarning, reasonOverride = null }) {
     const member = message.member ?? await message.guild.members.fetch(message.author.id).catch(() => null);
     const timeoutMs = security.timeoutMinutes * 60 * 1000;
@@ -640,37 +789,41 @@ export class SecurityManager {
 
   async handleRoleUpdate(oldRole, newRole) {
     if (!newRole?.guild) return;
-    const hadAdmin = oldRole?.permissions?.has(PermissionFlagsBits.Administrator);
-    const hasAdmin = newRole.permissions?.has(PermissionFlagsBits.Administrator);
-    if (hadAdmin || !hasAdmin) return;
+    const dangerousGains = describeDangerousPermissionGains(oldRole?.permissions, newRole.permissions);
+    if (!dangerousGains.length) return;
 
     const guildConfig = await this.storage.getGuildConfig(newRole.guild.id);
     const security = normalizeSecurityConfig(guildConfig?.security);
-    if (!security.enabled || (!security.antiBot && !security.antiNuke)) return;
+    if (!security.enabled || !security.antiNuke) return;
 
     const entry = await this.findRecentAuditEntry(newRole.guild, AuditLogEvent.RoleUpdate, newRole.id);
     const executor = entry?.executor;
-    if (!executor || this.isTrustedExecutor(newRole.guild, executor.id) || !executor.bot) return;
+    if (!executor || this.isTrustedExecutor(newRole.guild, executor.id)) return;
 
-    const botMember = await newRole.guild.members.fetch(executor.id).catch(() => null);
-    const topGgDecision = await this.shouldBanBotBecauseMissingTopGg(executor);
-    const updatedPermissions = newRole.permissions.remove(PermissionFlagsBits.Administrator);
+    const updatedPermissions = removeDangerousPermissionGains(oldRole?.permissions, newRole.permissions);
     if (newRole.editable) {
-      await newRole.setPermissions(updatedPermissions, 'NexaDesk Security Guard: bot gave Administrator').catch(() => null);
+      await newRole.setPermissions(updatedPermissions, 'NexaDesk Security Guard: permiso peligroso retirado').catch(() => null);
     }
-    if (topGgDecision.shouldBan && botMember?.bannable) {
-      await botMember.ban({ reason: 'NexaDesk Security Guard: bot gave Administrator permissions' }).catch(() => null);
-    }
+
+    const topGgDecision = executor.bot ? await this.shouldBanBotBecauseMissingTopGg(executor) : null;
+    const isolation = await this.isolateSensitiveExecutor({
+      guild: newRole.guild,
+      executor,
+      security,
+      reason: `NexaDesk Security Guard: elevacion de permisos en ${newRole.name}`,
+      topGgDecision
+    });
 
     await this.sendSecurityLog({
       guild: newRole.guild,
       config: security,
-      title: 'Bot elevando permisos',
-      description: `${executor.tag} intento dar Administrator al rol ${newRole.name}.`,
+      title: 'Elevacion de permisos bloqueada',
+      description: `${executor.tag} intento anadir permisos peligrosos al rol ${newRole.name}.`,
       fields: [
         { name: 'Rol', value: `${newRole.name} (${newRole.id})`, inline: true },
-        { name: 'Top.gg', value: describeTopGgLookup(topGgDecision.lookup) },
-        { name: 'Respuesta', value: `${newRole.editable ? 'Permiso Administrator retirado' : 'No pude editar el rol'} / ${topGgDecision.shouldBan && botMember?.bannable ? 'bot baneado' : 'bot no baneado por politica Top.gg o permisos'}` }
+        { name: 'Permisos', value: dangerousGains.join(', ').slice(0, 900) },
+        executor.bot ? { name: 'Top.gg', value: describeTopGgLookup(topGgDecision?.lookup) } : null,
+        { name: 'Respuesta', value: `${newRole.editable ? 'Permisos peligrosos retirados' : 'No pude editar el rol por jerarquia/permisos'} / ${isolation}` }
       ],
       important: true
     });
@@ -750,14 +903,16 @@ export class SecurityManager {
       && !this.isSecurityLabBot(executor.id)
     ) return false;
 
+    const risk = classifySensitiveAuditRisk({ auditType, entry, baseSeverity: severity, security, label });
+    severity = risk.severity;
     const now = Date.now();
     const key = `${guild.id}:${executor.id}`;
     const windowMs = security.nukeWindowSeconds * 1000;
     const bucket = (this.actionBuckets.get(key) ?? []).filter((item) => now - item.at <= windowMs);
     const lockdownChannelId = channelId ?? (CHANNEL_LOCKDOWN_AUDIT_TYPES.has(auditType) ? targetId : null);
-    bucket.push({ at: now, auditType, label, targetId, targetName, severity, channelId: lockdownChannelId });
+    bucket.push({ at: now, auditType, label, targetId, targetName, severity, channelId: lockdownChannelId, riskReason: risk.reason });
     this.actionBuckets.set(key, bucket);
-    const limit = getSensitiveActionLimit(security, auditType, severity);
+    const limit = risk.limit ?? getSensitiveActionLimit(security, auditType, severity);
 
     await this.sendSecurityLog({
       guild,
@@ -767,27 +922,22 @@ export class SecurityManager {
       fields: [
         { name: 'Executor', value: `${executor.tag} (${executor.id})`, inline: true },
         { name: 'Acciones recientes', value: `${bucket.length}/${limit}`, inline: true },
-        { name: 'Riesgo', value: severity, inline: true }
+        { name: 'Riesgo', value: severity, inline: true },
+        risk.reason ? { name: 'Senal', value: risk.reason } : null
       ]
     });
 
     if (bucket.length < limit) return true;
 
-    const member = await guild.members.fetch(executor.id).catch(() => null);
-    const topGgDecision = member?.user?.bot
-      ? (botTopGgDecision ?? await this.shouldBanBotBecauseMissingTopGg(member.user))
-      : { shouldBan: true, lookup: null };
-    const canBan = Boolean(
-      member?.bannable
-      && guild.members.me?.permissions.has(PermissionFlagsBits.BanMembers)
-      && (!member.user.bot || topGgDecision.shouldBan)
-      && !this.isSecurityLabBot(member.user.id)
-    );
-    if (canBan) {
-      await member.ban({ reason: `NexaDesk Security Guard: ${bucket.length} acciones sensibles en ${security.nukeWindowSeconds}s` }).catch(() => null);
-    }
+    const isolation = await this.isolateSensitiveExecutor({
+      guild,
+      executor,
+      security,
+      reason: `NexaDesk Security Guard: ${bucket.length} acciones sensibles en ${security.nukeWindowSeconds}s`,
+      topGgDecision: botTopGgDecision
+    });
 
-    const isLabSimulation = this.isSecurityLabBot(member?.user?.id ?? executor.id);
+    const isLabSimulation = this.isSecurityLabBot(executor.id);
     const lockdownTargetIds = collectLockdownTargetChannelIds(bucket);
     const cleanupResult = auditType === AuditLogEvent.ChannelCreate
       ? await this.deleteRecentCreatedChannels({
@@ -813,14 +963,85 @@ export class SecurityManager {
       description: `${executor.tag} supero el limite de acciones sensibles.`,
       fields: [
         { name: 'Acciones', value: bucket.map((item) => `- ${item.label}`).slice(-8).join('\n') || label },
-        member?.user?.bot ? { name: 'Top.gg', value: describeTopGgLookup(topGgDecision.lookup) } : null,
+        executor.bot ? { name: 'Top.gg', value: describeTopGgLookup(botTopGgDecision?.lookup) } : null,
         cleanupResult ? { name: 'Limpieza de canales', value: cleanupResult } : null,
         lockdownResult ? { name: 'Lockdown rapido', value: lockdownResult } : null,
-        { name: 'Respuesta', value: isLabSimulation ? 'Simulacion registrada. Bot de laboratorio no aislado ni bloqueado.' : canBan ? 'Ban preventivo aplicado' : 'No pude banear por permisos, jerarquia o politica Top.gg' }
+        { name: 'Respuesta', value: isLabSimulation ? 'Simulacion registrada. Bot de laboratorio no aislado ni bloqueado.' : isolation }
       ],
       important: true
     });
     return true;
+  }
+
+  async findRecentWebhookAuditEntry(message) {
+    const direct = await this.findRecentAuditEntry(message.guild, AuditLogEvent.WebhookCreate, message.webhookId);
+    if (direct) return direct;
+    const updated = await this.findRecentAuditEntry(message.guild, AuditLogEvent.WebhookUpdate, message.webhookId);
+    if (updated) return updated;
+    return this.findRecentAuditEntry(message.guild, AuditLogEvent.WebhookCreate, null);
+  }
+
+  async isolateSensitiveExecutor({ guild, executor, security, reason, topGgDecision = null }) {
+    if (!executor?.id) return 'No hay executor identificable.';
+    if (this.isTrustedExecutor(guild, executor.id)) return 'Executor confiable: no se aplica aislamiento automatico.';
+    if (this.isSecurityLabBot(executor.id)) {
+      return 'Simulacion detectada: bot de laboratorio autorizado. Accion registrada sin ban/kick/timeout.';
+    }
+
+    const member = await guild.members.fetch(executor.id).catch(() => null);
+    if (!member) return 'No pude obtener el miembro ejecutor. Puede haber salido del servidor.';
+
+    const actions = [];
+    if (!member.user.bot) {
+      actions.push(await this.stripDangerousMemberRoles(member, reason));
+    }
+
+    if (member.moderatable && guild.members.me?.permissions.has(PermissionFlagsBits.ModerateMembers)) {
+      const timedOut = await member.timeout(security.timeoutMinutes * 60 * 1000, reason).then(() => true).catch(() => false);
+      actions.push(timedOut
+        ? `Timeout aplicado ${security.timeoutMinutes} min.`
+        : 'No pude aplicar timeout por jerarquia/permisos.');
+    } else {
+      actions.push('Timeout no aplicado: falta Moderate Members o jerarquia suficiente.');
+    }
+
+    if (member.user.bot) {
+      const decision = topGgDecision ?? await this.shouldBanBotBecauseMissingTopGg(member.user);
+      if (!decision.shouldBan) {
+        actions.push(`Bot no baneado: ${describeTopGgLookup(decision.lookup)}.`);
+        return compactActionSummary(actions);
+      }
+      if (member.bannable && guild.members.me?.permissions.has(PermissionFlagsBits.BanMembers)) {
+        const banned = await member.ban({ reason }).then(() => true).catch(() => false);
+        actions.push(banned ? 'Bot baneado preventivamente.' : 'No pude banear el bot.');
+      } else if (member.kickable && guild.members.me?.permissions.has(PermissionFlagsBits.KickMembers)) {
+        const kicked = await member.kick(reason).then(() => true).catch(() => false);
+        actions.push(kicked ? 'Bot expulsado preventivamente.' : 'No pude expulsar el bot.');
+      } else {
+        actions.push('No pude banear/expulsar el bot por permisos o jerarquia.');
+      }
+    }
+
+    return compactActionSummary(actions);
+  }
+
+  async stripDangerousMemberRoles(member, reason) {
+    if (member.id === member.guild.ownerId) return 'No retiro roles al owner del servidor.';
+    if (!member.guild.members.me?.permissions.has(PermissionFlagsBits.ManageRoles)) {
+      return 'No pude retirar roles peligrosos: falta Manage Roles.';
+    }
+
+    const dangerousRoles = member.roles.cache.filter((role) => (
+      role.id !== member.guild.id
+      && !role.managed
+      && role.editable
+      && hasDangerousPermissions(role.permissions)
+    ));
+    if (!dangerousRoles.size) return 'No encontre roles peligrosos manejables para retirar.';
+
+    const removed = await member.roles.remove([...dangerousRoles.keys()], reason).then(() => true).catch(() => false);
+    if (!removed) return 'No pude retirar roles peligrosos por jerarquia/permisos.';
+    return `Roles peligrosos retirados: ${[...dangerousRoles.values()].map((role) => role.name).slice(0, 6).join(', ')}.`;
   }
 
   async deleteRecentCreatedChannels({ guild, bucket, reason }) {
@@ -1158,6 +1379,109 @@ function permissionOverwriteSignature(channel) {
     .map((overwrite) => `${overwrite.id}:${overwrite.type}:${String(overwrite.allow?.bitfield ?? '')}:${String(overwrite.deny?.bitfield ?? '')}`)
     .sort()
     .join('|');
+}
+
+function classifySensitiveAuditRisk({ auditType, entry, baseSeverity, security, label = '' }) {
+  const changes = getAuditChangeKeys(entry);
+  const labelText = String(label ?? '').toLowerCase();
+  const highMode = security?.level === 'high';
+
+  if (auditType === AuditLogEvent.GuildUpdate) {
+    return {
+      severity: 'critical',
+      limit: 1,
+      reason: 'Cambio directo de configuracion del servidor.'
+    };
+  }
+
+  if (
+    auditType === AuditLogEvent.WebhookCreate
+    || auditType === AuditLogEvent.WebhookUpdate
+    || auditType === AuditLogEvent.WebhookDelete
+  ) {
+    return {
+      severity: 'critical',
+      limit: highMode ? 1 : 2,
+      reason: 'Cambio de webhook. Puede ser usado por bots personales o apps externas sin estar instaladas como bot.'
+    };
+  }
+
+  if (
+    auditType === AuditLogEvent.ChannelUpdate
+    && (changes.some((key) => key.includes('permission')) || labelText.includes('permiso'))
+  ) {
+    return {
+      severity: 'critical',
+      limit: 1,
+      reason: 'Cambio de permisos de canal detectado.'
+    };
+  }
+
+  if (auditType === AuditLogEvent.RoleUpdate && changes.includes('permissions')) {
+    return {
+      severity: 'critical',
+      limit: 1,
+      reason: 'Cambio de permisos de rol detectado.'
+    };
+  }
+
+  if (auditType === AuditLogEvent.ChannelDelete || auditType === AuditLogEvent.RoleDelete) {
+    return {
+      severity: 'critical',
+      limit: highMode ? 1 : Math.max(2, Number(security?.nukeLimit ?? 3) - 1),
+      reason: 'Eliminacion sensible detectada.'
+    };
+  }
+
+  return {
+    severity: baseSeverity,
+    limit: null,
+    reason: null
+  };
+}
+
+function getAuditChangeKeys(entry) {
+  const changes = Array.isArray(entry?.changes)
+    ? entry.changes
+    : [...(entry?.changes?.values?.() ?? [])];
+  return changes
+    .map((change) => String(change?.key ?? '').toLowerCase())
+    .filter(Boolean);
+}
+
+function hasDangerousPermissions(permissions) {
+  return DANGEROUS_ROLE_PERMISSIONS.some(([, flag]) => permissions?.has?.(flag));
+}
+
+function describeDangerousPermissionGains(oldPermissions, newPermissions) {
+  return DANGEROUS_ROLE_PERMISSIONS
+    .filter(([, flag]) => newPermissions?.has?.(flag) && !oldPermissions?.has?.(flag))
+    .map(([label]) => label);
+}
+
+function removeDangerousPermissionGains(oldPermissions, newPermissions) {
+  const gainedFlags = DANGEROUS_ROLE_PERMISSIONS
+    .filter(([, flag]) => newPermissions?.has?.(flag) && !oldPermissions?.has?.(flag))
+    .map(([, flag]) => flag);
+  return gainedFlags.length ? newPermissions.remove(...gainedFlags) : newPermissions;
+}
+
+function buildWebhookThreatReason({ massMention, repeated, flooding, linkAnalysis, offensiveAnalysis, spamAnalysis }) {
+  const reasons = [];
+  if (massMention) reasons.push('mentions masivas');
+  if (repeated) reasons.push('mensajes repetidos');
+  if (flooding) reasons.push('flood por webhook');
+  if (shouldBlockLinkThreat(linkAnalysis)) reasons.push(`link ${linkAnalysis.verdict} (${linkAnalysis.confidence}%)`);
+  if (offensiveAnalysis?.malicious) reasons.push(offensiveAnalysis.reason || 'contenido ofensivo/malicioso');
+  if (shouldBlockSpamThreat(spamAnalysis)) reasons.push(spamAnalysis.reason || 'spam detectado por IA');
+  return reasons.join(' | ').slice(0, 900) || 'Patron sospechoso por webhook.';
+}
+
+function compactActionSummary(actions = []) {
+  return actions
+    .filter(Boolean)
+    .filter((item, index, source) => source.indexOf(item) === index)
+    .join(' ');
 }
 
 function parseIdList(value = '') {

@@ -2228,7 +2228,7 @@ async function buildDashboardAssistantReply({ config, message, guild, stats, act
         'En Premium se gestionan Voz Pro, Modo examen supervisado, IA prioritaria, transcripciones inteligentes, Security Plus, branding propio, informes semanales, Growth Engine, SLA Radar, Auto-config Pro, Alianzas Pro, Team Assist, analitica premium, Affiliate Boost y conversion insights por servidor.',
         'El sistema de afiliados usa /afiliado codigo para generar codigo y /afiliado server codigo:<CODIGO> para registrar quien recomendo NexaDesk en un servidor; cada 7 servidores desbloquean un slot Premium temporal.',
         'El modo mantenimiento se controla por slash command owner-only /mantenimiento o desde el panel oculto /admin; /admin se abre con codigo temporal emitido por /code a roles autorizados.',
-        'Security Guard incluye anti-flood, anti-links IA, XN Protect Automod, anti-bots Top.gg, anti-alts y anti-nuke con proteccion ante canales/config masivos.',
+        'Security Guard incluye anti-flood, anti-links IA, XN Protect Automod, anti-bots Top.gg, anti-alts y anti-nuke contra canales/config/webhooks, incluyendo bots personales o apps externas usados por usuarios.',
         'En Tickets se ven tickets y transcripciones guardadas.',
         'Si el usuario pide que tu metas algo, explica que puedes rellenar campos con botones de accion, pero el usuario debe revisar y guardar/publicar.',
         'No pidas IDs si la dashboard ya ofrece selectores de roles, canales y categorias.',
@@ -3540,7 +3540,7 @@ function buildDocsSections(config) {
       summary: 'Capas anti-raid, anti-scam, blacklist y crisis.',
       blocks: [
         { type: 'list', items: [
-          'Security Guard detecta flood, links sospechosos, contenido ofensivo/malicioso, alts, bots no listados en Top.gg, creaciones masivas de canales, cambios de permisos/config y patrones anti-nuke.',
+          'Security Guard detecta flood, links sospechosos, contenido ofensivo/malicioso, alts, bots no listados en Top.gg, webhooks/apps externas, creaciones masivas de canales, cambios de permisos/config y patrones anti-nuke.',
           'Los links se analizan con IA cuando aparecen en mensajes; puede recomendar review, borrado o aislamiento.',
           'XN Protect Automod se consulta con contenido textual y, si response.malicioso=true, se borra el mensaje, se intenta aislar al autor y se loguea motivo/palabras.',
           'Anti-bots consulta Top.gg con TOPGG_API_TOKEN. Solo banea bots cuando la API confirma que no estan listados; con timeout/error/token ausente solo deja aviso.',
@@ -5324,7 +5324,7 @@ function renderDashboard({ session, guilds, tickets, stats, dashboardState = {},
           <button class="secondary-button" type="button" onclick="return rescanDiscovery()">Reescanear canales</button>
         </article>
         <article class="control-card wide">
-            <div class="card-head"><span class="step">3</span><div><h2>Security Guard</h2><p>Activa proteccion anti-flood, anti-links IA, XN Protect Automod, anti-alts, anti-bots y anti-nuke de canales/config usando audit logs.</p></div></div>
+            <div class="card-head"><span class="step">3</span><div><h2>Security Guard</h2><p>Activa proteccion anti-flood, anti-links IA, XN Protect Automod, anti-alts, anti-bots y anti-nuke de canales/config/webhooks usando audit logs.</p></div></div>
           <form onsubmit="return saveSecurity(event)">
             <label>Estado<select id="securityEnabled">
               <option value="false">Desactivado</option>
@@ -5366,7 +5366,7 @@ function renderDashboard({ session, guilds, tickets, stats, dashboardState = {},
               <div><strong id="securityBotPolicyLabel">Top.gg seguro</strong><span>Anti-bots visual: permite bots listados/confiables y avisa cuando falta verificacion.</span></div>
               <div><strong id="securityRiskLabel">Riesgo controlado</strong><span>Resumen comercial del nivel actual para explicar que protege NexaDesk.</span></div>
             </div>
-            <p class="notice span-2">Anti-bots solo banea bots que Top.gg confirme como no listados. Anti-nuke tambien detecta rafagas de canales, permisos y cambios del servidor; puede limpiar canales nuevos y aplicar lockdown rapido solo sobre canales afectados. Para cobertura completa, actualiza permisos con View Audit Log, Manage Channels, Manage Messages, Moderate Members, Kick Members y Ban Members.</p>
+            <p class="notice span-2">Anti-bots solo banea bots que Top.gg confirme como no listados. Anti-nuke tambien detecta rafagas de canales, permisos, webhooks, apps externas y cambios del servidor; puede limpiar canales nuevos, borrar webhooks sospechosos, retirar roles peligrosos manejables y aplicar lockdown rapido solo sobre canales afectados. Para cobertura completa, actualiza permisos con View Audit Log, Manage Channels, Manage Webhooks, Manage Roles, Manage Messages, Moderate Members, Kick Members y Ban Members.</p>
             <button class="span-2" type="submit">Guardar Security Guard</button>
           </form>
         </article>
