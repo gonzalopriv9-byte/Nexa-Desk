@@ -70,6 +70,32 @@ services:
         sync: false
       - key: GROQ_MODEL
         value: llama-3.1-8b-instant
+      - key: FISH_AUDIO_API_KEY
+        sync: false
+      - key: FISH_AUDIO_TTS_MODEL
+        value: s2.1-pro-free
+      - key: FISH_AUDIO_TTS_REFERENCE_ID
+        value: 38ae051b0e95429e8f05ace75729a253
+      - key: FISH_AUDIO_TTS_FORMAT
+        value: opus
+      - key: FISH_AUDIO_TTS_LATENCY
+        value: low
+      - key: FISH_AUDIO_TTS_OPUS_BITRATE
+        value: 32000
+      - key: FISH_AUDIO_TTS_SPEED
+        value: 1.04
+      - key: FISH_AUDIO_TTS_VOLUME
+        value: 0
+      - key: FISH_AUDIO_TTS_CHUNK_LENGTH
+        value: 220
+      - key: FISH_AUDIO_TTS_MAX_CHARS
+        value: 450
+      - key: FISH_AUDIO_TIMEOUT_MS
+        value: 8000
+      - key: VOICE_TTS_PROVIDER
+        value: fish
+      - key: VOICE_TTS_MAX_CHARS
+        value: 450
       - key: AI_PROVIDER
         value: groq
       - key: OLLAMA_BASE_URL
