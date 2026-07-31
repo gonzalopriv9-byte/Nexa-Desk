@@ -98,6 +98,16 @@ services:
         value: 450
       - key: AI_PROVIDER
         value: groq
+      - key: AI_ACTIONS_ENABLED
+        value: true
+      - key: AI_ACTIONS_AUTONOMOUS_BANS
+        value: true
+      - key: AI_ACTIONS_BAN_CONFIDENCE
+        value: 96
+      - key: AI_ACTIONS_CHANNEL_CONFIDENCE
+        value: 90
+      - key: AI_ACTIONS_LOCK_CONFIDENCE
+        value: 92
       - key: OLLAMA_BASE_URL
         sync: false
       - key: OLLAMA_MODEL

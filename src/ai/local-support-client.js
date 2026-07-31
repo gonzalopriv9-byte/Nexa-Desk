@@ -124,6 +124,31 @@ function buildJsonFallback({ system, lastUser }) {
     });
   }
 
+  if (compact.includes('"action":"create_voice_room|ban_user|create_text_channel|delete_channel|lock_channel|escalate_staff|none"')) {
+    const actionText = normalizeText(lastUser);
+    const voice = /\b(voz|voice|chat de voz|sala de voz|hablar por voz)\b/iu.test(actionText);
+    const staff = /\b(staff|humano|moderador|admin|owner|responsable)\b/iu.test(actionText);
+    const ban = /\b(ban|banear|banea|expulsar|sancionar)\b/iu.test(actionText);
+    return JSON.stringify({
+      action: voice ? 'create_voice_room' : staff || ban ? 'escalate_staff' : 'none',
+      confidence: voice ? 82 : staff || ban ? 76 : 0,
+      evidenceLevel: 'none',
+      targetUserId: null,
+      targetChannelId: null,
+      channelName: null,
+      reason: voice
+        ? 'Fallback local detecto peticion de voz.'
+        : ban
+          ? 'Fallback local no ejecuta bans sin analisis IA y pruebas verificables.'
+          : staff
+            ? 'Fallback local detecto necesidad de staff.'
+            : 'Sin accion segura detectada.',
+      publicResponse: '',
+      proofSummary: [],
+      requiresStaffReview: !voice
+    });
+  }
+
   if (compact.includes('"score":0-10')) {
     return JSON.stringify({
       score: 5,

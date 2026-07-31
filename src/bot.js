@@ -620,6 +620,28 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
         return;
       }
 
+      if (isVoiceConversationRequest(message.content)) {
+        const handled = await handleNaturalVoiceRequest({
+          storage,
+          message,
+          ticket,
+          guildConfig,
+          voiceManager
+        });
+        if (handled) return;
+      }
+
+      const autonomousAction = await handleAutonomousTicketAction({
+        storage,
+        supportAgent,
+        message,
+        ticket,
+        guildConfig,
+        voiceManager,
+        config
+      });
+      if (autonomousAction.handled) return;
+
       if (isRaidReportMessage(message.content)) {
         const escalation = buildRaidReportEscalation(message);
         const shouldMentionStaff = await registerTicketEscalation({
@@ -1811,6 +1833,627 @@ async function getVoiceCommandContext({ interaction, storage, allowFreeStatus = 
   }
 
   return { ticket, guildConfig };
+}
+
+async function handleNaturalVoiceRequest({ storage, message, ticket, guildConfig, voiceManager = null }) {
+  if (!message.guild || !ticket || !guildConfig) return false;
+
+  const existingChannel = ticket.voiceChannelId
+    ? await message.guild.channels.fetch(ticket.voiceChannelId).catch(() => null)
+    : null;
+  if (existingChannel) {
+    const reply = await sendTicketResponse(message, {
+      content: `${EMOJIS.wifi} Si, ya tienes sala de voz vinculada a este ticket: ${existingChannel}. Entra ahi y seguimos por voz.`,
+      allowedMentions: { repliedUser: false }
+    });
+    await saveTranscript(storage, reply, 'assistant');
+    return true;
+  }
+
+  if (!isVoiceSupportEnabled(guildConfig)) {
+    const reply = await sendTicketResponse(message, {
+      content: [
+        `${EMOJIS.wifi} Puedo atender por voz, pero en este servidor la voz esta reservada para **Premium**.`,
+        `Puedes seguir por aqui o pedir al staff que active Premium desde ${PUBLIC_DASHBOARD_URL}#premium.`
+      ].join('\n'),
+      allowedMentions: { repliedUser: false }
+    });
+    await saveTranscript(storage, reply, 'assistant');
+    return true;
+  }
+
+  if (!canManageVoiceSupportFromMessage(message, ticket, guildConfig)) {
+    const reply = await sendTicketResponse(message, {
+      content: 'La sala de voz solo puede abrirla quien creo el ticket, el staff configurado o alguien con Manage Server.',
+      allowedMentions: { repliedUser: false }
+    });
+    await saveTranscript(storage, reply, 'assistant');
+    return true;
+  }
+
+  if (!message.guild.members.me?.permissions.has(PermissionFlagsBits.ManageChannels)) {
+    const reply = await sendTicketResponse(message, {
+      content: 'Quiero abrirte sala de voz, pero me falta **Manage Channels** para crearla.',
+      allowedMentions: { repliedUser: false }
+    });
+    await saveTranscript(storage, reply, 'assistant');
+    return true;
+  }
+
+  const preparing = await sendTicketResponse(message, {
+    content: `${EMOJIS.wifi} Si, creamos una sala de voz privada para este ticket. Dame un momento.`,
+    allowedMentions: { repliedUser: false }
+  });
+  await saveTranscript(storage, preparing, 'assistant');
+
+  const result = await createVoiceRoomForTicket({
+    interaction: buildMessageInteractionContext(message),
+    storage,
+    voiceManager,
+    ticket,
+    guildConfig,
+    textChannel: message.channel,
+    requestedName: ticket.channelName || message.author.username,
+    requestId: `natural-${message.id}`
+  }).catch((error) => {
+    console.error(`Natural voice room creation failed in ${message.channelId}:`, compactRuntimeError(error));
+    return { ready: false, error };
+  });
+
+  const content = result.ready
+    ? [
+        `${EMOJIS.wifi} Sala de voz creada: ${result.channel}`,
+        result.session?.started
+          ? 'Entra cuando quieras. NexaDesk escuchara, transcribira y respondera por voz.'
+          : `La sala esta creada, pero la IA de voz no pudo arrancar: ${result.session?.reason ?? 'motor no disponible.'}`
+      ].join('\n')
+    : [
+        'No pude crear la sala de voz automaticamente.',
+        'Revisa que tenga **Manage Channels**, **Connect**, **Speak** y que la migracion Pro Voice de Supabase este aplicada.'
+      ].join('\n');
+
+  const reply = await message.channel.send({ content, allowedMentions: { parse: [] } }).catch(() => null);
+  if (reply) await saveTranscript(storage, reply, 'assistant');
+  return true;
+}
+
+async function handleAutonomousTicketAction({ storage, supportAgent, message, ticket, guildConfig, voiceManager = null, config }) {
+  if (!config.AI_ACTIONS_ENABLED) return { handled: false };
+  if (!supportAgent?.planTicketAction) return { handled: false };
+  if (!shouldConsiderAutonomousActionRequest(message)) return { handled: false };
+
+  const evidence = await buildTicketActionEvidence({ storage, message, ticket, guildConfig });
+  const decision = await supportAgent.planTicketAction({
+    message,
+    ticket,
+    guildConfig,
+    evidence
+  }).catch((error) => {
+    console.warn(`Autonomous action planner failed in ${message.channelId}:`, error?.message ?? error);
+    return null;
+  });
+
+  if (!decision || decision.action === 'none') return { handled: false };
+
+  if (decision.action === 'create_voice_room') {
+    return { handled: await handleNaturalVoiceRequest({ storage, message, ticket, guildConfig, voiceManager }) };
+  }
+
+  if (decision.action === 'ban_user') {
+    return handleAutonomousBanAction({ storage, message, ticket, guildConfig, decision, evidence, config });
+  }
+
+  if (decision.action === 'create_text_channel') {
+    return handleAutonomousCreateChannelAction({ storage, message, ticket, guildConfig, decision, evidence, config });
+  }
+
+  if (decision.action === 'delete_channel') {
+    return handleAutonomousDeleteChannelAction({ storage, message, ticket, guildConfig, decision, evidence, config });
+  }
+
+  if (decision.action === 'lock_channel') {
+    return handleAutonomousLockChannelAction({ storage, message, ticket, guildConfig, decision, evidence, config });
+  }
+
+  if (decision.action === 'escalate_staff') {
+    const reason = decision.reason || 'La accion solicitada requiere revision humana.';
+    const shouldMentionStaff = await registerTicketEscalation({ storage, message, guildConfig, ticket, reason });
+    const reply = await sendTicketResponse(message, {
+      content: buildPublicReply({
+        shouldEscalate: true,
+        reason,
+        publicAnswer: decision.publicResponse || 'Puedo preparar el caso, pero esta accion necesita que el staff la revise antes de ejecutarla.'
+      }, guildConfig, { mentionStaff: shouldMentionStaff }).slice(0, 1900),
+      allowedMentions: { roles: shouldMentionStaff && guildConfig.staffRoleId ? [guildConfig.staffRoleId] : [] }
+    });
+    await saveTranscript(storage, reply, 'assistant');
+    await logAutonomousAction(storage, message, {
+      decision,
+      executed: false,
+      reason,
+      severity: 'warning',
+      title: 'Accion IA enviada a staff'
+    });
+    return { handled: true };
+  }
+
+  return { handled: false };
+}
+
+async function handleAutonomousBanAction({ storage, message, ticket, guildConfig, decision, evidence, config }) {
+  const blockReason = await validateAutonomousBan({ message, guildConfig, decision, evidence, config });
+  if (blockReason) {
+    const shouldMentionStaff = await registerTicketEscalation({ storage, message, guildConfig, ticket, reason: blockReason });
+    const reply = await sendTicketResponse(message, {
+      content: buildPublicReply({
+        shouldEscalate: true,
+        reason: blockReason,
+        publicAnswer: [
+          'No voy a banear automaticamente con la informacion actual.',
+          `${blockReason}`,
+          'He avisado al staff para que revise el caso con seguridad.'
+        ].join('\n')
+      }, guildConfig, { mentionStaff: shouldMentionStaff }).slice(0, 1900),
+      allowedMentions: { roles: shouldMentionStaff && guildConfig.staffRoleId ? [guildConfig.staffRoleId] : [] }
+    });
+    await saveTranscript(storage, reply, 'assistant');
+    await logAutonomousAction(storage, message, {
+      decision,
+      executed: false,
+      reason: blockReason,
+      severity: 'warning',
+      title: 'Ban autonomo bloqueado por seguridad'
+    });
+    return { handled: true };
+  }
+
+  const targetMember = await message.guild.members.fetch(decision.targetUserId).catch(() => null);
+  const targetLabel = targetMember?.user?.tag ?? decision.targetUserId;
+  const reason = `NexaDesk IA: ${decision.reason || 'evidencia fuerte revisada en ticket'}`.slice(0, 480);
+
+  await targetMember?.send([
+    `Has sido baneado de **${message.guild.name}** por NexaDesk.`,
+    `Motivo: ${decision.reason || 'Evidencia fuerte revisada en un ticket.'}`,
+    'Si crees que es un error, contacta con el staff del servidor o usa el servidor de soporte de NexaDesk.'
+  ].join('\n')).catch(() => null);
+
+  const banned = await message.guild.members.ban(decision.targetUserId, {
+    reason,
+    deleteMessageSeconds: 0
+  }).then(() => true).catch((error) => {
+    console.error(`Autonomous ban failed in ${message.guildId} for ${decision.targetUserId}:`, compactRuntimeError(error));
+    return false;
+  });
+
+  if (!banned) {
+    const reply = await sendTicketResponse(message, {
+      content: [
+        'Tenia criterio suficiente para actuar, pero Discord no me dejo aplicar el ban.',
+        'Probablemente falta **Ban Members** o mi rol esta por debajo del usuario objetivo. Aviso al staff para que lo revise.'
+      ].join('\n'),
+      allowedMentions: { parse: [] }
+    });
+    await saveTranscript(storage, reply, 'assistant');
+    await logAutonomousAction(storage, message, {
+      decision,
+      executed: false,
+      reason: `Discord rechazo el ban de ${targetLabel}.`,
+      severity: 'critical',
+      title: 'Ban autonomo fallido por permisos'
+    });
+    return { handled: true };
+  }
+
+  const reply = await sendTicketResponse(message, {
+    content: [
+      `${EMOJIS.ban} Accion ejecutada: **ban aplicado** a ${targetMember ? `${targetMember}` : `<@${decision.targetUserId}>`}.`,
+      `Motivo: ${decision.reason}`,
+      decision.proofSummary?.length ? `Pruebas: ${decision.proofSummary.slice(0, 3).join(' | ')}` : ''
+    ].filter(Boolean).join('\n').slice(0, 1900),
+    allowedMentions: { users: [decision.targetUserId], roles: [] }
+  });
+  await saveTranscript(storage, reply, 'assistant');
+  await storage.updateTicket(ticket.channelId, { status: 'staff_waiting' }).catch(() => null);
+  await logAutonomousAction(storage, message, {
+    decision,
+    executed: true,
+    reason: `Ban aplicado a ${targetLabel}.`,
+    severity: 'critical',
+    title: 'Ban autonomo ejecutado'
+  });
+  return { handled: true };
+}
+
+async function handleAutonomousCreateChannelAction({ storage, message, guildConfig, decision, evidence, config }) {
+  if (!canMessageManageChannels(message, guildConfig)) {
+    return respondActionNeedsStaff({ storage, message, guildConfig, decision, reason: 'Crear canales por IA requiere staff o Manage Channels.' });
+  }
+  if (decision.confidence < config.AI_ACTIONS_CHANNEL_CONFIDENCE) {
+    return respondActionNeedsStaff({ storage, message, guildConfig, decision, reason: 'La IA no tiene suficiente confianza para crear un canal sin revision.' });
+  }
+  if (!message.guild.members.me?.permissions.has(PermissionFlagsBits.ManageChannels)) {
+    return respondActionNeedsStaff({ storage, message, guildConfig, decision, reason: 'Me falta Manage Channels para crear canales.' });
+  }
+
+  const name = sanitizeAutonomousChannelName(decision.channelName || inferChannelNameFromText(message.content));
+  if (!name) {
+    return respondActionNeedsStaff({ storage, message, guildConfig, decision, reason: 'No hay un nombre de canal claro.' });
+  }
+
+  const channelOptions = {
+    name,
+    type: ChannelType.GuildText,
+    reason: `NexaDesk AI action requested by ${message.author.tag}`
+  };
+  const parentId = await resolveAutonomousChannelParentId(message, guildConfig);
+  if (parentId) channelOptions.parent = parentId;
+
+  const channel = await message.guild.channels.create(channelOptions);
+  const reply = await sendTicketResponse(message, {
+    content: `${EMOJIS.check} Canal creado: ${channel}.`,
+    allowedMentions: { parse: [] }
+  });
+  await saveTranscript(storage, reply, 'assistant');
+  await logAutonomousAction(storage, message, {
+    decision: { ...decision, targetChannelId: channel.id, channelName: channel.name },
+    executed: true,
+    reason: `Canal #${channel.name} creado.`,
+    severity: 'success',
+    title: 'Canal creado por accion IA'
+  });
+  return { handled: true };
+}
+
+async function handleAutonomousDeleteChannelAction({ storage, message, ticket, guildConfig, decision, config }) {
+  if (!canMessageManageChannels(message, guildConfig)) {
+    return respondActionNeedsStaff({ storage, message, guildConfig, decision, reason: 'Eliminar canales por IA requiere staff o Manage Channels.' });
+  }
+  if (decision.confidence < config.AI_ACTIONS_CHANNEL_CONFIDENCE) {
+    return respondActionNeedsStaff({ storage, message, guildConfig, decision, reason: 'La IA no tiene suficiente confianza para eliminar un canal sin revision.' });
+  }
+  if (!message.guild.members.me?.permissions.has(PermissionFlagsBits.ManageChannels)) {
+    return respondActionNeedsStaff({ storage, message, guildConfig, decision, reason: 'Me falta Manage Channels para eliminar canales.' });
+  }
+
+  const targetChannelId = decision.targetChannelId || extractMentionedChannelIds(message)[0] || (mentionsCurrentChannelDeletion(message.content) ? message.channelId : null);
+  if (!targetChannelId) {
+    return respondActionNeedsStaff({ storage, message, guildConfig, decision, reason: 'No hay canal objetivo claro para eliminar.' });
+  }
+  if (targetChannelId === message.channelId) {
+    const reply = await sendTicketResponse(message, {
+      content: 'Este es el canal del ticket. Lo cerrare correctamente con transcripcion en vez de borrarlo en seco.',
+      allowedMentions: { parse: [] }
+    });
+    await saveTranscript(storage, reply, 'assistant');
+    await closeTicketWithTranscript({
+      client: message.client,
+      storage,
+      channel: message.channel,
+      guild: message.guild,
+      ticket,
+      requestedBy: message.author,
+      requestId: `ai-delete-${message.id}`,
+      closingReply: reply,
+      fallbackUser: message.author,
+      reason: `NexaDesk AI ticket close requested by ${message.author.tag}`
+    });
+    return { handled: true };
+  }
+  if ([guildConfig.ticketCategoryId, guildConfig.voiceCategoryId, guildConfig.allianceChannelId].includes(targetChannelId)) {
+    return respondActionNeedsStaff({ storage, message, guildConfig, decision, reason: 'No eliminare canales/categorias criticas configuradas para NexaDesk sin revision manual.' });
+  }
+
+  const channel = await message.guild.channels.fetch(targetChannelId).catch(() => null);
+  if (!channel || !channel.deletable) {
+    return respondActionNeedsStaff({ storage, message, guildConfig, decision, reason: 'No pude encontrar o eliminar ese canal por permisos/jerarquia.' });
+  }
+
+  await channel.delete(`NexaDesk AI action requested by ${message.author.tag}`);
+  const reply = await sendTicketResponse(message, {
+    content: `${EMOJIS.check} Canal eliminado: #${channel.name ?? targetChannelId}.`,
+    allowedMentions: { parse: [] }
+  });
+  await saveTranscript(storage, reply, 'assistant');
+  await logAutonomousAction(storage, message, {
+    decision: { ...decision, targetChannelId, channelName: channel.name },
+    executed: true,
+    reason: `Canal #${channel.name ?? targetChannelId} eliminado.`,
+    severity: 'critical',
+    title: 'Canal eliminado por accion IA'
+  });
+  return { handled: true };
+}
+
+async function handleAutonomousLockChannelAction({ storage, message, ticket, guildConfig, decision, evidence, config }) {
+  const activeRaid = evidence?.signals?.includes('active_raid_or_mass_spam');
+  const staffAllowed = canMessageManageChannels(message, guildConfig);
+  if (!staffAllowed && !(activeRaid && decision.confidence >= config.AI_ACTIONS_LOCK_CONFIDENCE)) {
+    return respondActionNeedsStaff({ storage, message, guildConfig, decision, reason: 'Bloquear canales automaticamente requiere staff o evidencia de raid activo.' });
+  }
+  if (!message.guild.members.me?.permissions.has(PermissionFlagsBits.ManageChannels)) {
+    return respondActionNeedsStaff({ storage, message, guildConfig, decision, reason: 'Me falta Manage Channels para bloquear canales.' });
+  }
+
+  const targetChannelId = decision.targetChannelId || extractMentionedChannelIds(message)[0] || message.channelId;
+  const channel = await message.guild.channels.fetch(targetChannelId).catch(() => null);
+  if (!channel?.permissionOverwrites?.edit) {
+    return respondActionNeedsStaff({ storage, message, guildConfig, decision, reason: 'No pude bloquear ese canal.' });
+  }
+
+  await channel.permissionOverwrites.edit(message.guild.roles.everyone, {
+    SendMessages: false
+  }, { reason: `NexaDesk AI lockdown requested by ${message.author.tag}` });
+
+  const reply = await sendTicketResponse(message, {
+    content: `${EMOJIS.ban} Canal bloqueado temporalmente: ${channel}. El staff puede revisarlo y reabrirlo cuando termine el incidente.`,
+    allowedMentions: { parse: [] }
+  });
+  await saveTranscript(storage, reply, 'assistant');
+  await logAutonomousAction(storage, message, {
+    decision: { ...decision, targetChannelId, channelName: channel.name },
+    executed: true,
+    reason: `Canal #${channel.name ?? targetChannelId} bloqueado.`,
+    severity: 'critical',
+    title: 'Canal bloqueado por accion IA'
+  });
+  return { handled: true };
+}
+
+async function buildTicketActionEvidence({ storage, message, ticket, guildConfig }) {
+  const [transcriptMessages, recentMessages] = await Promise.all([
+    storage.listTranscriptMessages(message.channelId).catch(() => []),
+    message.channel.messages.fetch({ limit: 12 }).catch(() => new Map())
+  ]);
+
+  const recent = [...recentMessages.values()]
+    .sort((a, b) => a.createdTimestamp - b.createdTimestamp)
+    .slice(-10);
+  const requesterIsStaff = isConfiguredStaffMember(message.member, message.author, guildConfig);
+  const mentionedUsers = [...message.mentions.users.values()]
+    .filter((user) => user.id !== message.client.user?.id)
+    .map((user) => ({ id: user.id, tag: user.tag, bot: user.bot }));
+  const mentionedChannels = [...message.mentions.channels.values()]
+    .map((channel) => ({ id: channel.id, name: channel.name, type: channel.type }));
+  const recentAttachmentCount = recent.reduce((count, item) => count + (item.attachments?.size ?? 0), 0);
+  const transcriptAttachmentCount = transcriptMessages
+    .slice(-30)
+    .filter((item) => /\[adjunto:|\[attachment:|pruebas visuales|analisis visual|captura|imagen|video/i.test(String(item.content ?? '')))
+    .length;
+  const allText = [
+    message.content,
+    ...recent.map((item) => item.content ?? ''),
+    ...transcriptMessages.slice(-20).map((item) => item.content ?? '')
+  ].join('\n');
+  const normalized = normalizeText(allText);
+  const signals = [];
+  if (recentAttachmentCount || transcriptAttachmentCount) signals.push('visual_or_file_evidence');
+  if (/\b(?:raid|raidead|nuke|flood|spam masivo|mass spam|webhook spam|canales borrados|roles borrados)\b/.test(normalized)) {
+    signals.push('active_raid_or_mass_spam');
+  }
+  if (/\b(?:scam|estafa|phishing|token|malware|nitro gratis|robo|dox|doxing|amenaza|acoso|chantaje|extorsion)\b/.test(normalized)) {
+    signals.push('serious_report_keyword');
+  }
+  if (mentionedUsers.length) signals.push('explicit_target_user_mentioned');
+  if (mentionedChannels.length) signals.push('explicit_target_channel_mentioned');
+
+  return {
+    currentChannel: {
+      id: message.channelId,
+      name: message.channel?.name,
+      type: message.channel?.type,
+      ticketStatus: ticket?.status ?? 'open'
+    },
+    requester: {
+      id: message.author.id,
+      tag: message.author.tag,
+      isStaff: requesterIsStaff,
+      manageGuild: Boolean(message.member?.permissions?.has(PermissionFlagsBits.ManageGuild)),
+      manageChannels: Boolean(message.member?.permissions?.has(PermissionFlagsBits.ManageChannels)),
+      banMembers: Boolean(message.member?.permissions?.has(PermissionFlagsBits.BanMembers))
+    },
+    botPermissions: {
+      manageChannels: Boolean(message.guild.members.me?.permissions.has(PermissionFlagsBits.ManageChannels)),
+      manageRoles: Boolean(message.guild.members.me?.permissions.has(PermissionFlagsBits.ManageRoles)),
+      banMembers: Boolean(message.guild.members.me?.permissions.has(PermissionFlagsBits.BanMembers)),
+      moderateMembers: Boolean(message.guild.members.me?.permissions.has(PermissionFlagsBits.ModerateMembers))
+    },
+    ticket: {
+      openedBy: ticket?.openedBy ?? null,
+      categoryId: ticket?.categoryId ?? null,
+      voiceChannelId: ticket?.voiceChannelId ?? null
+    },
+    mentionedUsers,
+    mentionedChannels,
+    rawIdsInMessage: extractRawIds(message.content),
+    proof: {
+      currentMessageAttachments: message.attachments?.size ?? 0,
+      recentAttachmentCount,
+      transcriptAttachmentCount,
+      hasEvidence: Boolean(recentAttachmentCount || transcriptAttachmentCount),
+      signals
+    },
+    recentTranscript: transcriptMessages
+      .slice(-12)
+      .map((item) => `${item.authorName || item.role}: ${String(item.content ?? '').replace(/\s+/g, ' ').slice(0, 220)}`),
+    recentDiscord: recent
+      .map((item) => `${item.author?.tag ?? item.author?.id}: ${String(item.content ?? '').replace(/\s+/g, ' ').slice(0, 220)}${item.attachments?.size ? ` [${item.attachments.size} adjunto(s)]` : ''}`)
+  };
+}
+
+function shouldConsiderAutonomousActionRequest(message) {
+  const text = normalizeText(message.content);
+  if (!text.trim()) return false;
+  return [
+    /\b(?:voz|voice|chat\s+de\s+voz|sala\s+de\s+voz|hablar\s+por\s+voz)\b/,
+    /\b(?:ban|banear|banea|banealo|banearlo|sanciona|sancionar|expulsa|kick)\b/,
+    /\b(?:crea|crear|haz|abre|abrir)\b.*\b(?:canal|channel)\b/,
+    /\b(?:borra|borrar|elimina|eliminar|delete)\b.*\b(?:canal|channel)\b/,
+    /\b(?:bloquea|bloquear|lockdown|cierra)\b.*\b(?:canal|chat)\b/,
+    /\b(?:raid|raidead|nuke|flood|spam\s+masivo|estafa|phishing|malware|token|acoso|amenaza)\b/
+  ].some((pattern) => pattern.test(text));
+}
+
+function isVoiceConversationRequest(content = '') {
+  const text = normalizeText(content);
+  return [
+    /\b(?:podemos|puedo|podrias|puedes|quiero|mejor|prefiero|vamos)\b.*\b(?:hablar|atender|seguir|continuar)\b.*\b(?:voz|voice|vc)\b/,
+    /\b(?:chat\s+de\s+voz|sala\s+de\s+voz|canal\s+de\s+voz|soporte\s+por\s+voz|ticket\s+por\s+voz)\b/,
+    /\b(?:crea|abre|monta|haz)\b.*\b(?:voz|voice|vc)\b/
+  ].some((pattern) => pattern.test(text));
+}
+
+function buildMessageInteractionContext(message) {
+  return {
+    guild: message.guild,
+    guildId: message.guildId,
+    channel: message.channel,
+    channelId: message.channelId,
+    client: message.client,
+    user: message.author,
+    options: {
+      getString: () => null
+    }
+  };
+}
+
+function canManageVoiceSupportFromMessage(message, ticket, guildConfig) {
+  if (message.member?.permissions?.has(PermissionFlagsBits.ManageGuild)) return true;
+  if (guildConfig?.staffRoleId && memberHasRole(message.member, guildConfig.staffRoleId)) return true;
+  if (ticket.openedBy) return ticket.openedBy === message.author.id;
+  return true;
+}
+
+function canMessageManageChannels(message, guildConfig) {
+  if (message.member?.permissions?.has(PermissionFlagsBits.ManageGuild)) return true;
+  if (message.member?.permissions?.has(PermissionFlagsBits.ManageChannels)) return true;
+  if (guildConfig?.staffRoleId && memberHasRole(message.member, guildConfig.staffRoleId)) return true;
+  return false;
+}
+
+async function validateAutonomousBan({ message, guildConfig, decision, evidence, config }) {
+  if (!config.AI_ACTIONS_AUTONOMOUS_BANS) return 'Los bans autonomos estan desactivados por configuracion.';
+  if (decision.confidence < config.AI_ACTIONS_BAN_CONFIDENCE) return `Confianza insuficiente (${decision.confidence}/${config.AI_ACTIONS_BAN_CONFIDENCE}).`;
+  if (!['strong', 'critical'].includes(decision.evidenceLevel)) return 'No hay evidencia fuerte o critica para banear sin revision.';
+  if (!decision.targetUserId) return 'No hay usuario objetivo claro.';
+  if (!isExplicitUserTarget(message, decision.targetUserId)) return 'El usuario objetivo no aparece mencionado o indicado claramente en el mensaje.';
+  if (!hasConcreteModerationEvidence(evidence, decision)) return 'No hay prueba visual, adjunto o senal suficiente guardada para ejecutar ban automatico.';
+  if (!message.guild.members.me?.permissions.has(PermissionFlagsBits.BanMembers)) return 'Me falta Ban Members para aplicar el ban.';
+  if (decision.targetUserId === message.author.id) return 'No aplico bans automaticos contra quien abre la solicitud.';
+  if (decision.targetUserId === message.client.user?.id) return 'No puedo sancionarme a mi mismo.';
+  if (decision.targetUserId === message.guild.ownerId) return 'No aplico acciones automaticas contra el owner del servidor.';
+
+  const targetMember = await message.guild.members.fetch(decision.targetUserId).catch(() => null);
+  if (!targetMember) return 'No pude obtener el miembro objetivo en este servidor.';
+  if (targetMember.user?.bot) return 'Los bots sospechosos los gestiona Security Guard; este ticket queda para revision del staff.';
+  if (targetMember.permissions?.has(PermissionFlagsBits.ManageGuild) || targetMember.permissions?.has(PermissionFlagsBits.Administrator)) {
+    return 'No aplico bans automaticos contra admins o usuarios con Manage Server.';
+  }
+  if (guildConfig?.staffRoleId && memberHasRole(targetMember, guildConfig.staffRoleId)) {
+    return 'No aplico bans automaticos contra miembros del staff configurado.';
+  }
+  if (!targetMember.bannable) return 'No puedo banear a ese usuario por jerarquia o permisos.';
+
+  return '';
+}
+
+function isExplicitUserTarget(message, targetUserId) {
+  if (message.mentions.users.has(targetUserId)) return true;
+  const rawIds = extractRawIds(message.content);
+  return rawIds.includes(targetUserId);
+}
+
+function hasConcreteModerationEvidence(evidence, decision) {
+  if (evidence?.proof?.hasEvidence) return true;
+  if (evidence?.proof?.signals?.includes('active_raid_or_mass_spam') && decision.evidenceLevel === 'critical') return true;
+  return Array.isArray(decision.proofSummary) && decision.proofSummary.length >= 2 && decision.evidenceLevel === 'critical';
+}
+
+async function respondActionNeedsStaff({ storage, message, guildConfig, decision, reason }) {
+  const reply = await sendTicketResponse(message, {
+    content: [
+      'No ejecuto esa accion automaticamente con la informacion actual.',
+      reason,
+      'Si procede, que un staff lo confirme y lo puedo dejar preparado.'
+    ].join('\n').slice(0, 1900),
+    allowedMentions: { parse: [] }
+  });
+  await saveTranscript(storage, reply, 'assistant');
+  await logAutonomousAction(storage, message, {
+    decision,
+    executed: false,
+    reason,
+    severity: 'warning',
+    title: 'Accion IA bloqueada por seguridad'
+  });
+  return { handled: true };
+}
+
+async function logAutonomousAction(storage, message, { decision, executed, reason, severity = 'info', title = 'Accion IA' }) {
+  await storage.addGuildLog({
+    guildId: message.guildId,
+    guildName: message.guild?.name,
+    type: 'ticket',
+    severity,
+    title,
+    message: reason,
+    actorId: message.author?.id,
+    actorName: message.author?.tag ?? message.author?.username,
+    targetId: decision?.targetUserId ?? decision?.targetChannelId ?? null,
+    targetName: decision?.channelName ?? null,
+    channelId: message.channelId,
+    channelName: message.channel?.name,
+    metadata: {
+      executed,
+      action: decision?.action,
+      confidence: decision?.confidence,
+      evidenceLevel: decision?.evidenceLevel,
+      proofSummary: decision?.proofSummary ?? [],
+      aiReason: decision?.reason ?? ''
+    }
+  }).catch((error) => {
+    console.warn(`Could not persist autonomous action log in ${message.guildId}:`, error?.message ?? error);
+  });
+}
+
+function extractMentionedChannelIds(message) {
+  return [...message.mentions.channels.keys()];
+}
+
+function extractRawIds(content = '') {
+  return [...String(content).matchAll(/\b\d{16,24}\b/g)].map((match) => match[0]);
+}
+
+function mentionsCurrentChannelDeletion(content = '') {
+  const text = normalizeText(content);
+  return /\b(?:este|actual|ticket)\b.*\b(?:canal|channel|ticket)\b/.test(text)
+    || /\b(?:borra|elimina|delete|cierra)\s+(?:este\s+)?ticket\b/.test(text);
+}
+
+function inferChannelNameFromText(content = '') {
+  const raw = String(content ?? '');
+  return raw.match(/(?:canal|channel)\s+(?:llamado|llamada|nombre|#)?\s*["'`#]?([a-zA-Z0-9_\-\s]{3,40})/i)?.[1]
+    ?? raw.match(/["'`]([a-zA-Z0-9_\-\s]{3,40})["'`]/)?.[1]
+    ?? '';
+}
+
+function sanitizeAutonomousChannelName(value = '') {
+  return String(value)
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 80);
+}
+
+async function resolveAutonomousChannelParentId(message, guildConfig) {
+  const candidates = [guildConfig?.ticketCategoryId, guildConfig?.voiceCategoryId].filter(Boolean);
+  for (const id of candidates) {
+    const channel = await message.guild.channels.fetch(id).catch(() => null);
+    if (channel?.type === ChannelType.GuildCategory) return channel.id;
+  }
+  return null;
 }
 
 async function handleSendTranscriptCommand({ interaction, storage }) {
