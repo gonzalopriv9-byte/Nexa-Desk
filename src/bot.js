@@ -57,6 +57,7 @@ import {
   normalizeExamConfig,
   normalizeExamState
 } from './exam-mode.js';
+import { buildGatewayGuildBackupSnapshot, restoreGuildBackupWithRest } from './backups.js';
 import { buildFeedbackStats, formatRatingStars, normalizeGrowthConfig } from './growth.js';
 import { DEFAULT_PREMIUM_MODULES, PREMIUM_SALES_FEATURES, getPremiumCheckoutConfig } from './premium-billing.js';
 import { isPremiumEntitled, normalizePremiumConfig } from './premium.js';
@@ -142,6 +143,20 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
         console.error('Scheduled smart discovery failed:', error);
       });
     }, 1000 * 60 * 60 * 6);
+    if (config.BACKUPS_ENABLED) {
+      trackManagedTimeout(managedTimers, () => {
+        if (!isClientReadyForDiscordRest(readyClient)) return;
+        captureInstalledGuildBackups({ client: readyClient, storage, source: 'startup' }).catch((error) => {
+          console.error('Initial guild backup capture failed:', error);
+        });
+      }, config.BACKUP_STARTUP_DELAY_MS);
+      trackManagedInterval(managedTimers, () => {
+        if (!isClientReadyForDiscordRest(readyClient)) return;
+        captureInstalledGuildBackups({ client: readyClient, storage, source: 'scheduled' }).catch((error) => {
+          console.error('Scheduled guild backup capture failed:', error);
+        });
+      }, config.BACKUP_INTERVAL_MS);
+    }
     console.log(`NexaDesk online as ${readyClient.user.tag}`);
   });
 
@@ -8003,6 +8018,80 @@ async function scanInstalledGuildsForDiscovery({ client, storage, supportAgent =
     if (result && hasUsefulDiscovery(result.discovery)) detected += 1;
   }
   console.log(`NexaDesk smart discovery scanned ${guilds.length} guilds; useful channels found in ${detected}.`);
+}
+
+async function captureInstalledGuildBackups({ client, storage, source = 'scheduled' }) {
+  if (!isClientReadyForDiscordRest(client)) {
+    console.log('NexaDesk backups skipped because this instance is not the active Discord gateway.');
+    return;
+  }
+  const guilds = [...client.guilds.cache.values()];
+  let captured = 0;
+  let failed = 0;
+  let stoppedReason = '';
+  for (const guild of guilds) {
+    const saved = await captureGuildBackup(client, storage, { guildId: guild.id, source }).catch((error) => {
+      failed += 1;
+      console.warn(`Guild backup failed for ${guild.name} (${guild.id}):`, error?.message ?? error);
+      if (/gateway is not active|leadership|lease/i.test(String(error?.message ?? error))) {
+        stoppedReason = 'Discord gateway dejo de ser lider activo durante el barrido.';
+      }
+      return null;
+    });
+    if (saved) captured += 1;
+    if (saved?.fallback) {
+      stoppedReason = 'Supabase no tiene guild_backups aplicado; detengo el barrido horario tras un snapshot fallback para proteger el lease HA.';
+    }
+    if (stoppedReason) break;
+    await sleep(250);
+  }
+  console.log(`NexaDesk backups indexed ${captured}/${guilds.length} guilds${failed ? `; failed ${failed}` : ''}${stoppedReason ? `; stopped: ${stoppedReason}` : ''}.`);
+}
+
+export async function captureGuildBackup(client, storage, { guildId, source = 'dashboard' }) {
+  if (!isClientReadyForDiscordRest(client)) {
+    throw new Error('Discord gateway is not active on this NexaDesk instance.');
+  }
+  const guild = await client.guilds.fetch(guildId);
+  const snapshot = await buildGatewayGuildBackupSnapshot(guild, { source });
+  const saved = await storage.saveGuildBackupSnapshot(snapshot);
+  await storage.addGuildLog?.({
+    guildId: guild.id,
+    guildName: guild.name,
+    type: 'security',
+    severity: 'success',
+    title: 'Backup capturado',
+    message: `Snapshot guardado con ${saved.summary.roles} roles y ${saved.summary.channels} canales.`,
+    metadata: { backupId: saved.id, source: saved.source, summary: saved.summary }
+  }).catch(() => {});
+  return saved;
+}
+
+export async function restoreGuildBackup(client, storage, { backupId, targetGuildId, requestedBy = null }) {
+  if (!isClientReadyForDiscordRest(client)) {
+    throw new Error('Discord gateway is not active on this NexaDesk instance.');
+  }
+  const backup = await storage.getGuildBackupSnapshot(backupId);
+  if (!backup) throw new Error('No encuentro ese backup en Supabase.');
+  const targetGuild = await client.guilds.fetch(targetGuildId);
+  const result = await restoreGuildBackupWithRest({
+    rest: client.rest,
+    backup,
+    targetGuildId,
+    targetGuild,
+    requestedBy
+  });
+  const saved = await storage.recordGuildBackupRestore?.(result);
+  await storage.addGuildLog?.({
+    guildId: targetGuildId,
+    guildName: result.targetGuildName,
+    type: 'security',
+    severity: result.status === 'completed' ? 'success' : 'warning',
+    title: 'Backup restaurado',
+    message: `Restaurado desde ${result.sourceGuildName}: ${result.summary.rolesCreated} roles y ${result.summary.channelsCreated} canales creados.`,
+    metadata: { backupId, restoreId: result.id, summary: result.summary, requestedBy }
+  }).catch(() => {});
+  return saved ?? result;
 }
 
 export async function refreshGuildDiscovery(client, storage, { guildId, reason = 'manual' }, supportAgent = null) {

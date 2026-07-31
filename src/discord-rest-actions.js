@@ -1,4 +1,5 @@
 import { REST, Routes, ChannelType } from 'discord.js';
+import { buildRestGuildBackupSnapshot, restoreGuildBackupWithRest } from './backups.js';
 import { buildPanelActionRow, buildPanelEmbed, normalizePanelOptions } from './panel-options.js';
 import { analyzeGuildChannelsForDiscovery } from './server-discovery.js';
 
@@ -180,6 +181,52 @@ export function createDiscordRestActions({ config, storage }) {
           reason
         }
       });
+    },
+
+    async captureGuildBackup({ guildId, source = 'dashboard' }) {
+      requireBotToken(botToken);
+      const [guild, channels, roles] = await Promise.all([
+        rest.get(Routes.guild(guildId)),
+        rest.get(Routes.guildChannels(guildId)),
+        rest.get(Routes.guildRoles(guildId))
+      ]);
+      const snapshot = buildRestGuildBackupSnapshot({ guild, channels, roles, source });
+      const saved = await storage.saveGuildBackupSnapshot(snapshot);
+      await storage.addGuildLog?.({
+        guildId,
+        guildName: saved.guildName,
+        type: 'security',
+        severity: 'success',
+        title: 'Backup capturado',
+        message: `Snapshot guardado con ${saved.summary.roles} roles y ${saved.summary.channels} canales.`,
+        metadata: { backupId: saved.id, source: saved.source, summary: saved.summary }
+      }).catch(() => {});
+      return saved;
+    },
+
+    async restoreGuildBackup({ backupId, targetGuildId, requestedBy = null }) {
+      requireBotToken(botToken);
+      const backup = await storage.getGuildBackupSnapshot(backupId);
+      if (!backup) throw new Error('No encuentro ese backup en Supabase.');
+      const targetGuild = await rest.get(Routes.guild(targetGuildId));
+      const result = await restoreGuildBackupWithRest({
+        rest,
+        backup,
+        targetGuildId,
+        targetGuild,
+        requestedBy
+      });
+      const saved = await storage.recordGuildBackupRestore?.(result);
+      await storage.addGuildLog?.({
+        guildId: targetGuildId,
+        guildName: result.targetGuildName,
+        type: 'security',
+        severity: result.status === 'completed' ? 'success' : 'warning',
+        title: 'Backup restaurado',
+        message: `Restaurado desde ${result.sourceGuildName}: ${result.summary.rolesCreated} roles y ${result.summary.channelsCreated} canales creados.`,
+        metadata: { backupId, restoreId: result.id, summary: result.summary, requestedBy }
+      }).catch(() => {});
+      return saved ?? result;
     },
 
     async listInstalledGuildIds() {

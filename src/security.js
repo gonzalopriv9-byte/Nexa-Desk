@@ -202,6 +202,7 @@ export class SecurityManager {
     this.lastFloodWarnings = new Map();
     this.topGgBotCache = new Map();
     this.autoArmWarnings = new Set();
+    this.recoveryNotifyCooldowns = new Map();
     this.securityLabBotIds = parseIdList(config.SECURITY_LAB_BOT_IDS);
   }
 
@@ -1229,6 +1230,16 @@ export class SecurityManager {
       important: true,
       evidence
     });
+    if (!isLabSimulation) {
+      await this.notifyBackupRecoveryOption({
+        guild,
+        security,
+        evidence,
+        reason: `${executor.tag} supero el limite anti-nuke con ${bucket.length} acciones sensibles.`
+      }).catch((error) => {
+        console.warn(`Could not notify backup recovery option for ${guild.id}:`, error?.message ?? error);
+      });
+    }
     return true;
   }
 
@@ -1632,6 +1643,58 @@ export class SecurityManager {
       expiresAt: Date.now() + ttlMs
     });
     return result;
+  }
+
+  async notifyBackupRecoveryOption({ guild, security, evidence = null, reason = '' }) {
+    const now = Date.now();
+    const last = this.recoveryNotifyCooldowns.get(guild.id) ?? 0;
+    if (now - last < 1000 * 60 * 30) return;
+    this.recoveryNotifyCooldowns.set(guild.id, now);
+
+    const owner = await guild.fetchOwner().catch(() => null);
+    if (!owner) return;
+    const latestBackups = await this.storage.listGuildBackupSnapshots?.([guild.id], { limit: 1 }).catch(() => []);
+    const latest = latestBackups?.[0] ?? null;
+    const dashboardUrl = String(this.config.DASHBOARD_PUBLIC_URL ?? 'https://nexa-desk.onrender.com').replace(/\/$/, '');
+    const backupUrl = `${dashboardUrl}/backups`;
+    const summary = latest?.summary ?? {};
+    const embed = new EmbedBuilder()
+      .setColor(0xd6b86a)
+      .setTitle(`${EMOJIS.wifi} Recuperacion disponible para ${guild.name}`)
+      .setDescription([
+        'NexaDesk ha detectado un posible raid destructivo o acciones sensibles en masa.',
+        latest
+          ? `Tengo un backup reciente guardado en Supabase: **${summary.roles ?? 0} roles**, **${summary.channels ?? 0} canales** y **${summary.categories ?? 0} categorias**.`
+          : 'Todavia no encuentro un backup reciente para este servidor. Revisa /backups por si hay snapshots anteriores.',
+        '',
+        `Abre ${backupUrl}, selecciona **${guild.name}** como servidor raideado y elige un servidor nuevo donde recrear la estructura.`,
+        'La restauracion crea roles/canales y no borra nada del servidor destino.'
+      ].join('\n'))
+      .addFields([
+        { name: 'Motivo detectado', value: String(reason || 'Anti-nuke disparado.').slice(0, 1024) },
+        latest ? { name: 'Ultimo backup', value: `${latest.guildName} · ${latest.capturedAt}` } : null
+      ].filter(Boolean))
+      .setTimestamp(new Date());
+    const payload = {
+      embeds: [embed],
+      allowedMentions: { parse: [] }
+    };
+    if (evidence) payload.files = [createEvidenceAttachment(evidence)];
+    await owner.send(payload).catch(() => null);
+
+    await this.storage.addGuildLog?.({
+      guildId: guild.id,
+      guildName: guild.name,
+      type: 'security',
+      severity: 'critical',
+      title: 'Owner avisado de recuperacion',
+      message: `Se envio MD al owner con enlace a ${backupUrl}.`,
+      metadata: {
+        backupId: latest?.id ?? null,
+        backupCapturedAt: latest?.capturedAt ?? null,
+        securityLevel: security?.level ?? null
+      }
+    }).catch(() => {});
   }
 
   async sendSecurityLog({ guild, config, title, description, fields = [], important = false, evidence = null }) {

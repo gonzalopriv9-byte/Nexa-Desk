@@ -689,6 +689,70 @@ export function createServer({ config, storage, bot, events }) {
     res.json(enrichDashboardStats(stats, guilds));
   }));
 
+  app.get('/api/backups', asyncHandler(async (req, res) => {
+    const manageableGuildIds = req.session.guilds.map((guild) => guild.id);
+    const configs = await storage.listGuildConfigs();
+    const installedGuildIds = await getInstalledGuildIds(bot, configs);
+    const guilds = mergeUserGuilds(req.session, configs, installedGuildIds, config);
+    const [backups, restores] = await Promise.all([
+      storage.listGuildBackupSnapshots?.(manageableGuildIds, { limit: 120 }) ?? [],
+      storage.listGuildBackupRestores?.(manageableGuildIds, { limit: 80 }) ?? []
+    ]);
+    res.json({
+      guilds,
+      backups: backups.map(serializeBackupListItem),
+      restores: restores.map(serializeBackupRestoreListItem)
+    });
+  }));
+
+  app.post('/api/backups/capture', asyncHandler(async (req, res) => {
+    const guildId = String(req.body.guildId ?? '').trim();
+    if (!canAccessGuild(req.session, guildId)) {
+      res.status(403).json({ error: 'No puedes crear backups de este servidor.' });
+      return;
+    }
+    const saved = await bot.captureGuildBackup({
+      guildId,
+      source: `dashboard:${req.session.user.id}`
+    });
+    await recordDashboardGuildLog(storage, req, {
+      guildId,
+      guildName: saved.guildName,
+      type: 'security',
+      severity: 'success',
+      title: 'Backup manual creado',
+      message: `Snapshot creado desde /backups con ${saved.summary.roles} roles y ${saved.summary.channels} canales.`,
+      metadata: { backupId: saved.id, summary: saved.summary }
+    });
+    res.json({ backup: serializeBackupListItem(saved) });
+  }));
+
+  app.post('/api/backups/restore', asyncHandler(async (req, res) => {
+    const backupId = String(req.body.backupId ?? '').trim();
+    const targetGuildId = String(req.body.targetGuildId ?? '').trim();
+    const backup = await storage.getGuildBackupSnapshot?.(backupId);
+    if (!backup) {
+      res.status(404).json({ error: 'No encuentro ese backup.' });
+      return;
+    }
+    if (!canAccessGuild(req.session, backup.guildId) || !canAccessGuild(req.session, targetGuildId)) {
+      res.status(403).json({ error: 'Necesitas permisos en el servidor origen y destino.' });
+      return;
+    }
+    const configs = await storage.listGuildConfigs();
+    const installedGuildIds = await getInstalledGuildIds(bot, configs);
+    if (!installedGuildIds.has(targetGuildId)) {
+      res.status(409).json({ error: 'NexaDesk no esta instalado en el servidor destino. Invitalo primero con permisos de administrador.' });
+      return;
+    }
+    const restore = await bot.restoreGuildBackup({
+      backupId,
+      targetGuildId,
+      requestedBy: req.session.user.id
+    });
+    res.json({ restore: serializeBackupRestoreListItem(restore) });
+  }));
+
   app.get('/api/premium/account', asyncHandler(async (req, res) => {
     const account = await storage.getPremiumBillingAccount(req.session.user.id);
     res.json(buildPremiumAccountResponse({ account, config }));
@@ -1151,6 +1215,24 @@ export function createServer({ config, storage, bot, events }) {
     } catch (error) {
       res.status(400).json({ error: error.message });
     }
+  }));
+
+  app.get('/backups', asyncHandler(async (req, res) => {
+    const manageableGuildIds = req.session.guilds.map((guild) => guild.id);
+    const configs = await storage.listGuildConfigs();
+    const installedGuildIds = await getInstalledGuildIds(bot, configs);
+    const guilds = mergeUserGuilds(req.session, configs, installedGuildIds, config);
+    const [backups, restores] = await Promise.all([
+      storage.listGuildBackupSnapshots?.(manageableGuildIds, { limit: 120 }) ?? [],
+      storage.listGuildBackupRestores?.(manageableGuildIds, { limit: 80 }) ?? []
+    ]);
+    res.type('html').send(renderBackupsPage({
+      session: req.session,
+      guilds,
+      backups: backups.map(serializeBackupListItem),
+      restores: restores.map(serializeBackupRestoreListItem),
+      config
+    }));
   }));
 
   app.get('/', asyncHandler(async (req, res) => {
@@ -1659,6 +1741,35 @@ function enrichDashboardStats(stats, guilds) {
     welcomeReadyGuilds: guilds.filter((guild) => normalizeWelcomeConfig(guild.welcome).enabled).length,
     proGuilds: guilds.filter(isPremiumEntitled).length,
     panels: guilds.reduce((total, guild) => total + (guild.panels?.length ?? 0), 0)
+  };
+}
+
+function serializeBackupListItem(snapshot = {}) {
+  return {
+    id: String(snapshot.id ?? ''),
+    guildId: String(snapshot.guildId ?? ''),
+    guildName: String(snapshot.guildName ?? 'Servidor').slice(0, 160),
+    capturedAt: snapshot.capturedAt ?? snapshot.createdAt ?? null,
+    source: String(snapshot.source ?? 'scheduled').slice(0, 80),
+    summary: snapshot.summary && typeof snapshot.summary === 'object' ? snapshot.summary : {},
+    fallback: Boolean(snapshot.fallback)
+  };
+}
+
+function serializeBackupRestoreListItem(entry = {}) {
+  return {
+    id: String(entry.id ?? ''),
+    backupId: String(entry.backupId ?? ''),
+    sourceGuildId: String(entry.sourceGuildId ?? ''),
+    sourceGuildName: String(entry.sourceGuildName ?? 'Servidor origen').slice(0, 160),
+    targetGuildId: String(entry.targetGuildId ?? ''),
+    targetGuildName: String(entry.targetGuildName ?? 'Servidor destino').slice(0, 160),
+    requestedBy: entry.requestedBy ? String(entry.requestedBy) : null,
+    status: String(entry.status ?? 'completed'),
+    summary: entry.summary && typeof entry.summary === 'object' ? entry.summary : {},
+    createdAt: entry.createdAt ?? entry.completedAt ?? null,
+    completedAt: entry.completedAt ?? null,
+    fallback: Boolean(entry.fallback)
   };
 }
 
@@ -4082,6 +4193,185 @@ function renderAdminPanelScript(initialSnapshot) {
       };
     }
   </script>`;
+}
+
+function renderBackupsPage({ session, guilds = [], backups = [], restores = [], config }) {
+  const initial = JSON.stringify({ guilds, backups, restores }).replace(/</g, '\\u003c');
+  const dashboardUrl = config.DASHBOARD_PUBLIC_URL.replace(/\/$/, '');
+  return `<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Backups - NexaDesk</title>
+  <link rel="icon" type="image/svg+xml" href="/assets/nexadesk-logo.svg">
+  <style>
+    :root { color-scheme:dark; --bg:#050505; --panel:rgba(16,16,16,.82); --panel2:rgba(255,255,255,.06); --line:rgba(255,255,255,.16); --text:#f7f7f7; --muted:#aaa; --gold:#d6b86a; --danger:#ff5c5c; --ok:#72f0a2; }
+    * { box-sizing:border-box; }
+    body { min-height:100vh; margin:0; font-family:"Segoe UI",ui-sans-serif,system-ui,sans-serif; color:var(--text); background:#050505; overflow-x:hidden; }
+    body::before { content:""; position:fixed; inset:-20%; pointer-events:none; background:radial-gradient(circle at 16% 6%, rgba(255,255,255,.18), transparent 25%), radial-gradient(circle at 80% 18%, rgba(214,184,106,.18), transparent 28%), repeating-linear-gradient(90deg, rgba(255,255,255,.055) 0 1px, transparent 1px 96px), repeating-linear-gradient(0deg, rgba(255,255,255,.035) 0 1px, transparent 1px 96px); animation: drift 18s ease-in-out infinite alternate; }
+    @keyframes drift { from { transform:translate3d(-18px,-10px,0) scale(1); } to { transform:translate3d(18px,14px,0) scale(1.04); } }
+    main { position:relative; z-index:1; width:min(1180px, calc(100% - 28px)); margin:0 auto; padding:30px 0 70px; }
+    nav { display:flex; justify-content:space-between; align-items:center; gap:16px; margin-bottom:22px; }
+    .brand { display:flex; align-items:center; gap:12px; color:#fff; text-decoration:none; font-weight:950; letter-spacing:-.02em; }
+    .brand img { width:42px; height:42px; border-radius:12px; border:1px solid rgba(255,255,255,.35); background:#000; }
+    .nav-links { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:10px; }
+    a.pill, button { border:1px solid var(--line); border-radius:999px; background:rgba(255,255,255,.08); color:#fff; padding:11px 14px; text-decoration:none; font-weight:900; cursor:pointer; transition:.2s ease; }
+    button:hover, a.pill:hover { transform:translateY(-1px); border-color:rgba(255,255,255,.34); background:rgba(255,255,255,.14); }
+    button.primary { background:#fff; color:#000; }
+    button.gold { background:linear-gradient(135deg, #fff2b7, var(--gold)); color:#0a0a0a; border-color:rgba(255,255,255,.46); }
+    button.danger { background:rgba(255,92,92,.14); border-color:rgba(255,92,92,.42); color:#ffdede; }
+    button:disabled { opacity:.55; cursor:not-allowed; transform:none; }
+    .hero { border:1px solid var(--line); border-radius:30px; padding:30px; background:linear-gradient(145deg, rgba(25,25,25,.9), rgba(5,5,5,.72)); box-shadow:0 30px 100px rgba(0,0,0,.44), inset 0 1px 0 rgba(255,255,255,.08); overflow:hidden; position:relative; }
+    .hero::after { content:""; position:absolute; inset:auto -100px -160px auto; width:320px; height:320px; border-radius:50%; background:rgba(255,255,255,.12); filter:blur(24px); }
+    .kicker { margin:0 0 10px; color:var(--gold); text-transform:uppercase; letter-spacing:.18em; font-size:12px; font-weight:900; }
+    h1 { margin:0; font-size:clamp(42px, 7vw, 86px); line-height:.9; letter-spacing:-.07em; }
+    p { color:var(--muted); line-height:1.62; }
+    .hero p { max-width:760px; font-size:18px; }
+    .grid { display:grid; grid-template-columns:1.05fr .95fr; gap:16px; margin-top:16px; }
+    .card { border:1px solid var(--line); border-radius:24px; padding:20px; background:var(--panel); backdrop-filter:blur(18px); box-shadow:0 18px 70px rgba(0,0,0,.25); }
+    .card h2 { margin:0 0 8px; font-size:24px; letter-spacing:-.03em; }
+    .field { display:grid; gap:8px; margin:14px 0; }
+    label { color:#d7d7d7; font-weight:850; font-size:13px; text-transform:uppercase; letter-spacing:.08em; }
+    select { width:100%; border:1px solid rgba(255,255,255,.18); border-radius:14px; background:#080808; color:#fff; padding:13px 12px; font:inherit; outline:none; }
+    .actions { display:flex; flex-wrap:wrap; gap:10px; margin-top:14px; }
+    .stat-row { display:grid; grid-template-columns:repeat(4,1fr); gap:10px; margin-top:16px; }
+    .stat { border:1px solid var(--line); border-radius:18px; padding:14px; background:var(--panel2); }
+    .stat strong { display:block; font-size:26px; }
+    .stat span { color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.08em; }
+    .backup-list, .restore-list { display:grid; gap:10px; max-height:520px; overflow:auto; padding-right:4px; }
+    .backup-item { border:1px solid var(--line); border-radius:18px; padding:14px; background:rgba(255,255,255,.055); cursor:pointer; transition:.2s ease; }
+    .backup-item:hover, .backup-item.selected { border-color:#fff; background:rgba(255,255,255,.11); transform:translateY(-1px); }
+    .backup-title { display:flex; justify-content:space-between; gap:10px; font-weight:950; }
+    .badge { display:inline-flex; align-items:center; border:1px solid rgba(255,255,255,.18); border-radius:999px; padding:5px 8px; font-size:12px; color:#fff; background:rgba(255,255,255,.08); }
+    .badge.gold { color:#171000; background:var(--gold); border-color:var(--gold); }
+    .meta { color:var(--muted); font-size:13px; margin-top:8px; display:flex; flex-wrap:wrap; gap:8px; }
+    .restore-item { border-left:3px solid var(--gold); padding:10px 12px; background:rgba(255,255,255,.045); border-radius:12px; color:#ddd; }
+    .empty { border:1px dashed rgba(255,255,255,.24); border-radius:18px; padding:18px; color:var(--muted); background:rgba(255,255,255,.04); }
+    .toast { position:fixed; right:18px; bottom:18px; z-index:5; max-width:min(420px, calc(100% - 36px)); border:1px solid rgba(255,255,255,.2); border-radius:18px; padding:14px 16px; background:#fff; color:#050505; box-shadow:0 20px 80px rgba(0,0,0,.45); opacity:0; transform:translateY(12px); transition:.25s ease; pointer-events:none; font-weight:800; }
+    .toast.show { opacity:1; transform:translateY(0); }
+    .warning { border:1px solid rgba(214,184,106,.34); background:rgba(214,184,106,.08); border-radius:16px; padding:12px 14px; color:#ead9a5; }
+    @media (max-width: 860px) { main { width:min(100% - 18px, 720px); padding-top:18px; } nav { align-items:flex-start; } .grid { grid-template-columns:1fr; } .stat-row { grid-template-columns:repeat(2,1fr); } .hero { padding:22px; border-radius:24px; } }
+  </style>
+</head>
+<body>
+  <main>
+    <nav>
+      <a class="brand" href="/"><img src="/assets/nexadesk-logo.svg" alt="">NexaDesk</a>
+      <div class="nav-links">
+        <a class="pill" href="/">Dashboard</a>
+        <a class="pill" href="${escapeHtml(dashboardUrl)}/status">Estado</a>
+        <form method="post" action="/logout" style="margin:0"><button type="submit">Cerrar sesion</button></form>
+      </div>
+    </nav>
+
+    <section class="hero">
+      <p class="kicker">Security Recovery Center</p>
+      <h1>Backups de servidor, listos para un mal dia.</h1>
+      <p>NexaDesk indexa roles, categorias, canales y permisos cada hora. Si un raid destruye el servidor, invita el bot a un servidor nuevo, entra aqui y recrea la estructura desde Supabase.</p>
+      <div class="stat-row">
+        <div class="stat"><strong id="statBackups">${backups.length}</strong><span>Snapshots</span></div>
+        <div class="stat"><strong id="statGuilds">${guilds.filter((guild) => guild.installed).length}</strong><span>Destinos instalados</span></div>
+        <div class="stat"><strong id="statRoles">0</strong><span>Roles indexados</span></div>
+        <div class="stat"><strong id="statChannels">0</strong><span>Canales indexados</span></div>
+      </div>
+    </section>
+
+    <section class="grid">
+      <div class="card">
+        <h2>1. Selecciona el backup raideado</h2>
+        <p>Elige el snapshot del servidor destruido. Puedes crear uno manual antes de tocar nada si todavia queda estructura viva.</p>
+        <div class="field">
+          <label>Servidor origen para captura manual</label>
+          <select id="captureGuild"></select>
+        </div>
+        <div class="actions">
+          <button id="captureBtn" class="primary">Crear backup ahora</button>
+          <button id="refreshBtn">Actualizar lista</button>
+        </div>
+        <div id="backupList" class="backup-list" style="margin-top:16px"></div>
+      </div>
+
+      <div class="card">
+        <h2>2. Restaura en un servidor nuevo</h2>
+        <p>El destino debe tener NexaDesk instalado con permisos altos. Por seguridad, la restauracion crea roles y canales, no borra nada existente.</p>
+        <div class="warning">Recomendado: crea un servidor vacio, invita NexaDesk como administrador y restaura ahi para reconstruir rapido.</div>
+        <div class="field">
+          <label>Servidor destino</label>
+          <select id="targetGuild"></select>
+        </div>
+        <div class="actions">
+          <button id="restoreBtn" class="gold">Restaurar estructura</button>
+        </div>
+        <h2 style="margin-top:24px">Ultimas restauraciones</h2>
+        <div id="restoreList" class="restore-list"></div>
+      </div>
+    </section>
+  </main>
+  <div id="toast" class="toast"></div>
+  <script>
+    const initialState = ${initial};
+    const state = { ...initialState, selectedBackupId: initialState.backups[0]?.id || '', busy:false };
+    const $ = (id) => document.getElementById(id);
+    const html = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#039;' }[char]));
+    const fmt = (value) => value ? new Intl.DateTimeFormat('es-ES', { dateStyle:'medium', timeStyle:'short' }).format(new Date(value)) : 'Fecha desconocida';
+    const toast = (message) => { const node = $('toast'); node.textContent = message; node.classList.add('show'); clearTimeout(window.__toastTimer); window.__toastTimer = setTimeout(() => node.classList.remove('show'), 4200); };
+    function selectedBackup() { return state.backups.find((backup) => backup.id === state.selectedBackupId) || state.backups[0] || null; }
+    function render() {
+      const installed = state.guilds.filter((guild) => guild.installed);
+      $('statBackups').textContent = state.backups.length;
+      $('statGuilds').textContent = installed.length;
+      const latest = selectedBackup();
+      $('statRoles').textContent = latest?.summary?.roles ?? 0;
+      $('statChannels').textContent = latest?.summary?.channels ?? 0;
+      $('captureGuild').innerHTML = state.guilds.map((guild) => '<option value="' + html(guild.guildId) + '">' + html(guild.guildName) + (guild.installed ? '' : ' - bot no instalado') + '</option>').join('');
+      $('targetGuild').innerHTML = installed.map((guild) => '<option value="' + html(guild.guildId) + '">' + html(guild.guildName) + '</option>').join('') || '<option value="">No hay destinos instalados</option>';
+      $('backupList').innerHTML = state.backups.map((backup) => {
+        const summary = backup.summary || {};
+        const selected = backup.id === state.selectedBackupId ? ' selected' : '';
+        return '<div class="backup-item' + selected + '" data-backup="' + html(backup.id) + '"><div class="backup-title"><span>' + html(backup.guildName) + '</span><span class="badge gold">' + html(backup.source) + '</span></div><div class="meta"><span>' + html(fmt(backup.capturedAt)) + '</span><span>' + Number(summary.roles || 0) + ' roles</span><span>' + Number(summary.channels || 0) + ' canales</span><span>' + Number(summary.categories || 0) + ' categorias</span>' + (backup.fallback ? '<span class="badge">fallback</span>' : '') + '</div></div>';
+      }).join('') || '<div class="empty">Todavia no hay backups accesibles. Pulsa "Crear backup ahora" o espera al indexado horario.</div>';
+      document.querySelectorAll('[data-backup]').forEach((node) => node.addEventListener('click', () => { state.selectedBackupId = node.dataset.backup; render(); }));
+      $('restoreList').innerHTML = state.restores.map((item) => '<div class="restore-item"><strong>' + html(item.sourceGuildName) + ' -> ' + html(item.targetGuildName) + '</strong><br><span>' + html(item.status) + ' · ' + html(fmt(item.completedAt || item.createdAt)) + '</span></div>').join('') || '<div class="empty">Aun no has restaurado ningun backup.</div>';
+      $('restoreBtn').disabled = state.busy || !selectedBackup() || !installed.length;
+      $('captureBtn').disabled = state.busy;
+      $('refreshBtn').disabled = state.busy;
+    }
+    async function api(path, body) {
+      const response = await fetch(path, {
+        method: body ? 'POST' : 'GET',
+        credentials: 'same-origin',
+        headers: body ? { 'content-type':'application/json' } : {},
+        body: body ? JSON.stringify(body) : undefined
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || 'HTTP ' + response.status);
+      return payload;
+    }
+    async function reload() {
+      const payload = await api('/api/backups');
+      state.guilds = payload.guilds || [];
+      state.backups = payload.backups || [];
+      state.restores = payload.restores || [];
+      if (!state.backups.find((backup) => backup.id === state.selectedBackupId)) state.selectedBackupId = state.backups[0]?.id || '';
+      render();
+    }
+    $('refreshBtn').addEventListener('click', async () => { state.busy = true; render(); try { await reload(); toast('Backups actualizados.'); } catch (error) { toast(error.message); } finally { state.busy = false; render(); } });
+    $('captureBtn').addEventListener('click', async () => { state.busy = true; render(); try { const payload = await api('/api/backups/capture', { guildId:$('captureGuild').value }); state.backups.unshift(payload.backup); state.selectedBackupId = payload.backup.id; toast('Backup creado y guardado en Supabase.'); await reload(); } catch (error) { toast(error.message); } finally { state.busy = false; render(); } });
+    $('restoreBtn').addEventListener('click', async () => {
+      const backup = selectedBackup();
+      const targetGuildId = $('targetGuild').value;
+      if (!backup || !targetGuildId) return;
+      if (!confirm('Vas a recrear roles y canales de "' + backup.guildName + '" en el servidor destino. No se borrara nada existente. Continuar?')) return;
+      state.busy = true; render();
+      try { const payload = await api('/api/backups/restore', { backupId:backup.id, targetGuildId }); state.restores.unshift(payload.restore); toast('Restauracion completada. Revisa Discord.'); await reload(); }
+      catch (error) { toast(error.message); }
+      finally { state.busy = false; render(); }
+    });
+    render();
+  </script>
+</body>
+</html>`;
 }
 
 function renderLegalPage({ title, eyebrow, intro, updatedAt, sections }) {

@@ -10,6 +10,7 @@ import {
   normalizeAffiliateRedemption
 } from './affiliates.js';
 import { normalizeAiQualitySignal } from './ai-quality.js';
+import { normalizeGuildBackupSnapshot } from './backups.js';
 import { normalizeBlacklistEntry, normalizeBlacklistEvidence, normalizeBlacklistLookup } from './blacklist.js';
 import { buildFeedbackStats, normalizeGrowthConfig, normalizeTicketFeedback } from './growth.js';
 import { normalizeMaintenanceState } from './maintenance.js';
@@ -40,6 +41,8 @@ export class JsonStorage {
     this.feedbackFile = path.join(dataDir, 'ticket-feedback.json');
     this.aiQualitySignalsFile = path.join(dataDir, 'ai-quality-signals.json');
     this.guildLogsFile = path.join(dataDir, 'guild-logs.json');
+    this.guildBackupsFile = path.join(dataDir, 'guild-backups.json');
+    this.guildBackupRestoresFile = path.join(dataDir, 'guild-backup-restores.json');
     this.premiumPurchasesFile = path.join(dataDir, 'premium-purchases.json');
     this.premiumActivationsFile = path.join(dataDir, 'premium-activations.json');
   }
@@ -55,6 +58,8 @@ export class JsonStorage {
     await this.#ensureJson(this.feedbackFile, {});
     await this.#ensureJson(this.aiQualitySignalsFile, {});
     await this.#ensureJson(this.guildLogsFile, {});
+    await this.#ensureJson(this.guildBackupsFile, {});
+    await this.#ensureJson(this.guildBackupRestoresFile, {});
     await this.#ensureJson(this.premiumPurchasesFile, {});
     await this.#ensureJson(this.premiumActivationsFile, {});
   }
@@ -263,6 +268,56 @@ export class JsonStorage {
       .map(normalizeGuildLog)
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
       .slice(0, clampNumber(limit, 1, 500));
+  }
+
+  async saveGuildBackupSnapshot(snapshot) {
+    const backups = await this.#readJson(this.guildBackupsFile);
+    const normalized = normalizeGuildBackupSnapshot(snapshot);
+    backups[normalized.id] = normalized;
+
+    const byGuild = Object.values(backups)
+      .map(normalizeGuildBackupSnapshot)
+      .filter((item) => item.guildId === normalized.guildId)
+      .sort((a, b) => b.capturedAt.localeCompare(a.capturedAt));
+    for (const oldBackup of byGuild.slice(30)) {
+      delete backups[oldBackup.id];
+    }
+
+    await this.#writeJson(this.guildBackupsFile, backups);
+    this.events?.publish('guild.backup.saved', normalized);
+    return normalized;
+  }
+
+  async listGuildBackupSnapshots(guildIds = [], { limit = 100 } = {}) {
+    const allowed = new Set(guildIds.map(String).filter(Boolean));
+    const backups = Object.values(await this.#readJson(this.guildBackupsFile))
+      .map(normalizeGuildBackupSnapshot)
+      .filter((snapshot) => !allowed.size || allowed.has(snapshot.guildId))
+      .sort((a, b) => b.capturedAt.localeCompare(a.capturedAt));
+    return backups.slice(0, clampNumber(limit, 1, 500));
+  }
+
+  async getGuildBackupSnapshot(id) {
+    const backups = await this.#readJson(this.guildBackupsFile);
+    return backups[id] ? normalizeGuildBackupSnapshot(backups[id]) : null;
+  }
+
+  async recordGuildBackupRestore(entry) {
+    const restores = await this.#readJson(this.guildBackupRestoresFile);
+    const normalized = normalizeGuildBackupRestoreEntry(entry);
+    restores[normalized.id] = normalized;
+    await this.#writeJson(this.guildBackupRestoresFile, restores);
+    this.events?.publish('guild.backup.restored', normalized);
+    return normalized;
+  }
+
+  async listGuildBackupRestores(guildIds = [], { limit = 100 } = {}) {
+    const allowed = new Set(guildIds.map(String).filter(Boolean));
+    const restores = Object.values(await this.#readJson(this.guildBackupRestoresFile))
+      .map(normalizeGuildBackupRestoreEntry)
+      .filter((entry) => !allowed.size || allowed.has(entry.sourceGuildId) || allowed.has(entry.targetGuildId))
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    return restores.slice(0, clampNumber(limit, 1, 500));
   }
 
   async recordPremiumPurchase(purchase) {
@@ -1061,6 +1116,142 @@ export class SupabaseStorage {
       : {};
     return (Array.isArray(source[String(guildId)]) ? source[String(guildId)] : [])
       .map(normalizeGuildLog)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .slice(0, clampNumber(limit, 1, 500));
+  }
+
+  async saveGuildBackupSnapshot(snapshot) {
+    const normalized = normalizeGuildBackupSnapshot(snapshot);
+    const { data, error } = await this.client
+      .from('guild_backups')
+      .upsert(toGuildBackupRow(normalized), { onConflict: 'id' })
+      .select()
+      .single();
+    if (isMissingGuildBackupsTableError(error)) {
+      console.warn('guild_backups table missing; persisting backup in Supabase fallback store. Run supabase/schema.sql for indexed backups.');
+      return this.#saveGuildBackupSnapshotFallback(normalized);
+    }
+    if (error) throw error;
+    const saved = fromGuildBackupRow(data);
+    this.events?.publish('guild.backup.saved', saved);
+    return saved;
+  }
+
+  async listGuildBackupSnapshots(guildIds = [], { limit = 100 } = {}) {
+    let query = this.client
+      .from('guild_backups')
+      .select('*')
+      .order('captured_at', { ascending: false })
+      .limit(clampNumber(limit, 1, 500));
+    if (guildIds.length) query = query.in('guild_id', guildIds.map(String));
+    const { data, error } = await query;
+    if (isMissingGuildBackupsTableError(error)) {
+      return this.#listGuildBackupSnapshotsFallback(guildIds, { limit });
+    }
+    if (error) throw error;
+    return data.map(fromGuildBackupRow);
+  }
+
+  async getGuildBackupSnapshot(id) {
+    const { data, error } = await this.client
+      .from('guild_backups')
+      .select('*')
+      .eq('id', String(id))
+      .maybeSingle();
+    if (isMissingGuildBackupsTableError(error)) {
+      return this.#getGuildBackupSnapshotFallback(id);
+    }
+    if (error) throw error;
+    return data ? fromGuildBackupRow(data) : null;
+  }
+
+  async recordGuildBackupRestore(entry) {
+    const normalized = normalizeGuildBackupRestoreEntry(entry);
+    const { data, error } = await this.client
+      .from('guild_backup_restores')
+      .upsert(toGuildBackupRestoreRow(normalized), { onConflict: 'id' })
+      .select()
+      .single();
+    if (isMissingGuildBackupsTableError(error)) {
+      console.warn('guild_backup_restores table missing; persisting restore record in Supabase fallback store. Run supabase/schema.sql.');
+      return this.#recordGuildBackupRestoreFallback(normalized);
+    }
+    if (error) throw error;
+    const saved = fromGuildBackupRestoreRow(data);
+    this.events?.publish('guild.backup.restored', saved);
+    return saved;
+  }
+
+  async listGuildBackupRestores(guildIds = [], { limit = 100 } = {}) {
+    const query = this.client
+      .from('guild_backup_restores')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(clampNumber(limit, 1, 500) * (guildIds.length ? 3 : 1));
+    const { data, error } = await query;
+    if (isMissingGuildBackupsTableError(error)) {
+      return this.#listGuildBackupRestoresFallback(guildIds, { limit });
+    }
+    if (error) throw error;
+    const allowed = new Set(guildIds.map(String).filter(Boolean));
+    return data
+      .map(fromGuildBackupRestoreRow)
+      .filter((entry) => !allowed.size || allowed.has(entry.sourceGuildId) || allowed.has(entry.targetGuildId))
+      .slice(0, clampNumber(limit, 1, 500));
+  }
+
+  async #saveGuildBackupSnapshotFallback(snapshot) {
+    const normalized = normalizeGuildBackupSnapshot(snapshot);
+    const settings = await this.getGlobalSettings();
+    const store = normalizeGuildBackupsFallbackStore(settings.guildBackupsFallback);
+    store.snapshots[normalized.id] = normalized;
+    const latest = Object.values(store.snapshots)
+      .map(normalizeGuildBackupSnapshot)
+      .sort((a, b) => b.capturedAt.localeCompare(a.capturedAt));
+    store.snapshots = Object.fromEntries(latest.slice(0, 500).map((item) => [item.id, item]));
+    await this.updateGlobalSettings({ guildBackupsFallback: store });
+    this.events?.publish('guild.backup.saved', normalized);
+    return { ...normalized, fallback: true };
+  }
+
+  async #listGuildBackupSnapshotsFallback(guildIds = [], { limit = 100 } = {}) {
+    const settings = await this.getGlobalSettings();
+    const store = normalizeGuildBackupsFallbackStore(settings.guildBackupsFallback);
+    const allowed = new Set(guildIds.map(String).filter(Boolean));
+    return Object.values(store.snapshots)
+      .map(normalizeGuildBackupSnapshot)
+      .filter((snapshot) => !allowed.size || allowed.has(snapshot.guildId))
+      .sort((a, b) => b.capturedAt.localeCompare(a.capturedAt))
+      .slice(0, clampNumber(limit, 1, 500));
+  }
+
+  async #getGuildBackupSnapshotFallback(id) {
+    const settings = await this.getGlobalSettings();
+    const store = normalizeGuildBackupsFallbackStore(settings.guildBackupsFallback);
+    return store.snapshots[String(id)] ? normalizeGuildBackupSnapshot(store.snapshots[String(id)]) : null;
+  }
+
+  async #recordGuildBackupRestoreFallback(entry) {
+    const normalized = normalizeGuildBackupRestoreEntry(entry);
+    const settings = await this.getGlobalSettings();
+    const store = normalizeGuildBackupsFallbackStore(settings.guildBackupsFallback);
+    store.restores[normalized.id] = normalized;
+    const latest = Object.values(store.restores)
+      .map(normalizeGuildBackupRestoreEntry)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    store.restores = Object.fromEntries(latest.slice(0, 250).map((item) => [item.id, item]));
+    await this.updateGlobalSettings({ guildBackupsFallback: store });
+    this.events?.publish('guild.backup.restored', normalized);
+    return { ...normalized, fallback: true };
+  }
+
+  async #listGuildBackupRestoresFallback(guildIds = [], { limit = 100 } = {}) {
+    const settings = await this.getGlobalSettings();
+    const store = normalizeGuildBackupsFallbackStore(settings.guildBackupsFallback);
+    const allowed = new Set(guildIds.map(String).filter(Boolean));
+    return Object.values(store.restores)
+      .map(normalizeGuildBackupRestoreEntry)
+      .filter((entry) => !allowed.size || allowed.has(entry.sourceGuildId) || allowed.has(entry.targetGuildId))
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
       .slice(0, clampNumber(limit, 1, 500));
   }
@@ -2509,6 +2700,93 @@ function fromAffiliateRedemptionRow(row) {
   });
 }
 
+function toGuildBackupRow(snapshot) {
+  const normalized = normalizeGuildBackupSnapshot(snapshot);
+  return {
+    id: normalized.id,
+    guild_id: normalized.guildId,
+    guild_name: normalized.guildName,
+    captured_at: normalized.capturedAt,
+    source: normalized.source,
+    summary: normalized.summary,
+    snapshot: normalized.snapshot,
+    created_at: normalized.createdAt
+  };
+}
+
+function fromGuildBackupRow(row) {
+  return normalizeGuildBackupSnapshot({
+    id: row.id,
+    guildId: row.guild_id,
+    guildName: row.guild_name,
+    capturedAt: row.captured_at,
+    source: row.source,
+    summary: row.summary,
+    snapshot: row.snapshot,
+    createdAt: row.created_at
+  });
+}
+
+function toGuildBackupRestoreRow(entry) {
+  const normalized = normalizeGuildBackupRestoreEntry(entry);
+  return {
+    id: normalized.id,
+    backup_id: normalized.backupId,
+    source_guild_id: normalized.sourceGuildId,
+    source_guild_name: normalized.sourceGuildName,
+    target_guild_id: normalized.targetGuildId,
+    target_guild_name: normalized.targetGuildName,
+    requested_by: normalized.requestedBy,
+    status: normalized.status,
+    summary: normalized.summary,
+    created_at: normalized.createdAt,
+    completed_at: normalized.completedAt
+  };
+}
+
+function fromGuildBackupRestoreRow(row) {
+  return normalizeGuildBackupRestoreEntry({
+    id: row.id,
+    backupId: row.backup_id,
+    sourceGuildId: row.source_guild_id,
+    sourceGuildName: row.source_guild_name,
+    targetGuildId: row.target_guild_id,
+    targetGuildName: row.target_guild_name,
+    requestedBy: row.requested_by,
+    status: row.status,
+    summary: row.summary,
+    createdAt: row.created_at,
+    completedAt: row.completed_at
+  });
+}
+
+function normalizeGuildBackupRestoreEntry(entry = {}) {
+  const value = entry && typeof entry === 'object' ? entry : {};
+  const createdAt = value.createdAt ?? value.created_at ?? value.startedAt ?? new Date().toISOString();
+  const requestedBy = value.requestedBy ?? value.requested_by;
+  return {
+    id: String(value.id ?? `restore-${value.targetGuildId ?? value.target_guild_id ?? 'guild'}-${Date.now()}-${crypto.randomUUID()}`),
+    backupId: String(value.backupId ?? value.backup_id ?? ''),
+    sourceGuildId: String(value.sourceGuildId ?? value.source_guild_id ?? ''),
+    sourceGuildName: String(value.sourceGuildName ?? value.source_guild_name ?? 'Servidor origen').slice(0, 160),
+    targetGuildId: String(value.targetGuildId ?? value.target_guild_id ?? ''),
+    targetGuildName: String(value.targetGuildName ?? value.target_guild_name ?? 'Servidor destino').slice(0, 160),
+    requestedBy: requestedBy ? String(requestedBy) : null,
+    status: ['completed', 'partial', 'failed'].includes(value.status) ? value.status : 'completed',
+    summary: value.summary && typeof value.summary === 'object' ? value.summary : {},
+    createdAt,
+    completedAt: value.completedAt ?? value.completed_at ?? createdAt
+  };
+}
+
+function normalizeGuildBackupsFallbackStore(source = {}) {
+  const value = source && typeof source === 'object' ? source : {};
+  return {
+    snapshots: value.snapshots && typeof value.snapshots === 'object' ? value.snapshots : {},
+    restores: value.restores && typeof value.restores === 'object' ? value.restores : {}
+  };
+}
+
 function normalizeAffiliateStore(source = {}) {
   const value = source && typeof source === 'object' ? source : {};
   return {
@@ -2531,6 +2809,10 @@ function isMissingAiQualitySignalTableError(error) {
 
 function isMissingGuildLogsTableError(error) {
   return Boolean(error && /guild_logs|relation .* does not exist|schema cache/i.test(String(error.message ?? '')));
+}
+
+function isMissingGuildBackupsTableError(error) {
+  return Boolean(error && /guild_backups|guild_backup_restores|relation .* does not exist|schema cache/i.test(String(error.message ?? '')));
 }
 
 function isMissingPremiumBillingTableError(error) {

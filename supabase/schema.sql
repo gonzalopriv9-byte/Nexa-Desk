@@ -257,6 +257,40 @@ create index if not exists affiliate_redemptions_created_at_idx on public.affili
 create index if not exists affiliate_redemptions_guild_id_idx on public.affiliate_redemptions (guild_id);
 create index if not exists affiliate_redemptions_reward_purchase_id_idx on public.affiliate_redemptions (reward_purchase_id);
 
+create table if not exists public.guild_backups (
+  id text primary key,
+  guild_id text not null,
+  guild_name text,
+  captured_at timestamptz not null default now(),
+  source text not null default 'scheduled',
+  summary jsonb not null default '{}'::jsonb,
+  snapshot jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists guild_backups_guild_id_idx on public.guild_backups (guild_id);
+create index if not exists guild_backups_captured_at_idx on public.guild_backups (captured_at desc);
+create index if not exists guild_backups_source_idx on public.guild_backups (source);
+
+create table if not exists public.guild_backup_restores (
+  id text primary key,
+  backup_id text not null,
+  source_guild_id text,
+  source_guild_name text,
+  target_guild_id text not null,
+  target_guild_name text,
+  requested_by text,
+  status text not null default 'completed',
+  summary jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  completed_at timestamptz
+);
+
+create index if not exists guild_backup_restores_backup_id_idx on public.guild_backup_restores (backup_id);
+create index if not exists guild_backup_restores_source_guild_id_idx on public.guild_backup_restores (source_guild_id);
+create index if not exists guild_backup_restores_target_guild_id_idx on public.guild_backup_restores (target_guild_id);
+create index if not exists guild_backup_restores_created_at_idx on public.guild_backup_restores (created_at desc);
+
 alter table public.affiliate_profiles add column if not exists reward_threshold integer not null default 7;
 alter table public.affiliate_profiles add column if not exists reward_slots integer not null default 1;
 alter table public.affiliate_profiles add column if not exists reward_days integer not null default 30;
