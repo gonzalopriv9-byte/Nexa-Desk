@@ -121,6 +121,7 @@ function createVoiceManager() {
   return new VoiceSessionManager({
     storage,
     aiClient: createGroqFallbackClient(),
+    visualAnalyzer,
     config
   });
 }

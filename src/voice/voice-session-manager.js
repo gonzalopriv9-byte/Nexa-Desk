@@ -18,6 +18,7 @@ import {
 } from '@discordjs/voice';
 import prism from 'prism-media';
 import { detectAiQualitySignalHeuristic, parseAiQualitySignalJson } from '../ai-quality.js';
+import { hasVisualAttachments } from '../ai/visual-analyzer.js';
 
 const SAMPLE_RATE = 48_000;
 const STT_SAMPLE_RATE = 16_000;
@@ -33,10 +34,11 @@ const EDGE_TTS_GEC_VERSION = `1-${EDGE_TTS_CHROMIUM_VERSION}`;
 const EDGE_TTS_USER_AGENT = `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${EDGE_TTS_CHROMIUM_MAJOR}.0.0.0 Safari/537.36 Edg/${EDGE_TTS_CHROMIUM_MAJOR}.0.0.0`;
 
 export class VoiceSessionManager {
-  constructor({ storage, aiClient, config }) {
+  constructor({ storage, aiClient, config, visualAnalyzer = null }) {
     this.storage = storage;
     this.aiClient = aiClient;
     this.config = config;
+    this.visualAnalyzer = visualAnalyzer;
     this.sessionsByGuild = new Map();
   }
 
@@ -88,6 +90,10 @@ export class VoiceSessionManager {
       player,
       speakers: new Set(),
       processing: false,
+      currentTurnId: null,
+      currentAudioStream: null,
+      currentPcmStream: null,
+      lastUnclearVoiceNoticeAt: 0,
       stopped: false,
       startedAt: new Date().toISOString()
     };
@@ -142,11 +148,52 @@ export class VoiceSessionManager {
     return { spoken: true };
   }
 
+  async ingestVisualMessage({ message, guildConfig }) {
+    const session = this.getSession(message.guildId);
+    if (!session || session.stopped || session.ticketChannelId !== message.channelId) {
+      return { handled: false };
+    }
+    if (!this.visualAnalyzer || !hasVisualAttachments(message)) {
+      return { handled: false };
+    }
+
+    const analysis = await this.visualAnalyzer.analyzeMessageAttachments({
+      message,
+      guildConfig: guildConfig ?? session.guildConfig,
+      force: true
+    }).catch((error) => {
+      console.warn(`Voice visual ingest failed for ${message.channelId}:`, error?.message ?? error);
+      return `NexaDesk recibio una prueba visual, pero no pudo analizarla automaticamente: ${String(error?.message ?? error).slice(0, 260)}`;
+    });
+
+    const content = [
+      'Pruebas visuales analizadas para el modo voz:',
+      `Mensaje visual: ${message.author?.username ?? 'usuario'} (${message.id})`,
+      analysis || 'Prueba visual recibida. No hay analisis automatico disponible.'
+    ].join('\n');
+
+    await this.storage.addTranscriptMessage({
+      guildId: session.guildId,
+      channelId: session.ticketChannelId,
+      messageId: `voice-visual-${message.id}`,
+      authorId: session.voiceChannel.client.user.id,
+      authorName: session.voiceChannel.client.user.username,
+      authorBot: true,
+      role: 'system',
+      content,
+      createdAt: new Date().toISOString()
+    }).catch(() => {});
+
+    return { handled: true, analysisReady: Boolean(analysis?.trim()) };
+  }
+
   async #captureSpeech(session, userId) {
     if (session.stopped || session.speakers.has(userId)) return;
 
     const member = await session.voiceChannel.guild.members.fetch(userId).catch(() => null);
     if (!member || member.user.bot) return;
+
+    this.#interruptVoicePlayback(session);
 
     session.speakers.add(userId);
     const opusStream = session.connection.receiver.subscribe(userId, {
@@ -194,16 +241,17 @@ export class VoiceSessionManager {
   }
 
   async #handleUtterance(session, member, pcm) {
-    if (session.processing) {
-      await session.textChannel.send(`Estoy terminando una respuesta anterior, ${member}. Te escucho en un momento.`).catch(() => {});
-      return;
-    }
+    const turnId = randomUUID();
+    this.#interruptVoiceTurn(session);
+    session.currentTurnId = turnId;
 
     session.processing = true;
     try {
       const preparedAudio = await prepareSpeechForTranscription(pcm);
       if (!preparedAudio) {
-        await session.textChannel.send(`No he detectado voz suficientemente clara, ${member}. Prueba a hablar un poco mas cerca del micro.`).catch(() => {});
+        if (shouldSendUnclearVoiceNotice(session)) {
+          await session.textChannel.send(`No he detectado voz suficientemente clara, ${member}. Prueba a hablar un poco mas cerca del micro.`).catch(() => {});
+        }
         return;
       }
 
@@ -213,7 +261,7 @@ export class VoiceSessionManager {
         model: this.config.GROQ_STT_MODEL
       });
 
-      if (!transcript) return;
+      if (!this.#isCurrentVoiceTurn(session, turnId) || !transcript) return;
 
       await this.storage.addTranscriptMessage({
         guildId: session.guildId,
@@ -233,7 +281,16 @@ export class VoiceSessionManager {
 
       await session.textChannel.send(`**${member.displayName} por voz:** ${transcript.slice(0, 1_800)}`).catch(() => {});
       const answer = await this.#answerVoiceTicket(session, transcript, member);
-      if (!answer) return;
+      if (!this.#isCurrentVoiceTurn(session, turnId) || !answer) return;
+
+      const speakPromise = this.config.VOICE_TTS_ENABLED
+        ? this.#speak(session, answer.publicAnswer).catch((error) => {
+          console.error(`Voice TTS failed for ${session.voiceChannelId}:`, error);
+          if (this.#isCurrentVoiceTurn(session, turnId)) {
+            session.textChannel.send('He respondido por texto, pero no pude reproducir la voz en la sala.').catch(() => {});
+          }
+        })
+        : null;
 
       await this.storage.addTranscriptMessage({
         guildId: session.guildId,
@@ -254,36 +311,58 @@ export class VoiceSessionManager {
         allowedMentions: { roles: answer.mentionStaff && session.guildConfig.staffRoleId ? [session.guildConfig.staffRoleId] : [] }
       }).catch(() => {});
 
-      if (this.config.VOICE_TTS_ENABLED) {
-        await this.#speak(session, answer.publicAnswer).catch((error) => {
-          console.error(`Voice TTS failed for ${session.voiceChannelId}:`, error);
-          session.textChannel.send('He respondido por texto, pero no pude reproducir la voz en la sala.').catch(() => {});
-        });
-      }
+      if (speakPromise) await speakPromise;
     } finally {
-      session.processing = false;
+      if (this.#isCurrentVoiceTurn(session, turnId)) {
+        session.processing = false;
+        session.currentTurnId = null;
+        session.currentAudioStream = null;
+        session.currentPcmStream = null;
+      }
     }
+  }
+
+  #interruptVoiceTurn(session) {
+    if (!session.currentTurnId && !session.processing) return;
+    this.#interruptVoicePlayback(session);
+    session.currentAudioStream?.destroy?.();
+    session.currentPcmStream?.destroy?.();
+  }
+
+  #interruptVoicePlayback(session) {
+    if (!session?.player) return;
+    try {
+      session.player.stop(true);
+    } catch {
+      // The audio player may already be idle.
+    }
+  }
+
+  #isCurrentVoiceTurn(session, turnId) {
+    return !session.stopped && session.currentTurnId === turnId;
   }
 
   async #answerVoiceTicket(session, transcript, member) {
     const history = await this.storage.listTranscriptMessages(session.ticketChannelId);
-    const hasVisualEvidence = hasRecentVisualEvidence(history);
+    const visualContext = await this.#analyzeRecentVisualContext(session, transcript, history);
+    const hasVisualEvidence = Boolean(visualContext.trim()) || hasRecentAnalyzedVisualEvidence(history);
     const system = [
       'Eres NexaDesk, soporte por voz para tickets de Discord.',
       'Responde en el mismo idioma del ultimo mensaje del usuario.',
-      'Se breve y natural para poder leerlo en voz alta.',
+      'Se muy breve y natural para poder leerlo en voz alta: maximo 2 frases, salvo emergencia.',
       'Recibes transcripciones limpias de audio. Si hay texto del usuario, nunca digas que no puedes procesar, escuchar o entender el audio.',
       'La transcripcion del ticket es memoria fuerte: usa mensajes de voz anteriores como contexto y no reinicies el caso.',
       'No afirmes que estas viendo una captura, imagen, video o adjunto salvo que la transcripcion incluya un adjunto o analisis visual real.',
       hasVisualEvidence
-        ? 'Hay evidencia visual o adjuntos en la transcripcion: puedes referirte solo a lo que este escrito ahi.'
+        ? 'Hay analisis visual real disponible: usalo para continuar sin pedir al usuario que copie el texto de la imagen.'
         : 'No hay adjuntos ni analisis visuales en la transcripcion: si el usuario dice que enviara una captura, espera a que la mande y no diagnostiques todavia.',
+      visualContext ? `Analisis visual reciente para este turno:\n${visualContext}` : '',
       'No incluyas prefijos como "NexaDesk:", "[Voz]", ":Global:" ni nombres de emojis.',
       'Si el caso requiere staff humano, empieza con [ESCALATE] y explica el motivo sin repetir menciones.',
       'Si el usuario quiere reportar acoso, amenazas, abuso o incumplimientos, pide datos clave y escala al staff cuando sea necesario.',
       'No inventes datos del servidor. Usa solo el contexto proporcionado.',
-      session.guildConfig.serverPrompt ? `Prompt del servidor:\n${session.guildConfig.serverPrompt}` : '',
-      session.guildConfig.serverInfo ? `Informacion del servidor:\n${session.guildConfig.serverInfo}` : '',
+      session.guildConfig.serverPrompt ? `Prompt del servidor:\n${compactVoiceContext(session.guildConfig.serverPrompt, 900)}` : '',
+      session.guildConfig.serverInfo ? `Informacion del servidor:\n${compactVoiceContext(session.guildConfig.serverInfo, 700)}` : '',
       `Servidor: ${session.guildName}`,
       `Usuario hablando: ${member.displayName}`
     ].filter(Boolean).join('\n\n');
@@ -294,7 +373,12 @@ export class VoiceSessionManager {
       content: `Ultimo mensaje transcrito de ${member.displayName}: ${sanitizeVoiceHistoryContent(transcript)}`
     });
 
-    const raw = await this.aiClient.generate({ system, messages });
+    const raw = await this.aiClient.generate({
+      system,
+      messages,
+      maxTokens: 115,
+      temperature: 0.18
+    });
     const parsed = parseVoiceEscalation(raw);
     if (!hasVisualEvidence && claimsToSeeVisualEvidence(parsed.publicAnswer)) {
       parsed.publicAnswer = 'Perfecto, mandame la captura cuando puedas y la reviso con el contexto del error que me has contado.';
@@ -304,6 +388,57 @@ export class VoiceSessionManager {
       ...parsed,
       mentionStaff: parsed.shouldEscalate && Boolean(session.guildConfig.staffRoleId)
     };
+  }
+
+  async #analyzeRecentVisualContext(session, transcript, history = []) {
+    if (!this.visualAnalyzer || !shouldVoiceSearchVisualContext(transcript, history)) return '';
+
+    const messages = await session.textChannel.messages.fetch({ limit: 10 }).catch(() => null);
+    if (!messages?.size) return '';
+
+    const recentVisualMessage = [...messages.values()]
+      .filter((item) => !item.author?.bot && hasVisualAttachments(item))
+      .filter((item) => Date.now() - Number(item.createdTimestamp ?? 0) <= 10 * 60_000)
+      .sort((a, b) => b.createdTimestamp - a.createdTimestamp)
+      .at(0);
+
+    if (!recentVisualMessage) return '';
+
+    const existing = [...history]
+      .reverse()
+      .find((entry) => entry.messageId === `voice-visual-${recentVisualMessage.id}`);
+    if (existing?.content?.trim()) return existing.content;
+
+    const analysis = await this.visualAnalyzer.analyzeMessageAttachments({
+      message: recentVisualMessage,
+      guildConfig: session.guildConfig,
+      force: true
+    }).catch((error) => {
+      console.warn(`Voice visual analysis failed for ${session.ticketChannelId}:`, error?.message ?? error);
+      return '';
+    });
+
+    if (!analysis?.trim()) return '';
+
+    const content = [
+      'Pruebas visuales analizadas para el modo voz:',
+      `Mensaje visual: ${recentVisualMessage.author?.username ?? 'usuario'} (${recentVisualMessage.id})`,
+      analysis
+    ].join('\n');
+
+    await this.storage.addTranscriptMessage({
+      guildId: session.guildId,
+      channelId: session.ticketChannelId,
+      messageId: `voice-visual-${recentVisualMessage.id}`,
+      authorId: session.voiceChannel.client.user.id,
+      authorName: session.voiceChannel.client.user.username,
+      authorBot: true,
+      role: 'system',
+      content,
+      createdAt: new Date().toISOString()
+    }).catch(() => {});
+
+    return content;
   }
 
   async #recordVoiceAiQualitySignal(session, member, transcript) {
@@ -388,6 +523,8 @@ export class VoiceSessionManager {
     const startedAt = Date.now();
     const { audioStream, contentType } = await createFishAudioStream(text, this.config);
     const pcmStream = decodeTtsStreamToDiscordPcm(audioStream, this.config);
+    session.currentAudioStream = audioStream;
+    session.currentPcmStream = pcmStream;
 
     session.connection.subscribe(session.player);
     await entersState(session.connection, VoiceConnectionStatus.Ready, 5_000);
@@ -565,10 +702,10 @@ async function createFishAudioStream(text, config = {}) {
   const payload = buildFishAudioPayload(text, config, {
     format: config.FISH_AUDIO_TTS_STREAM_FORMAT || 'mp3',
     latency: config.FISH_AUDIO_TTS_STREAM_LATENCY || 'balanced',
-    chunkLength: Number(config.FISH_AUDIO_TTS_STREAM_CHUNK_LENGTH) || 100,
-    minChunkLength: Number(config.FISH_AUDIO_TTS_STREAM_MIN_CHUNK_LENGTH) || 40,
-    maxChars: Math.min(Number(config.FISH_AUDIO_TTS_MAX_CHARS) || 320, Number(config.VOICE_TTS_MAX_CHARS) || 280, 360),
-    maxNewTokens: 512,
+    chunkLength: Number(config.FISH_AUDIO_TTS_STREAM_CHUNK_LENGTH) || 80,
+    minChunkLength: Number(config.FISH_AUDIO_TTS_STREAM_MIN_CHUNK_LENGTH) || 25,
+    maxChars: Math.min(Number(config.FISH_AUDIO_TTS_MAX_CHARS) || 260, Number(config.VOICE_TTS_MAX_CHARS) || 220, 280),
+    maxNewTokens: 384,
     mp3Bitrate: Number(config.FISH_AUDIO_TTS_STREAM_MP3_BITRATE) || 64
   });
 
@@ -708,8 +845,8 @@ async function synthesizeWithFishAudio(text, config = {}) {
     latency: config.FISH_AUDIO_TTS_LATENCY || 'balanced',
     chunkLength: Number(config.FISH_AUDIO_TTS_CHUNK_LENGTH) || 220,
     minChunkLength: 50,
-    maxChars: Number(config.FISH_AUDIO_TTS_MAX_CHARS) || 450,
-    maxNewTokens: 768,
+    maxChars: Number(config.FISH_AUDIO_TTS_MAX_CHARS) || 260,
+    maxNewTokens: 512,
     mp3Bitrate: 128
   });
   if (!payload.text) return Buffer.alloc(0);
@@ -793,6 +930,18 @@ function normalizeFishAudioText(text) {
   return String(text ?? '')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+function compactVoiceContext(content, maxChars) {
+  const normalized = String(content ?? '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const limit = Math.max(200, Number(maxChars) || 700);
+  if (normalized.length <= limit) return normalized;
+
+  const head = Math.floor(limit * 0.65);
+  const tail = Math.max(120, limit - head - 24);
+  return `${normalized.slice(0, head).trim()} ... ${normalized.slice(-tail).trim()}`;
 }
 
 function fitTextForFishAudio(text, maxChars) {
@@ -1167,10 +1316,10 @@ function buildVoiceConversationHistory(history, currentTranscript) {
     }))
     .filter((message) => message.content && !isOperationalVoiceMessage(message.content))
     .filter((message) => normalizeComparableText(message.content) !== normalizedCurrent)
-    .slice(-12)
+    .slice(-8)
     .map((message) => ({
       role: message.role,
-      content: `${message.authorName}: ${message.content}`.slice(0, 1_600)
+      content: `${message.authorName}: ${message.content}`.slice(0, 700)
     }));
 }
 
@@ -1216,10 +1365,27 @@ function isBadAudioProcessingAnswer(content) {
     || normalized.includes('no puedo escuchar el audio');
 }
 
-function hasRecentVisualEvidence(history = []) {
+function shouldSendUnclearVoiceNotice(session) {
+  const now = Date.now();
+  if (now - Number(session.lastUnclearVoiceNoticeAt ?? 0) < 12_000) return false;
+  session.lastUnclearVoiceNoticeAt = now;
+  return true;
+}
+
+function shouldVoiceSearchVisualContext(transcript, history = []) {
+  const normalized = normalizeComparableText([
+    transcript,
+    history.slice(-8).map((message) => message.content ?? '').join('\n')
+  ].join('\n'));
+
+  return /\b(?:captura|capturas|imagen|imagenes|foto|fotos|pantallazo|screenshot|adjunto|prueba|pruebas|ahi\s+las\s+tienes|te\s+la\s+mando|te\s+las\s+mando)\b/.test(normalized)
+    || history.slice(-8).some((message) => /\[adjunto:|captura recibida|imagen recibida|video recibido/i.test(String(message.content ?? '')));
+}
+
+function hasRecentAnalyzedVisualEvidence(history = []) {
   return history
     .slice(-30)
-    .some((message) => /\[adjunto:|pruebas visuales analizadas|analisis visual|captura recibida|imagen recibida|video recibido/i.test(String(message.content ?? '')));
+    .some((message) => /pruebas visuales analizadas|analisis visual|pruebas visuales analizadas para el modo voz/i.test(String(message.content ?? '')));
 }
 
 function claimsToSeeVisualEvidence(content) {

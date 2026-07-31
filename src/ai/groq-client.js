@@ -26,7 +26,7 @@ export class GroqClient {
       ]
     });
 
-    return completion.choices[0]?.message?.content?.trim() ?? '';
+    return sanitizeModelOutput(completion.choices[0]?.message?.content);
   }
 
   async analyzeImages({ system, prompt, images }) {
@@ -41,9 +41,9 @@ export class GroqClient {
     const completion = await this.client.chat.completions.create({
       model: this.visionModel,
       temperature: 0.1,
-      max_completion_tokens: 550,
+      max_completion_tokens: 350,
       messages: [
-        { role: 'system', content: system },
+        { role: 'system', content: `${system}\n\nResponde directo. No incluyas razonamiento interno ni etiquetas <think>.` },
         {
           role: 'user',
           content: [
@@ -57,7 +57,7 @@ export class GroqClient {
       ]
     });
 
-    return completion.choices[0]?.message?.content?.trim() ?? '';
+    return sanitizeModelOutput(completion.choices[0]?.message?.content);
   }
 
   async transcribeAudio({ audioBuffer, fileName = 'nexadesk-voice.wav', model }) {
@@ -117,6 +117,20 @@ export class GroqClient {
 
     return Buffer.from(await response.arrayBuffer());
   }
+}
+
+function sanitizeModelOutput(content) {
+  const text = String(content ?? '').trim();
+  if (!text) return '';
+
+  const withoutClosedThinking = text.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+  if (withoutClosedThinking && !/^<think>/i.test(withoutClosedThinking)) {
+    return withoutClosedThinking;
+  }
+
+  return text
+    .replace(/<\/?think>/gi, '')
+    .trim();
 }
 
 function splitSpeechInput(text) {

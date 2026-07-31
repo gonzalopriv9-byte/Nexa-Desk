@@ -64,6 +64,7 @@ import { buildReleaseState, findPendingFeatureByCommand } from './release-gates.
 import { SecurityManager, SECURITY_LEVELS, normalizeSecurityConfig, normalizeSecurityLevel, summarizeSecurityConfig } from './security.js';
 import { analyzeGuildChannelsForDiscovery, hasUsefulDiscovery, normalizeChannelNameForDiscovery, normalizeDiscoveryConfig } from './server-discovery.js';
 import { buildTranscriptFileName, buildTranscriptText } from './transcripts.js';
+import { hasVisualAttachments } from './ai/visual-analyzer.js';
 import { createTicketFlowCard } from './welcome-card.js';
 import { formatWelcomeTemplate as formatMemberWelcomeTemplate, normalizeWelcomeConfig } from './welcome.js';
 import { XNPROTECT_BLACKLIST_CREDIT, checkXnProtectGlobalBan } from './xnprotect-blacklist.js';
@@ -602,6 +603,11 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
     const staffHandoff = await handleStaffHandoffMessage({ storage, message, ticket, guildConfig, client });
     if (staffHandoff.ticket) ticket = staffHandoff.ticket;
     if (staffHandoff.handled) return;
+
+    if (hasVisualAttachments(message) && isActiveVoiceTicketMessage(voiceManager, message)) {
+      await voiceManager.ingestVisualMessage({ message, guildConfig });
+      return;
+    }
 
     if (!config.AI_AUTO_REPLY) return;
     const activeResponseKey = message.channelId;
@@ -2300,6 +2306,11 @@ function isVoiceConversationRequest(content = '') {
     /\b(?:chat\s+de\s+voz|sala\s+de\s+voz|canal\s+de\s+voz|soporte\s+por\s+voz|ticket\s+por\s+voz)\b/,
     /\b(?:crea|abre|monta|haz)\b.*\b(?:voz|voice|vc)\b/
   ].some((pattern) => pattern.test(text));
+}
+
+function isActiveVoiceTicketMessage(voiceManager, message) {
+  const session = voiceManager?.getSession?.(message.guildId);
+  return Boolean(session && !session.stopped && session.ticketChannelId === message.channelId);
 }
 
 function buildMessageInteractionContext(message) {

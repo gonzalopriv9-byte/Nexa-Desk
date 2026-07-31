@@ -86,7 +86,7 @@ function shouldFallbackAiError(error) {
     .join(' ')
     .toLowerCase();
 
-  return /api.?key|unauthori[sz]ed|forbidden|invalid.?key|clave|token|rate.?limit|quota|limit.*exceed|exceed.*limit|token.*exceed|exceed.*token|insufficient|temporar|timeout|timed out|overloaded|unavailable|tpm|rpm|aborted|provider_timeout|empty_response/.test(message);
+  return /api.?key|unauthori[sz]ed|forbidden|invalid.?key|clave|token|rate.?limit|quota|limit.*exceed|exceed.*limit|token.*exceed|exceed.*token|insufficient|temporar|timeout|timed out|overloaded|unavailable|tpm|rpm|aborted|provider_timeout|empty_response|failed\s+to\s+retrieve\s+media|model_not_found|does\s+not\s+exist|decommissioned/.test(message);
 }
 
 function decorateAiFallbackError(error, providerName, method) {

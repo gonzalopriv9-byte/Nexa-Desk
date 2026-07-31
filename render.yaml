@@ -70,12 +70,14 @@ services:
         sync: false
       - key: GROQ_MODEL
         value: llama-3.1-8b-instant
+      - key: GROQ_VISION_MODEL
+        value: qwen/qwen3.6-27b
       - key: FISH_AUDIO_API_KEY
         sync: false
       - key: FISH_AUDIO_TTS_MODEL
         value: s2.1-pro-free
       - key: FISH_AUDIO_TTS_REFERENCE_ID
-        value: 38ae051b0e95429e8f05ace75729a253
+        value: 21adf3cda02a4aa88dc593353cc9d715
       - key: FISH_AUDIO_TTS_FORMAT
         value: opus
       - key: FISH_AUDIO_TTS_LATENCY
@@ -83,23 +85,23 @@ services:
       - key: FISH_AUDIO_TTS_STREAM_FORMAT
         value: mp3
       - key: FISH_AUDIO_TTS_STREAM_LATENCY
-        value: balanced
+        value: low
       - key: FISH_AUDIO_TTS_STREAM_CHUNK_LENGTH
-        value: 100
+        value: 80
       - key: FISH_AUDIO_TTS_STREAM_MIN_CHUNK_LENGTH
-        value: 40
+        value: 25
       - key: FISH_AUDIO_TTS_STREAM_MP3_BITRATE
         value: 64
       - key: FISH_AUDIO_TTS_OPUS_BITRATE
         value: 32000
       - key: FISH_AUDIO_TTS_SPEED
-        value: 1.04
+        value: 1.08
       - key: FISH_AUDIO_TTS_VOLUME
         value: 0
       - key: FISH_AUDIO_TTS_CHUNK_LENGTH
         value: 220
       - key: FISH_AUDIO_TTS_MAX_CHARS
-        value: 320
+        value: 260
       - key: FISH_AUDIO_TIMEOUT_MS
         value: 5000
       - key: VOICE_TTS_PROVIDER
@@ -109,7 +111,7 @@ services:
       - key: VOICE_TTS_PREWARM_ENABLED
         value: true
       - key: VOICE_TTS_MAX_CHARS
-        value: 280
+        value: 220
       - key: AI_PROVIDER
         value: groq
       - key: AI_ACTIONS_ENABLED
