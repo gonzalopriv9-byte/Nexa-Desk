@@ -1,4 +1,5 @@
 import {
+  AttachmentBuilder,
   AuditLogEvent,
   ChannelType,
   EmbedBuilder,
@@ -12,9 +13,13 @@ const TOPGG_ERROR_CACHE_MS = 1000 * 60 * 15;
 const LOCKDOWN_COOLDOWN_MS = 1000 * 60;
 const CHANNEL_CLEANUP_MAX = 12;
 const LOCKDOWN_CHANNEL_MAX = 20;
+const RAID_EVIDENCE_SNIPPET_MAX = 520;
 const CHANNEL_LOCKDOWN_AUDIT_TYPES = new Set([
   AuditLogEvent.ChannelCreate,
   AuditLogEvent.ChannelUpdate,
+  AuditLogEvent.IntegrationCreate,
+  AuditLogEvent.IntegrationDelete,
+  AuditLogEvent.IntegrationUpdate,
   AuditLogEvent.WebhookCreate,
   AuditLogEvent.WebhookDelete,
   AuditLogEvent.WebhookUpdate
@@ -184,6 +189,10 @@ export class SecurityManager {
       return this.handleWebhookMessageCreate({ message, guildConfig, security });
     }
 
+    if (isExternalApplicationMessage(message)) {
+      return this.handleExternalApplicationMessageCreate({ message, guildConfig, security });
+    }
+
     const urls = extractMessageUrls(message);
     if (security.antiScamLinks && urls.length) {
       const handledLinkThreat = await this.handleMessageLinks({ message, guildConfig, security, urls });
@@ -225,26 +234,50 @@ export class SecurityManager {
     const repeatWarning = now - warnedAt < 120000;
     this.lastFloodWarnings.set(warningKey, now);
 
-    const isolation = await this.isolateFloodActor(message, security, {
-      repeated,
-      flooding,
-      repeatWarning
+    const raidReason = repeated
+      ? 'Rafaga de mensajes repetidos compatible con bot personal/selfbot.'
+      : 'Flood de mensajes compatible con raid o automatizacion externa.';
+    const lockdownResult = await this.applyEmergencyLockdown({
+      guild: message.guild,
+      channelIds: [message.channelId],
+      reason: `NexaDesk Security Guard: ${raidReason}`
+    });
+    const evidence = buildRaidEvidence({
+      guild: message.guild,
+      channel: message.channel,
+      sourceLabel: message.author.bot ? 'Bot instalado o app externa' : 'Cuenta de usuario / posible selfbot',
+      responsible: message.author,
+      reason: raidReason,
+      bucket,
+      message,
+      actionSummary: `${deleted} mensajes borrados. ${lockdownResult}.`
+    });
+    const isolation = await this.isolateSensitiveExecutor({
+      guild: message.guild,
+      executor: message.author,
+      security,
+      reason: `NexaDesk Security Guard: ${raidReason}`,
+      banResponsible: true,
+      evidence,
+      incidentSummary: `${message.author.tag} envio ${bucket.length} mensajes en ${security.floodWindowSeconds}s en #${message.channel?.name ?? message.channelId}.`
     });
 
     await this.sendSecurityLog({
       guild: message.guild,
       config: security,
-      title: 'Anti-flood activado',
-      description: `${message.author} envio demasiados mensajes en poco tiempo. NexaDesk limpio la rafaga y aislo al autor si tenia permisos suficientes.`,
+      title: 'Anti-flood/anti-raid activado',
+      description: `${message.author} envio demasiados mensajes en poco tiempo. NexaDesk limpio la rafaga, bloqueo el canal e intento sancionar al responsable.`,
       fields: [
         { name: 'Usuario', value: `${message.author.tag} (${message.author.id})`, inline: true },
         { name: 'Tipo', value: message.author.bot ? 'Bot' : 'Usuario', inline: true },
         { name: 'Canal', value: `${message.channel}`, inline: true },
         { name: 'Mensajes detectados', value: `${bucket.length}/${security.floodLimit}`, inline: true },
         { name: 'Borrados', value: String(deleted), inline: true },
+        { name: 'Lockdown', value: lockdownResult, inline: true },
         { name: 'Aislamiento', value: isolation }
       ],
-      important: true
+      important: true,
+      evidence
     });
 
     return true;
@@ -297,22 +330,40 @@ export class SecurityManager {
     );
     if (!risky) return false;
 
+    const threatReason = buildWebhookThreatReason({ massMention, repeated, flooding, linkAnalysis, offensiveAnalysis, spamAnalysis });
+    const responsible = await this.resolveWebhookResponsible(message);
     const deleted = await this.deleteWebhookBurstMessages(message, bucket, security);
     const webhookAction = await this.deleteWebhookSource(
       message,
       `NexaDesk Security Guard: webhook usado para ${massMention ? 'mention spam' : 'spam/raid'}`
     );
-    const auditEntry = await this.findRecentWebhookAuditEntry(message);
-    const executor = auditEntry?.executor;
-    const isolation = executor && !this.isTrustedExecutor(message.guild, executor.id)
+    const lockdownResult = await this.applyEmergencyLockdown({
+      guild: message.guild,
+      channelIds: [message.channelId],
+      reason: 'NexaDesk Security Guard: canal bloqueado por raid desde webhook/app externa'
+    });
+    const evidence = buildRaidEvidence({
+      guild: message.guild,
+      channel: message.channel,
+      sourceLabel: `Webhook ${message.webhookId}`,
+      responsible: responsible.user,
+      reason: threatReason,
+      bucket,
+      message,
+      actionSummary: `${deleted} mensajes borrados. ${webhookAction}. ${lockdownResult}.`
+    });
+    const isolation = responsible.user && !this.isTrustedExecutor(message.guild, responsible.user.id)
       ? await this.isolateSensitiveExecutor({
           guild: message.guild,
-          executor,
+          executor: responsible.user,
           security,
-          reason: 'NexaDesk Security Guard: webhook o app externa usada para spam/raid',
-          topGgDecision: executor.bot ? await this.shouldBanBotBecauseMissingTopGg(executor) : null
+          reason: `NexaDesk Security Guard: webhook/app externa usada para raid. ${threatReason}`,
+          topGgDecision: responsible.user.bot ? await this.shouldBanBotBecauseMissingTopGg(responsible.user) : null,
+          banResponsible: true,
+          evidence,
+          incidentSummary: `Se detecto actividad de raid desde un webhook/app externa en #${message.channel?.name ?? message.channelId}. Motivo: ${threatReason}`
         })
-      : 'No pude identificar al creador del webhook en audit logs. Webhook neutralizado si Discord lo permitio.';
+      : 'No pude identificar al responsable humano en webhook/audit logs. Webhook neutralizado y canal bloqueado si Discord lo permitio.';
 
     await this.sendSecurityLog({
       guild: message.guild,
@@ -322,13 +373,117 @@ export class SecurityManager {
       fields: [
         { name: 'Canal', value: `${message.channel}`, inline: true },
         { name: 'Webhook', value: `${message.webhookId}`, inline: true },
-        executor ? { name: 'Ejecutor', value: `${executor.tag} (${executor.id})`, inline: true } : null,
-        { name: 'Motivo', value: buildWebhookThreatReason({ massMention, repeated, flooding, linkAnalysis, offensiveAnalysis, spamAnalysis }) },
+        responsible.user ? { name: 'Responsable', value: `${responsible.user.tag} (${responsible.user.id})`, inline: true } : null,
+        { name: 'Rastro', value: responsible.source || 'Sin rastro claro en integraciones/audit logs.', inline: true },
+        { name: 'Motivo', value: threatReason },
         { name: 'Mensajes borrados', value: String(deleted), inline: true },
         { name: 'Webhook', value: webhookAction, inline: true },
+        { name: 'Lockdown', value: lockdownResult, inline: true },
         { name: 'Aislamiento', value: isolation }
       ],
-      important: true
+      important: true,
+      evidence
+    });
+
+    return true;
+  }
+
+  async handleExternalApplicationMessageCreate({ message, guildConfig, security }) {
+    if (!security.antiFlood && !security.antiScamLinks && !security.antiOffensive) return false;
+
+    const sourceId = message.applicationId ?? message.author?.id ?? 'unknown';
+    const key = `${message.guild.id}:external-app:${sourceId}`;
+    const now = Date.now();
+    const windowMs = security.floodWindowSeconds * 1000;
+    const bucket = (this.messageBuckets.get(key) ?? []).filter((entry) => now - entry.at <= windowMs);
+    const content = normalizeContent(message.content);
+    bucket.push({
+      at: now,
+      content,
+      messageId: message.id,
+      channelId: message.channelId,
+      applicationId: message.applicationId ?? null
+    });
+    this.messageBuckets.set(key, bucket);
+
+    const repeated = Boolean(content && bucket.filter((entry) => entry.content === content).length >= 2);
+    const flooding = bucket.length >= Math.max(3, Math.min(security.floodLimit, 4));
+    const massMention = security.antiFlood && isMassMentionMessage(message);
+    const urls = extractMessageUrls(message);
+
+    let linkAnalysis = null;
+    if (security.antiScamLinks && urls.length) {
+      linkAnalysis = await this.reviewMessageLinks({ message, guildConfig, urls });
+    }
+
+    let offensiveAnalysis = null;
+    if (security.antiOffensive && message.content && !shouldSkipAutomodContent(message.content)) {
+      offensiveAnalysis = await reviewXnProtectAutomod(message.content);
+    }
+
+    let spamAnalysis = null;
+    if (security.antiFlood && (shouldReviewSpamContent(message) || repeated || flooding || massMention)) {
+      spamAnalysis = await this.reviewSpamContent({ message, guildConfig });
+    }
+
+    const risky = Boolean(
+      massMention
+      || repeated
+      || flooding
+      || shouldBlockLinkThreat(linkAnalysis)
+      || offensiveAnalysis?.malicious
+      || shouldBlockSpamThreat(spamAnalysis)
+    );
+    if (!risky) return false;
+
+    const threatReason = buildWebhookThreatReason({ massMention, repeated, flooding, linkAnalysis, offensiveAnalysis, spamAnalysis });
+    const responsible = await this.resolveExternalApplicationResponsible(message);
+    const deleted = await this.deleteFloodBurstMessages(message, bucket, security);
+    const lockdownResult = await this.applyEmergencyLockdown({
+      guild: message.guild,
+      channelIds: [message.channelId],
+      reason: 'NexaDesk Security Guard: canal bloqueado por raid desde app externa'
+    });
+    const evidence = buildRaidEvidence({
+      guild: message.guild,
+      channel: message.channel,
+      sourceLabel: `App externa ${sourceId}`,
+      responsible: responsible.user,
+      reason: threatReason,
+      bucket,
+      message,
+      actionSummary: `${deleted} mensajes borrados. ${lockdownResult}.`
+    });
+    const isolation = responsible.user && !this.isTrustedExecutor(message.guild, responsible.user.id)
+      ? await this.isolateSensitiveExecutor({
+          guild: message.guild,
+          executor: responsible.user,
+          security,
+          reason: `NexaDesk Security Guard: app externa usada para raid. ${threatReason}`,
+          topGgDecision: responsible.user.bot ? await this.shouldBanBotBecauseMissingTopGg(responsible.user) : null,
+          banResponsible: true,
+          evidence,
+          incidentSummary: `Se detecto actividad de raid desde una app externa en #${message.channel?.name ?? message.channelId}. Motivo: ${threatReason}`
+        })
+      : 'No pude identificar al responsable humano en interaction metadata/audit logs. Canal bloqueado y mensajes limpiados si Discord lo permitio.';
+
+    await this.sendSecurityLog({
+      guild: message.guild,
+      config: security,
+      title: 'App externa bloqueada',
+      description: `${message.author?.tag ?? 'App externa'} publico contenido sospechoso sin estar como miembro normal del servidor.`,
+      fields: [
+        { name: 'Canal', value: `${message.channel}`, inline: true },
+        { name: 'Aplicacion', value: `${sourceId}`, inline: true },
+        responsible.user ? { name: 'Responsable', value: `${responsible.user.tag} (${responsible.user.id})`, inline: true } : null,
+        { name: 'Rastro', value: responsible.source || 'Sin rastro claro en metadata/audit logs.', inline: true },
+        { name: 'Motivo', value: threatReason },
+        { name: 'Mensajes borrados', value: String(deleted), inline: true },
+        { name: 'Lockdown', value: lockdownResult, inline: true },
+        { name: 'Aislamiento', value: isolation }
+      ],
+      important: true,
+      evidence
     });
 
     return true;
@@ -403,24 +558,44 @@ export class SecurityManager {
     this.messageBuckets.set(key, bucket);
 
     const deleted = await this.deleteFloodBurstMessages(message, bucket, security);
-    const isolation = await this.isolateFloodActor(message, security, {
-      repeated: true,
-      flooding: true,
-      repeatWarning: true,
-      reasonOverride: `NexaDesk Security Guard: ${analysis.reason || 'spam detectado por IA'}`
+    const lockdownResult = await this.applyEmergencyLockdown({
+      guild: message.guild,
+      channelIds: [message.channelId],
+      reason: `NexaDesk Security Guard: ${analysis.reason || 'spam/raid detectado por IA'}`
+    });
+    const evidence = buildRaidEvidence({
+      guild: message.guild,
+      channel: message.channel,
+      sourceLabel: message.author.bot ? 'Bot/app de spam' : 'Cuenta de usuario / posible selfbot',
+      responsible: message.author,
+      reason: analysis.reason || 'Spam o raid detectado por IA',
+      bucket,
+      message,
+      actionSummary: `${deleted} mensajes borrados. ${lockdownResult}.`
+    });
+    const isolation = await this.isolateSensitiveExecutor({
+      guild: message.guild,
+      executor: message.author,
+      security,
+      reason: `NexaDesk Security Guard: ${analysis.reason || 'spam detectado por IA'}`,
+      banResponsible: true,
+      evidence,
+      incidentSummary: `${message.author.tag} publico contenido clasificado como spam/raid en #${message.channel?.name ?? message.channelId}.`
     });
 
     await this.sendSecurityLog({
       guild: message.guild,
       config: security,
-      title: 'Spam IA bloqueado',
-      description: `${message.author} envio contenido clasificado como spam, raid o promocion fraudulenta. NexaDesk limpio la rafaga reciente del autor.`,
+      title: 'Spam IA / raid bloqueado',
+      description: `${message.author} envio contenido clasificado como spam, raid o promocion fraudulenta. NexaDesk limpio la rafaga, bloqueo el canal e intento sancionar al responsable.`,
       fields: [
         ...buildSpamThreatFields({ message, analysis }),
         { name: 'Mensajes borrados', value: String(deleted), inline: true },
+        { name: 'Lockdown', value: lockdownResult, inline: true },
         { name: 'Aislamiento', value: isolation }
       ],
-      important: true
+      important: true,
+      evidence
     });
 
     return true;
@@ -480,11 +655,29 @@ export class SecurityManager {
 
   async handleMentionSpam({ message, security }) {
     const deleted = await message.delete().then(() => true).catch(() => false);
-    const isolation = await this.isolateFloodActor(message, security, {
-      repeated: true,
-      flooding: true,
-      repeatWarning: true,
-      reasonOverride: 'NexaDesk Security Guard: mention spam o ping masivo'
+    const lockdownResult = await this.applyEmergencyLockdown({
+      guild: message.guild,
+      channelIds: [message.channelId],
+      reason: 'NexaDesk Security Guard: mention spam o ping masivo'
+    });
+    const evidence = buildRaidEvidence({
+      guild: message.guild,
+      channel: message.channel,
+      sourceLabel: message.author.bot ? 'Bot/app con mention spam' : 'Cuenta de usuario / posible selfbot',
+      responsible: message.author,
+      reason: 'Mention spam o ping masivo',
+      bucket: [{ at: Date.now(), content: message.content, channelId: message.channelId, messageId: message.id }],
+      message,
+      actionSummary: `${deleted ? 1 : 0} mensajes borrados. ${lockdownResult}.`
+    });
+    const isolation = await this.isolateSensitiveExecutor({
+      guild: message.guild,
+      executor: message.author,
+      security,
+      reason: 'NexaDesk Security Guard: mention spam o ping masivo',
+      banResponsible: true,
+      evidence,
+      incidentSummary: `${message.author.tag} envio mention spam en #${message.channel?.name ?? message.channelId}.`
     });
 
     const mentionStats = getMentionStats(message);
@@ -499,9 +692,11 @@ export class SecurityManager {
         { name: 'Canal', value: `${message.channel}`, inline: true },
         { name: 'Menciones', value: `everyone/here: ${mentionStats.everyone ? 'si' : 'no'} | roles: ${mentionStats.roles} | usuarios: ${mentionStats.users}` },
         { name: 'Mensaje borrado', value: deleted ? 'Si' : 'No pude borrarlo por permisos o antiguedad', inline: true },
+        { name: 'Lockdown', value: lockdownResult, inline: true },
         { name: 'Aislamiento', value: isolation }
       ],
-      important: true
+      important: true,
+      evidence
     });
 
     return true;
@@ -844,6 +1039,21 @@ export class SecurityManager {
     }
   }
 
+  async handleGuildIntegrationsUpdate(guild) {
+    if (!guild) return;
+    for (const auditType of [AuditLogEvent.IntegrationCreate, AuditLogEvent.IntegrationUpdate, AuditLogEvent.IntegrationDelete]) {
+      const handled = await this.handleAuditAction(guild, {
+        targetId: null,
+        channelId: null,
+        auditType,
+        label: 'cambio de integracion/app externa del servidor',
+        severity: 'critical',
+        targetName: guild.name ?? null
+      });
+      if (handled) return;
+    }
+  }
+
   async handleGuildBanAdd(ban) {
     await this.handleAuditAction(ban?.guild, {
       targetId: ban?.user?.id,
@@ -929,16 +1139,28 @@ export class SecurityManager {
 
     if (bucket.length < limit) return true;
 
+    const isLabSimulation = this.isSecurityLabBot(executor.id);
+    const lockdownTargetIds = collectLockdownTargetChannelIds(bucket);
+    const evidence = buildRaidEvidence({
+      guild,
+      channel: lockdownTargetIds[0] ? await guild.channels.fetch(lockdownTargetIds[0]).catch(() => null) : null,
+      sourceLabel: 'Anti-nuke audit logs',
+      responsible: executor,
+      reason: bucket.map((item) => item.riskReason || item.label).slice(-6).join(' | '),
+      bucket,
+      actionSummary: `Limite superado: ${bucket.length}/${limit} acciones sensibles.`
+    });
     const isolation = await this.isolateSensitiveExecutor({
       guild,
       executor,
       security,
       reason: `NexaDesk Security Guard: ${bucket.length} acciones sensibles en ${security.nukeWindowSeconds}s`,
-      topGgDecision: botTopGgDecision
+      topGgDecision: botTopGgDecision,
+      banResponsible: true,
+      evidence,
+      incidentSummary: `${executor.tag} supero el limite anti-nuke con ${bucket.length} acciones sensibles en ${security.nukeWindowSeconds}s.`
     });
 
-    const isLabSimulation = this.isSecurityLabBot(executor.id);
-    const lockdownTargetIds = collectLockdownTargetChannelIds(bucket);
     const cleanupResult = auditType === AuditLogEvent.ChannelCreate
       ? await this.deleteRecentCreatedChannels({
         guild,
@@ -968,20 +1190,86 @@ export class SecurityManager {
         lockdownResult ? { name: 'Lockdown rapido', value: lockdownResult } : null,
         { name: 'Respuesta', value: isLabSimulation ? 'Simulacion registrada. Bot de laboratorio no aislado ni bloqueado.' : isolation }
       ],
-      important: true
+      important: true,
+      evidence
     });
     return true;
   }
 
-  async findRecentWebhookAuditEntry(message) {
-    const direct = await this.findRecentAuditEntry(message.guild, AuditLogEvent.WebhookCreate, message.webhookId);
-    if (direct) return direct;
-    const updated = await this.findRecentAuditEntry(message.guild, AuditLogEvent.WebhookUpdate, message.webhookId);
-    if (updated) return updated;
-    return this.findRecentAuditEntry(message.guild, AuditLogEvent.WebhookCreate, null);
+  async resolveWebhookResponsible(message) {
+    const webhook = await message.fetchWebhook?.().catch(() => null);
+    const owner = normalizeResponsibleUser(webhook?.owner);
+    if (owner && !this.isTrustedExecutor(message.guild, owner.id)) {
+      return { user: owner, source: 'webhook.owner' };
+    }
+
+    const auditEntry = await this.findRecentWebhookAuditEntry(message);
+    if (auditEntry?.executor) {
+      return { user: auditEntry.executor, source: `audit:${auditEntry.action ?? 'webhook'}` };
+    }
+
+    const integrationEntry = await this.findRecentIntegrationAuditEntry(message.guild);
+    if (integrationEntry?.executor) {
+      return { user: integrationEntry.executor, source: `audit:${integrationEntry.action ?? 'integration'}` };
+    }
+
+    return { user: null, source: 'No encontrado en webhook.owner, webhooks audit logs ni integrations audit logs.' };
   }
 
-  async isolateSensitiveExecutor({ guild, executor, security, reason, topGgDecision = null }) {
+  async resolveExternalApplicationResponsible(message) {
+    const metadataUser = normalizeResponsibleUser(
+      message.interactionMetadata?.user
+      ?? message.interaction?.user
+      ?? message.interactionMetadata?.authorizingIntegrationOwners?.user
+    );
+    if (metadataUser && !this.isTrustedExecutor(message.guild, metadataUser.id)) {
+      return { user: metadataUser, source: 'interaction metadata' };
+    }
+
+    const integrationEntry = await this.findRecentIntegrationAuditEntry(message.guild, message.applicationId ?? message.author?.id);
+    if (integrationEntry?.executor) {
+      return { user: integrationEntry.executor, source: `audit:${integrationEntry.action ?? 'integration'}` };
+    }
+
+    return { user: null, source: 'No encontrado en interaction metadata ni integrations audit logs.' };
+  }
+
+  async findRecentWebhookAuditEntry(message) {
+    await sleep(650);
+    const auditTypes = [AuditLogEvent.WebhookCreate, AuditLogEvent.WebhookUpdate, AuditLogEvent.WebhookDelete];
+    const now = Date.now();
+    for (const auditType of auditTypes) {
+      const logs = await message.guild.fetchAuditLogs({ type: auditType, limit: 10 }).catch(() => null);
+      const entry = logs?.entries?.find((item) => {
+        if (now - item.createdTimestamp > 1000 * 60 * 20) return false;
+        const targetId = item.target?.id ?? item.targetId;
+        const channelId = item.target?.channelId ?? item.extra?.channel?.id ?? item.extra?.channelId;
+        return targetId === message.webhookId || channelId === message.channelId || !targetId;
+      });
+      if (entry) return entry;
+    }
+    return null;
+  }
+
+  async findRecentIntegrationAuditEntry(guild, applicationId = null) {
+    await sleep(650);
+    const auditTypes = [AuditLogEvent.IntegrationCreate, AuditLogEvent.IntegrationUpdate, AuditLogEvent.IntegrationDelete];
+    const now = Date.now();
+    for (const auditType of auditTypes) {
+      const logs = await guild.fetchAuditLogs({ type: auditType, limit: 10 }).catch(() => null);
+      const entry = logs?.entries?.find((item) => {
+        if (now - item.createdTimestamp > 1000 * 60 * 20) return false;
+        if (!applicationId) return true;
+        const targetId = item.target?.id ?? item.targetId;
+        const appId = item.target?.applicationId ?? item.extra?.applicationId;
+        return targetId === applicationId || appId === applicationId || !targetId;
+      });
+      if (entry) return entry;
+    }
+    return null;
+  }
+
+  async isolateSensitiveExecutor({ guild, executor, security, reason, topGgDecision = null, banResponsible = false, evidence = null, incidentSummary = '' }) {
     if (!executor?.id) return 'No hay executor identificable.';
     if (this.isTrustedExecutor(guild, executor.id)) return 'Executor confiable: no se aplica aislamiento automatico.';
     if (this.isSecurityLabBot(executor.id)) {
@@ -994,6 +1282,24 @@ export class SecurityManager {
     const actions = [];
     if (!member.user.bot) {
       actions.push(await this.stripDangerousMemberRoles(member, reason));
+    }
+
+    if (banResponsible && !member.user.bot) {
+      if (member.bannable && guild.members.me?.permissions.has(PermissionFlagsBits.BanMembers)) {
+        await this.notifyRaidResponsible({
+          member,
+          guild,
+          reason,
+          evidence,
+          incidentSummary,
+          actionLabel: 'baneado'
+        });
+        const banned = await member.ban({ reason }).then(() => true).catch(() => false);
+        actions.push(banned ? 'Responsable humano baneado preventivamente.' : 'No pude banear al responsable humano.');
+        if (banned) return compactActionSummary(actions);
+      } else {
+        actions.push('No pude banear al responsable humano por permisos o jerarquia.');
+      }
     }
 
     if (member.moderatable && guild.members.me?.permissions.has(PermissionFlagsBits.ModerateMembers)) {
@@ -1012,6 +1318,14 @@ export class SecurityManager {
         return compactActionSummary(actions);
       }
       if (member.bannable && guild.members.me?.permissions.has(PermissionFlagsBits.BanMembers)) {
+        await this.notifyRaidResponsible({
+          member,
+          guild,
+          reason,
+          evidence,
+          incidentSummary,
+          actionLabel: 'baneado'
+        });
         const banned = await member.ban({ reason }).then(() => true).catch(() => false);
         actions.push(banned ? 'Bot baneado preventivamente.' : 'No pude banear el bot.');
       } else if (member.kickable && guild.members.me?.permissions.has(PermissionFlagsBits.KickMembers)) {
@@ -1023,6 +1337,21 @@ export class SecurityManager {
     }
 
     return compactActionSummary(actions);
+  }
+
+  async notifyRaidResponsible({ member, guild, reason, evidence = null, incidentSummary = '', actionLabel = 'sancionado' }) {
+    const lines = [
+      `NexaDesk Security Guard ha detectado actividad compatible con raid en **${guild.name}**.`,
+      `Tu cuenta/bot ha sido ${actionLabel} preventivamente.`,
+      '',
+      `Motivo: ${String(reason ?? 'actividad de raid').slice(0, 1300)}`,
+      incidentSummary ? `Resumen: ${String(incidentSummary).slice(0, 1300)}` : null,
+      '',
+      'Si crees que es un error, contacta con el staff del servidor y aporta contexto.'
+    ].filter(Boolean);
+    const payload = { content: lines.join('\n') };
+    if (evidence) payload.files = [createEvidenceAttachment(evidence)];
+    await member.send(payload).catch(() => null);
   }
 
   async stripDangerousMemberRoles(member, reason) {
@@ -1102,6 +1431,7 @@ export class SecurityManager {
     if (!targetChannels.length) return 'Lockdown omitido: los canales objetivo ya no existen o no son bloqueables.';
 
     let locked = 0;
+    let roleLocks = 0;
     let failed = 0;
     for (const channel of targetChannels) {
       const ok = await channel.permissionOverwrites.edit(guild.roles.everyone, {
@@ -1112,11 +1442,32 @@ export class SecurityManager {
       }, { reason }).then(() => true).catch(() => false);
       if (ok) locked += 1;
       else failed += 1;
+
+      const explicitRoleOverwrites = [...(channel.permissionOverwrites?.cache?.values?.() ?? [])]
+        .filter((overwrite) => overwrite.id !== guild.roles.everyone.id && guild.roles.cache.has(overwrite.id))
+        .filter((overwrite) => (
+          overwrite.allow?.has?.(PermissionFlagsBits.SendMessages)
+          || overwrite.allow?.has?.(PermissionFlagsBits.CreatePublicThreads)
+          || overwrite.allow?.has?.(PermissionFlagsBits.CreatePrivateThreads)
+          || overwrite.allow?.has?.(PermissionFlagsBits.AddReactions)
+        ))
+        .slice(0, 25);
+
+      for (const overwrite of explicitRoleOverwrites) {
+        const roleOk = await channel.permissionOverwrites.edit(overwrite.id, {
+          SendMessages: false,
+          CreatePublicThreads: false,
+          CreatePrivateThreads: false,
+          AddReactions: false
+        }, { reason }).then(() => true).catch(() => false);
+        if (roleOk) roleLocks += 1;
+        else failed += 1;
+      }
     }
 
     this.lockdownCooldowns.set(cooldownKey, now);
     if (!locked) return `No pude bloquear el canal objetivo (${failed} fallidos).`;
-    return `Lockdown aplicado en ${locked} canal(es) objetivo${failed ? ` (${failed} fallidos)` : ''}.`;
+    return `Lockdown aplicado en ${locked} canal(es) objetivo${roleLocks ? ` y ${roleLocks} permisos de rol explicitos` : ''}${failed ? ` (${failed} fallidos)` : ''}.`;
   }
 
   async findRecentAuditEntry(guild, auditType, targetId) {
@@ -1128,7 +1479,7 @@ export class SecurityManager {
       if (now - entry.createdTimestamp > 10000) return false;
       if (!targetId) return true;
       const entryTargetId = entry.target?.id ?? entry.targetId;
-      return !entryTargetId || entryTargetId === targetId;
+      return entryTargetId === targetId;
     }) ?? null;
   }
 
@@ -1247,24 +1598,27 @@ export class SecurityManager {
     return result;
   }
 
-  async sendSecurityLog({ guild, config, title, description, fields = [], important = false }) {
+  async sendSecurityLog({ guild, config, title, description, fields = [], important = false, evidence = null }) {
     const embed = new EmbedBuilder()
       .setColor(0xffffff)
       .setTitle(`${EMOJIS.wifi} NexaDesk Security Guard - ${title}`)
       .setDescription(description)
       .addFields(fields.filter((field) => field?.name && field?.value).slice(0, 8))
       .setTimestamp(new Date());
+    if (evidence?.fileName) embed.setImage(`attachment://${evidence.fileName}`);
+
+    const files = evidence ? [createEvidenceAttachment(evidence)] : [];
 
     const channel = config.logChannelId
       ? await guild.channels.fetch(config.logChannelId).catch(() => null)
       : null;
     if (channel?.type === ChannelType.GuildText || channel?.isTextBased?.()) {
-      await channel.send({ embeds: [embed], allowedMentions: { parse: [] } }).catch(() => null);
+      await channel.send({ embeds: [embed], files, allowedMentions: { parse: [] } }).catch(() => null);
     }
 
     if (important || config.alertOwner) {
       const owner = await guild.fetchOwner().catch(() => null);
-      await owner?.send({ embeds: [embed] }).catch(() => null);
+      await owner?.send({ embeds: [embed], files: evidence ? [createEvidenceAttachment(evidence)] : [] }).catch(() => null);
     }
 
     await this.storage.addGuildLog?.({
@@ -1276,7 +1630,8 @@ export class SecurityManager {
       message: description,
       metadata: {
         fields: fields.filter((field) => field?.name && field?.value).slice(0, 8),
-        logChannelId: config.logChannelId || null
+        logChannelId: config.logChannelId || null,
+        evidenceFileName: evidence?.fileName ?? null
       }
     }).catch((error) => {
       console.warn(`Could not persist security log for ${guild.id}:`, error?.message ?? error);
@@ -1398,11 +1753,14 @@ function classifySensitiveAuditRisk({ auditType, entry, baseSeverity, security, 
     auditType === AuditLogEvent.WebhookCreate
     || auditType === AuditLogEvent.WebhookUpdate
     || auditType === AuditLogEvent.WebhookDelete
+    || auditType === AuditLogEvent.IntegrationCreate
+    || auditType === AuditLogEvent.IntegrationUpdate
+    || auditType === AuditLogEvent.IntegrationDelete
   ) {
     return {
       severity: 'critical',
       limit: highMode ? 1 : 2,
-      reason: 'Cambio de webhook. Puede ser usado por bots personales o apps externas sin estar instaladas como bot.'
+      reason: 'Cambio de webhook/integracion. Puede ser usado por bots personales o apps externas sin estar instaladas como bot.'
     };
   }
 
@@ -1482,6 +1840,145 @@ function compactActionSummary(actions = []) {
     .filter(Boolean)
     .filter((item, index, source) => source.indexOf(item) === index)
     .join(' ');
+}
+
+function isExternalApplicationMessage(message) {
+  if (!message?.guild || message.webhookId) return false;
+  if (!message.author?.bot) return false;
+  if (message.member) return false;
+  return Boolean(message.applicationId || message.interactionMetadata || message.interaction || message.author?.id);
+}
+
+function normalizeResponsibleUser(user) {
+  if (!user?.id) return null;
+  return {
+    id: String(user.id),
+    tag: user.tag ?? user.username ?? String(user.id),
+    username: user.username ?? user.tag ?? String(user.id),
+    bot: Boolean(user.bot),
+    send: typeof user.send === 'function' ? user.send.bind(user) : null,
+    fetch: typeof user.fetch === 'function' ? user.fetch.bind(user) : null,
+    flags: user.flags
+  };
+}
+
+function buildRaidEvidence({ guild, channel = null, sourceLabel = 'Security Guard', responsible = null, reason = '', bucket = [], message = null, actionSummary = '' }) {
+  const fileName = `nexadesk-raid-proof-${guild?.id ?? 'guild'}-${Date.now()}.svg`;
+  const detectedAt = new Date().toLocaleString('es-ES', { timeZone: 'Europe/Madrid' });
+  const snippets = [
+    message ? formatEvidenceMessage({
+      at: message.createdTimestamp ?? Date.now(),
+      author: message.author?.tag ?? message.author?.username ?? 'Origen desconocido',
+      content: message.content || '[Sin texto visible]'
+    }) : null,
+    ...bucket.slice(-6).map((item) => formatEvidenceMessage({
+      at: item.at,
+      author: responsible?.tag ?? 'Origen detectado',
+      content: item.content || item.label || item.riskReason || `Evento ${item.auditType ?? 'desconocido'}`
+    }))
+  ].filter(Boolean);
+
+  const rows = [
+    ['Servidor', guild?.name ?? guild?.id ?? 'Desconocido'],
+    ['Canal', channel ? `#${channel.name ?? channel.id}` : 'No identificado'],
+    ['Origen', sourceLabel],
+    ['Responsable', responsible ? `${responsible.tag ?? responsible.username ?? responsible.id} (${responsible.id})` : 'No identificado'],
+    ['Detectado', detectedAt],
+    ['Motivo', reason || 'Patron de raid detectado'],
+    ['Acciones', actionSummary || 'Security Guard activo']
+  ];
+
+  const svg = buildRaidEvidenceSvg({ rows, snippets });
+  return {
+    fileName,
+    buffer: Buffer.from(svg, 'utf8')
+  };
+}
+
+function createEvidenceAttachment(evidence) {
+  return new AttachmentBuilder(Buffer.from(evidence.buffer), {
+    name: evidence.fileName,
+    description: 'Prueba visual generada automaticamente por NexaDesk Security Guard.'
+  });
+}
+
+function formatEvidenceMessage({ at, author, content }) {
+  const timestamp = new Date(Number(at) || Date.now()).toLocaleTimeString('es-ES', {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    timeZone: 'Europe/Madrid'
+  });
+  return `[${timestamp}] ${author}: ${String(content ?? '').replace(/\s+/g, ' ').trim().slice(0, RAID_EVIDENCE_SNIPPET_MAX)}`;
+}
+
+function buildRaidEvidenceSvg({ rows, snippets }) {
+  const rowLines = rows.flatMap(([label, value]) => wrapSvgLines(`${label}: ${value}`, 82));
+  const snippetLines = snippets.length
+    ? snippets.flatMap((line) => wrapSvgLines(line, 88)).slice(0, 12)
+    : ['Sin mensajes recientes disponibles.'];
+  const height = Math.max(760, 250 + (rowLines.length + snippetLines.length) * 30);
+  const rowText = rowLines.map((line, index) => svgText(line, 70, 205 + index * 30, '24', '#f4f4f4')).join('\n');
+  const snippetStart = 245 + rowLines.length * 30;
+  const snippetText = snippetLines.map((line, index) => svgText(line, 70, snippetStart + 70 + index * 28, '21', '#cfcfcf')).join('\n');
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="${height}" viewBox="0 0 1400 ${height}">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#050505"/>
+      <stop offset="55%" stop-color="#151515"/>
+      <stop offset="100%" stop-color="#000000"/>
+    </linearGradient>
+    <pattern id="grid" width="56" height="56" patternUnits="userSpaceOnUse">
+      <path d="M 56 0 L 0 0 0 56" fill="none" stroke="#262626" stroke-width="1"/>
+    </pattern>
+    <filter id="glow"><feGaussianBlur stdDeviation="5" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+  </defs>
+  <rect width="1400" height="${height}" fill="url(#bg)"/>
+  <rect width="1400" height="${height}" fill="url(#grid)" opacity=".45"/>
+  <rect x="42" y="42" width="1316" height="${height - 84}" rx="34" fill="#101010" stroke="#ffffff" stroke-opacity=".18"/>
+  <circle cx="118" cy="118" r="42" fill="#ffffff" filter="url(#glow)"/>
+  <text x="180" y="108" font-family="Arial, Helvetica, sans-serif" font-size="34" font-weight="900" fill="#ffffff">NexaDesk Security Guard</text>
+  <text x="180" y="148" font-family="Arial, Helvetica, sans-serif" font-size="22" fill="#bdbdbd">Prueba automatica de raid / anti-nuke</text>
+  <text x="108" y="132" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="42" font-weight="900" fill="#050505">!</text>
+  <line x1="70" y1="176" x2="1330" y2="176" stroke="#ffffff" stroke-opacity=".2"/>
+  ${rowText}
+  <rect x="62" y="${snippetStart + 30}" width="1276" height="${Math.max(220, snippetLines.length * 28 + 65)}" rx="24" fill="#050505" stroke="#ffffff" stroke-opacity=".14"/>
+  <text x="86" y="${snippetStart + 66}" font-family="Arial, Helvetica, sans-serif" font-size="24" font-weight="900" fill="#ffffff">Mensajes/eventos usados como prueba</text>
+  ${snippetText}
+  <text x="70" y="${height - 58}" font-family="Arial, Helvetica, sans-serif" font-size="20" fill="#8f8f8f">Generado automaticamente. Revisa audit logs y permisos antes de revertir sanciones.</text>
+</svg>`;
+}
+
+function wrapSvgLines(value, maxLength) {
+  const words = String(value ?? '').split(/\s+/g).filter(Boolean);
+  const lines = [];
+  let current = '';
+  for (const word of words) {
+    const next = current ? `${current} ${word}` : word;
+    if (next.length > maxLength && current) {
+      lines.push(current);
+      current = word;
+    } else {
+      current = next;
+    }
+  }
+  if (current) lines.push(current);
+  return lines.length ? lines : [''];
+}
+
+function svgText(value, x, y, size, color) {
+  return `<text x="${x}" y="${y}" font-family="Consolas, 'Courier New', monospace" font-size="${size}" fill="${color}">${escapeXml(value)}</text>`;
+}
+
+function escapeXml(value = '') {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
 }
 
 function parseIdList(value = '') {

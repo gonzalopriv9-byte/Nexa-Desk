@@ -797,6 +797,13 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
     });
   });
 
+  client.on(Events.GuildIntegrationsUpdate, async (guild) => {
+    if (!await leadershipGate.isActive()) return;
+    await securityManager.handleGuildIntegrationsUpdate(guild).catch((error) => {
+      console.error(`Security integrations guard failed in ${guild?.id ?? 'unknown'}:`, error);
+    });
+  });
+
   client.on(Events.GuildBanAdd, async (ban) => {
     if (!await leadershipGate.isActive()) return;
     await securityManager.handleGuildBanAdd(ban).catch((error) => {
