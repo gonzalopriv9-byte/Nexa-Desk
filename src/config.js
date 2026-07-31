@@ -53,7 +53,7 @@ const schema = z.object({
   SUPABASE_SERVICE_ROLE_KEY: z.string().optional(),
   AI_PROVIDER: z.enum(['groq', 'ollama', 'openai-compatible', 'disabled']).default('groq'),
   AI_REPLY_TIMEOUT_MS: z.coerce.number().int().min(5000).max(120000).default(22000),
-  AI_PROVIDER_TIMEOUT_MS: z.coerce.number().int().min(2500).max(60000).default(6500),
+  AI_PROVIDER_TIMEOUT_MS: z.coerce.number().int().min(2500).max(60000).default(3200),
   AI_TYPING_INTERVAL_MS: z.coerce.number().int().min(3000).max(9000).default(5000),
   AI_SLOW_LOG_MS: z.coerce.number().int().min(1000).max(60000).default(8000),
   AI_LOCAL_FALLBACK_ENABLED: envBoolean.default(true),

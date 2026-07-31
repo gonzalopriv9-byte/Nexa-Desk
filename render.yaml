@@ -68,6 +68,8 @@ services:
         value: eur
       - key: GROQ_API_KEY
         sync: false
+      - key: AI_PROVIDER_TIMEOUT_MS
+        value: 3200
       - key: GROQ_MODEL
         value: llama-3.1-8b-instant
       - key: GROQ_VISION_MODEL
