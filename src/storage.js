@@ -1010,8 +1010,8 @@ export class SupabaseStorage {
       .select()
       .single();
     if (isMissingGuildLogsTableError(error)) {
-      console.warn('guild_logs table missing; server log not persisted. Run supabase/schema.sql.');
-      return { ...normalized, notPersisted: true };
+      console.warn('guild_logs table missing; persisting server log in Supabase fallback store. Run supabase/schema.sql for full indexes.');
+      return this.#addGuildLogFallback(normalized);
     }
     if (error) throw error;
     const saved = fromGuildLogRow(data);
@@ -1026,9 +1026,43 @@ export class SupabaseStorage {
       .eq('guild_id', String(guildId))
       .order('created_at', { ascending: false })
       .limit(clampNumber(limit, 1, 500));
-    if (isMissingGuildLogsTableError(error)) return [];
+    if (isMissingGuildLogsTableError(error)) {
+      return this.#listGuildLogsFallback(guildId, { limit });
+    }
     if (error) throw error;
     return data.map(fromGuildLogRow);
+  }
+
+  async #addGuildLogFallback(entry) {
+    const normalized = normalizeGuildLog(entry);
+    const settings = await this.getGlobalSettings();
+    const source = settings.guildLogsFallback && typeof settings.guildLogsFallback === 'object'
+      ? settings.guildLogsFallback
+      : {};
+    const guildId = String(normalized.guildId);
+    const guildLogs = Array.isArray(source[guildId]) ? source[guildId].map(normalizeGuildLog) : [];
+    const nextLogs = [normalized, ...guildLogs]
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .slice(0, 500);
+    await this.updateGlobalSettings({
+      guildLogsFallback: {
+        ...source,
+        [guildId]: nextLogs
+      }
+    });
+    this.events?.publish('guild.log.created', normalized);
+    return { ...normalized, fallback: true };
+  }
+
+  async #listGuildLogsFallback(guildId, { limit = 150 } = {}) {
+    const settings = await this.getGlobalSettings();
+    const source = settings.guildLogsFallback && typeof settings.guildLogsFallback === 'object'
+      ? settings.guildLogsFallback
+      : {};
+    return (Array.isArray(source[String(guildId)]) ? source[String(guildId)] : [])
+      .map(normalizeGuildLog)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .slice(0, clampNumber(limit, 1, 500));
   }
 
   async getBlacklistEntry(value) {
