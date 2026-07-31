@@ -80,6 +80,16 @@ services:
         value: opus
       - key: FISH_AUDIO_TTS_LATENCY
         value: low
+      - key: FISH_AUDIO_TTS_STREAM_FORMAT
+        value: mp3
+      - key: FISH_AUDIO_TTS_STREAM_LATENCY
+        value: balanced
+      - key: FISH_AUDIO_TTS_STREAM_CHUNK_LENGTH
+        value: 100
+      - key: FISH_AUDIO_TTS_STREAM_MIN_CHUNK_LENGTH
+        value: 40
+      - key: FISH_AUDIO_TTS_STREAM_MP3_BITRATE
+        value: 64
       - key: FISH_AUDIO_TTS_OPUS_BITRATE
         value: 32000
       - key: FISH_AUDIO_TTS_SPEED
@@ -89,13 +99,17 @@ services:
       - key: FISH_AUDIO_TTS_CHUNK_LENGTH
         value: 220
       - key: FISH_AUDIO_TTS_MAX_CHARS
-        value: 450
+        value: 320
       - key: FISH_AUDIO_TIMEOUT_MS
-        value: 8000
+        value: 5000
       - key: VOICE_TTS_PROVIDER
         value: fish
+      - key: VOICE_TTS_STREAMING_ENABLED
+        value: true
+      - key: VOICE_TTS_PREWARM_ENABLED
+        value: true
       - key: VOICE_TTS_MAX_CHARS
-        value: 450
+        value: 280
       - key: AI_PROVIDER
         value: groq
       - key: AI_ACTIONS_ENABLED

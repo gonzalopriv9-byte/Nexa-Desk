@@ -3,7 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { Readable } from 'node:stream';
+import { PassThrough, Readable } from 'node:stream';
 import WebSocket from 'ws';
 import {
   AudioPlayerStatus,
@@ -99,6 +99,14 @@ export class VoiceSessionManager {
         console.error(`Voice capture failed for ${voiceChannel.id}:`, error);
       });
     });
+
+    if (shouldUseFishStreaming(this.config) && this.config.VOICE_TTS_PREWARM_ENABLED) {
+      void prewarmFishAudio(this.config).then((elapsedMs) => {
+        console.log(`Voice TTS prewarmed with Fish.audio in ${elapsedMs}ms.`);
+      }).catch((error) => {
+        console.warn('Voice TTS prewarm failed:', normalizeProcessError(error));
+      });
+    }
 
     return { started: true };
   }
@@ -364,11 +372,39 @@ export class VoiceSessionManager {
     const safeText = prepareVoiceSpeechText(text, this.config.VOICE_TTS_MAX_CHARS);
     if (!safeText) return;
 
-    const audio = await this.#synthesizeSpeechWithFallback(safeText);
+    if (shouldUseFishStreaming(this.config)) {
+      try {
+        await this.#speakFishStream(session, safeText);
+        return;
+      } catch (error) {
+        console.error('Fish.audio streaming TTS failed, using buffered fallback:', normalizeProcessError(error));
+      }
+    }
+
+    await this.#speakBuffered(session, safeText);
+  }
+
+  async #speakFishStream(session, text) {
+    const startedAt = Date.now();
+    const { audioStream, contentType } = await createFishAudioStream(text, this.config);
+    const pcmStream = decodeTtsStreamToDiscordPcm(audioStream, this.config);
+
+    session.connection.subscribe(session.player);
+    await entersState(session.connection, VoiceConnectionStatus.Ready, 5_000);
+    const resource = createAudioResource(pcmStream, { inputType: StreamType.Raw, inlineVolume: true });
+    resource.volume?.setVolume(1.35);
+    session.player.play(resource);
+    await entersState(session.player, AudioPlayerStatus.Playing, 8_000);
+    console.log(`Voice TTS streaming started using Fish.audio (${contentType || 'audio stream'}, ${Date.now() - startedAt}ms to playback).`);
+    await entersState(session.player, AudioPlayerStatus.Idle, 45_000).catch(() => {});
+  }
+
+  async #speakBuffered(session, text) {
+    const audio = await this.#synthesizeSpeechWithFallback(text);
     if (!audio?.length) {
       throw new Error('TTS did not return audio bytes.');
     }
-    const pcm = await decodeTtsToDiscordPcm(audio);
+    const pcm = await decodeTtsToDiscordPcm(audio, this.config);
     const stats = analyzePcm16(pcm);
     if (!pcm.length || (stats.rms < 0.0008 && stats.peak < 0.01)) {
       throw new Error(`TTS audio decoded as silence (rms ${stats.rms.toFixed(5)}, peak ${stats.peak.toFixed(5)}).`);
@@ -495,8 +531,8 @@ function buildWavFromPcm(pcm) {
   return Buffer.concat([header, pcm]);
 }
 
-function decodeTtsToDiscordPcm(audioBuffer) {
-  return runProcessBuffer('ffmpeg', [
+function decodeTtsToDiscordPcm(audioBuffer, config = {}) {
+  return runProcessBuffer(config.FFMPEG_BIN || 'ffmpeg', [
     '-hide_banner',
     '-loglevel',
     'error',
@@ -514,54 +550,172 @@ function decodeTtsToDiscordPcm(audioBuffer) {
   ], audioBuffer);
 }
 
+function shouldUseFishStreaming(config = {}) {
+  if (!config.VOICE_TTS_STREAMING_ENABLED || !String(config.FISH_AUDIO_API_KEY ?? '').trim()) return false;
+  const provider = config.VOICE_TTS_PROVIDER || 'auto';
+  return provider === 'fish' || (provider === 'auto' && !config.VOICE_TTS_LOCAL_FIRST);
+}
+
+async function createFishAudioStream(text, config = {}) {
+  const apiKey = String(config.FISH_AUDIO_API_KEY ?? '').trim();
+  if (!apiKey) {
+    throw new Error('FISH_AUDIO_API_KEY is not configured.');
+  }
+
+  const payload = buildFishAudioPayload(text, config, {
+    format: config.FISH_AUDIO_TTS_STREAM_FORMAT || 'mp3',
+    latency: config.FISH_AUDIO_TTS_STREAM_LATENCY || 'balanced',
+    chunkLength: Number(config.FISH_AUDIO_TTS_STREAM_CHUNK_LENGTH) || 100,
+    minChunkLength: Number(config.FISH_AUDIO_TTS_STREAM_MIN_CHUNK_LENGTH) || 40,
+    maxChars: Math.min(Number(config.FISH_AUDIO_TTS_MAX_CHARS) || 320, Number(config.VOICE_TTS_MAX_CHARS) || 280, 360),
+    maxNewTokens: 512,
+    mp3Bitrate: Number(config.FISH_AUDIO_TTS_STREAM_MP3_BITRATE) || 64
+  });
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), Number(config.FISH_AUDIO_TIMEOUT_MS) || 5_000);
+  try {
+    const response = await fetch('https://api.fish.audio/v1/tts', {
+      method: 'POST',
+      signal: controller.signal,
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+        model: config.FISH_AUDIO_TTS_MODEL || 's2.1-pro-free'
+      },
+      body: JSON.stringify(payload)
+    });
+
+    const contentType = response.headers.get('content-type') || '';
+    if (!response.ok || contentType.includes('application/json')) {
+      const body = await response.text().catch(() => '');
+      throw new Error(`Fish.audio streaming TTS returned ${response.status}: ${body.slice(0, 300)}`);
+    }
+    if (!response.body) {
+      throw new Error('Fish.audio streaming TTS did not return a readable body.');
+    }
+
+    clearTimeout(timeout);
+    return {
+      audioStream: Readable.fromWeb(response.body),
+      contentType
+    };
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      throw new Error('Fish.audio streaming TTS timed out before audio headers.');
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function decodeTtsStreamToDiscordPcm(audioStream, config = {}) {
+  const child = spawn(config.FFMPEG_BIN || 'ffmpeg', [
+    '-hide_banner',
+    '-loglevel',
+    'error',
+    '-fflags',
+    'nobuffer',
+    '-flags',
+    'low_delay',
+    '-probesize',
+    '32768',
+    '-analyzeduration',
+    '0',
+    '-i',
+    'pipe:0',
+    '-af',
+    'dynaudnorm=f=75:g=9,volume=1.25',
+    '-f',
+    's16le',
+    '-ar',
+    String(SAMPLE_RATE),
+    '-ac',
+    String(CHANNELS),
+    'pipe:1'
+  ], { stdio: ['pipe', 'pipe', 'pipe'] });
+
+  const output = new PassThrough({
+    highWaterMark: SAMPLE_RATE * CHANNELS * BYTES_PER_SAMPLE
+  });
+  const stderr = [];
+  let inputErrored = false;
+
+  child.stdout.pipe(output);
+  child.stderr.on('data', (chunk) => {
+    if (stderr.length < 8) stderr.push(chunk);
+  });
+  child.once('error', (error) => {
+    if (!output.destroyed) output.destroy(error);
+  });
+  child.once('close', (code) => {
+    if (code === 0 || inputErrored || output.destroyed) return;
+    const message = Buffer.concat(stderr).toString('utf8').trim();
+    output.destroy(new Error(message || `ffmpeg streaming decoder exited with code ${code}`));
+  });
+
+  child.stdin.once('error', (error) => {
+    if (error.code !== 'EPIPE' && !output.destroyed) output.destroy(error);
+  });
+  audioStream.once('error', (error) => {
+    inputErrored = true;
+    child.stdin.destroy(error);
+    if (!output.destroyed) output.destroy(error);
+  });
+  audioStream.pipe(child.stdin);
+
+  return output;
+}
+
+async function prewarmFishAudio(config = {}) {
+  const startedAt = Date.now();
+  const { audioStream } = await createFishAudioStream('NexaDesk listo.', config);
+
+  await new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      audioStream.destroy();
+      resolve();
+    }, Math.min(Number(config.FISH_AUDIO_TIMEOUT_MS) || 5_000, 5_000));
+
+    audioStream.once('data', () => {
+      clearTimeout(timeout);
+      audioStream.destroy();
+      resolve();
+    });
+    audioStream.once('end', () => {
+      clearTimeout(timeout);
+      resolve();
+    });
+    audioStream.once('error', (error) => {
+      clearTimeout(timeout);
+      reject(error);
+    });
+    audioStream.resume();
+  });
+
+  return Date.now() - startedAt;
+}
+
 async function synthesizeWithFishAudio(text, config = {}) {
   const apiKey = String(config.FISH_AUDIO_API_KEY ?? '').trim();
   if (!apiKey) {
     throw new Error('FISH_AUDIO_API_KEY is not configured.');
   }
 
-  const normalizedText = String(text ?? '')
-    .replace(/\s+/g, ' ')
-    .trim();
-  if (!normalizedText) return Buffer.alloc(0);
-
-  const maxChars = Math.max(120, Math.min(Number(config.FISH_AUDIO_TTS_MAX_CHARS) || 450, 500));
-  const fishText = fitTextForFishAudio(normalizedText, maxChars);
-  const format = config.FISH_AUDIO_TTS_FORMAT || 'opus';
-  const payload = {
-    text: fishText,
-    temperature: 0.64,
-    top_p: 0.72,
-    prosody: {
-      speed: Number(config.FISH_AUDIO_TTS_SPEED) || 1.04,
-      volume: Number(config.FISH_AUDIO_TTS_VOLUME) || 0,
-      normalize_loudness: true
-    },
-    chunk_length: Number(config.FISH_AUDIO_TTS_CHUNK_LENGTH) || 220,
-    normalize: true,
-    format,
-    sample_rate: format === 'opus' ? 48_000 : null,
+  const payload = buildFishAudioPayload(text, config, {
+    format: config.FISH_AUDIO_TTS_FORMAT || 'opus',
     latency: config.FISH_AUDIO_TTS_LATENCY || 'balanced',
-    max_new_tokens: 768,
-    repetition_penalty: 1.16,
-    min_chunk_length: 50,
-    condition_on_previous_chunks: false,
-    early_stop_threshold: 1
-  };
-
-  const referenceId = String(config.FISH_AUDIO_TTS_REFERENCE_ID ?? '').trim();
-  if (referenceId) {
-    payload.reference_id = referenceId;
-  }
-  if (format === 'opus') {
-    payload.opus_bitrate = Number(config.FISH_AUDIO_TTS_OPUS_BITRATE) || 32_000;
-  }
-  if (format === 'mp3') {
-    payload.mp3_bitrate = 128;
-  }
+    chunkLength: Number(config.FISH_AUDIO_TTS_CHUNK_LENGTH) || 220,
+    minChunkLength: 50,
+    maxChars: Number(config.FISH_AUDIO_TTS_MAX_CHARS) || 450,
+    maxNewTokens: 768,
+    mp3Bitrate: 128
+  });
+  if (!payload.text) return Buffer.alloc(0);
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), Number(config.FISH_AUDIO_TIMEOUT_MS) || 12_000);
+  const timeout = setTimeout(() => controller.abort(), Number(config.FISH_AUDIO_TIMEOUT_MS) || 5_000);
   try {
     const response = await fetch('https://api.fish.audio/v1/tts', {
       method: 'POST',
@@ -589,6 +743,56 @@ async function synthesizeWithFishAudio(text, config = {}) {
   } finally {
     clearTimeout(timeout);
   }
+}
+
+function buildFishAudioPayload(text, config = {}, overrides = {}) {
+  const normalizedText = normalizeFishAudioText(text);
+  if (!normalizedText) return { text: '' };
+
+  const maxChars = Math.max(120, Math.min(Number(overrides.maxChars) || 450, 500));
+  const format = overrides.format || config.FISH_AUDIO_TTS_FORMAT || 'opus';
+  const payload = {
+    text: fitTextForFishAudio(normalizedText, maxChars),
+    temperature: 0.64,
+    top_p: 0.72,
+    prosody: {
+      speed: Number(config.FISH_AUDIO_TTS_SPEED) || 1.04,
+      volume: Number(config.FISH_AUDIO_TTS_VOLUME) || 0,
+      normalize_loudness: true
+    },
+    chunk_length: Number(overrides.chunkLength) || 220,
+    normalize: true,
+    format,
+    latency: overrides.latency || config.FISH_AUDIO_TTS_LATENCY || 'balanced',
+    max_new_tokens: Number(overrides.maxNewTokens) || 768,
+    repetition_penalty: 1.16,
+    min_chunk_length: Number(overrides.minChunkLength) || 50,
+    condition_on_previous_chunks: false,
+    early_stop_threshold: 1
+  };
+
+  if (format === 'opus' || format === 'pcm') {
+    payload.sample_rate = 48_000;
+  }
+
+  const referenceId = String(config.FISH_AUDIO_TTS_REFERENCE_ID ?? '').trim();
+  if (referenceId) {
+    payload.reference_id = referenceId;
+  }
+  if (format === 'opus') {
+    payload.opus_bitrate = Number(config.FISH_AUDIO_TTS_OPUS_BITRATE) || 32_000;
+  }
+  if (format === 'mp3') {
+    payload.mp3_bitrate = Number(overrides.mp3Bitrate) || 128;
+  }
+
+  return payload;
+}
+
+function normalizeFishAudioText(text) {
+  return String(text ?? '')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 function fitTextForFishAudio(text, maxChars) {
