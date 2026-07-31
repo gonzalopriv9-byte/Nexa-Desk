@@ -6859,9 +6859,10 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
     async function saveSecurity(event) {
       event.preventDefault();
       const guildId = document.querySelector('#guildId').value;
+      const securityEnabled = document.querySelector('#securityEnabled').value === 'true';
       const updated = await postJson('/api/guilds/' + guildId, {
         security: {
-          enabled: document.querySelector('#securityEnabled').value === 'true',
+          enabled: securityEnabled,
           level: document.querySelector('#securityLevel').value,
           logChannelId: document.querySelector('#securityLogChannelId').value,
           logChannelName: selectedOptionText('#securityLogChannelId'),
@@ -6871,7 +6872,8 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
           antiOffensive: document.querySelector('#securityAntiOffensive').value === 'true',
           antiBot: document.querySelector('#securityAntiBot').value === 'true',
           antiAlt: document.querySelector('#securityAntiAlt').value === 'true',
-          antiNuke: document.querySelector('#securityAntiNuke').value === 'true'
+          antiNuke: document.querySelector('#securityAntiNuke').value === 'true',
+          disabledAt: securityEnabled ? null : new Date().toISOString()
         }
       }).catch((error) => showToast(error.message));
       if (updated) {

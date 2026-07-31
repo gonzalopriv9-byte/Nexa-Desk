@@ -104,7 +104,9 @@ const DEFAULT_SECURITY = {
   level: 'medium',
   logChannelId: null,
   logChannelName: null,
-  alertOwner: true
+  alertOwner: true,
+  disabledAt: null,
+  disabledBy: null
 };
 
 export function normalizeSecurityLevel(level) {
@@ -141,12 +143,36 @@ export function normalizeSecurityConfig(input = {}) {
     nukeLimit: clampInt(source.nukeLimit, defaults.nukeLimit, 2, 30),
     nukeWindowSeconds: clampInt(source.nukeWindowSeconds, defaults.nukeWindowSeconds, 4, 60),
     timeoutMinutes: clampInt(source.timeoutMinutes, defaults.timeoutMinutes, 1, 1440),
-    alertOwner: toBoolean(source.alertOwner, DEFAULT_SECURITY.alertOwner)
+    alertOwner: toBoolean(source.alertOwner, DEFAULT_SECURITY.alertOwner),
+    disabledAt: source.disabledAt ? String(source.disabledAt).slice(0, 80) : null,
+    disabledBy: cleanId(source.disabledBy)
   };
 }
 
 export function isSecurityEnabled(guildConfig) {
-  return Boolean(normalizeSecurityConfig(guildConfig?.security).enabled);
+  return Boolean(resolveSecurityRuntimeConfig(guildConfig).security.enabled);
+}
+
+export function resolveSecurityRuntimeConfig(guildConfig) {
+  const raw = guildConfig?.security;
+  const security = normalizeSecurityConfig(raw);
+  const autoArmed = shouldAutoArmConfiguredSecurity(raw, security);
+  return {
+    security: autoArmed ? { ...security, enabled: true, autoArmed: true } : security,
+    autoArmed
+  };
+}
+
+function shouldAutoArmConfiguredSecurity(raw, security) {
+  if (!raw || typeof raw !== 'object') return false;
+  if (security.enabled) return false;
+  if (security.disabledAt || security.disabledBy) return false;
+
+  const rawLevel = normalizeSecurityLevel(raw.level);
+  const hasLogChannel = Boolean(cleanId(raw.logChannelId));
+  const highIntent = rawLevel === 'high' || security.nukeLimit <= 2 || security.floodLimit <= 4;
+  const hasProtectionIntent = raw.antiNuke === true || raw.antiFlood === true || raw.antiScamLinks === true || raw.antiOffensive === true;
+  return highIntent && (hasLogChannel || hasProtectionIntent);
 }
 
 export function summarizeSecurityConfig(config = {}) {
@@ -175,14 +201,24 @@ export class SecurityManager {
     this.lockdownCooldowns = new Map();
     this.lastFloodWarnings = new Map();
     this.topGgBotCache = new Map();
+    this.autoArmWarnings = new Set();
     this.securityLabBotIds = parseIdList(config.SECURITY_LAB_BOT_IDS);
+  }
+
+  getRuntimeSecurity(guildConfig, guild = null) {
+    const runtime = resolveSecurityRuntimeConfig(guildConfig);
+    if (runtime.autoArmed && guild?.id && !this.autoArmWarnings.has(guild.id)) {
+      this.autoArmWarnings.add(guild.id);
+      console.warn(`NexaDesk Security Guard auto-armed ${guild.name ?? guild.id}: high-risk configuration was present but enabled=false without manual disable marker.`);
+    }
+    return runtime.security;
   }
 
   async handleMessageCreate(message) {
     if (!message.guild || message.author?.id === this.client.user?.id) return false;
 
     const guildConfig = await this.storage.getGuildConfig(message.guild.id);
-    const security = normalizeSecurityConfig(guildConfig?.security);
+    const security = this.getRuntimeSecurity(guildConfig, message.guild);
     if (!security.enabled) return false;
 
     if (message.webhookId) {
@@ -832,7 +868,7 @@ export class SecurityManager {
   async handleMemberAdd(member) {
     if (!member.guild) return;
     const guildConfig = await this.storage.getGuildConfig(member.guild.id);
-    const security = normalizeSecurityConfig(guildConfig?.security);
+    const security = this.getRuntimeSecurity(guildConfig, member.guild);
     if (!security.enabled) return;
 
     await this.trackJoinRaid(member.guild, security);
@@ -988,7 +1024,7 @@ export class SecurityManager {
     if (!dangerousGains.length) return;
 
     const guildConfig = await this.storage.getGuildConfig(newRole.guild.id);
-    const security = normalizeSecurityConfig(guildConfig?.security);
+    const security = this.getRuntimeSecurity(guildConfig, newRole.guild);
     if (!security.enabled || !security.antiNuke) return;
 
     const entry = await this.findRecentAuditEntry(newRole.guild, AuditLogEvent.RoleUpdate, newRole.id);
@@ -1093,7 +1129,7 @@ export class SecurityManager {
   async handleAuditAction(guild, { auditType, targetId, label, severity = 'medium', targetName = null, channelId = null }) {
     if (!guild) return false;
     const guildConfig = await this.storage.getGuildConfig(guild.id);
-    const security = normalizeSecurityConfig(guildConfig?.security);
+    const security = this.getRuntimeSecurity(guildConfig, guild);
     if (!security.enabled || !security.antiNuke) return false;
     if (!guild.members.me?.permissions.has(PermissionFlagsBits.ViewAuditLog)) return false;
 

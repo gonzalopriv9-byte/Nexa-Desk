@@ -3047,7 +3047,12 @@ async function handleSecurityCommand({ interaction, storage }) {
   if (subcommand === 'desactivar') {
     const updated = await storage.upsertGuildConfig(interaction.guildId, {
       guildName: interaction.guild.name,
-      security: normalizeSecurityConfig({ ...current, enabled: false })
+      security: normalizeSecurityConfig({
+        ...current,
+        enabled: false,
+        disabledAt: new Date().toISOString(),
+        disabledBy: interaction.user.id
+      })
     });
     await interaction.reply({
       embeds: [buildSecurityStatusEmbed({ guild: interaction.guild, security: updated.security })],
