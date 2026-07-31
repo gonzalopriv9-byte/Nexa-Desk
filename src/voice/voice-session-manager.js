@@ -385,12 +385,31 @@ export class VoiceSessionManager {
   }
 
   async #synthesizeSpeechWithFallback(text) {
-    if (['edge', 'piper', 'espeak'].includes(this.config.VOICE_TTS_PROVIDER)) {
+    const provider = this.config.VOICE_TTS_PROVIDER || 'auto';
+
+    if (provider === 'fish') {
+      try {
+        return await synthesizeWithFishAudio(text, this.config);
+      } catch (error) {
+        console.error('Fish.audio TTS failed, trying local TTS fallback:', normalizeProcessError(error));
+        return synthesizeLocalSpeech(text, this.config);
+      }
+    }
+
+    if (['edge', 'piper', 'espeak'].includes(provider)) {
       return synthesizeLocalSpeech(text, this.config);
     }
 
     if (this.config.VOICE_TTS_LOCAL_FIRST) {
       return synthesizeLocalSpeech(text, this.config);
+    }
+
+    if (provider === 'auto' && this.config.FISH_AUDIO_API_KEY) {
+      try {
+        return await synthesizeWithFishAudio(text, this.config);
+      } catch (error) {
+        console.error('Fish.audio TTS failed, trying Groq TTS fallback:', normalizeProcessError(error));
+      }
     }
 
     try {
@@ -493,6 +512,97 @@ function decodeTtsToDiscordPcm(audioBuffer) {
     String(CHANNELS),
     'pipe:1'
   ], audioBuffer);
+}
+
+async function synthesizeWithFishAudio(text, config = {}) {
+  const apiKey = String(config.FISH_AUDIO_API_KEY ?? '').trim();
+  if (!apiKey) {
+    throw new Error('FISH_AUDIO_API_KEY is not configured.');
+  }
+
+  const normalizedText = String(text ?? '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!normalizedText) return Buffer.alloc(0);
+
+  const maxChars = Math.max(120, Math.min(Number(config.FISH_AUDIO_TTS_MAX_CHARS) || 450, 500));
+  const fishText = fitTextForFishAudio(normalizedText, maxChars);
+  const format = config.FISH_AUDIO_TTS_FORMAT || 'opus';
+  const payload = {
+    text: fishText,
+    temperature: 0.64,
+    top_p: 0.72,
+    prosody: {
+      speed: Number(config.FISH_AUDIO_TTS_SPEED) || 1.04,
+      volume: Number(config.FISH_AUDIO_TTS_VOLUME) || 0,
+      normalize_loudness: true
+    },
+    chunk_length: Number(config.FISH_AUDIO_TTS_CHUNK_LENGTH) || 220,
+    normalize: true,
+    format,
+    sample_rate: format === 'opus' ? 48_000 : null,
+    latency: config.FISH_AUDIO_TTS_LATENCY || 'balanced',
+    max_new_tokens: 768,
+    repetition_penalty: 1.16,
+    min_chunk_length: 50,
+    condition_on_previous_chunks: false,
+    early_stop_threshold: 1
+  };
+
+  const referenceId = String(config.FISH_AUDIO_TTS_REFERENCE_ID ?? '').trim();
+  if (referenceId) {
+    payload.reference_id = referenceId;
+  }
+  if (format === 'opus') {
+    payload.opus_bitrate = Number(config.FISH_AUDIO_TTS_OPUS_BITRATE) || 32_000;
+  }
+  if (format === 'mp3') {
+    payload.mp3_bitrate = 128;
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), Number(config.FISH_AUDIO_TIMEOUT_MS) || 12_000);
+  try {
+    const response = await fetch('https://api.fish.audio/v1/tts', {
+      method: 'POST',
+      signal: controller.signal,
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+        model: config.FISH_AUDIO_TTS_MODEL || 's2.1-pro-free'
+      },
+      body: JSON.stringify(payload)
+    });
+
+    const contentType = response.headers.get('content-type') || '';
+    if (!response.ok || contentType.includes('application/json')) {
+      const body = await response.text().catch(() => '');
+      throw new Error(`Fish.audio TTS returned ${response.status}: ${body.slice(0, 300)}`);
+    }
+
+    return Buffer.from(await response.arrayBuffer());
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      throw new Error('Fish.audio TTS timed out.');
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function fitTextForFishAudio(text, maxChars) {
+  if (text.length <= maxChars) return text;
+  const suffix = ' Te dejo el resto por escrito en el ticket.';
+  const slice = text.slice(0, Math.max(120, maxChars - suffix.length));
+  const splitAt = Math.max(
+    slice.lastIndexOf('. '),
+    slice.lastIndexOf('? '),
+    slice.lastIndexOf('! '),
+    slice.lastIndexOf('; '),
+    slice.lastIndexOf(', ')
+  );
+  return `${slice.slice(0, splitAt > 120 ? splitAt + 1 : slice.length).trim()}${suffix}`;
 }
 
 async function synthesizeLocalSpeech(text, config = {}) {
