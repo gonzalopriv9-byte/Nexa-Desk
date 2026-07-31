@@ -39,7 +39,12 @@ export class VoiceSessionManager {
     this.aiClient = aiClient;
     this.config = config;
     this.visualAnalyzer = visualAnalyzer;
+    this.ticketCloseHandler = null;
     this.sessionsByGuild = new Map();
+  }
+
+  setTicketCloseHandler(handler) {
+    this.ticketCloseHandler = typeof handler === 'function' ? handler : null;
   }
 
   async startTicketSession({ guild, textChannel, voiceChannel, ticket, guildConfig }) {
@@ -280,6 +285,12 @@ export class VoiceSessionManager {
       });
 
       await session.textChannel.send(`**${member.displayName} por voz:** ${transcript.slice(0, 1_800)}`).catch(() => {});
+
+      if (isVoiceTicketCloseRequest(transcript)) {
+        const closed = await this.#handleVoiceTicketClose(session, member, transcript);
+        if (closed) return;
+      }
+
       const answer = await this.#answerVoiceTicket(session, transcript, member);
       if (!this.#isCurrentVoiceTurn(session, turnId) || !answer) return;
 
@@ -342,6 +353,15 @@ export class VoiceSessionManager {
     return !session.stopped && session.currentTurnId === turnId;
   }
 
+  async #handleVoiceTicketClose(session, member, transcript) {
+    if (!this.ticketCloseHandler) return false;
+    const result = await this.ticketCloseHandler({ session, member, transcript }).catch((error) => {
+      console.error(`Voice ticket close handler failed for ${session.ticketChannelId}:`, error?.message ?? error);
+      return { handled: false };
+    });
+    return Boolean(result?.handled);
+  }
+
   async #answerVoiceTicket(session, transcript, member) {
     const history = await this.storage.listTranscriptMessages(session.ticketChannelId);
     const visualContext = await this.#analyzeRecentVisualContext(session, transcript, history);
@@ -360,6 +380,9 @@ export class VoiceSessionManager {
       'No incluyas prefijos como "NexaDesk:", "[Voz]", ":Global:" ni nombres de emojis.',
       'Si el caso requiere staff humano, empieza con [ESCALATE] y explica el motivo sin repetir menciones.',
       'Si el usuario quiere reportar acoso, amenazas, abuso o incumplimientos, pide datos clave y escala al staff cuando sea necesario.',
+      'Si el usuario reporta que NexaDesk no responde en su servidor, no preguntes por terminos premium ni inventes requisitos. Pide o revisa pasos concretos: categoria configurada, rol/permisos del bot, panel publicado, IA no desactivada, Ticket King si aplica y logs recientes.',
+      'Nunca digas que hace falta aceptar terminos premium para que NexaDesk funcione. Premium solo anade funciones extra como voz, prioridad o analiticas.',
+      'Si el usuario ofrece una captura, aceptala cuando ayude: dile que la mande y que la revisaras. No la rechaces salvo que ya tengas datos suficientes.',
       'No inventes datos del servidor. Usa solo el contexto proporcionado.',
       session.guildConfig.serverPrompt ? `Prompt del servidor:\n${compactVoiceContext(session.guildConfig.serverPrompt, 900)}` : '',
       session.guildConfig.serverInfo ? `Informacion del servidor:\n${compactVoiceContext(session.guildConfig.serverInfo, 700)}` : '',
@@ -382,6 +405,10 @@ export class VoiceSessionManager {
     const parsed = parseVoiceEscalation(raw);
     if (!hasVisualEvidence && claimsToSeeVisualEvidence(parsed.publicAnswer)) {
       parsed.publicAnswer = 'Perfecto, mandame la captura cuando puedas y la reviso con el contexto del error que me has contado.';
+      parsed.shouldEscalate = false;
+    }
+    if (claimsFakePremiumTermsRequirement(parsed.publicAnswer)) {
+      parsed.publicAnswer = 'No hace falta aceptar ningun termino premium para que NexaDesk responda. Revisemos lo importante: categoria/panel configurado, permisos del bot, IA no pausada y si el canal coincide con el sistema de tickets que usas.';
       parsed.shouldEscalate = false;
     }
     return {
@@ -1365,6 +1392,17 @@ function isBadAudioProcessingAnswer(content) {
     || normalized.includes('no puedo escuchar el audio');
 }
 
+function isVoiceTicketCloseRequest(content) {
+  const normalized = normalizeComparableText(content);
+  return [
+    /\b(?:cierra|cierralo|cerralo|cerrar|cerrad|cerrame|cerrarme)\b.*\b(?:ticket|canal)\b/,
+    /\b(?:cierra|cierralo|cerralo)\b/,
+    /\b(?:puedes|podrias|quiero|necesito|vale|ok|gracias)\b.*\b(?:cerrar|cerrarlo|cerrarlo|cierra|cierralo|cerralo)\b/,
+    /\b(?:close|delete|shut)\s+(?:the\s+|this\s+)?ticket\b/,
+    /\b(?:you\s+can|please|pls|thanks|thank\s+you)\b.*\b(?:close|delete)\b/
+  ].some((pattern) => pattern.test(normalized));
+}
+
 function shouldSendUnclearVoiceNotice(session) {
   const now = Date.now();
   if (now - Number(session.lastUnclearVoiceNoticeAt ?? 0) < 12_000) return false;
@@ -1395,6 +1433,13 @@ function claimsToSeeVisualEvidence(content) {
     /\b(?:en|segun)\s+(?:la|tu)\s+(?:captura|imagen|foto|pantallazo|screenshot)\b/,
     /\bparece\s+que\s+el\s+error\s+se\s+debe\b/
   ].some((pattern) => pattern.test(normalized));
+}
+
+function claimsFakePremiumTermsRequirement(content) {
+  const normalized = normalizeComparableText(content);
+  return /\bterminos?\b.*\bpremium\b/.test(normalized)
+    || /\bpremium\b.*\b(?:aceptar|aceptes|aceptado|terminos?)\b/.test(normalized)
+    || /\bnecesito\b.*\b(?:aceptes|aceptar)\b.*\bterminos?\b/.test(normalized);
 }
 
 function normalizeComparableText(content) {

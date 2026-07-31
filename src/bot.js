@@ -108,6 +108,14 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
   const managedTimers = new Set();
   const securityManager = new SecurityManager({ storage, client, supportAgent, config });
   const leadershipGate = createHaLeadershipGate({ storage, config });
+  voiceManager?.setTicketCloseHandler?.(({ session, member, transcript }) => handleVoiceTicketCloseRequest({
+    client,
+    storage,
+    voiceManager,
+    session,
+    member,
+    transcript
+  }));
 
   const originalDestroy = client.destroy.bind(client);
   client.destroy = async (...args) => {
@@ -5004,6 +5012,76 @@ async function handleNaturalCloseRequest({ client, storage, message, ticket, gui
   });
 }
 
+async function handleVoiceTicketCloseRequest({ client, storage, voiceManager, session, member, transcript }) {
+  const channel = session.textChannel;
+  const guild = channel.guild;
+  const [storedTicket, storedGuildConfig] = await Promise.all([
+    storage.getTicket(channel.id).catch(() => null),
+    storage.getGuildConfig(guild.id).catch(() => null)
+  ]);
+  const ticket = {
+    ...(storedTicket ?? session.ticket),
+    voiceChannelId: (storedTicket ?? session.ticket)?.voiceChannelId ?? session.voiceChannelId
+  };
+  const guildConfig = storedGuildConfig ?? session.guildConfig;
+
+  if (!ticket?.channelId) {
+    const reply = await channel.send({
+      content: 'He entendido que quieres cerrar el ticket, pero este canal no esta registrado como ticket activo. Aviso al staff para que lo revise.',
+      allowedMentions: { parse: [] }
+    }).catch(() => null);
+    if (reply) await saveTranscript(storage, reply, 'assistant');
+    return { handled: true };
+  }
+
+  if (!canCloseTicketFromVoiceMember(member, ticket, guildConfig)) {
+    const reply = await channel.send({
+      content: 'He entendido que quieres cerrar el ticket, pero solo puede hacerlo quien lo abrio, el staff configurado o alguien con Manage Server.',
+      allowedMentions: { parse: [] }
+    }).catch(() => null);
+    if (reply) await saveTranscript(storage, reply, 'assistant');
+    return { handled: true };
+  }
+
+  const closingReply = await channel.send({
+    content: [
+      `${EMOJIS.check} Ticket cerrado por voz.`,
+      'Estoy preparando la transcripcion y eliminare este canal en unos segundos.'
+    ].join('\n'),
+    allowedMentions: { parse: [] }
+  });
+
+  await storage.addTranscriptMessage({
+    guildId: guild.id,
+    channelId: channel.id,
+    messageId: `voice-close-intent-${Date.now()}`,
+    authorId: member.user.id,
+    authorName: member.user.username,
+    authorBot: false,
+    role: 'system',
+    content: `Cierre solicitado por voz: ${transcript}`,
+    createdAt: new Date().toISOString()
+  }).catch((error) => {
+    console.error(`Failed to record voice close intent ${channel.id}: ${compactRuntimeError(error)}`);
+  });
+
+  await closeTicketWithTranscript({
+    client,
+    storage,
+    voiceManager,
+    channel,
+    guild,
+    ticket,
+    requestedBy: member.user,
+    requestId: `voice-${Date.now()}`,
+    closingReply,
+    fallbackUser: member.user,
+    reason: `NexaDesk voice close requested by ${member.user.tag}`
+  });
+
+  return { handled: true };
+}
+
 async function closeTicketWithTranscript({ client, storage, voiceManager = null, channel, guild, ticket, requestedBy, requestId, closingReply, fallbackUser = null, reason }) {
   const requestedAt = new Date().toISOString();
   scheduleTicketChannelDelete({
@@ -6700,6 +6778,13 @@ function canCloseTicketFromMessage(message, ticket, guildConfig) {
   if (message.member?.permissions?.has(PermissionFlagsBits.ManageGuild)) return true;
   if (guildConfig?.staffRoleId && memberHasRole(message.member, guildConfig.staffRoleId)) return true;
   if (ticket.openedBy) return ticket.openedBy === message.author.id;
+  return true;
+}
+
+function canCloseTicketFromVoiceMember(member, ticket, guildConfig) {
+  if (member?.permissions?.has(PermissionFlagsBits.ManageGuild)) return true;
+  if (guildConfig?.staffRoleId && memberHasRole(member, guildConfig.staffRoleId)) return true;
+  if (ticket.openedBy) return ticket.openedBy === member?.user?.id;
   return true;
 }
 
