@@ -374,7 +374,7 @@ const commands = [
     .toJSON(),
   new SlashCommandBuilder()
     .setName('code')
-    .setDescription('Genera un codigo temporal de un solo uso para entrar a /admin.')
+    .setDescription('Pide a la web un codigo temporal de un solo uso para entrar a /admin.')
     .toJSON(),
   new SlashCommandBuilder()
     .setName('mantenimiento')

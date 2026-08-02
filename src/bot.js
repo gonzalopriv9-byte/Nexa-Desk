@@ -32,13 +32,7 @@ import {
   isBlacklistEntryActive,
   parseBlacklistDuration
 } from './blacklist.js';
-import {
-  ADMIN_CODE_ROLE_ID,
-  buildAdminAccessCode,
-  canReuseAdminAccessCode,
-  generateAdminCode,
-  getAdminAccessCodeValue
-} from './admin-code.js';
+import { ADMIN_CODE_ROLE_ID } from './admin-code.js';
 import {
   buildMaintenanceNoticeText,
   getMaintenanceDelayMs,
@@ -2935,39 +2929,63 @@ async function handleAdminCodeCommand({ interaction, storage, config }) {
     return;
   }
 
-  const settings = await storage.getGlobalSettings();
-  const currentRecord = settings?.adminAccessCode;
-  const canReuse = canReuseAdminAccessCode({
-    record: currentRecord,
-    config,
-    createdBy: interaction.user.id
-  });
-  const code = canReuse ? getAdminAccessCodeValue({ record: currentRecord, config }) : generateAdminCode();
-  const record = canReuse
-    ? currentRecord
-    : buildAdminAccessCode({
-      code,
-      config,
-      createdBy: interaction.user.id,
-      createdByTag: interaction.user.tag ?? interaction.user.username,
-      guildId: interaction.guildId
-    });
-  if (!canReuse) {
-    await storage.updateGlobalSettings({ adminAccessCode: record });
+  await interaction.deferReply({ ephemeral: true });
+
+  let issued;
+  try {
+    issued = await requestAdminCodeFromDashboard({ interaction, config });
+  } catch (error) {
+    await interaction.editReply([
+      `${EMOJIS.ban} No pude pedir el codigo a la web de NexaDesk.`,
+      `Motivo: ${String(error?.message ?? error).slice(0, 500)}`,
+      `Ruta admin: ${new URL('/admin', config.DASHBOARD_PUBLIC_URL || PUBLIC_DASHBOARD_URL).toString()}`,
+      'Mientras la web no emita el codigo, no genero codigos locales para evitar errores de expirado entre PI y Render.'
+    ].join('\n'));
+    return;
   }
 
-  const expiresAt = Math.round(Date.parse(record.expiresAt) / 1000);
-  await interaction.reply({
+  const expiresAt = Math.round(Date.parse(issued.expiresAt) / 1000);
+  await interaction.editReply({
     content: [
-      `${EMOJIS.check} ${canReuse ? 'Codigo activo' : 'Codigo nuevo'} para **/admin**: \`${code}\``,
-      `Caduca <t:${expiresAt}:R> y se invalida al primer uso.`,
-      `Ruta: ${new URL('/admin', PUBLIC_DASHBOARD_URL).toString()}`,
-      canReuse
-        ? 'Te he devuelto el mismo codigo activo para evitar invalidarlo por pedirlo varias veces.'
-        : 'Si lo pides otra vez antes de usarlo, te devolvere este mismo codigo mientras siga activo.'
+      `${EMOJIS.check} ${issued.reused ? 'Codigo activo' : 'Codigo nuevo'} emitido por la web para **/admin**: \`${issued.code}\``,
+      `Caduca <t:${expiresAt}:R> y se invalida al primer uso correcto.`,
+      `Ruta: ${issued.adminUrl || new URL('/admin', config.DASHBOARD_PUBLIC_URL || PUBLIC_DASHBOARD_URL).toString()}`,
+      issued.reused
+        ? 'La web me ha devuelto el mismo codigo activo para no invalidarte el anterior.'
+        : 'Si lo pides otra vez antes de usarlo, la web te devolvera este mismo codigo mientras siga activo.'
     ].join('\n'),
     ephemeral: true
   });
+}
+
+async function requestAdminCodeFromDashboard({ interaction, config }) {
+  const baseUrl = String(config.DASHBOARD_PUBLIC_URL || PUBLIC_DASHBOARD_URL).replace(/\/+$/, '');
+  const endpoint = new URL('/internal/admin/code', baseUrl);
+  const token = String(config.ADMIN_CODE_SECRET || config.DISCORD_TOKEN || '').trim();
+  if (!token) {
+    throw new Error('Falta token interno para pedir codigos admin.');
+  }
+
+  const response = await fetch(endpoint, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${token}`,
+      'x-nexadesk-admin-code-secret': token,
+      'content-type': 'application/json',
+      accept: 'application/json'
+    },
+    body: JSON.stringify({
+      createdBy: interaction.user.id,
+      createdByTag: interaction.user.tag ?? interaction.user.username,
+      guildId: interaction.guildId,
+      requestedFrom: 'discord-command'
+    })
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok || !body?.code) {
+    throw new Error(body?.error || `HTTP ${response.status}`);
+  }
+  return body;
 }
 
 async function handleMaintenanceCommand({ interaction, storage }) {

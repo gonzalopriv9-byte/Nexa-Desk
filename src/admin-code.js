@@ -14,7 +14,7 @@ export function normalizeAdminCode(code) {
   return String(code ?? '').replace(/\D/g, '').slice(0, 6);
 }
 
-export function buildAdminAccessCode({ code, config, createdBy, createdByTag, guildId }) {
+export function buildAdminAccessCode({ code, config, createdBy, createdByTag, guildId, issuer = 'dashboard' }) {
   const normalized = normalizeAdminCode(code);
   const salt = crypto.randomBytes(16).toString('hex');
   const now = Date.now();
@@ -23,6 +23,7 @@ export function buildAdminAccessCode({ code, config, createdBy, createdByTag, gu
     codeHash: hashAdminCode({ code: normalized, salt, config }),
     codeSalt: salt,
     encryptedCode: encryptAdminCode({ code: normalized, config }),
+    issuer,
     createdBy,
     createdByTag,
     guildId,

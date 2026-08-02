@@ -6,7 +6,14 @@ import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { getAdminAccessCodeStatus, inspectAdminAccessCode } from './admin-code.js';
+import {
+  buildAdminAccessCode,
+  canReuseAdminAccessCode,
+  generateAdminCode,
+  getAdminAccessCodeStatus,
+  getAdminAccessCodeValue,
+  inspectAdminAccessCode
+} from './admin-code.js';
 import { GroqClient } from './ai/groq-client.js';
 import { GLOBAL_BLACKLIST_ADMIN_USER_ID, buildGlobalBanCode, isBlacklistEntryActive, parseBlacklistDuration } from './blacklist.js';
 import { normalizeTotpSecret, verifyTotpCode } from './docs-auth.js';
@@ -440,6 +447,51 @@ export function createServer({ config, storage, bot, events }) {
     res.clearCookie('nexadesk_admin');
     res.redirect('/admin');
   });
+
+  app.post('/internal/admin/code', asyncHandler(async (req, res) => {
+    if (!isAuthorizedAdminCodeIssuerRequest(req, config)) {
+      res.status(401).json({ error: 'Unauthorized admin code issuer.' });
+      return;
+    }
+
+    const createdBy = String(req.body.createdBy ?? '').trim();
+    if (!createdBy) {
+      res.status(400).json({ error: 'createdBy is required.' });
+      return;
+    }
+
+    const settings = await storage.getGlobalSettings();
+    const currentRecord = settings?.adminAccessCode;
+    const reusable = canReuseAdminAccessCode({ record: currentRecord, config, createdBy });
+    const code = reusable
+      ? getAdminAccessCodeValue({ record: currentRecord, config })
+      : generateAdminCode();
+    const record = reusable
+      ? currentRecord
+      : buildAdminAccessCode({
+        code,
+        config,
+        createdBy,
+        createdByTag: String(req.body.createdByTag ?? '').trim().slice(0, 120),
+        guildId: String(req.body.guildId ?? '').trim().slice(0, 40),
+        issuer: 'dashboard'
+      });
+
+    if (!reusable) {
+      await storage.updateGlobalSettings({ adminAccessCode: record });
+    }
+
+    const status = getAdminAccessCodeStatus(record);
+    res.json({
+      ok: true,
+      code,
+      reused: reusable,
+      expiresAt: record.expiresAt,
+      secondsRemaining: status.secondsRemaining ?? null,
+      adminUrl: new URL('/admin', config.DASHBOARD_PUBLIC_URL).toString(),
+      issuer: record.issuer ?? 'dashboard'
+    });
+  }));
 
   app.get('/admin', asyncHandler(async (req, res) => {
     setDocsSecurityHeaders(res);
@@ -1531,6 +1583,27 @@ function requireGlobalAdmin(req, res, next) {
     return;
   }
   next();
+}
+
+function isAuthorizedAdminCodeIssuerRequest(req, config) {
+  const authorization = String(req.get('authorization') ?? '').trim();
+  const bearer = authorization.toLowerCase().startsWith('bearer ')
+    ? authorization.slice(7).trim()
+    : '';
+  const direct = String(req.get('x-nexadesk-admin-code-secret') ?? '').trim();
+  const candidates = [config.ADMIN_CODE_SECRET, config.DISCORD_TOKEN]
+    .map((value) => String(value ?? '').trim())
+    .filter(Boolean);
+  return candidates.some((expected) => (
+    timingSafeStringEqual(bearer, expected) || timingSafeStringEqual(direct, expected)
+  ));
+}
+
+function timingSafeStringEqual(left, right) {
+  const a = Buffer.from(String(left ?? ''), 'utf8');
+  const b = Buffer.from(String(right ?? ''), 'utf8');
+  if (!a.length || a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
 }
 
 function requireAdminSession(req, res, next) {
@@ -2940,7 +3013,7 @@ function renderAdminDisabled(config) {
         <img src="/assets/nexadesk-logo.svg" alt="NexaDesk" class="gate-logo">
         <p class="kicker">NexaDesk command room</p>
         <h1>Admin aun no esta configurado.</h1>
-        <p>Usa <code>/code</code> en Discord con el rol autorizado para generar un codigo temporal de acceso.</p>
+        <p>Usa <code>/code</code> en Discord con el rol autorizado. El bot pedira a la web que emita un codigo temporal de acceso.</p>
         <div class="notice">
           <strong>Ruta oculta</strong>
           <span>El panel vive en <code>/admin</code>, no aparece en la dashboard principal y sus APIs requieren sesion firmada.</span>
@@ -2965,7 +3038,7 @@ function renderAdminGate({ config, error = '', codeStatus = null }) {
         <img src="/assets/nexadesk-logo.svg" alt="NexaDesk" class="gate-logo">
         <p class="kicker">Panel oculto</p>
         <h1>Introduce el codigo de rotacion</h1>
-        <p>Genera un codigo temporal con <code>/code</code> en Discord. Si ya tienes uno activo, NexaDesk te devolvera el mismo codigo para no invalidarte el anterior. Esta sesion caduca en ${escapeHtml(String(config.DOCS_SESSION_MINUTES))} minutos.</p>
+        <p>Pide un codigo temporal con <code>/code</code> en Discord. La web lo emite y el bot solo lo solicita, asi evitamos codigos creados en la PI que Render no pueda validar. Esta sesion caduca en ${escapeHtml(String(config.DOCS_SESSION_MINUTES))} minutos.</p>
         <div class="notice">
           <strong>${escapeHtml(status.label)}</strong>
           <span>${escapeHtml(statusText)}</span>
@@ -2980,7 +3053,7 @@ function renderAdminGate({ config, error = '', codeStatus = null }) {
         </form>
         <div class="notice">
           <strong>Sin acceso publico</strong>
-          <span>El codigo dura 10 minutos, se guarda hasheado, se cifra para poder repetirlo al mismo emisor mientras esta activo, se invalida al primer uso y protege endpoints internos bajo <code>/admin/api</code>.</span>
+          <span>El codigo dura 10 minutos, lo emite la web, se guarda hasheado, se cifra para poder repetirlo al mismo emisor mientras esta activo, se invalida al primer uso y protege endpoints internos bajo <code>/admin/api</code>.</span>
         </div>
       </main>
     `
@@ -3588,7 +3661,7 @@ function buildDocsSections(config) {
           'El canal de anuncios detectado es destino de broadcast: todo mensaje publicado en ANNOUNCEMENT_SOURCE_CHANNEL_ID dentro de ANNOUNCEMENT_SOURCE_GUILD_ID se replica ahi.',
           'Release Control: toda funcion nueva debe declararse en src/release-gates.js. Mientras no este lanzada desde /owner, sus comandos quedan owner-only y las secciones nuevas de dashboard con data-release-feature muestran "Estamos trabajando en esta parte".',
           '/docs es una zona oculta: no aparece en la UI, requiere TOTP y no debe contener secretos en claro.',
-          `/admin es el command room oculto: se entra con codigo temporal generado por /code, limitado al rol ${config.ADMIN_CODE_ROLE_ID}, usa cookie separada y permite ver datos globales live y activar/desactivar mantenimiento.`
+          `/admin es el command room oculto: se entra con codigo temporal emitido por la web y solicitado con /code, limitado al rol ${config.ADMIN_CODE_ROLE_ID}, usa cookie separada y permite ver datos globales live y activar/desactivar mantenimiento.`
         ] }
       ]
     },
