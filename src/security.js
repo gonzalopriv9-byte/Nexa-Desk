@@ -10,6 +10,9 @@ import { DISCORD_EMOJIS as EMOJIS } from './emojis.js';
 
 const TOPGG_CACHE_MS = 1000 * 60 * 60 * 12;
 const TOPGG_ERROR_CACHE_MS = 1000 * 60 * 15;
+const XNPROTECT_IMAGE_ANTISCAM_URL = 'https://apis.ebixcloud.com/apis/ai/tools/antiscam';
+const XNPROTECT_IMAGE_TIMEOUT_MS = 8_500;
+const XNPROTECT_IMAGE_MAX_BYTES = 8 * 1024 * 1024;
 const LOCKDOWN_COOLDOWN_MS = 1000 * 60;
 const CHANNEL_CLEANUP_MAX = 12;
 const LOCKDOWN_CHANNEL_MAX = 20;
@@ -236,6 +239,11 @@ export class SecurityManager {
       if (handledLinkThreat) return true;
     }
 
+    if (security.antiScamLinks && hasReviewableImageAttachments(message)) {
+      const handledImageThreat = await this.handleMaliciousImageContent({ message, security });
+      if (handledImageThreat) return true;
+    }
+
     if (security.antiOffensive && message.content && !shouldSkipAutomodContent(message.content)) {
       const handledOffensiveContent = await this.handleOffensiveContent({ message, security });
       if (handledOffensiveContent) return true;
@@ -352,6 +360,11 @@ export class SecurityManager {
       offensiveAnalysis = await reviewXnProtectAutomod(message.content);
     }
 
+    let imageAnalysis = null;
+    if (security.antiScamLinks && hasReviewableImageAttachments(message)) {
+      imageAnalysis = await reviewXnProtectImageAntiscam(message);
+    }
+
     let spamAnalysis = null;
     if (security.antiFlood && (shouldReviewSpamContent(message) || repeated || flooding || massMention)) {
       spamAnalysis = await this.reviewSpamContent({ message, guildConfig });
@@ -363,11 +376,12 @@ export class SecurityManager {
       || flooding
       || shouldBlockLinkThreat(linkAnalysis)
       || offensiveAnalysis?.malicious
+      || imageAnalysis?.scam
       || shouldBlockSpamThreat(spamAnalysis)
     );
     if (!risky) return false;
 
-    const threatReason = buildWebhookThreatReason({ massMention, repeated, flooding, linkAnalysis, offensiveAnalysis, spamAnalysis });
+    const threatReason = buildWebhookThreatReason({ massMention, repeated, flooding, linkAnalysis, offensiveAnalysis, imageAnalysis, spamAnalysis });
     const responsible = await this.resolveWebhookResponsible(message);
     const deleted = await this.deleteWebhookBurstMessages(message, bucket, security);
     const webhookAction = await this.deleteWebhookSource(
@@ -458,6 +472,11 @@ export class SecurityManager {
       offensiveAnalysis = await reviewXnProtectAutomod(message.content);
     }
 
+    let imageAnalysis = null;
+    if (security.antiScamLinks && hasReviewableImageAttachments(message)) {
+      imageAnalysis = await reviewXnProtectImageAntiscam(message);
+    }
+
     let spamAnalysis = null;
     if (security.antiFlood && (shouldReviewSpamContent(message) || repeated || flooding || massMention)) {
       spamAnalysis = await this.reviewSpamContent({ message, guildConfig });
@@ -469,11 +488,12 @@ export class SecurityManager {
       || flooding
       || shouldBlockLinkThreat(linkAnalysis)
       || offensiveAnalysis?.malicious
+      || imageAnalysis?.scam
       || shouldBlockSpamThreat(spamAnalysis)
     );
     if (!risky) return false;
 
-    const threatReason = buildWebhookThreatReason({ massMention, repeated, flooding, linkAnalysis, offensiveAnalysis, spamAnalysis });
+    const threatReason = buildWebhookThreatReason({ massMention, repeated, flooding, linkAnalysis, offensiveAnalysis, imageAnalysis, spamAnalysis });
     const responsible = await this.resolveExternalApplicationResponsible(message);
     const deleted = await this.deleteFloodBurstMessages(message, bucket, security);
     const lockdownResult = await this.applyEmergencyLockdown({
@@ -657,6 +677,37 @@ export class SecurityManager {
     return heuristic;
   }
 
+  async handleMaliciousImageContent({ message, security }) {
+    const analysis = await reviewXnProtectImageAntiscam(message);
+    if (!analysis.scam) return false;
+
+    const deleted = await message.delete().then(() => true).catch(() => false);
+    const isolation = await this.isolateFloodActor(message, security, {
+      repeated: true,
+      flooding: true,
+      repeatWarning: true,
+      reasonOverride: `NexaDesk Security Guard: ${analysis.reason || 'imagen maliciosa o scam visual'}`
+    });
+
+    await this.sendSecurityLog({
+      guild: message.guild,
+      config: security,
+      title: 'Imagen maliciosa bloqueada',
+      description: `${message.author} envio una imagen marcada como scam o maliciosa por XN Protect Antiscam.`,
+      fields: [
+        { name: 'Usuario', value: `${message.author.tag} (${message.author.id})`, inline: true },
+        { name: 'Canal', value: `${message.channel}`, inline: true },
+        ...buildImageThreatFields({ message, analysis }),
+        { name: 'Mensaje borrado', value: deleted ? 'Si' : 'No pude borrarlo por permisos o antiguedad', inline: true },
+        { name: 'Aislamiento', value: isolation },
+        { name: 'Fuente', value: 'XN Protect Antiscam Image API. Derechos reservados por XN Protect.' }
+      ],
+      important: true
+    });
+
+    return true;
+  }
+
   async handleOffensiveContent({ message, security }) {
     const analysis = await reviewXnProtectAutomod(message.content);
     if (!analysis.malicious) return false;
@@ -680,6 +731,7 @@ export class SecurityManager {
         { name: 'Canal', value: `${message.channel}`, inline: true },
         { name: 'Motivo', value: analysis.reason || 'No indicado.' },
         { name: 'Palabras detectadas', value: analysis.words.length ? analysis.words.join(', ').slice(0, 700) : 'No indicadas.' },
+        analysis.category ? { name: 'Categoria', value: `${analysis.category}${Number.isFinite(analysis.score) ? ` · score ${analysis.score}` : ''}`, inline: true } : null,
         { name: 'Mensaje borrado', value: deleted ? 'Si' : 'No pude borrarlo por permisos o antiguedad', inline: true },
         { name: 'Aislamiento', value: isolation },
         { name: 'Fuente', value: 'XN Protect Automod API. Derechos reservados por XN Protect.' }
@@ -1923,13 +1975,14 @@ function removeDangerousPermissionGains(oldPermissions, newPermissions) {
   return gainedFlags.length ? newPermissions.remove(...gainedFlags) : newPermissions;
 }
 
-function buildWebhookThreatReason({ massMention, repeated, flooding, linkAnalysis, offensiveAnalysis, spamAnalysis }) {
+function buildWebhookThreatReason({ massMention, repeated, flooding, linkAnalysis, offensiveAnalysis, imageAnalysis, spamAnalysis }) {
   const reasons = [];
   if (massMention) reasons.push('mentions masivas');
   if (repeated) reasons.push('mensajes repetidos');
   if (flooding) reasons.push('flood por webhook');
   if (shouldBlockLinkThreat(linkAnalysis)) reasons.push(`link ${linkAnalysis.verdict} (${linkAnalysis.confidence}%)`);
   if (offensiveAnalysis?.malicious) reasons.push(offensiveAnalysis.reason || 'contenido ofensivo/malicioso');
+  if (imageAnalysis?.scam) reasons.push(imageAnalysis.reason || `imagen maliciosa${imageAnalysis.score ? ` (${imageAnalysis.score})` : ''}`);
   if (shouldBlockSpamThreat(spamAnalysis)) reasons.push(spamAnalysis.reason || 'spam detectado por IA');
   return reasons.join(' | ').slice(0, 900) || 'Patron sospechoso por webhook.';
 }
@@ -2114,6 +2167,23 @@ function extractMessageUrls(message) {
   return extractUrls(parts.filter(Boolean).join('\n'));
 }
 
+function hasReviewableImageAttachments(message) {
+  return getReviewableImageAttachments(message).length > 0;
+}
+
+function getReviewableImageAttachments(message) {
+  return [...(message?.attachments?.values?.() ?? [])]
+    .filter((attachment) => {
+      const contentType = String(attachment?.contentType ?? '').toLowerCase();
+      const name = String(attachment?.name ?? attachment?.url ?? '').toLowerCase();
+      const size = Number(attachment?.size ?? 0);
+      const isImage = contentType.startsWith('image/')
+        || /\.(?:png|jpe?g|webp|gif)$/iu.test(name);
+      return isImage && (!size || size <= XNPROTECT_IMAGE_MAX_BYTES) && Boolean(attachment?.url || attachment?.proxyURL);
+    })
+    .slice(0, 3);
+}
+
 function cleanUrl(rawUrl = '') {
   const cleaned = String(rawUrl)
     .trim()
@@ -2168,6 +2238,15 @@ function buildLinkThreatFields({ message, urls, analysis }) {
       ? { name: 'Senales', value: analysis.riskSignals.map((item) => `- ${item}`).join('\n').slice(0, 900) }
       : null
   ].filter(Boolean);
+}
+
+function buildImageThreatFields({ message, analysis }) {
+  const attachment = analysis.attachment ?? {};
+  return [
+    { name: 'Archivo', value: `${attachment.name ?? 'imagen'}${attachment.size ? ` (${Math.round(Number(attachment.size) / 1024)} KB)` : ''}`.slice(0, 220), inline: true },
+    { name: 'Veredicto imagen', value: `${analysis.scam ? 'scam/maliciosa' : 'segura'}${analysis.score ? ` · score ${analysis.score}` : ''}`, inline: true },
+    { name: 'Motivo imagen', value: analysis.reason || analysis.error || 'Sin motivo indicado.' }
+  ];
 }
 
 function normalizeSpamThreatAnalysis(input) {
@@ -2345,6 +2424,8 @@ async function reviewXnProtectAutomod(content = '') {
       return { malicious: false, words: [], reason: '', source: 'xnprotect-error' };
     }
     const result = body?.response && typeof body.response === 'object' ? body.response : {};
+    const details = result.detalles && typeof result.detalles === 'object' ? result.detalles : {};
+    const score = Number(details.score);
     const words = Array.isArray(result.palabras_maliciosas)
       ? result.palabras_maliciosas.map((item) => String(item).slice(0, 80)).filter(Boolean).slice(0, 12)
       : [];
@@ -2352,6 +2433,8 @@ async function reviewXnProtectAutomod(content = '') {
       malicious: result.malicioso === true,
       words,
       reason: String(result.reason ?? '').slice(0, 700),
+      category: String(details.categoria ?? '').slice(0, 80),
+      score: Number.isFinite(score) ? Number(score.toFixed(4)) : null,
       source: 'xnprotect'
     };
   } catch (error) {
@@ -2361,6 +2444,164 @@ async function reviewXnProtectAutomod(content = '') {
     return { malicious: false, words: [], reason: '', source: 'xnprotect-unavailable' };
   } finally {
     clearTimeout(timeout);
+  }
+}
+
+async function reviewXnProtectImageAntiscam(message) {
+  const attachments = getReviewableImageAttachments(message);
+  if (!attachments.length) {
+    return { checked: false, scam: false, reason: '', score: null, source: 'no-image' };
+  }
+
+  const results = [];
+  for (const attachment of attachments) {
+    const result = await reviewXnProtectImageAttachment(attachment);
+    results.push(result);
+    if (result.scam) return result;
+  }
+
+  const checked = results.find((result) => result.checked);
+  if (checked) return checked;
+
+  return {
+    checked: false,
+    scam: false,
+    reason: '',
+    score: null,
+    source: 'xnprotect-image-unavailable',
+    error: results.map((result) => result.error).filter(Boolean).join(' | ').slice(0, 500),
+    attachment: attachments[0]
+  };
+}
+
+async function reviewXnProtectImageAttachment(attachment) {
+  if (typeof FormData === 'undefined' || typeof Blob === 'undefined') {
+    return {
+      checked: false,
+      scam: false,
+      source: 'xnprotect-image-unavailable',
+      error: 'Este runtime de Node no soporta FormData/Blob global.',
+      attachment
+    };
+  }
+
+  const url = attachment.url || attachment.proxyURL;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), XNPROTECT_IMAGE_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(url, {
+      headers: { accept: attachment.contentType || 'image/*' },
+      signal: controller.signal
+    });
+    if (!response.ok) {
+      throw new Error(`No pude descargar la imagen de Discord: HTTP ${response.status}`);
+    }
+
+    const contentLength = Number(response.headers.get('content-length') || attachment.size || 0);
+    if (contentLength > XNPROTECT_IMAGE_MAX_BYTES) {
+      return {
+        checked: false,
+        scam: false,
+        source: 'image-too-large',
+        error: `Imagen demasiado grande para antiscam (${Math.round(contentLength / 1024 / 1024)} MB).`,
+        attachment
+      };
+    }
+
+    const arrayBuffer = await response.arrayBuffer();
+    if (arrayBuffer.byteLength > XNPROTECT_IMAGE_MAX_BYTES) {
+      return {
+        checked: false,
+        scam: false,
+        source: 'image-too-large',
+        error: `Imagen demasiado grande para antiscam (${Math.round(arrayBuffer.byteLength / 1024 / 1024)} MB).`,
+        attachment
+      };
+    }
+
+    const contentType = attachment.contentType
+      || response.headers.get('content-type')
+      || 'image/png';
+    return await postXnProtectImageAntiscam({
+      bytes: arrayBuffer,
+      fileName: attachment.name || `discord-image-${attachment.id || Date.now()}.png`,
+      contentType,
+      attachment
+    });
+  } catch (error) {
+    if (error?.name !== 'AbortError') {
+      console.error('XN Protect image antiscam failed:', error);
+    }
+    return {
+      checked: false,
+      scam: false,
+      source: 'xnprotect-image-unavailable',
+      error: error?.name === 'AbortError' ? 'XN Protect image antiscam timeout.' : String(error?.message ?? error),
+      attachment
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function postXnProtectImageAntiscam({ bytes, fileName, contentType, attachment }) {
+  const fields = ['image', 'file', 'imagen'];
+  const errors = [];
+
+  for (const field of fields) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), XNPROTECT_IMAGE_TIMEOUT_MS);
+    try {
+      const form = new FormData();
+      form.append(field, new Blob([bytes], { type: contentType }), fileName);
+      const response = await fetch(XNPROTECT_IMAGE_ANTISCAM_URL, {
+        method: 'POST',
+        headers: { accept: 'application/json' },
+        body: form,
+        signal: controller.signal
+      });
+      const bodyText = await response.text();
+      const body = parseJsonObject(bodyText);
+      if (!response.ok || body?.success === false) {
+        errors.push(`${field}: HTTP ${response.status} ${String(body?.errors?.[0]?.message ?? bodyText).slice(0, 160)}`);
+        continue;
+      }
+
+      const result = body?.response && typeof body.response === 'object' ? body.response : {};
+      return {
+        checked: true,
+        scam: result.scam === true,
+        reason: String(result.reason ?? '').slice(0, 700),
+        score: result.score == null ? null : String(result.score).slice(0, 80),
+        source: 'xnprotect-image',
+        attachment,
+        raw: body
+      };
+    } catch (error) {
+      errors.push(`${field}: ${error?.name === 'AbortError' ? 'timeout' : String(error?.message ?? error).slice(0, 160)}`);
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  return {
+    checked: false,
+    scam: false,
+    reason: '',
+    score: null,
+    source: 'xnprotect-image-unavailable',
+    error: errors.join(' | ').slice(0, 500),
+    attachment
+  };
+}
+
+function parseJsonObject(value = '') {
+  try {
+    const parsed = JSON.parse(String(value || '{}'));
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
   }
 }
 

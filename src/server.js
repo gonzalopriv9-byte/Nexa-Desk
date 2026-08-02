@@ -3579,7 +3579,7 @@ function buildDocsSections(config) {
           'Supabase guarda configuracion, paneles, componentes, tickets, transcripciones, feedback de tickets y blacklist interna.',
           'Quality Radar guarda senales en ai_quality_signals cuando el usuario se queja de que NexaDesk/IA funciona mal, se equivoca, repite, no ve imagenes, falla en voz o genera enfado.',
           'Groq procesa soporte IA, vision, STT y parte de TTS; Akiomae queda como fallback final.',
-          'XN Protect aporta blacklist global y Automod ofensivo/malicioso. NexaDesk acredita la fuente y no banea automaticamente por blacklist externa.',
+          'XN Protect aporta blacklist global, Automod textual ofensivo/malicioso y Antiscam de imagenes. NexaDesk acredita la fuente y no banea automaticamente por blacklist externa.',
           'Top.gg se usa como lista positiva para Anti-bots: si un bot esta listado, se permite; si Top.gg devuelve 404, se puede banear; si falla la API, no se banea.',
           'Premium por servidor se decide con plan pro/premium/enterprise, voice_support_enabled o /activarpremium desde owner autorizado.',
           'Growth Engine pide feedback al cerrar tickets; Premium permite reviews publicas y Churn Radar para recuperar usuarios insatisfechos.',
@@ -3733,9 +3733,9 @@ function buildDocsSections(config) {
       summary: 'Capas anti-raid, anti-scam, blacklist y crisis.',
       blocks: [
         { type: 'list', items: [
-          'Security Guard detecta flood, links sospechosos, contenido ofensivo/malicioso, alts, bots no listados en Top.gg, webhooks/apps externas, creaciones masivas de canales, cambios de permisos/config y patrones anti-nuke.',
-          'Los links se analizan con IA cuando aparecen en mensajes; puede recomendar review, borrado o aislamiento.',
-          'XN Protect Automod se consulta con contenido textual y, si response.malicioso=true, se borra el mensaje, se intenta aislar al autor y se loguea motivo/palabras.',
+          'Security Guard detecta flood, links sospechosos, imagenes scam, contenido ofensivo/malicioso, alts, bots no listados en Top.gg, webhooks/apps externas, creaciones masivas de canales, cambios de permisos/config y patrones anti-nuke.',
+          'Los links se analizan con IA cuando aparecen en mensajes; puede recomendar review, borrado o aislamiento. Los adjuntos de imagen se revisan con XN Protect Antiscam cuando Anti-links IA esta activo.',
+          'XN Protect Automod se consulta con contenido textual y, si response.malicioso=true, se borra el mensaje, se intenta aislar al autor y se loguea motivo/palabras/categoria/score si la API lo devuelve.',
           'Anti-bots consulta Top.gg con TOPGG_API_TOKEN. Solo banea bots cuando la API confirma que no estan listados; con timeout/error/token ausente solo deja aviso.',
           'Los mensajes de crisis/autolesion no se bloquean por Automod para permitir contencion y escalado humano.',
           'XN Protect se consulta al abrir tickets y deja aviso al staff sin banear automaticamente.',
@@ -6011,7 +6011,7 @@ function renderDashboard({ session, guilds, tickets, stats, dashboardState = {},
           <button class="secondary-button" type="button" onclick="return rescanDiscovery()">Reescanear canales</button>
         </article>
         <article class="control-card wide">
-            <div class="card-head"><span class="step">3</span><div><h2>Security Guard</h2><p>Activa proteccion anti-flood, anti-links IA, XN Protect Automod, anti-alts, anti-bots y anti-nuke de canales/config/webhooks usando audit logs.</p></div></div>
+            <div class="card-head"><span class="step">3</span><div><h2>Security Guard</h2><p>Activa proteccion anti-flood, anti-links e imagenes scam IA, XN Protect Automod, anti-alts, anti-bots y anti-nuke de canales/config/webhooks usando audit logs.</p></div></div>
           <form onsubmit="return saveSecurity(event)">
             <label>Estado<select id="securityEnabled">
               <option value="false">Desactivado</option>
@@ -6028,7 +6028,7 @@ function renderDashboard({ session, guilds, tickets, stats, dashboardState = {},
               <option value="true">Activo</option>
               <option value="false">Desactivado</option>
             </select></label>
-            <label>Anti-links IA<select id="securityAntiScamLinks">
+            <label>Anti-links e imagenes IA<select id="securityAntiScamLinks">
               <option value="true">Activo</option>
               <option value="false">Desactivado</option>
             </select></label>

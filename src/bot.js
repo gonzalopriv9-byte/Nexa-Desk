@@ -3860,8 +3860,8 @@ function buildHelpEmbed({ view, config, guild }) {
           name: `${EMOJIS.ban} Que protege`,
           value: [
             'Anti-flood: borra spam rapido y puede aplicar timeout.',
-            'Anti-links IA: revisa enlaces con IA para bloquear phishing, estafas, malware y regalos falsos.',
-            'XN Protect Automod: borra contenido ofensivo/malicioso y avisa al staff con motivo y palabras detectadas.',
+            'Anti-links e imagenes IA: revisa enlaces con IA y adjuntos visuales con XN Protect Antiscam para bloquear phishing, estafas, malware y regalos falsos.',
+            'XN Protect Automod: borra contenido ofensivo/malicioso y avisa al staff con motivo, categoria, score y palabras detectadas cuando la API lo devuelve.',
             'Anti-bots Top.gg: solo banea bots que no aparezcan listados en Top.gg; si Top.gg no responde, no banea a ciegas.',
             'Anti-alts: expulsa cuentas demasiado nuevas si lo activas.',
             'Anti-nuke: mira audit logs y reacciona ante acciones masivas en canales, permisos, config del servidor, roles, webhooks, kicks y bans.'
