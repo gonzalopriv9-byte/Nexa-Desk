@@ -73,7 +73,7 @@ services:
       - key: GROQ_MODEL
         value: llama-3.1-8b-instant
       - key: GROQ_VISION_MODEL
-        value: qwen/qwen3.6-27b
+        value: meta-llama/llama-4-scout-17b-16e-instruct
       - key: FISH_AUDIO_API_KEY
         sync: false
       - key: FISH_AUDIO_TTS_MODEL

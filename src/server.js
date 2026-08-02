@@ -950,6 +950,21 @@ export function createServer({ config, storage, bot, events }) {
     res.send(buildTranscriptText({ ticket, messages }));
   }));
 
+  app.get('/tickets/:channelId/replay', asyncHandler(async (req, res) => {
+    const ticket = await storage.getTicket(req.params.channelId);
+    if (!ticket || !canAccessGuild(req.session, ticket.guildId)) {
+      res.status(404).type('html').send(renderSimpleErrorPage('Transcripcion no encontrada', 'No tienes acceso a este ticket o ya no existe.'));
+      return;
+    }
+
+    const messages = await storage.listTranscriptMessages(req.params.channelId);
+    const users = buildReplayUserMap(messages);
+    await hydrateReplayUsersFromDiscord({ config, users }).catch((error) => {
+      console.warn(`Could not hydrate replay users for ${req.params.channelId}:`, normalizeError(error));
+    });
+    res.type('html').send(renderTicketReplayPage({ ticket, messages, users }));
+  }));
+
   app.get('/api/guilds/:guildId/roles', requireGuildAccess, asyncHandler(async (req, res) => {
     res.json(await bot.listGuildRoles({ guildId: req.params.guildId }));
   }));
@@ -4924,6 +4939,7 @@ function renderDashboard({ session, guilds, tickets, stats, dashboardState = {},
   <style>
     :root { color-scheme:dark; --bg:#050505; --panel:#101010; --panel-2:#181818; --line:#343434; --soft-line:rgba(255,255,255,.1); --text:#ffffff; --muted:#a8a8a8; --paper:#ffffff; --ink:#050505; --ok:#ffffff; --danger:#ff5f57; --glass:rgba(15,15,15,.72); --glass-strong:rgba(18,18,18,.9); --glow:rgba(255,255,255,.18); }
     * { box-sizing:border-box; }
+    [hidden] { display:none !important; }
     img,svg,video { max-width:100%; }
     html { scroll-behavior:smooth; }
     body { position:relative; min-height:100vh; margin:0; font-family:"Segoe UI",ui-sans-serif,system-ui,sans-serif; background:#030303; color:var(--text); overflow-x:hidden; isolation:isolate; }
@@ -4974,6 +4990,7 @@ function renderDashboard({ session, guilds, tickets, stats, dashboardState = {},
     .banner-frame:hover img { transform:scale(1.03); filter:contrast(1.12) brightness(1.08); }
     .dashboard-banner-frame { height:150px; margin-bottom:16px; }
     .dashboard-banner-frame img { height:100%; object-fit:cover; }
+    .overview-hero { margin-bottom:18px; animation:cardReveal .58s cubic-bezier(.2,.8,.2,1) both; }
     .signal-list { display:grid; gap:10px; margin-top:16px; }
     .signal { display:flex; justify-content:space-between; gap:18px; padding:10px 0; border-bottom:1px solid var(--soft-line); color:var(--muted); }
     .signal strong { color:var(--text); }
@@ -5303,11 +5320,12 @@ function renderDashboard({ session, guilds, tickets, stats, dashboardState = {},
     .nav-brand { margin-bottom:20px; }
     .brand-logo { border-radius:18px; box-shadow:0 18px 54px rgba(255,255,255,.08), 0 0 0 1px rgba(255,255,255,.18) inset; }
     .nav-link { min-height:45px; border-radius:16px; padding:11px 13px; letter-spacing:.01em; position:relative; overflow:hidden; }
+    .nav-link span:last-child { font-weight:800; }
     .nav-link::after { content:""; position:absolute; inset:0; background:linear-gradient(100deg, transparent 0%, rgba(255,255,255,.16) 42%, transparent 74%); transform:translateX(-130%); opacity:0; pointer-events:none; }
     .nav-link:hover::after,.nav-link.is-active::after { animation:softShimmer 1.8s var(--ease-out-pro) both; }
     .nav-link:hover,.nav-link.is-active { border-color:rgba(255,255,255,.56); background:linear-gradient(135deg, rgba(255,255,255,.18), rgba(255,255,255,.052)); transform:translateX(5px); }
     .nav-icon { width:22px; display:grid; place-items:center; }
-    .dashboard-banner-frame { border-radius:28px; height:180px; margin-bottom:18px; border-color:rgba(255,255,255,.16); box-shadow:0 32px 110px rgba(0,0,0,.5); }
+    .dashboard-banner-frame { border-radius:28px; height:132px; margin-bottom:18px; border-color:rgba(255,255,255,.16); box-shadow:0 32px 110px rgba(0,0,0,.5); }
     .dashboard-banner-frame::after { content:""; position:absolute; inset:0; pointer-events:none; background:linear-gradient(90deg, rgba(255,255,255,.06), transparent 26%, transparent 72%, rgba(255,255,255,.08)); mix-blend-mode:screen; }
     header { border:1px solid rgba(255,255,255,.14); border-radius:30px; padding:28px; background:linear-gradient(145deg, rgba(255,255,255,.105), rgba(255,255,255,.028)); box-shadow:0 34px 120px rgba(0,0,0,.42), 0 0 0 1px rgba(255,255,255,.03) inset; overflow:hidden; }
     header::before { opacity:.75; filter:blur(56px); }
@@ -5458,21 +5476,23 @@ function renderDashboard({ session, guilds, tickets, stats, dashboardState = {},
     </div>
   </aside>
   <main>
-    <div class="banner-frame dashboard-banner-frame"><img src="/assets/nexadesk-banner.svg" alt="NexaDesk animated monochrome banner"></div>
-    <div class="topbar">
-      <header>
-        <div class="brand-lockup"><img class="brand-logo" src="/assets/nexadesk-logo.svg" alt="NexaDesk"><strong>NexaDesk Command</strong></div>
-        <h1>Centro de control para soporte con IA.</h1>
-        <p>Elige un servidor, configura el contexto, prepara el escalado humano y publica paneles sin copiar IDs.</p>
-      </header>
-      <aside class="hero-panel">
-        <p class="kicker">Sesion Discord</p>
-        <div class="signal-list">
-          <div class="signal"><span>Usuario</span><strong>${escapeHtml(session.user.username)}</strong></div>
-          <div class="signal"><span>Realtime</span><strong id="liveState">Conectando</strong></div>
-          <div class="signal"><span>Ultima sync</span><strong id="lastSync">${escapeHtml(new Date().toLocaleTimeString())}</strong></div>
-        </div>
-      </aside>
+    <div class="overview-hero" id="overviewHero">
+      <div class="banner-frame dashboard-banner-frame"><img src="/assets/nexadesk-banner.svg" alt="NexaDesk animated monochrome banner"></div>
+      <div class="topbar">
+        <header>
+          <div class="brand-lockup"><img class="brand-logo" src="/assets/nexadesk-logo.svg" alt="NexaDesk"><strong>NexaDesk Command</strong></div>
+          <h1>Centro de control para soporte con IA.</h1>
+          <p>Elige un servidor, configura el contexto, prepara el escalado humano y publica paneles sin copiar IDs.</p>
+        </header>
+        <aside class="hero-panel">
+          <p class="kicker">Sesion Discord</p>
+          <div class="signal-list">
+            <div class="signal"><span>Usuario</span><strong>${escapeHtml(session.user.username)}</strong></div>
+            <div class="signal"><span>Realtime</span><strong id="liveState">Conectando</strong></div>
+            <div class="signal"><span>Ultima sync</span><strong id="lastSync">${escapeHtml(new Date().toLocaleTimeString())}</strong></div>
+          </div>
+        </aside>
+      </div>
     </div>
     <div class="view-stage">
       <section class="dashboard-view is-active" id="view-overview" data-view="overview">
@@ -5690,7 +5710,9 @@ function renderDashboard({ session, guilds, tickets, stats, dashboardState = {},
               <p class="notice span-2">Preguntas en formato recomendado: <strong>P: ¿Cuantos años tienes?</strong>. Puedes poner hasta 40 preguntas. Si activas revision Premium, el formulario se abre fuera de Discord y el staff supervisa pantalla manualmente.</p>
             </div>
             <label class="span-2">Primer mensaje personalizado<textarea id="componentWelcomeMessage">Hola {user}, soy NexaDesk.
-Antes de empezar, he guardado tus respuestas para que el staff tenga contexto.</textarea></label>
+Antes de empezar, he guardado tus respuestas para que el staff tenga contexto.
+{answers}</textarea></label>
+            <p class="notice span-2">Variables del primer mensaje: <code>{user}</code>, <code>{username}</code>, <code>{server}</code>, <code>{channel}</code>, <code>{bot}</code> y <code>{answers}</code>. Si no pones <code>{answers}</code>, NexaDesk no añadira las respuestas previas automaticamente.</p>
             <button class="span-2" id="componentSubmitButton" type="submit">Crear componente</button>
             <button class="span-2 secondary-button is-hidden" id="componentCancelEditButton" type="button" onclick="resetComponentEditor()">Cancelar edicion</button>
           </form>
@@ -5771,9 +5793,10 @@ Antes de empezar, he guardado tus respuestas para que el staff tenga contexto.</
                 <label class="span-2">Footer<input id="panelFooterText" value="NexaDesk AI Support"></label>
               </div>
               <div class="form-section">
-                <div class="section-label"><strong>Primer mensaje</strong><span>Usa {user} para mencionar al usuario</span></div>
+                <div class="section-label"><strong>Primer mensaje</strong><span>Usa variables para controlar exactamente el saludo del ticket</span></div>
                 <textarea id="panelWelcomeMessage">Hola {user}, soy NexaDesk.
 Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al staff con el contexto ordenado.</textarea>
+                <p class="notice">Variables disponibles: <code>{user}</code>, <code>{username}</code>, <code>{server}</code>, <code>{channel}</code>, <code>{bot}</code> y <code>{answers}</code>.</p>
               </div>
               <button class="span-2" id="panelSubmitButton" type="submit">Publicar panel personalizado</button>
               <button class="span-2 secondary-button is-hidden" id="panelCancelEditButton" type="button" onclick="resetPanelEditor()">Cancelar edicion</button>
@@ -5985,19 +6008,9 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
         </div>
     <section class="surface" id="tickets">
       <div class="ticket-tools">
-        <div><h2>Tickets recientes</h2><p>Abre una transcripcion para revisar la conversacion guardada por servidor.</p></div>
+        <div><h2>Tickets recientes</h2><p>Abre cada replay en una pestaña nueva con aspecto de chat de Discord.</p></div>
       </div>
-      ${ticketRows ? `<table><thead><tr><th>Canal</th><th>Servidor</th><th>Estado</th><th>Creado</th><th>Transcripcion</th></tr></thead><tbody id="ticketRows">${ticketRows}</tbody></table>` : '<div class="empty-state" id="emptyTickets"><strong>Aun no hay tickets detectados.</strong><span>Crea un panel o abre un ticket en una categoria configurada para ver actividad en tiempo real aqui.</span></div><table hidden><thead><tr><th>Canal</th><th>Servidor</th><th>Estado</th><th>Creado</th><th>Transcripcion</th></tr></thead><tbody id="ticketRows"></tbody></table>'}
-      <aside class="transcript-viewer" id="transcriptViewer" hidden>
-        <div class="transcript-head">
-          <div><strong id="transcriptTitle">Transcripcion</strong><span id="transcriptMeta">Selecciona un ticket para cargar mensajes.</span></div>
-          <div class="transcript-actions">
-            <a class="transcript-download" id="downloadTranscript" href="#" download>Descargar TXT</a>
-            <button class="secondary-button table-action" type="button" onclick="closeTranscript()">Cerrar</button>
-          </div>
-        </div>
-        <div class="transcript-body" id="transcriptBody"></div>
-      </aside>
+      ${ticketRows ? `<table><thead><tr><th>Canal</th><th>Servidor</th><th>Estado</th><th>Creado</th><th>Replay</th></tr></thead><tbody id="ticketRows">${ticketRows}</tbody></table>` : '<div class="empty-state" id="emptyTickets"><strong>Aun no hay tickets detectados.</strong><span>Crea un panel o abre un ticket en una categoria configurada para ver actividad en tiempo real aqui.</span></div><table hidden><thead><tr><th>Canal</th><th>Servidor</th><th>Estado</th><th>Creado</th><th>Replay</th></tr></thead><tbody id="ticketRows"></tbody></table>'}
     </section>
       </section>
       <section class="dashboard-view" id="view-logs" data-view="logs">
@@ -6088,7 +6101,6 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       tickets: ${JSON.stringify(tickets)},
       stats: ${JSON.stringify(stats)},
       premiumAccount: null,
-      activeTranscriptChannelId: null,
       activeLogGuildId: null,
       guildLogs: [],
       activeView: 'overview'
@@ -6136,6 +6148,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       document.querySelectorAll('.nav-link[data-view]').forEach((link) => {
         link.classList.toggle('is-active', link.dataset.view === nextView);
       });
+      document.querySelector('#overviewHero')?.toggleAttribute('hidden', nextView !== 'overview');
       if (updateHash && location.hash !== '#' + nextView) {
         history.replaceState(null, '', '#' + nextView);
       }
@@ -6338,7 +6351,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       setTimeout(() => startDashboardTour(), 950);
     }
     function ticketRow(ticket) {
-      return '<tr><td>#' + escapeHtml(ticket.channelName) + '</td><td>' + escapeHtml(ticket.guildName) + '</td><td>' + escapeHtml(ticket.status) + '</td><td>' + escapeHtml(new Date(ticket.createdAt).toLocaleString()) + '</td><td><button class="table-action secondary-button" type="button" data-transcript-channel="' + escapeHtml(ticket.channelId) + '">Ver</button></td></tr>';
+      return '<tr><td>#' + escapeHtml(ticket.channelName) + '</td><td>' + escapeHtml(ticket.guildName) + '</td><td>' + escapeHtml(ticket.status) + '</td><td>' + escapeHtml(new Date(ticket.createdAt).toLocaleString()) + '</td><td><button class="table-action secondary-button" type="button" data-replay-channel="' + escapeHtml(ticket.channelId) + '">Ver</button></td></tr>';
     }
     function escapeHtml(value) {
       return String(value ?? '').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll(\"'\",'&#039;');
@@ -6351,41 +6364,16 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       document.querySelector('#ticketRows').innerHTML = state.tickets.length ? state.tickets.map(ticketRow).join('') : '<tr><td colspan="5">Aun no hay tickets detectados.</td></tr>';
       document.querySelector('#emptyTickets')?.remove();
       document.querySelector('#ticketRows')?.closest('table')?.removeAttribute('hidden');
-      bindTranscriptButtons();
+      bindReplayButtons();
     }
-    function bindTranscriptButtons() {
-      document.querySelectorAll('[data-transcript-channel]').forEach((button) => {
-        button.onclick = () => openTranscript(button.dataset.transcriptChannel);
+    function bindReplayButtons() {
+      document.querySelectorAll('[data-replay-channel]').forEach((button) => {
+        button.onclick = () => openTicketReplay(button.dataset.replayChannel);
       });
     }
-    async function openTranscript(channelId) {
-      const ticket = state.tickets.find((item) => item.channelId === channelId);
-      state.activeTranscriptChannelId = channelId;
-      document.querySelector('#transcriptViewer').hidden = false;
-      document.querySelector('#transcriptTitle').textContent = ticket ? '#' + ticket.channelName : 'Transcripcion';
-      document.querySelector('#transcriptMeta').textContent = ticket ? ticket.guildName + ' - ' + ticket.status : 'Cargando mensajes';
-      document.querySelector('#downloadTranscript').href = '/api/tickets/' + channelId + '/transcript.txt';
-      document.querySelector('#transcriptBody').innerHTML = '<p class="notice">Cargando transcripcion...</p>';
-      try {
-        const messages = await fetch('/api/tickets/' + channelId + '/transcript').then((response) => {
-          if (!response.ok) throw new Error('No se pudo cargar la transcripcion.');
-          return response.json();
-        });
-        renderTranscriptMessages(messages);
-      } catch (error) {
-        document.querySelector('#transcriptBody').innerHTML = '<p class="notice">' + escapeHtml(error.message) + '</p>';
-      }
-    }
-    function closeTranscript() {
-      state.activeTranscriptChannelId = null;
-      document.querySelector('#transcriptViewer').hidden = true;
-      document.querySelector('#transcriptBody').innerHTML = '';
-    }
-    function renderTranscriptMessages(messages) {
-      document.querySelector('#transcriptMeta').textContent = messages.length + ' mensajes guardados';
-      document.querySelector('#transcriptBody').innerHTML = messages.length
-        ? messages.map((message) => '<article class="transcript-message ' + escapeHtml(message.role || '') + '"><div class="transcript-meta"><strong>' + escapeHtml(message.authorName || message.role || 'Desconocido') + '</strong><span>' + escapeHtml(new Date(message.createdAt).toLocaleString()) + '</span></div><div class="transcript-content">' + escapeHtml(message.content || '') + '</div></article>').join('')
-        : '<p class="notice">Este ticket aun no tiene mensajes guardados.</p>';
+    function openTicketReplay(channelId) {
+      if (!channelId) return;
+      window.open('/tickets/' + encodeURIComponent(channelId) + '/replay', '_blank', 'noopener');
     }
     async function loadGuildLogs(guildId = document.querySelector('#logsGuildId')?.value || document.querySelector('#guildId')?.value) {
       if (!guildId) return;
@@ -7353,7 +7341,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       document.querySelector('#componentExamFormUrl').value = '';
       document.querySelector('#componentExamReviewEnabled').value = 'false';
       document.querySelector('#componentExamPassScore').value = '6';
-      document.querySelector('#componentWelcomeMessage').value = 'Hola {user}, soy NexaDesk.\\nAntes de empezar, he guardado tus respuestas para que el staff tenga contexto.';
+      document.querySelector('#componentWelcomeMessage').value = 'Hola {user}, soy NexaDesk.\\nAntes de empezar, he guardado tus respuestas para que el staff tenga contexto.\\n{answers}';
       document.querySelector('#componentSubmitButton').textContent = 'Crear componente';
       document.querySelector('#componentCancelEditButton')?.classList.add('is-hidden');
       if (keepGuild && guildId) document.querySelector('#componentGuildId').value = guildId;
@@ -7939,7 +7927,6 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
     source.addEventListener('transcript.message', () => {
       document.querySelector('#lastSync').textContent = new Date().toLocaleTimeString();
       refreshStats().catch(() => {});
-      if (state.activeTranscriptChannelId) openTranscript(state.activeTranscriptChannelId).catch(() => {});
     });
     source.addEventListener('ticket.feedback', () => {
       document.querySelector('#lastSync').textContent = new Date().toLocaleTimeString();
@@ -8031,7 +8018,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
     }
     document.querySelector('#panelThumbnailFile')?.addEventListener('change', (event) => uploadPanelImage(event.target, '#panelThumbnailUrl'));
     document.querySelector('#panelImageFile')?.addEventListener('change', (event) => uploadPanelImage(event.target, '#panelImageUrl'));
-    bindTranscriptButtons();
+    bindReplayButtons();
     updateComponentMode();
     updatePanelPreview();
     renderPremiumPanel(getActiveGuild());
@@ -8052,7 +8039,213 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
 }
 
 function renderTicketRow(ticket) {
-  return `<tr><td>#${escapeHtml(ticket.channelName)}</td><td>${escapeHtml(ticket.guildName)}</td><td>${escapeHtml(ticket.status)}</td><td>${escapeHtml(new Date(ticket.createdAt).toLocaleString())}</td><td><button class="table-action secondary-button" type="button" data-transcript-channel="${escapeHtml(ticket.channelId)}">Ver</button></td></tr>`;
+  return `<tr><td>#${escapeHtml(ticket.channelName)}</td><td>${escapeHtml(ticket.guildName)}</td><td>${escapeHtml(ticket.status)}</td><td>${escapeHtml(new Date(ticket.createdAt).toLocaleString())}</td><td><button class="table-action secondary-button" type="button" data-replay-channel="${escapeHtml(ticket.channelId)}">Ver</button></td></tr>`;
+}
+
+function renderTicketReplayPage({ ticket, messages, users }) {
+  const messageCount = messages.length;
+  return `<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Replay #${escapeHtml(ticket.channelName)} - NexaDesk</title>
+  <link rel="icon" type="image/svg+xml" href="/assets/nexadesk-logo.svg">
+  <style>
+    :root { color-scheme:dark; --bg:#111214; --chat:#313338; --line:#3f4147; --text:#f2f3f5; --muted:#b5bac1; --accent:#ffffff; --mention-bg:rgba(88,101,242,.22); --mention:#dee0fc; }
+    * { box-sizing:border-box; }
+    body { margin:0; min-height:100vh; font-family:"Segoe UI",ui-sans-serif,system-ui,sans-serif; color:var(--text); background:radial-gradient(circle at 24% -10%, rgba(255,255,255,.11), transparent 30%), linear-gradient(180deg,#151518,#0b0c0e); }
+    body::before { content:""; position:fixed; inset:0; pointer-events:none; background:repeating-linear-gradient(90deg, rgba(255,255,255,.035) 0 1px, transparent 1px 86px), repeating-linear-gradient(0deg, rgba(255,255,255,.024) 0 1px, transparent 1px 86px); opacity:.28; }
+    main { position:relative; width:min(1120px, calc(100% - 28px)); margin:0 auto; padding:24px 0 48px; }
+    .replay-shell { border:1px solid rgba(255,255,255,.14); border-radius:28px; overflow:hidden; background:#2b2d31; box-shadow:0 34px 120px rgba(0,0,0,.52), inset 0 1px 0 rgba(255,255,255,.04); }
+    .replay-top { display:flex; justify-content:space-between; align-items:center; gap:18px; padding:18px 22px; border-bottom:1px solid rgba(255,255,255,.1); background:linear-gradient(180deg,#1f2024,#17181b); }
+    .channel-lockup { display:flex; align-items:center; gap:12px; min-width:0; }
+    .hash { display:grid; place-items:center; width:42px; height:42px; border-radius:14px; color:#111; background:#fff; font-size:25px; font-weight:950; }
+    h1 { margin:0; font-size:20px; line-height:1.1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .meta { color:var(--muted); font-size:13px; margin-top:5px; }
+    .actions { display:flex; gap:10px; flex-wrap:wrap; justify-content:flex-end; }
+    .actions a { color:#111; background:#fff; border:0; border-radius:999px; padding:10px 13px; font-weight:900; text-decoration:none; }
+    .actions a.secondary { color:#fff; background:rgba(255,255,255,.08); border:1px solid rgba(255,255,255,.14); }
+    .chat { padding:8px 0 18px; background:var(--chat); }
+    .day-divider { display:flex; align-items:center; gap:12px; margin:18px 22px 12px; color:var(--muted); font-size:12px; font-weight:800; text-transform:uppercase; letter-spacing:.06em; }
+    .day-divider::before,.day-divider::after { content:""; height:1px; flex:1; background:rgba(255,255,255,.12); }
+    .message { display:grid; grid-template-columns:44px minmax(0,1fr); gap:12px; padding:4px 22px; margin:0; }
+    .message:hover { background:rgba(255,255,255,.035); }
+    .avatar { width:42px; height:42px; border-radius:50%; object-fit:cover; background:#111; border:1px solid rgba(255,255,255,.12); }
+    .avatar-fallback { display:grid; place-items:center; font-weight:950; color:#111; background:#fff; }
+    .message-head { display:flex; gap:9px; align-items:baseline; min-width:0; }
+    .author { font-weight:900; color:#fff; }
+    .bot-tag { color:#fff; background:#5865f2; border-radius:4px; padding:1px 4px; font-size:11px; font-weight:950; }
+    time { color:var(--muted); font-size:12px; }
+    .content { margin-top:2px; white-space:pre-wrap; overflow-wrap:anywhere; line-height:1.42; color:#dbdee1; }
+    .mention { color:var(--mention); background:var(--mention-bg); border-radius:4px; padding:0 3px; font-weight:800; }
+    .emoji { width:22px; height:22px; object-fit:contain; vertical-align:-5px; }
+    .attachments { display:grid; gap:8px; margin-top:8px; max-width:620px; }
+    .attachment { border:1px solid rgba(255,255,255,.12); border-radius:12px; overflow:hidden; background:#232428; }
+    .attachment img { display:block; max-height:420px; width:auto; max-width:100%; }
+    .attachment a { display:block; color:#fff; padding:10px 12px; text-decoration:none; font-weight:800; }
+    .empty { padding:60px 22px; text-align:center; color:var(--muted); }
+    @media (max-width:720px) { main { width:100%; padding:0; } .replay-shell { min-height:100vh; border-radius:0; border-left:0; border-right:0; } .replay-top { align-items:flex-start; flex-direction:column; } .actions { width:100%; justify-content:flex-start; } .message { padding:6px 14px; grid-template-columns:38px minmax(0,1fr); } .avatar { width:36px; height:36px; } }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="replay-shell">
+      <header class="replay-top">
+        <div class="channel-lockup">
+          <span class="hash">#</span>
+          <div>
+            <h1>${escapeHtml(ticket.channelName || ticket.channelId)}</h1>
+            <div class="meta">${escapeHtml(ticket.guildName || 'Servidor')} - ${escapeHtml(ticket.status || 'open')} - ${messageCount} mensajes guardados</div>
+          </div>
+        </div>
+        <div class="actions">
+          <a class="secondary" href="/#tickets">Volver a dashboard</a>
+          <a href="/api/tickets/${encodeURIComponent(ticket.channelId)}/transcript.txt">Descargar TXT</a>
+        </div>
+      </header>
+      <section class="chat">
+        ${renderReplayMessages(messages, users)}
+      </section>
+    </section>
+  </main>
+</body>
+</html>`;
+}
+
+function renderReplayMessages(messages, users) {
+  if (!messages.length) return '<div class="empty">Este ticket aun no tiene mensajes guardados.</div>';
+  let lastDay = '';
+  return messages.map((message) => {
+    const day = formatReplayDay(message.createdAt);
+    const divider = day !== lastDay ? `<div class="day-divider">${escapeHtml(day)}</div>` : '';
+    lastDay = day;
+    return divider + renderReplayMessage(message, users);
+  }).join('');
+}
+
+function renderReplayMessage(message, users) {
+  const user = users.get(String(message.authorId ?? '')) ?? {
+    name: message.authorName || message.role || 'Desconocido',
+    bot: message.authorBot
+  };
+  const parsed = parseReplayContent(message.content);
+  return `<article class="message">
+    ${renderReplayAvatar(user)}
+    <div>
+      <div class="message-head"><span class="author">${escapeHtml(user.name)}</span>${user.bot ? '<span class="bot-tag">APP</span>' : ''}<time>${escapeHtml(formatReplayTime(message.createdAt))}</time></div>
+      ${parsed.text ? `<div class="content">${renderReplayText(parsed.text, users)}</div>` : ''}
+      ${parsed.attachments.length ? `<div class="attachments">${parsed.attachments.map(renderReplayAttachment).join('')}</div>` : ''}
+    </div>
+  </article>`;
+}
+
+function renderReplayAvatar(user) {
+  if (user.avatarUrl) {
+    return `<img class="avatar" src="${escapeHtml(user.avatarUrl)}" alt="${escapeHtml(user.name)}">`;
+  }
+  if (user.bot) {
+    return '<img class="avatar" src="/assets/nexadesk-logo.svg" alt="NexaDesk">';
+  }
+  return `<div class="avatar avatar-fallback">${escapeHtml(String(user.name ?? '?').trim().slice(0, 1).toUpperCase() || '?')}</div>`;
+}
+
+function parseReplayContent(content) {
+  const attachments = [];
+  const textLines = [];
+  for (const line of String(content ?? '').split(/\r?\n/)) {
+    const match = line.match(/^\[Adjunto:\s*(.*?)\s*\|\s*(.*?)\s*\|\s*(https?:\/\/[^\]]+)\]$/i);
+    if (match) {
+      attachments.push({ name: match[1], contentType: match[2], url: match[3] });
+    } else {
+      textLines.push(line);
+    }
+  }
+  return { text: textLines.join('\n').trim(), attachments };
+}
+
+function renderReplayText(text, users) {
+  return escapeHtml(text)
+    .replace(/&lt;@!?(\d{17,22})&gt;/g, (_match, userId) => {
+      const user = users.get(String(userId));
+      return `<span class="mention">@${escapeHtml(user?.name || userId)}</span>`;
+    })
+    .replace(/&lt;(a?):([a-zA-Z0-9_]{2,32}):(\d{17,22})&gt;/g, (_match, animated, name, id) => {
+      const extension = animated ? 'gif' : 'png';
+      return `<img class="emoji" src="https://cdn.discordapp.com/emojis/${id}.${extension}" alt=":${escapeHtml(name)}:" title=":${escapeHtml(name)}:">`;
+    });
+}
+
+function renderReplayAttachment(attachment) {
+  const isImage = /^image\//i.test(attachment.contentType) || /\.(png|jpe?g|webp|gif)$/i.test(attachment.url);
+  if (isImage) {
+    return `<div class="attachment"><a href="${escapeHtml(attachment.url)}" target="_blank" rel="noopener">${escapeHtml(attachment.name || 'Imagen adjunta')}</a><img src="${escapeHtml(attachment.url)}" alt="${escapeHtml(attachment.name || 'Imagen adjunta')}" loading="lazy"></div>`;
+  }
+  return `<div class="attachment"><a href="${escapeHtml(attachment.url)}" target="_blank" rel="noopener">${escapeHtml(attachment.name || 'Archivo adjunto')}</a></div>`;
+}
+
+function buildReplayUserMap(messages) {
+  const users = new Map();
+  for (const message of messages) {
+    if (!message.authorId) continue;
+    const id = String(message.authorId);
+    if (!users.has(id)) {
+      users.set(id, {
+        id,
+        name: message.authorName || message.role || id,
+        bot: Boolean(message.authorBot)
+      });
+    }
+  }
+  for (const content of messages.map((message) => message.content || '')) {
+    for (const match of String(content).matchAll(/<@!?(\d{17,22})>/g)) {
+      const id = match[1];
+      if (!users.has(id)) users.set(id, { id, name: id, bot: false });
+    }
+  }
+  return users;
+}
+
+async function hydrateReplayUsersFromDiscord({ config, users }) {
+  if (!config.DISCORD_TOKEN || !users.size) return;
+  const entries = [...users.values()].filter((user) => user.id && !user.bot).slice(0, 35);
+  await Promise.all(entries.map(async (user) => {
+    const fetched = await fetchDiscordUserWithBot(config, user.id).catch(() => null);
+    if (!fetched) return;
+    user.name = fetched.global_name || fetched.username || user.name;
+    user.avatarUrl = buildDiscordAvatarUrl(fetched);
+  }));
+}
+
+async function fetchDiscordUserWithBot(config, userId) {
+  const response = await fetch(`${DISCORD_API}/users/${encodeURIComponent(userId)}`, {
+    headers: { authorization: `Bot ${config.DISCORD_TOKEN}` }
+  });
+  if (!response.ok) return null;
+  return response.json();
+}
+
+function buildDiscordAvatarUrl(user) {
+  if (user?.avatar) {
+    const extension = user.avatar.startsWith('a_') ? 'gif' : 'png';
+    return `https://cdn.discordapp.com/avatars/${user.id}/${user.avatar}.${extension}?size=80`;
+  }
+  const index = Number(BigInt(user.id ?? 0) % 5n);
+  return `https://cdn.discordapp.com/embed/avatars/${index}.png`;
+}
+
+function formatReplayDay(value) {
+  const date = new Date(value || Date.now());
+  return Number.isNaN(date.getTime()) ? 'Fecha desconocida' : date.toLocaleDateString('es-ES', { day: '2-digit', month: 'long', year: 'numeric' });
+}
+
+function formatReplayTime(value) {
+  const date = new Date(value || Date.now());
+  return Number.isNaN(date.getTime()) ? '' : date.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
+}
+
+function renderSimpleErrorPage(title, message) {
+  return `<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)} - NexaDesk</title><style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#050505;color:#fff;font-family:Segoe UI,system-ui,sans-serif}article{width:min(560px,calc(100% - 32px));border:1px solid rgba(255,255,255,.16);border-radius:28px;padding:28px;background:linear-gradient(145deg,rgba(255,255,255,.1),rgba(255,255,255,.03));box-shadow:0 30px 100px rgba(0,0,0,.45)}h1{margin:0;font-size:34px}p{color:#b5b5b5;line-height:1.55}a{color:#050505;background:#fff;border-radius:999px;padding:10px 14px;text-decoration:none;font-weight:900}</style></head><body><article><h1>${escapeHtml(title)}</h1><p>${escapeHtml(message)}</p><a href="/">Volver</a></article></body></html>`;
 }
 
 function toInlineJson(value) {

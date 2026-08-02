@@ -45,7 +45,7 @@ import {
   normalizeMaintenanceState,
   shouldApplyMaintenanceToGuild
 } from './maintenance.js';
-import { buildPanelActionRow, buildPanelEmbed, normalizePanelOptions, normalizeTicketComponent, panelWelcomeMessage } from './panel-options.js';
+import { buildPanelActionRow, buildPanelEmbed, normalizePanelOptions, normalizeTicketComponent } from './panel-options.js';
 import { DISCORD_EMOJIS as EMOJIS } from './emojis.js';
 import {
   buildExamAnswerRecord,
@@ -4104,7 +4104,15 @@ async function createTicketFromConfiguredSource({ interaction, storage, guildCon
     return;
   }
 
-  const welcome = await channel.send(buildTicketWelcomeMessage({ panel: normalizedPanel, component: normalizedComponent, answers, userMention: `${interaction.user}` }));
+  const welcome = await channel.send(buildTicketWelcomeMessage({
+    panel: normalizedPanel,
+    component: normalizedComponent,
+    answers,
+    userMention: `${interaction.user}`,
+    username: interaction.user.username,
+    serverName: interaction.guild.name,
+    channelName: channel.name
+  }));
   await saveTranscript(storage, welcome, 'assistant');
   if (isExamTicketMode(ticketMode)) {
     const startedExamTicket = await startExamTicket({
@@ -4947,20 +4955,24 @@ function buildTicketComponentModal(component) {
   return modal;
 }
 
-function buildTicketWelcomeMessage({ panel, component, answers, userMention }) {
-  const baseMessage = component
-    ? formatWelcomeTemplate(component.welcomeMessage, userMention)
-    : panelWelcomeMessage(panel, userMention);
-
-  const answerBlock = answers.length
-    ? [
-        '',
-        '**Respuestas previas:**',
-        ...answers.map((item) => `**${item.question}**\n${item.answer}`)
-      ].join('\n')
-    : '';
-
-  return `${EMOJIS.nexalogo} ${baseMessage}${answerBlock}`;
+function buildTicketWelcomeMessage({ panel, component, answers = [], userMention, username = 'usuario', serverName = 'este servidor', channelName = 'ticket' }) {
+  const rawTemplate = component?.welcomeMessage || panel?.welcomeMessage || '';
+  const template = rawTemplate || (component
+    ? 'Hola {user}, soy NexaDesk.\nAntes de empezar, he guardado tus respuestas para que el staff tenga contexto.\n{answers}'
+    : 'Hola {user}, soy NexaDesk.\nCuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al staff con el contexto ordenado.');
+  const answerBlock = buildWelcomeAnswersBlock(answers);
+  const shouldAppendLegacyAnswers = answers.length
+    && !/\{answers\}/i.test(template)
+    && isLegacyComponentWelcomeTemplate(template);
+  const baseMessage = formatWelcomeTemplate(template, {
+    userMention,
+    username,
+    serverName,
+    channelName,
+    answers: answerBlock
+  });
+  const finalMessage = `${EMOJIS.nexalogo} ${baseMessage}${shouldAppendLegacyAnswers ? `\n${answerBlock}` : ''}`.trim();
+  return finalMessage.slice(0, 1950);
 }
 
 async function sendContextualTicketOpening({ storage, supportAgent, channel, ticket, guildConfig, panel, component, answers = [], user }) {
@@ -4989,10 +5001,34 @@ async function sendContextualTicketOpening({ storage, supportAgent, channel, tic
   return sent;
 }
 
-function formatWelcomeTemplate(template, userMention) {
+function formatWelcomeTemplate(template, { userMention, username, serverName, channelName, answers = '' }) {
   return String(template ?? '')
     .replaceAll('{user}', userMention)
-    .replaceAll('{bot}', 'NexaDesk');
+    .replaceAll('{username}', username)
+    .replaceAll('{server}', serverName)
+    .replaceAll('{channel}', channelName)
+    .replaceAll('{answers}', answers)
+    .replaceAll('{bot}', 'NexaDesk')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+function buildWelcomeAnswersBlock(answers = []) {
+  if (!answers.length) return '';
+  return [
+    '**Respuestas previas:**',
+    ...answers.map((item) => `**${item.question}**\n${item.answer}`)
+  ].join('\n');
+}
+
+function isLegacyComponentWelcomeTemplate(template) {
+  const normalized = String(template ?? '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim();
+  return normalized === 'hola {user}, soy nexadesk. antes de empezar, he guardado tus respuestas para que el staff tenga contexto.';
 }
 
 function buildTicketChannelName(username, componentLabel) {

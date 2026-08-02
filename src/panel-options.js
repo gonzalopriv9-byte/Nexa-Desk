@@ -38,7 +38,7 @@ const DEFAULT_COMPONENT = {
   ticketMode: 'text',
   exam: normalizeExamConfig(),
   questions: [],
-  welcomeMessage: 'Hola {user}, soy NexaDesk.\nAntes de empezar, he guardado tus respuestas para que el staff tenga contexto.'
+  welcomeMessage: 'Hola {user}, soy NexaDesk.\nAntes de empezar, he guardado tus respuestas para que el staff tenga contexto.\n{answers}'
 };
 
 export function normalizePanelOptions(input = {}) {
@@ -62,7 +62,7 @@ export function normalizePanelOptions(input = {}) {
     exam: normalizeExamConfig(source),
     selectPlaceholder: cleanString(source.selectPlaceholder, DEFAULT_PANEL.selectPlaceholder, 100),
     componentIds: normalizeStringList(source.componentIds).slice(0, 25),
-    welcomeMessage: cleanString(source.welcomeMessage, DEFAULT_PANEL.welcomeMessage, 1200)
+    welcomeMessage: cleanString(source.welcomeMessage, DEFAULT_PANEL.welcomeMessage, 1800)
   };
 }
 
@@ -81,7 +81,7 @@ export function normalizeTicketComponent(input = {}) {
     questions: normalizeTicketMode(source.ticketMode) === 'exam'
       ? []
       : normalizeStringList(source.questions).slice(0, 5).map((question) => cleanString(question, '', 45)).filter(Boolean),
-    welcomeMessage: cleanString(source.welcomeMessage, DEFAULT_COMPONENT.welcomeMessage, 1200),
+    welcomeMessage: cleanString(source.welcomeMessage, DEFAULT_COMPONENT.welcomeMessage, 1800),
     createdAt: source.createdAt || new Date().toISOString()
   };
 }

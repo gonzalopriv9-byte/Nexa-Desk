@@ -8,6 +8,12 @@ const execFileAsync = promisify(execFile);
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp']);
 const VIDEO_EXTENSIONS = new Set(['.mp4', '.mov', '.webm', '.mkv']);
 const MAX_IMAGE_URL_BYTES = 20_000_000;
+const IMAGE_EXTENSION_MIME = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp'
+};
 
 export class VisualAnalyzer {
   constructor({ visionClient, enabled = true, videoFrameCount = 3, videoMaxBytes = 25_000_000 }) {
@@ -35,9 +41,14 @@ export class VisualAnalyzer {
           continue;
         }
 
+        const dataUrl = await attachmentToDataUrl(attachment, MAX_IMAGE_URL_BYTES).catch((error) => {
+          notes.push(`La imagen "${attachment.name}" no se pudo descargar localmente (${normalizeError(error)}); intento analizarla por URL directa.`);
+          return attachment.url;
+        });
+
         imageInputs.push({
           label: attachment.name,
-          url: attachment.url,
+          url: dataUrl,
           source: 'image'
         });
         continue;
@@ -59,7 +70,8 @@ export class VisualAnalyzer {
         'Eres un analista visual para tickets de soporte en Discord.',
         'Describe solo lo que se puede observar en las imagenes o fotogramas.',
         'Lee texto visible, errores, nombres de pantallas, botones, estados y cualquier detalle util para soporte.',
-        'No inventes datos que no se vean. Si algo no es claro, dilo.'
+        'No inventes datos que no se vean. Si algo no es claro, dilo.',
+        'Si la imagen se puede leer parcialmente, extrae lo visible y di que parte esta borrosa, no respondas que no puedes verla entera.'
       ].join('\n'),
       prompt: buildVisualPrompt({ message, media, imageInputs }),
       images: imageInputs
@@ -189,7 +201,22 @@ function buildVisualPrompt({ message, media, imageInputs }) {
 }
 
 async function downloadFile(url, destination, maxBytes) {
-  const response = await fetch(url);
+  const buffer = await downloadBuffer(url, maxBytes);
+  await fs.writeFile(destination, buffer);
+}
+
+async function attachmentToDataUrl(attachment, maxBytes) {
+  const buffer = await downloadBuffer(attachment.url, maxBytes);
+  const mimeType = getImageMimeType(attachment);
+  return `data:${mimeType};base64,${buffer.toString('base64')}`;
+}
+
+async function downloadBuffer(url, maxBytes) {
+  const response = await fetch(url, {
+    headers: {
+      'user-agent': 'NexaDesk/1.0 (+https://nexa-desk.onrender.com)'
+    }
+  });
   if (!response.ok) {
     throw new Error(`descarga fallida (${response.status})`);
   }
@@ -204,7 +231,13 @@ async function downloadFile(url, destination, maxBytes) {
     throw new Error(`archivo demasiado grande (${Math.round(buffer.length / 1024 / 1024)} MB)`);
   }
 
-  await fs.writeFile(destination, buffer);
+  return buffer;
+}
+
+function getImageMimeType(attachment) {
+  const contentType = String(attachment.contentType ?? '').toLowerCase();
+  if (contentType.startsWith('image/') && !contentType.includes(';')) return contentType;
+  return IMAGE_EXTENSION_MIME[path.extname(attachment.name).toLowerCase()] ?? 'image/png';
 }
 
 function safeExtension(fileName, fallback) {

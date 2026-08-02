@@ -60,7 +60,7 @@ const schema = z.object({
   GROQ_API_KEY: z.string().optional(),
   GROQ_FALLBACK_API_KEYS: z.string().optional().default(''),
   GROQ_MODEL: z.string().default('llama-3.1-8b-instant'),
-  GROQ_VISION_MODEL: z.string().default('qwen/qwen3.6-27b'),
+  GROQ_VISION_MODEL: z.string().default('meta-llama/llama-4-scout-17b-16e-instruct'),
   GROQ_STT_MODEL: z.string().default('whisper-large-v3-turbo'),
   GROQ_TTS_MODEL: z.string().default('canopylabs/orpheus-v1-english'),
   GROQ_TTS_VOICE: z.string().default('hannah'),
