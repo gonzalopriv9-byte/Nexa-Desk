@@ -327,19 +327,19 @@ const commands = [
     .setDescription('Sistema de afiliados: gana slots Premium invitando servidores a NexaDesk.')
     .addSubcommand((subcommand) =>
       subcommand
-        .setName('codigo')
-        .setDescription('Genera o consulta tu codigo de afiliado.')
+        .setName('nombre')
+        .setDescription('Consulta tu nombre de afiliado.')
     )
     .addSubcommand((subcommand) =>
       subcommand
         .setName('server')
-        .setDescription('Registra el codigo de afiliado que recomendo NexaDesk en este servidor.')
+        .setDescription('Registra el usuario de Discord que recomendo NexaDesk en este servidor.')
         .addStringOption((option) =>
           option
-            .setName('codigo')
-            .setDescription('Codigo de afiliado de la persona que te recomendo NexaDesk.')
-            .setMinLength(4)
-            .setMaxLength(24)
+            .setName('usuario')
+            .setDescription('Username de Discord de la persona que te recomendo NexaDesk.')
+            .setMinLength(2)
+            .setMaxLength(32)
             .setRequired(true)
         )
     )

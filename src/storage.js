@@ -359,13 +359,19 @@ export class JsonStorage {
     const settings = await this.getGlobalSettings();
     const store = normalizeAffiliateStore(settings.affiliates);
     const userId = String(discordUserId);
+    const usedCodes = new Set(Object.values(store.profiles)
+      .map((profile) => normalizeAffiliateProfile(profile))
+      .filter((profile) => profile.discordUserId !== userId)
+      .map((profile) => normalizeAffiliateCode(profile.code)));
     const existing = Object.values(store.profiles)
       .map(normalizeAffiliateProfile)
       .find((profile) => profile.discordUserId === userId);
     if (existing) {
+      const nextCode = buildAffiliateProfileCode({ username, userId, usedCodes, currentCode: existing.code });
       const updated = normalizeAffiliateProfile({
         ...existing,
         username: username ?? existing.username,
+        code: nextCode,
         rewardThreshold,
         rewardSlots,
         rewardDays,
@@ -376,12 +382,7 @@ export class JsonStorage {
       return updated;
     }
 
-    let code;
-    const usedCodes = new Set(Object.values(store.profiles).map((profile) => normalizeAffiliateCode(profile.code)));
-    do {
-      code = generateAffiliateCode(username ?? userId);
-    } while (usedCodes.has(code));
-
+    const code = buildAffiliateProfileCode({ username, userId, usedCodes });
     const profile = normalizeAffiliateProfile({
       discordUserId: userId,
       username,
@@ -401,7 +402,7 @@ export class JsonStorage {
     const normalizedCode = normalizeAffiliateCode(code);
     return Object.values(store.profiles)
       .map(normalizeAffiliateProfile)
-      .find((profile) => profile.code === normalizedCode) ?? null;
+      .find((profile) => profile.code === normalizedCode || normalizeAffiliateCode(profile.username) === normalizedCode) ?? null;
   }
 
   async getAffiliateRedemptionByGuild(guildId) {
@@ -430,8 +431,11 @@ export class JsonStorage {
 
     const profile = Object.values(store.profiles)
       .map(normalizeAffiliateProfile)
-      .find((item) => item.code === normalizedCode);
-    if (!profile) throw new Error('Codigo de afiliado no encontrado.');
+      .find((item) => item.code === normalizedCode || normalizeAffiliateCode(item.username) === normalizedCode);
+    if (!profile) throw new Error('Usuario de afiliado no encontrado.');
+    if (profile.discordUserId === String(redeemedByUserId)) {
+      throw new Error('No puedes registrar tu propio usuario como afiliado.');
+    }
 
     const now = new Date().toISOString();
     const existingOwnerRedemptions = Object.values(store.redemptions)
@@ -1394,31 +1398,36 @@ export class SupabaseStorage {
     if (existing) {
       const totalRedemptions = await this.#countAffiliateRedemptionsForOwner(userId)
         .catch(() => existing.totalRedemptions);
-      const next = normalizeAffiliateProfile({
-        ...existing,
-        username: username ?? existing.username,
-        rewardThreshold,
-        rewardSlots,
-        rewardDays,
-        totalRedemptions,
-        rewardsEarned: Math.floor(totalRedemptions / Math.max(1, rewardThreshold)),
-        updatedAt: new Date().toISOString()
-      });
-      const { data, error } = await this.client
-        .from('affiliate_profiles')
-        .upsert(toAffiliateProfileRow(next), { onConflict: 'discord_user_id' })
-        .select()
-        .single();
-      if (isMissingAffiliateTableError(error)) return this.#getOrCreateAffiliateProfileFallback({ discordUserId, username, rewardThreshold, rewardSlots, rewardDays });
-      if (error) throw error;
-      return fromAffiliateProfileRow(data);
+      for (let attempt = 0; attempt < 4; attempt += 1) {
+        const next = normalizeAffiliateProfile({
+          ...existing,
+          username: username ?? existing.username,
+          code: generateAffiliateCode(username ?? existing.username ?? userId, userId, attempt),
+          rewardThreshold,
+          rewardSlots,
+          rewardDays,
+          totalRedemptions,
+          rewardsEarned: Math.floor(totalRedemptions / Math.max(1, rewardThreshold)),
+          updatedAt: new Date().toISOString()
+        });
+        const { data, error } = await this.client
+          .from('affiliate_profiles')
+          .upsert(toAffiliateProfileRow(next), { onConflict: 'discord_user_id' })
+          .select()
+          .single();
+        if (isMissingAffiliateTableError(error)) return this.#getOrCreateAffiliateProfileFallback({ discordUserId, username, rewardThreshold, rewardSlots, rewardDays });
+        if (error && /duplicate key|unique/i.test(String(error.message ?? ''))) continue;
+        if (error) throw error;
+        return fromAffiliateProfileRow(data);
+      }
+      throw new Error('No pude actualizar tu nombre de afiliado. Pruebalo otra vez.');
     }
 
     for (let attempt = 0; attempt < 5; attempt += 1) {
       const profile = normalizeAffiliateProfile({
         discordUserId: userId,
         username,
-        code: generateAffiliateCode(username ?? userId),
+        code: generateAffiliateCode(username ?? userId, userId, attempt),
         rewardThreshold,
         rewardSlots,
         rewardDays
@@ -1433,18 +1442,30 @@ export class SupabaseStorage {
       if (error) throw error;
       return fromAffiliateProfileRow(data);
     }
-    throw new Error('No pude generar un codigo de afiliado unico. Pruebalo otra vez.');
+    throw new Error('No pude generar un nombre de afiliado unico. Pruebalo otra vez.');
   }
 
   async getAffiliateProfileByCode(code) {
+    const normalizedCode = normalizeAffiliateCode(code);
     const { data, error } = await this.client
       .from('affiliate_profiles')
       .select('*')
-      .eq('code', normalizeAffiliateCode(code))
+      .eq('code', normalizedCode)
       .maybeSingle();
     if (isMissingAffiliateTableError(error)) return this.#getAffiliateProfileByCodeFallback(code);
     if (error) throw error;
-    return data ? fromAffiliateProfileRow(data) : null;
+    if (data) return fromAffiliateProfileRow(data);
+
+    const { data: rows, error: listError } = await this.client
+      .from('affiliate_profiles')
+      .select('*')
+      .limit(500);
+    if (isMissingAffiliateTableError(listError)) return this.#getAffiliateProfileByCodeFallback(code);
+    if (listError) throw listError;
+    const match = rows
+      ?.map(fromAffiliateProfileRow)
+      .find((profile) => normalizeAffiliateCode(profile.username) === normalizedCode) ?? null;
+    return match;
   }
 
   async getAffiliateRedemptionByGuild(guildId) {
@@ -1470,7 +1491,10 @@ export class SupabaseStorage {
     }
 
     const profile = await this.getAffiliateProfileByCode(code);
-    if (!profile) throw new Error('Codigo de afiliado no encontrado.');
+    if (!profile) throw new Error('Usuario de afiliado no encontrado.');
+    if (profile.discordUserId === String(redeemedByUserId)) {
+      throw new Error('No puedes registrar tu propio usuario como afiliado.');
+    }
 
     const now = new Date().toISOString();
     const redemption = normalizeAffiliateRedemption({
@@ -1893,13 +1917,19 @@ export class SupabaseStorage {
   async #getOrCreateAffiliateProfileFallback({ discordUserId, username, rewardThreshold = 7, rewardSlots = 1, rewardDays = 30 }) {
     const store = await this.#getAffiliateFallbackStore();
     const userId = String(discordUserId);
+    const usedCodes = new Set(Object.values(store.profiles)
+      .map((profile) => normalizeAffiliateProfile(profile))
+      .filter((profile) => profile.discordUserId !== userId)
+      .map((profile) => normalizeAffiliateCode(profile.code)));
     const existing = Object.values(store.profiles)
       .map(normalizeAffiliateProfile)
       .find((profile) => profile.discordUserId === userId);
     if (existing) {
+      const nextCode = buildAffiliateProfileCode({ username, userId, usedCodes, currentCode: existing.code });
       const updated = normalizeAffiliateProfile({
         ...existing,
         username: username ?? existing.username,
+        code: nextCode,
         rewardThreshold,
         rewardSlots,
         rewardDays,
@@ -1910,11 +1940,7 @@ export class SupabaseStorage {
       return updated;
     }
 
-    let code;
-    const usedCodes = new Set(Object.values(store.profiles).map((profile) => normalizeAffiliateCode(profile.code)));
-    do {
-      code = generateAffiliateCode(username ?? userId);
-    } while (usedCodes.has(code));
+    const code = buildAffiliateProfileCode({ username, userId, usedCodes });
     const profile = normalizeAffiliateProfile({
       discordUserId: userId,
       username,
@@ -1933,7 +1959,7 @@ export class SupabaseStorage {
     const normalizedCode = normalizeAffiliateCode(code);
     return Object.values(store.profiles)
       .map(normalizeAffiliateProfile)
-      .find((profile) => profile.code === normalizedCode) ?? null;
+      .find((profile) => profile.code === normalizedCode || normalizeAffiliateCode(profile.username) === normalizedCode) ?? null;
   }
 
   async #getAffiliateRedemptionByGuildFallback(guildId) {
@@ -1959,8 +1985,11 @@ export class SupabaseStorage {
 
     const profile = Object.values(store.profiles)
       .map(normalizeAffiliateProfile)
-      .find((item) => item.code === normalizeAffiliateCode(code));
-    if (!profile) throw new Error('Codigo de afiliado no encontrado.');
+      .find((item) => item.code === normalizeAffiliateCode(code) || normalizeAffiliateCode(item.username) === normalizeAffiliateCode(code));
+    if (!profile) throw new Error('Usuario de afiliado no encontrado.');
+    if (profile.discordUserId === String(redeemedByUserId)) {
+      throw new Error('No puedes registrar tu propio usuario como afiliado.');
+    }
 
     const now = new Date().toISOString();
     const existingOwnerRedemptions = Object.values(store.redemptions)
@@ -2698,6 +2727,16 @@ function fromAffiliateRedemptionRow(row) {
     rewardPurchaseId: row.reward_purchase_id,
     createdAt: row.created_at
   });
+}
+
+function buildAffiliateProfileCode({ username, userId, usedCodes = new Set(), currentCode = '' }) {
+  const current = normalizeAffiliateCode(currentCode);
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const candidate = generateAffiliateCode(username ?? userId, userId, attempt);
+    if (!candidate) continue;
+    if (!usedCodes.has(candidate) || candidate === current) return candidate;
+  }
+  return generateAffiliateCode(userId, userId, 5);
 }
 
 function toGuildBackupRow(snapshot) {

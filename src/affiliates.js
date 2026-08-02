@@ -1,28 +1,40 @@
-import crypto from 'node:crypto';
-
 export const AFFILIATE_DEFAULT_REWARD_THRESHOLD = 7;
 export const AFFILIATE_DEFAULT_REWARD_SLOTS = 1;
 export const AFFILIATE_DEFAULT_REWARD_DAYS = 30;
 
-const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-
 export function normalizeAffiliateCode(value = '') {
   return String(value ?? '')
+    .replace(/^@+/, '')
     .toUpperCase()
     .replace(/[^A-Z0-9]/g, '')
-    .slice(0, 18);
+    .slice(0, 24);
 }
 
-export function generateAffiliateCode(username = '') {
-  const prefix = normalizeAffiliateCode(username)
-    .replace(/^NEXA/, '')
-    .slice(0, 4)
-    .padEnd(4, 'X');
-  let suffix = '';
-  for (let index = 0; index < 6; index += 1) {
-    suffix += CODE_ALPHABET[crypto.randomInt(0, CODE_ALPHABET.length)];
-  }
-  return `NX${prefix}${suffix}`;
+export function normalizeAffiliateUsername(value = '') {
+  return String(value ?? '')
+    .trim()
+    .replace(/^@+/, '')
+    .replace(/#0{4}$/i, '')
+    .replace(/#\d{4}$/i, '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9._]/g, '')
+    .slice(0, 32);
+}
+
+export function generateAffiliateCode(username = '', fallback = '', attempt = 0) {
+  const base = normalizeAffiliateCode(username) || normalizeAffiliateCode(fallback) || 'AFILIADO';
+  if (attempt <= 0) return base;
+  const suffix = normalizeAffiliateCode(fallback).slice(-6) || String(attempt + 1);
+  return `${base}${suffix}`.slice(0, 24);
+}
+
+export function formatAffiliateIdentifier(profile = {}) {
+  const username = normalizeAffiliateUsername(profile.username);
+  if (username) return `@${username}`;
+  const code = normalizeAffiliateCode(profile.code);
+  return code ? `@${code.toLowerCase()}` : '@usuario';
 }
 
 export function normalizeAffiliateProfile(value = {}) {

@@ -21,6 +21,7 @@ import {
 import crypto from 'node:crypto';
 import {
   buildAffiliateProgress,
+  formatAffiliateIdentifier,
   normalizeAffiliateCode,
   normalizeAffiliateProfile,
   normalizeAffiliateRedemption
@@ -1121,22 +1122,22 @@ async function sendAffiliateWelcomeDm({ user, guild, config }) {
   const dashboardUrl = config.DASHBOARD_PUBLIC_URL || PUBLIC_DASHBOARD_URL;
   const embed = new EmbedBuilder()
     .setColor(0xf4c95d)
-    .setTitle(`${EMOJIS.global} ¿Tienes un amigo que te ha hablado de NexaDesk?`)
+    .setTitle(`${EMOJIS.global} Te recomendaron NexaDesk?`)
     .setDescription([
-      `Si alguien te recomendo NexaDesk para **${guild.name}**, dile que te pase su codigo de afiliado.`,
+      `Si alguien te recomendo NexaDesk para **${guild.name}**, dile que te pase su **nombre de usuario de Discord**.`,
       '',
-      `Usalo dentro del servidor con: \`/afiliado server codigo:<CODIGO>\``,
+      `Usalo dentro del servidor con: \`/afiliado server usuario:<USERNAME>\``,
       '',
-      `Cuando lo registres, ambos ayudais al crecimiento de NexaDesk. Cada **${threshold} servidores** que usen un codigo, ese afiliado gana **1 slot Premium durante ${rewardDays} dias**.`
+      `Cuando lo registres, ambos ayudais al crecimiento de NexaDesk. Cada **${threshold} servidores** que registren ese usuario, el afiliado gana **1 slot Premium durante ${rewardDays} dias**.`
     ].join('\n'))
     .addFields(
       {
         name: `${EMOJIS.check} Si tu quieres invitar servidores`,
-        value: 'Ejecuta `/afiliado codigo` y comparte tu codigo. Es una forma directa de conseguir Premium sin pagar.'
+        value: 'Ejecuta `/afiliado nombre` y comparte tu username. Es una forma directa de conseguir Premium sin pagar.'
       },
       {
         name: `${EMOJIS.nexalogo} Importante`,
-        value: 'Cada servidor solo puede registrar un codigo de afiliado una vez. Elegidlo bien antes de usarlo.'
+        value: 'Cada servidor solo puede registrar un afiliado una vez. Elegidlo bien antes de usarlo.'
       }
     )
     .setFooter({ text: 'NexaDesk Affiliates - crecimiento con recompensa real' })
@@ -2643,31 +2644,32 @@ async function handlePremiumCommand({ interaction, storage, config }) {
 
 async function handleAffiliateCommand({ interaction, storage, config, client }) {
   const subcommand = interaction.options.getSubcommand();
-  if (subcommand === 'codigo') {
+  if (subcommand === 'codigo' || subcommand === 'nombre') {
     await interaction.deferReply({ ephemeral: true });
     const profile = await storage.getOrCreateAffiliateProfile({
       discordUserId: interaction.user.id,
-      username: interaction.user.tag ?? interaction.user.username,
+      username: interaction.user.username,
       rewardThreshold: config.AFFILIATE_REWARD_SERVER_COUNT,
       rewardSlots: config.AFFILIATE_REWARD_SLOTS,
       rewardDays: config.AFFILIATE_REWARD_DAYS
     });
     const progress = buildAffiliateProgress(profile);
+    const affiliateName = formatAffiliateIdentifier(profile);
     const embed = new EmbedBuilder()
       .setColor(0xf4c95d)
-      .setTitle(`${EMOJIS.global} Tu codigo de afiliado NexaDesk`)
+      .setTitle(`${EMOJIS.global} Tu nombre de afiliado NexaDesk`)
       .setDescription([
-        `Tu codigo es: \`${profile.code}\``,
+        `Tu nombre de afiliado es: **${affiliateName}**`,
         '',
-        'Compártelo con owners que vayan a invitar NexaDesk. Cuando el bot entre a su servidor, ellos deben usar:',
-        `\`/afiliado server codigo:${profile.code}\``
+        'Compartelo con owners que vayan a invitar NexaDesk. Cuando el bot entre a su servidor, ellos deben usar:',
+        `\`/afiliado server usuario:${affiliateName.replace(/^@/, '')}\``
       ].join('\n'))
       .addFields(
         { name: 'Progreso', value: `${progress.progressInCycle}/${progress.rewardThreshold} servidores en este ciclo (${progress.totalRedemptions} total).`, inline: true },
         { name: 'Recompensa', value: `${profile.rewardSlots} slot Premium durante ${profile.rewardDays} dias cada ${profile.rewardThreshold} servidores.`, inline: true },
         { name: 'Te faltan', value: `${progress.remainingForNextReward || profile.rewardThreshold} servidores para el siguiente slot.`, inline: true }
       )
-      .setFooter({ text: 'Cada servidor solo puede registrar un codigo una vez.' })
+      .setFooter({ text: 'Cada servidor solo puede registrar un afiliado una vez.' })
       .setTimestamp(new Date());
     await interaction.editReply({ embeds: [embed] });
     return;
@@ -2675,16 +2677,16 @@ async function handleAffiliateCommand({ interaction, storage, config, client }) 
 
   if (subcommand === 'server') {
     if (!interaction.inGuild()) {
-      await interaction.reply({ content: 'Este comando debe usarse dentro del servidor que quiere registrar el codigo.', ephemeral: true });
+      await interaction.reply({ content: 'Este comando debe usarse dentro del servidor que quiere registrar el afiliado.', ephemeral: true });
       return;
     }
     if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
-      await interaction.reply({ content: 'Necesitas Manage Server para registrar un codigo de afiliado en este servidor.', ephemeral: true });
+      await interaction.reply({ content: 'Necesitas Manage Server para registrar un afiliado en este servidor.', ephemeral: true });
       return;
     }
 
     await interaction.deferReply({ ephemeral: true });
-    const code = normalizeAffiliateCode(interaction.options.getString('codigo', true));
+    const code = normalizeAffiliateCode(interaction.options.getString('usuario') ?? interaction.options.getString('codigo', true));
     const result = await storage.recordAffiliateRedemption({
       code,
       guildId: interaction.guildId,
@@ -2696,11 +2698,15 @@ async function handleAffiliateCommand({ interaction, storage, config, client }) 
       rewardDays: config.AFFILIATE_REWARD_DAYS
     }).catch(async (error) => {
       const message = String(error?.message ?? error);
-      if (/Codigo de afiliado no encontrado/i.test(message)) {
+      if (/Codigo de afiliado no encontrado|Usuario de afiliado no encontrado/i.test(message)) {
         await interaction.editReply([
-          `${EMOJIS.wifi} No encuentro ese codigo de afiliado.`,
-          'Revisa que este escrito exactamente como se lo dio tu amigo y vuelve a intentarlo.'
+          `${EMOJIS.wifi} No encuentro ese usuario de afiliado.`,
+          'Dile a tu amigo que ejecute `/afiliado nombre` primero y vuelve a intentarlo con su username de Discord.'
         ].join('\n'));
+        return null;
+      }
+      if (/propio usuario/i.test(message)) {
+        await interaction.editReply('No puedes registrar tu propio usuario como afiliado en este servidor. Pide a otro owner que use tu username en su servidor.');
         return null;
       }
       throw error;
@@ -2709,9 +2715,10 @@ async function handleAffiliateCommand({ interaction, storage, config, client }) 
 
     if (result.alreadyRedeemed) {
       const redemption = normalizeAffiliateRedemption(result.redemption);
+      const registeredProfile = result.profile ? formatAffiliateIdentifier(result.profile) : `@${redemption.code.toLowerCase()}`;
       await interaction.editReply([
-        `${EMOJIS.wifi} Este servidor ya tiene un codigo de afiliado registrado.`,
-        `Codigo usado: \`${redemption.code}\``,
+        `${EMOJIS.wifi} Este servidor ya tiene un afiliado registrado.`,
+        `Afiliado usado: **${registeredProfile}**`,
         'Por seguridad y para evitar abuso, no se puede cambiar desde Discord.'
       ].join('\n'));
       return;
@@ -2719,15 +2726,16 @@ async function handleAffiliateCommand({ interaction, storage, config, client }) 
 
     const profile = normalizeAffiliateProfile(result.profile);
     const progress = buildAffiliateProgress(profile);
+    const affiliateName = formatAffiliateIdentifier(profile);
     await notifyAffiliateOwner({ client, profile, guildName: interaction.guild?.name ?? interaction.guildId, rewardPurchase: result.rewardPurchase }).catch((error) => {
       console.warn(`Could not notify affiliate owner ${profile.discordUserId}:`, error?.message ?? error);
     });
 
     const embed = new EmbedBuilder()
       .setColor(0xf4c95d)
-      .setTitle(`${EMOJIS.check} Codigo de afiliado registrado`)
+      .setTitle(`${EMOJIS.check} Afiliado registrado`)
       .setDescription([
-        `Servidor registrado correctamente con el codigo \`${profile.code}\`.`,
+        `Servidor registrado correctamente con el afiliado **${affiliateName}**.`,
         '',
         `El afiliado recibio un aviso por MD. Le faltan **${progress.remainingForNextReward || profile.rewardThreshold} servidores** para su siguiente recompensa.`
       ].join('\n'))
@@ -2746,10 +2754,11 @@ async function notifyAffiliateOwner({ client, profile, guildName, rewardPurchase
   if (!user) return;
   const progress = buildAffiliateProgress(profile);
   const remaining = progress.remainingForNextReward || profile.rewardThreshold;
+  const affiliateName = formatAffiliateIdentifier(profile);
   const lines = [
-    `${EMOJIS.global} **ALGUIEN HA UTILIZADO TU CODIGO DE AFILIADO**`,
+    `${EMOJIS.global} **ALGUIEN HA REGISTRADO TU USUARIO DE AFILIADO**`,
     '',
-    `Tu codigo \`${profile.code}\` ha sido registrado en **${guildName}**.`,
+    `Tu usuario **${affiliateName}** ha sido registrado en **${guildName}**.`,
     `Te quedan **${remaining} servidores** para conseguir **1 servidor Premium**.`
   ];
   if (rewardPurchase) {
