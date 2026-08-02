@@ -38,6 +38,7 @@ const ASSETS_DIR = path.resolve(__dirname, '..', 'assets');
 const UPLOADS_DIR = path.resolve(process.cwd(), 'data', 'uploads');
 const docsAuthAttempts = new Map();
 const adminAuthAttempts = new Map();
+const ADMIN_CODE_REPLAY_GRACE_MS = 2 * 60 * 1000;
 
 export function createServer({ config, storage, bot, events }) {
   const app = express();
@@ -526,14 +527,18 @@ export function createServer({ config, storage, bot, events }) {
     const settings = await storage.getGlobalSettings();
     const record = settings?.adminAccessCode;
     const verification = inspectAdminAccessCode({ record, code: req.body.code, config });
-    if (!verification.ok) {
-      if (verification.reason === 'wrong' || verification.reason === 'malformed') {
+    const replayVerification = !verification.ok && verification.reason === 'used' && isRecentAdminCodeUse(record, ip)
+      ? inspectAdminAccessCode({ record, code: req.body.code, config, allowUsed: true })
+      : null;
+    const finalVerification = replayVerification?.ok ? replayVerification : verification;
+    if (!finalVerification.ok) {
+      if (finalVerification.reason === 'wrong' || finalVerification.reason === 'malformed') {
         recordAdminFailure(ip);
       }
       res.status(401).type('html').send(renderAdminGate({
         config,
         codeStatus: getAdminAccessCodeStatus(record),
-        error: adminCodeErrorMessage(verification.reason)
+        error: adminCodeErrorMessage(finalVerification.reason)
       }));
       return;
     }
@@ -544,8 +549,10 @@ export function createServer({ config, storage, bot, events }) {
     await storage.updateGlobalSettings({
       adminAccessCode: {
         ...record,
-        usedAt: new Date(now).toISOString(),
-        usedByIp: ip
+        usedAt: record.usedAt || new Date(now).toISOString(),
+        usedByIp: record.usedByIp || ip,
+        lastAcceptedAt: new Date(now).toISOString(),
+        lastAcceptedByIp: ip
       }
     });
     res.cookie('nexadesk_admin', signSession(config, {
@@ -2403,6 +2410,14 @@ function clearAdminFailures(ip) {
   clearAuthFailures(adminAuthAttempts, ip);
 }
 
+function isRecentAdminCodeUse(record, ip) {
+  if (!record?.usedAt || !record?.usedByIp) return false;
+  if (String(record.usedByIp) !== String(ip)) return false;
+  const usedAt = Date.parse(record.usedAt);
+  if (!Number.isFinite(usedAt)) return false;
+  return Date.now() - usedAt <= ADMIN_CODE_REPLAY_GRACE_MS;
+}
+
 function isAuthRateLimited(store, ip) {
   const entry = store.get(ip);
   if (!entry) return false;
@@ -3044,7 +3059,7 @@ function renderAdminGate({ config, error = '', codeStatus = null }) {
           <span>${escapeHtml(statusText)}</span>
         </div>
         ${error ? `<div class="error">${escapeHtml(error)}</div>` : ''}
-        <form method="post" action="/admin" class="totp-form" autocomplete="off">
+        <form method="post" action="/admin" class="totp-form" autocomplete="off" data-admin-code-form>
           <label>
             Codigo de rotacion
             <input name="code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" minlength="6" autocomplete="one-time-code" autofocus required>
@@ -3056,8 +3071,29 @@ function renderAdminGate({ config, error = '', codeStatus = null }) {
           <span>El codigo dura 10 minutos, lo emite la web, se guarda hasheado, se cifra para poder repetirlo al mismo emisor mientras esta activo, se invalida al primer uso y protege endpoints internos bajo <code>/admin/api</code>.</span>
         </div>
       </main>
-    `
+    `,
+    script: renderAdminCodeSubmitScript()
   });
+}
+
+function renderAdminCodeSubmitScript() {
+  return `<script>
+    document.querySelectorAll('[data-admin-code-form]').forEach((form) => {
+      let submitted = false;
+      form.addEventListener('submit', (event) => {
+        if (submitted) {
+          event.preventDefault();
+          return;
+        }
+        submitted = true;
+        const button = form.querySelector('button[type="submit"]');
+        if (button) {
+          button.disabled = true;
+          button.textContent = 'Entrando...';
+        }
+      });
+    });
+  </script>`;
 }
 
 function renderAdminCodeStatus(status) {

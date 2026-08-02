@@ -33,13 +33,13 @@ export function buildAdminAccessCode({ code, config, createdBy, createdByTag, gu
   };
 }
 
-export function inspectAdminAccessCode({ record, code, config }) {
+export function inspectAdminAccessCode({ record, code, config, allowUsed = false }) {
   const normalized = normalizeAdminCode(code);
   if (!record) return { ok: false, reason: 'missing' };
   if (!normalized || normalized.length !== 6) return { ok: false, reason: 'malformed' };
 
   const status = getAdminAccessCodeStatus(record);
-  if (status.state === 'used') return { ok: false, reason: 'used', status };
+  if (status.state === 'used' && !allowUsed) return { ok: false, reason: 'used', status };
   if (status.state === 'expired') return { ok: false, reason: 'expired', status };
   if (status.state === 'invalid') return { ok: false, reason: 'invalid', status };
 
@@ -49,7 +49,7 @@ export function inspectAdminAccessCode({ record, code, config }) {
     return { ok: false, reason: 'wrong', status };
   }
 
-  return { ok: true, reason: 'ok', status, normalized };
+  return { ok: true, reason: status.state === 'used' ? 'used_replay' : 'ok', status, normalized };
 }
 
 export function verifyAdminAccessCode({ record, code, config }) {
