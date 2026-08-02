@@ -26,7 +26,7 @@ import { DEFAULT_PREMIUM_MODULES, PREMIUM_ADDONS, PREMIUM_SALES_FEATURES, getPre
 import { isPremiumEntitled, normalizePremiumConfig, summarizePremiumConfig } from './premium.js';
 import { addManualPendingItem, buildLaunchPatch, buildReleaseState } from './release-gates.js';
 import { normalizeSecurityConfig, summarizeSecurityConfig } from './security.js';
-import { buildTranscriptFileName, buildTranscriptText } from './transcripts.js';
+import { buildTranscriptFileName, buildTranscriptText, verifyTranscriptAccessToken } from './transcripts.js';
 import { normalizeWelcomeConfig } from './welcome.js';
 
 const DISCORD_API = 'https://discord.com/api/v10';
@@ -640,6 +640,10 @@ export function createServer({ config, storage, bot, events }) {
 
     const session = getSession(req);
     if (!session) {
+      if ((isTranscriptReplayRequest(req) || isTranscriptDownloadRequest(req)) && req.query.viewer && req.query.token) {
+        next();
+        return;
+      }
       if (req.path.startsWith('/api/')) {
         res.status(401).json({ error: 'Login required' });
         return;
@@ -1015,7 +1019,9 @@ export function createServer({ config, storage, bot, events }) {
 
   app.get('/api/tickets/:channelId/transcript.txt', asyncHandler(async (req, res) => {
     const ticket = await storage.getTicket(req.params.channelId);
-    if (!ticket || !canAccessGuild(req.session, ticket.guildId)) {
+    const sessionCanAccess = req.session ? canAccessGuild(req.session, ticket?.guildId) : false;
+    const signedCanAccess = verifyTranscriptReplayRequest(req, config);
+    if (!ticket || (!sessionCanAccess && !signedCanAccess)) {
       res.status(404).type('text/plain').send('Ticket not found');
       return;
     }
@@ -1028,7 +1034,9 @@ export function createServer({ config, storage, bot, events }) {
 
   app.get('/tickets/:channelId/replay', asyncHandler(async (req, res) => {
     const ticket = await storage.getTicket(req.params.channelId);
-    if (!ticket || !canAccessGuild(req.session, ticket.guildId)) {
+    const sessionCanAccess = req.session ? canAccessGuild(req.session, ticket?.guildId) : false;
+    const signedCanAccess = verifyTranscriptReplayRequest(req, config);
+    if (!ticket || (!sessionCanAccess && !signedCanAccess)) {
       res.status(404).type('html').send(renderSimpleErrorPage('Transcripcion no encontrada', 'No tienes acceso a este ticket o ya no existe.'));
       return;
     }
@@ -1038,7 +1046,13 @@ export function createServer({ config, storage, bot, events }) {
     await hydrateReplayUsersFromDiscord({ config, users }).catch((error) => {
       console.warn(`Could not hydrate replay users for ${req.params.channelId}:`, normalizeError(error));
     });
-    res.type('html').send(renderTicketReplayPage({ ticket, messages, users }));
+    res.type('html').send(renderTicketReplayPage({
+      ticket,
+      messages,
+      users,
+      publicAccess: !sessionCanAccess && signedCanAccess,
+      accessQuery: buildTranscriptAccessQuery(req)
+    }));
   }));
 
   app.get('/api/guilds/:guildId/roles', requireGuildAccess, asyncHandler(async (req, res) => {
@@ -1752,7 +1766,39 @@ function canManageGuild(guild) {
 }
 
 function canAccessGuild(session, guildId) {
-  return session.guilds.some((guild) => guild.id === guildId);
+  return Boolean(session?.guilds?.some((guild) => guild.id === guildId));
+}
+
+function isTranscriptReplayRequest(req) {
+  return /^\/tickets\/\d{16,24}\/replay$/.test(req.path);
+}
+
+function isTranscriptDownloadRequest(req) {
+  return /^\/api\/tickets\/\d{16,24}\/transcript\.txt$/.test(req.path);
+}
+
+function verifyTranscriptReplayRequest(req, config) {
+  const channelId = String(req.params?.channelId
+    ?? req.path.match(/^\/tickets\/(\d{16,24})\/replay$/)?.[1]
+    ?? req.path.match(/^\/api\/tickets\/(\d{16,24})\/transcript\.txt$/)?.[1]
+    ?? '').trim();
+  const userId = String(req.query.viewer ?? '').trim();
+  const token = String(req.query.token ?? '').trim();
+  if (!channelId || !/^\d{16,24}$/.test(userId) || !token) return false;
+  return verifyTranscriptAccessToken({
+    channelId,
+    userId,
+    token,
+    secret: config.SESSION_SECRET
+  });
+}
+
+function buildTranscriptAccessQuery(req) {
+  const viewer = String(req.query.viewer ?? '').trim();
+  const token = String(req.query.token ?? '').trim();
+  if (!viewer || !token) return '';
+  const params = new URLSearchParams({ viewer, token });
+  return `?${params.toString()}`;
 }
 
 async function recordDashboardGuildLog(storage, req, { guildId, guildName, type = 'config', severity = 'info', title, message, metadata = {} }) {
@@ -8529,8 +8575,9 @@ function renderTicketRow(ticket) {
   return `<tr><td>#${escapeHtml(ticket.channelName)}</td><td>${escapeHtml(ticket.guildName)}</td><td>${escapeHtml(ticket.status)}</td><td>${escapeHtml(new Date(ticket.createdAt).toLocaleString())}</td><td><button class="table-action secondary-button" type="button" data-replay-channel="${escapeHtml(ticket.channelId)}">Ver</button></td></tr>`;
 }
 
-function renderTicketReplayPage({ ticket, messages, users }) {
+function renderTicketReplayPage({ ticket, messages, users, publicAccess = false, accessQuery = '' }) {
   const messageCount = messages.length;
+  const transcriptDownloadUrl = `/api/tickets/${encodeURIComponent(ticket.channelId)}/transcript.txt${accessQuery}`;
   return `<!doctype html>
 <html lang="es">
 <head>
@@ -8587,8 +8634,8 @@ function renderTicketReplayPage({ ticket, messages, users }) {
           </div>
         </div>
         <div class="actions">
-          <a class="secondary" href="/#tickets">Volver a dashboard</a>
-          <a href="/api/tickets/${encodeURIComponent(ticket.channelId)}/transcript.txt">Descargar TXT</a>
+          ${publicAccess ? '' : '<a class="secondary" href="/#tickets">Volver a dashboard</a>'}
+          <a href="${escapeHtml(transcriptDownloadUrl)}">Descargar TXT</a>
         </div>
       </header>
       <section class="chat">

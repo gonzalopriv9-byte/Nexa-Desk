@@ -58,7 +58,7 @@ import { isPremiumEntitled, normalizePremiumConfig } from './premium.js';
 import { buildReleaseState, findPendingFeatureByCommand } from './release-gates.js';
 import { SecurityManager, SECURITY_LEVELS, normalizeSecurityConfig, normalizeSecurityLevel, summarizeSecurityConfig } from './security.js';
 import { analyzeGuildChannelsForDiscovery, hasUsefulDiscovery, normalizeChannelNameForDiscovery, normalizeDiscoveryConfig } from './server-discovery.js';
-import { buildTranscriptFileName, buildTranscriptText } from './transcripts.js';
+import { buildTranscriptReplayUrl } from './transcripts.js';
 import { hasVisualAttachments } from './ai/visual-analyzer.js';
 import { createTicketFlowCard } from './welcome-card.js';
 import { formatWelcomeTemplate as formatMemberWelcomeTemplate, normalizeWelcomeConfig } from './welcome.js';
@@ -107,6 +107,7 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
     client,
     storage,
     voiceManager,
+    config,
     session,
     member,
     transcript
@@ -323,7 +324,7 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
           return;
         }
         if (subcommand === 'cerrar') {
-          await handleCloseTicketCommand({ interaction, storage, client, voiceManager });
+          await handleCloseTicketCommand({ interaction, storage, client, voiceManager, config });
           return;
         }
       }
@@ -345,7 +346,7 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
       }
 
       if (interaction.commandName === 'transcripcion' && interaction.options.getSubcommand() === 'enviar') {
-        await handleSendTranscriptCommand({ interaction, storage });
+        await handleSendTranscriptCommand({ interaction, storage, config });
         return;
       }
 
@@ -484,7 +485,7 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
       if (!ticket || ticket.status === 'closed') return;
 
       if (ticket.voiceChannelId) voiceManager?.stopSession(channel.guild.id, ticket.voiceChannelId);
-      await finalizeDeletedTicket({ client, storage, channel, ticket, voiceManager });
+      await finalizeDeletedTicket({ client, storage, channel, ticket, voiceManager, config });
     } catch (error) {
       console.error(`Failed to finalize deleted ticket channel ${channel.id}:`, error);
     }
@@ -604,7 +605,7 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
     }
 
     if (isTicketCloseRequest(message.content)) {
-      await handleNaturalCloseRequest({ client, storage, message, ticket, guildConfig });
+      await handleNaturalCloseRequest({ client, storage, message, ticket, guildConfig, config });
       return;
     }
 
@@ -1596,7 +1597,7 @@ function buildTicketPriorityAction(primary, { ticket, latestUser }) {
   return 'Sin mensajes de usuario suficientes. Revisa que el ticket se haya creado correctamente y que la transcripcion este activa.';
 }
 
-async function handleCloseTicketCommand({ interaction, storage, client, voiceManager = null }) {
+async function handleCloseTicketCommand({ interaction, storage, client, voiceManager = null, config }) {
   if (!interaction.inGuild() || !interaction.channelId) {
     await interaction.reply({ content: 'Este comando solo se puede usar dentro de un ticket del servidor.', ephemeral: true });
     return;
@@ -1628,6 +1629,7 @@ async function handleCloseTicketCommand({ interaction, storage, client, voiceMan
   await closeTicketWithTranscript({
     client,
     storage,
+    config,
     voiceManager,
     channel: interaction.channel,
     guild: interaction.guild,
@@ -2151,6 +2153,7 @@ async function handleAutonomousDeleteChannelAction({ storage, message, ticket, g
     await closeTicketWithTranscript({
       client: message.client,
       storage,
+      config,
       channel: message.channel,
       guild: message.guild,
       ticket,
@@ -2484,7 +2487,7 @@ async function resolveAutonomousChannelParentId(message, guildConfig) {
   return null;
 }
 
-async function handleSendTranscriptCommand({ interaction, storage }) {
+async function handleSendTranscriptCommand({ interaction, storage, config }) {
   if (!interaction.inGuild() || !interaction.channelId) {
     await interaction.reply({ content: 'Este comando solo se puede usar dentro de un ticket del servidor.', ephemeral: true });
     return;
@@ -2519,7 +2522,8 @@ async function handleSendTranscriptCommand({ interaction, storage }) {
       targetUser,
       ticket,
       messages,
-      guildName: interaction.guild.name
+      guildName: interaction.guild.name,
+      config
     });
   } catch (error) {
     console.error('Failed to DM ticket transcript:', error);
@@ -2535,11 +2539,11 @@ async function handleSendTranscriptCommand({ interaction, storage }) {
     authorName: interaction.user.username,
     authorBot: false,
     role: 'system',
-    content: `Transcripcion enviada por MD a ${targetUser.tag}.`,
+    content: `Enlace de transcripcion enviado por MD a ${targetUser.tag}.`,
     createdAt: new Date().toISOString()
   });
 
-  await interaction.editReply(`Transcripcion enviada por MD a **${targetUser.tag}**.`);
+  await interaction.editReply(`Enlace de transcripcion enviado por MD a **${targetUser.tag}**.`);
 }
 
 async function handleActivatePremiumCommand({ interaction, storage, client }) {
@@ -5054,7 +5058,7 @@ function buildTicketChannelName(username, componentLabel) {
   return prefix.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').slice(0, 90);
 }
 
-async function handleNaturalCloseRequest({ client, storage, message, ticket, guildConfig }) {
+async function handleNaturalCloseRequest({ client, storage, message, ticket, guildConfig, config }) {
   if (!canCloseTicketFromMessage(message, ticket, guildConfig)) {
     const reply = await message.reply({
       content: 'Solo quien abrio este ticket, el staff configurado o alguien con Manage Server puede cerrarlo.',
@@ -5075,6 +5079,7 @@ async function handleNaturalCloseRequest({ client, storage, message, ticket, gui
   await closeTicketWithTranscript({
     client,
     storage,
+    config,
     channel: message.channel,
     guild: message.guild,
     ticket,
@@ -5086,7 +5091,7 @@ async function handleNaturalCloseRequest({ client, storage, message, ticket, gui
   });
 }
 
-async function handleVoiceTicketCloseRequest({ client, storage, voiceManager, session, member, transcript }) {
+async function handleVoiceTicketCloseRequest({ client, storage, voiceManager, config, session, member, transcript }) {
   const channel = session.textChannel;
   const guild = channel.guild;
   const [storedTicket, storedGuildConfig] = await Promise.all([
@@ -5142,6 +5147,7 @@ async function handleVoiceTicketCloseRequest({ client, storage, voiceManager, se
   await closeTicketWithTranscript({
     client,
     storage,
+    config,
     voiceManager,
     channel,
     guild,
@@ -5156,7 +5162,7 @@ async function handleVoiceTicketCloseRequest({ client, storage, voiceManager, se
   return { handled: true };
 }
 
-async function closeTicketWithTranscript({ client, storage, voiceManager = null, channel, guild, ticket, requestedBy, requestId, closingReply, fallbackUser = null, reason }) {
+async function closeTicketWithTranscript({ client, storage, config, voiceManager = null, channel, guild, ticket, requestedBy, requestId, closingReply, fallbackUser = null, reason }) {
   const requestedAt = new Date().toISOString();
   scheduleTicketChannelDelete({
     guild,
@@ -5207,7 +5213,7 @@ async function closeTicketWithTranscript({ client, storage, voiceManager = null,
   });
   const guildConfig = await storage.getGuildConfig(guild.id).catch(() => null);
   const targetUser = await resolveTranscriptRecipient(client, ticket, messages) ?? fallbackUser;
-  let dmStatus = 'No se pudo detectar usuario para enviar la transcripcion por MD.';
+  let dmStatus = 'No se pudo detectar usuario para enviar el enlace de transcripcion por MD.';
 
   if (targetUser) {
     try {
@@ -5217,15 +5223,16 @@ async function closeTicketWithTranscript({ client, storage, voiceManager = null,
           ticket: closedTicket,
           messages,
           guildName: guild.name,
-          guildConfig
+          guildConfig,
+          config
         }),
         10_000,
         `send transcript dm ${channel.id}`
       );
-      dmStatus = `Transcripcion enviada automaticamente por MD a ${targetUser.tag}.`;
+      dmStatus = `Enlace de transcripcion enviado automaticamente por MD a ${targetUser.tag}.`;
     } catch (error) {
       console.error(`Failed to DM transcript for ticket close ${channel.id}: ${compactRuntimeError(error)}`);
-      dmStatus = `No se pudo enviar la transcripcion por MD a ${targetUser.tag}. Puede tener los MD cerrados.`;
+      dmStatus = `No se pudo enviar el enlace de transcripcion por MD a ${targetUser.tag}. Puede tener los MD cerrados.`;
     }
   }
 
@@ -5290,7 +5297,7 @@ function scheduleTicketChannelDelete({ guild, channelId, reason, delayMs = 10_00
   return timer;
 }
 
-async function finalizeDeletedTicket({ client, storage, channel, ticket, voiceManager = null }) {
+async function finalizeDeletedTicket({ client, storage, channel, ticket, voiceManager = null, config }) {
   const closedAt = new Date().toISOString();
   const closedTicket = {
     ...ticket,
@@ -5313,7 +5320,7 @@ async function finalizeDeletedTicket({ client, storage, channel, ticket, voiceMa
   const messages = await storage.listTranscriptMessages(ticket.channelId);
   const guildConfig = await storage.getGuildConfig(ticket.guildId).catch(() => null);
   const targetUser = await resolveTranscriptRecipient(client, ticket, messages);
-  let dmStatus = 'No se pudo detectar usuario para enviar la transcripcion por MD.';
+  let dmStatus = 'No se pudo detectar usuario para enviar el enlace de transcripcion por MD.';
 
   if (targetUser) {
     try {
@@ -5322,12 +5329,13 @@ async function finalizeDeletedTicket({ client, storage, channel, ticket, voiceMa
         ticket: closedTicket,
         messages,
         guildName: channel.guild?.name,
-        guildConfig
+        guildConfig,
+        config
       });
-      dmStatus = `Transcripcion enviada automaticamente por MD a ${targetUser.tag}.`;
+      dmStatus = `Enlace de transcripcion enviado automaticamente por MD a ${targetUser.tag}.`;
     } catch (error) {
       console.error('Failed to auto DM deleted ticket transcript:', error);
-      dmStatus = `No se pudo enviar la transcripcion por MD a ${targetUser.tag}. Puede tener los MD cerrados.`;
+      dmStatus = `No se pudo enviar el enlace de transcripcion por MD a ${targetUser.tag}. Puede tener los MD cerrados.`;
     }
   }
 
@@ -5363,15 +5371,19 @@ async function closeLinkedVoiceRoom({ guild, ticket, voiceManager = null, reason
   }
 }
 
-async function sendTranscriptDm({ targetUser, ticket, messages, guildName, guildConfig = null }) {
-  const transcriptText = buildTranscriptText({ ticket, messages });
-  const fileName = buildTranscriptFileName(ticket);
-  const attachment = new AttachmentBuilder(Buffer.from(transcriptText, 'utf8'), { name: fileName });
+async function sendTranscriptDm({ targetUser, ticket, guildName, guildConfig = null, config = null }) {
+  const transcriptUrl = buildTranscriptReplayUrl({
+    dashboardBaseUrl: getPublicDashboardBaseUrl(config ?? {}),
+    channelId: ticket.channelId,
+    userId: targetUser.id,
+    secret: config?.SESSION_SECRET
+  });
   const growth = normalizeGrowthConfig(guildConfig?.growth);
   const premium = normalizePremiumConfig(guildConfig?.premium, guildConfig ?? {});
   const shouldAskFeedback = growth.enabled && growth.feedbackDm;
   const content = [
-    `${EMOJIS.server} Aqui tienes la transcripcion de tu ticket en **${ticket.guildName ?? guildName ?? 'el servidor'}**.`,
+    `${EMOJIS.server} Aqui tienes el enlace para ver la transcripcion de tu ticket en **${ticket.guildName ?? guildName ?? 'el servidor'}**:`,
+    transcriptUrl,
     `Canal: **#${ticket.channelName ?? ticket.channelId}**`,
     'Si necesitas volver a contactar con el staff, abre un nuevo ticket.'
   ];
@@ -5385,7 +5397,6 @@ async function sendTranscriptDm({ targetUser, ticket, messages, guildName, guild
 
   await targetUser.send({
     content: content.join('\n'),
-    files: [attachment],
     components: shouldAskFeedback ? buildTranscriptFeedbackComponents(ticket.channelId) : []
   });
 }

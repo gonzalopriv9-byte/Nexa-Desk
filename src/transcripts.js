@@ -1,3 +1,7 @@
+import crypto from 'node:crypto';
+
+const TRANSCRIPT_ACCESS_TOKEN_VERSION = 'v1';
+
 export function buildTranscriptText({ ticket, messages = [] }) {
   const lines = [
     'NexaDesk Transcript',
@@ -33,6 +37,30 @@ export function buildTranscriptFileName(ticket) {
   return `nexadesk-${channel}-${date}.txt`;
 }
 
+export function buildTranscriptReplayUrl({ dashboardBaseUrl, channelId, userId, secret }) {
+  const url = new URL(`/tickets/${encodeURIComponent(channelId)}/replay`, dashboardBaseUrl);
+  url.searchParams.set('viewer', String(userId));
+  url.searchParams.set('token', buildTranscriptAccessToken({ channelId, userId, secret }));
+  return url.toString();
+}
+
+export function buildTranscriptAccessToken({ channelId, userId, secret }) {
+  return crypto
+    .createHmac('sha256', normalizeTranscriptTokenSecret(secret))
+    .update(buildTranscriptAccessPayload({ channelId, userId }))
+    .digest('base64url');
+}
+
+export function verifyTranscriptAccessToken({ channelId, userId, token, secret }) {
+  const provided = String(token ?? '').trim();
+  if (!provided) return false;
+  const expected = buildTranscriptAccessToken({ channelId, userId, secret });
+  const providedBuffer = Buffer.from(provided);
+  const expectedBuffer = Buffer.from(expected);
+  return providedBuffer.length === expectedBuffer.length
+    && crypto.timingSafeEqual(providedBuffer, expectedBuffer);
+}
+
 function normalizeContent(content = '') {
   return String(content).replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/\n/g, '\n  ');
 }
@@ -50,4 +78,17 @@ function sanitizeFilePart(value) {
     .replace(/[^a-z0-9-]+/g, '-')
     .replace(/^-+|-+$/g, '')
     .slice(0, 64) || 'ticket';
+}
+
+function buildTranscriptAccessPayload({ channelId, userId }) {
+  return [
+    TRANSCRIPT_ACCESS_TOKEN_VERSION,
+    String(channelId ?? '').trim(),
+    String(userId ?? '').trim()
+  ].join(':');
+}
+
+function normalizeTranscriptTokenSecret(secret) {
+  const value = String(secret ?? '').trim();
+  return value || 'nexadesk-transcript-access-fallback';
 }
