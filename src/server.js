@@ -538,6 +538,23 @@ export function createServer({ config, storage, bot, events }) {
     res.json({ maintenance: await storage.setMaintenanceState(patch) });
   }));
 
+  app.post('/admin/api/dashboard-maintenance', requireAdminSession, asyncHandler(async (req, res) => {
+    const enabled = Boolean(req.body.enabled);
+    const currentSettings = await storage.getGlobalSettings().catch(() => ({}));
+    const dashboardMaintenance = normalizeDashboardMaintenanceState({
+      ...currentSettings.dashboardMaintenance,
+      enabled,
+      message: String(req.body.message ?? '').trim().slice(0, 500),
+      enabledBy: enabled ? 'admin-vault' : currentSettings.dashboardMaintenance?.enabledBy,
+      enabledAt: enabled ? new Date().toISOString() : currentSettings.dashboardMaintenance?.enabledAt,
+      disabledBy: enabled ? null : 'admin-vault',
+      disabledAt: enabled ? null : new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    });
+    const saved = await storage.updateGlobalSettings({ dashboardMaintenance });
+    res.json({ dashboardMaintenance: normalizeDashboardMaintenanceState(saved.dashboardMaintenance) });
+  }));
+
   app.get('/admin/events', requireAdminSession, (req, res) => {
     res.writeHead(200, {
       'content-type': 'text/event-stream',
@@ -1261,6 +1278,16 @@ export function createServer({ config, storage, bot, events }) {
     ]);
     const installedGuildIds = await getInstalledGuildIds(bot, configs);
     const guilds = mergeUserGuilds(req.session, configs, installedGuildIds, config);
+    const dashboardMaintenance = normalizeDashboardMaintenanceState(settings.dashboardMaintenance);
+    const hasDashboardPriorityAccess = req.session.user.id === GLOBAL_BLACKLIST_ADMIN_USER_ID
+      || guilds.some((guild) => guild.installed && isPremiumEntitled(guild));
+    if (dashboardMaintenance.enabled && !hasDashboardPriorityAccess) {
+      res.type('html').send(renderDashboardMaintenancePage({
+        session: req.session,
+        maintenance: dashboardMaintenance
+      }));
+      return;
+    }
     res.type('html').send(renderDashboard({
       session: req.session,
       guilds,
@@ -1286,6 +1313,18 @@ export function createServer({ config, storage, bot, events }) {
 function asyncHandler(handler) {
   return (req, res, next) => {
     Promise.resolve(handler(req, res, next)).catch(next);
+  };
+}
+
+function normalizeDashboardMaintenanceState(value = {}) {
+  return {
+    enabled: Boolean(value?.enabled),
+    message: String(value?.message || 'Estamos reforzando la dashboard para que NexaDesk sea mas rapido, mas seguro y mas estable.').trim().slice(0, 500),
+    enabledBy: value?.enabledBy ? String(value.enabledBy).slice(0, 120) : null,
+    enabledAt: value?.enabledAt || null,
+    disabledBy: value?.disabledBy ? String(value.disabledBy).slice(0, 120) : null,
+    disabledAt: value?.disabledAt || null,
+    updatedAt: value?.updatedAt || null
   };
 }
 
@@ -1795,7 +1834,8 @@ async function buildAdminSnapshot({ storage, bot }) {
     feedback,
     aiQualitySignals,
     blacklistEntries,
-    maintenance
+    maintenance,
+    settings
   ] = await Promise.all([
     storage.listGuildConfigs().catch((error) => {
       console.warn('Admin snapshot guilds failed:', normalizeError(error));
@@ -1828,7 +1868,11 @@ async function buildAdminSnapshot({ storage, bot }) {
           console.warn('Admin snapshot maintenance failed:', normalizeError(error));
           return normalizeMaintenanceState();
         })
-      : Promise.resolve(normalizeMaintenanceState())
+      : Promise.resolve(normalizeMaintenanceState()),
+    storage.getGlobalSettings().catch((error) => {
+      console.warn('Admin snapshot global settings failed:', normalizeError(error));
+      return {};
+    })
   ]);
 
   const guildIds = configs.map((guild) => guild.guildId).filter(Boolean);
@@ -1861,6 +1905,7 @@ async function buildAdminSnapshot({ storage, bot }) {
     generatedAt: new Date().toISOString(),
     runtime: buildAdminRuntime(),
     maintenance: normalizeMaintenanceState(maintenance),
+    dashboardMaintenance: normalizeDashboardMaintenanceState(settings.dashboardMaintenance),
     stats: enrichAdminStats(stats, {
       guilds,
       tickets,
@@ -3070,6 +3115,28 @@ function renderAdminPanel({ config, session, snapshot }) {
           </div>
         </section>
 
+        <section class="admin-control">
+          <div>
+            <p class="kicker">Dashboard maintenance</p>
+            <h2>Bloqueo visual de la web Free</h2>
+            <p>Cuando esta activo, la dashboard principal muestra una pantalla de mantenimiento con juego. Usuarios con servidores Premium mantienen acceso prioritario; /admin, /docs, /status y paginas de gestion siguen disponibles.</p>
+            <label style="margin-top:12px">
+              Mensaje visible en la pantalla de mantenimiento
+              <textarea id="dashboardMaintenanceMessage" placeholder="Estamos reforzando la dashboard..."></textarea>
+            </label>
+            <div class="admin-buttons">
+              <button type="button" id="activateDashboardMaintenance">Activar web maintenance</button>
+              <button type="button" class="danger" id="disableDashboardMaintenance">Desactivar</button>
+              <span id="dashboardMaintenanceMeta">Sin cambios recientes.</span>
+            </div>
+          </div>
+          <div class="admin-card">
+            <span>Dashboard actual</span>
+            <strong id="dashboardMaintenanceLabel">...</strong>
+            <small id="dashboardMaintenanceDetails">Cargando estado.</small>
+          </div>
+        </section>
+
         <section class="admin-layout">
           <div class="admin-stack">
             <article class="admin-table-card">
@@ -4060,6 +4127,7 @@ function renderAdminPanelScript(initialSnapshot) {
       const stats = snapshot.stats || {};
       const runtime = snapshot.runtime || {};
       const maintenance = snapshot.maintenance || {};
+      const dashboardMaintenance = snapshot.dashboardMaintenance || {};
       const cards = [
         ['Servidores', String(stats.installedGuilds ?? 0) + ' / ' + String(stats.totalGuilds ?? 0), 'instalados / configurados'],
         ['Tickets', String(stats.openTickets ?? 0) + ' abiertos', String(stats.totalTickets ?? 0) + ' totales'],
@@ -4069,7 +4137,8 @@ function renderAdminPanelScript(initialSnapshot) {
         ['Blacklist', String(stats.activeBlacklistEntries ?? 0), 'entradas activas'],
         ['Paneles', String(stats.panels ?? 0), String(stats.components ?? 0) + ' componentes'],
         ['Runtime', String(runtime.rssMb ?? 0) + ' MB', 'uptime ' + uptime(runtime.uptimeSeconds)],
-        ['Mantenimiento', maintenance.enabled ? 'ACTIVO' : 'OFF', maintenance.enabled ? 'Free con delay' : 'sin ralentizar']
+        ['Mantenimiento', maintenance.enabled ? 'ACTIVO' : 'OFF', maintenance.enabled ? 'Free con delay' : 'sin ralentizar'],
+        ['Web maintenance', dashboardMaintenance.enabled ? 'ACTIVO' : 'OFF', dashboardMaintenance.enabled ? 'Free ve pantalla de espera' : 'dashboard abierta']
       ];
       byId('adminStats').innerHTML = cards.map((card) => '<article class="admin-card"><span>' + html(card[0]) + '</span><strong>' + html(card[1]) + '</strong><small>' + html(card[2]) + '</small></article>').join('');
     };
@@ -4085,6 +4154,17 @@ function renderAdminPanelScript(initialSnapshot) {
       byId('maintenanceMeta').textContent = maintenance.enabled
         ? 'Activado por ' + (maintenance.enabledBy || 'admin') + ' - ' + fmtDate(maintenance.enabledAt || maintenance.updatedAt)
         : 'Desactivado - ' + fmtDate(maintenance.disabledAt || maintenance.updatedAt);
+    };
+    const renderDashboardMaintenance = () => {
+      const dashboardMaintenance = state.snapshot.dashboardMaintenance || {};
+      byId('dashboardMaintenanceMessage').value = dashboardMaintenance.message || '';
+      byId('dashboardMaintenanceLabel').textContent = dashboardMaintenance.enabled ? 'Activo' : 'Desactivado';
+      byId('dashboardMaintenanceDetails').textContent = dashboardMaintenance.enabled
+        ? 'Dashboard Free bloqueada. Actualizado: ' + fmtDate(dashboardMaintenance.updatedAt)
+        : 'La dashboard principal esta disponible para Free y Premium.';
+      byId('dashboardMaintenanceMeta').textContent = dashboardMaintenance.enabled
+        ? 'Activado por ' + (dashboardMaintenance.enabledBy || 'admin') + ' - ' + fmtDate(dashboardMaintenance.enabledAt || dashboardMaintenance.updatedAt)
+        : 'Desactivado - ' + fmtDate(dashboardMaintenance.disabledAt || dashboardMaintenance.updatedAt);
     };
     const renderGuilds = () => {
       const guilds = state.snapshot.guilds || [];
@@ -4138,6 +4218,7 @@ function renderAdminPanelScript(initialSnapshot) {
     const renderAll = () => {
       renderStats();
       renderMaintenance();
+      renderDashboardMaintenance();
       renderGuilds();
       renderTickets();
       renderFeedback();
@@ -4181,8 +4262,31 @@ function renderAdminPanelScript(initialSnapshot) {
         setToast('No pude cambiar mantenimiento: ' + error.message);
       }
     };
+    const setDashboardMaintenance = async (enabled) => {
+      try {
+        const response = await fetch('/admin/api/dashboard-maintenance', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            enabled,
+            message: byId('dashboardMaintenanceMessage').value
+          })
+        });
+        const body = await response.json();
+        if (!response.ok) throw new Error(body.error || 'HTTP ' + response.status);
+        state.snapshot.dashboardMaintenance = body.dashboardMaintenance;
+        renderAll();
+        await loadSnapshot(true);
+        setToast(enabled ? 'Mantenimiento de dashboard activado.' : 'Mantenimiento de dashboard desactivado.');
+      } catch (error) {
+        setToast('No pude cambiar dashboard maintenance: ' + error.message);
+      }
+    };
     byId('activateMaintenance').addEventListener('click', () => setMaintenance(true));
     byId('disableMaintenance').addEventListener('click', () => setMaintenance(false));
+    byId('activateDashboardMaintenance').addEventListener('click', () => setDashboardMaintenance(true));
+    byId('disableDashboardMaintenance').addEventListener('click', () => setDashboardMaintenance(false));
     renderAll();
     setInterval(() => loadSnapshot(true), 20000);
     if (window.EventSource) {
@@ -4660,6 +4764,7 @@ function renderLogin(config) {
     .loader { width:min(440px, calc(100% - 32px)); border:1px solid var(--line); background:#0b1216; border-radius:8px; padding:24px; text-align:center; }
     .pulse { width:48px; height:48px; margin:0 auto 18px; border-radius:50%; border:2px solid rgba(255,255,255,.18); border-top-color:#fff; animation:spin 1s linear infinite; }
     #loadingPhrase { color:var(--text); font-weight:800; margin:0; }
+    #loadingTip { display:block; margin-top:8px; color:var(--muted); line-height:1.45; }
     .error { color:var(--danger); margin-top:14px; }
     @keyframes rise { from { opacity:0; transform:translateY(18px); } to { opacity:1; transform:translateY(0); } }
     @keyframes bannerIn { from { opacity:0; transform:translateY(18px) scale(.985); filter:blur(10px); } to { opacity:1; transform:translateY(0) scale(1); filter:blur(0); } }
@@ -4712,7 +4817,8 @@ function renderLogin(config) {
   <div class="loading" id="loading">
     <div class="loader">
       <div class="pulse"></div>
-      <p id="loadingPhrase">Preparando a tu agente de confianza</p>
+      <p id="loadingPhrase">"La seguridad es un proceso, no un boton." - Bruce Schneier</p>
+      <small id="loadingTip">Tip NexaDesk: configura rol staff y canal de logs antes de abrir paneles publicos.</small>
     </div>
   </div>
   <main>
@@ -4740,12 +4846,11 @@ function renderLogin(config) {
     </aside>
   </main>
   <script>
-    const phrases = [
-      'Preparando a tu agente de confianza',
-      'Sincronizando servidores gestionables',
-      'Cargando el centro de soporte',
-      'Afinando el contexto de NexaDesk',
-      'Conectando con Discord de forma segura'
+    const loadingCards = [
+      { quote: '"La seguridad es un proceso, no un boton." - Bruce Schneier', tip: 'Tip NexaDesk: configura rol staff y canal de logs antes de abrir paneles publicos.' },
+      { quote: '"Confia, pero verifica." - proverbio de seguridad', tip: 'Tip NexaDesk: revisa transcripciones antes de cerrar casos delicados.' },
+      { quote: '"La privacidad no deberia ser el precio de usar Internet." - Gary Kovacs', tip: 'Tip NexaDesk: no pongas tokens, claves ni datos sensibles en prompts del servidor.' },
+      { quote: '"La simplicidad es la maxima sofisticacion." - atribuido a Leonardo da Vinci', tip: 'Tip NexaDesk: empieza con un panel simple y anade componentes cuando el flujo este claro.' }
     ];
     const gate = document.querySelector('#accessGate');
     const gateTitle = document.querySelector('#gateTitle');
@@ -4769,10 +4874,12 @@ function renderLogin(config) {
     }
     let phraseIndex = 0;
     const phrase = document.querySelector('#loadingPhrase');
+    const tip = document.querySelector('#loadingTip');
     setInterval(() => {
-      phraseIndex = (phraseIndex + 1) % phrases.length;
-      if (phrase) phrase.textContent = phrases[phraseIndex];
-    }, 1300);
+      phraseIndex = (phraseIndex + 1) % loadingCards.length;
+      if (phrase) phrase.textContent = loadingCards[phraseIndex].quote;
+      if (tip) tip.textContent = loadingCards[phraseIndex].tip;
+    }, 1500);
     document.querySelector('#loginButton')?.addEventListener('click', () => {
       document.querySelector('#loading')?.classList.add('is-active');
     });
@@ -4811,6 +4918,222 @@ function renderError(message) {
 </html>`;
 }
 
+function renderDashboardMaintenancePage({ session, maintenance }) {
+  const message = normalizeDashboardMaintenanceState(maintenance).message;
+  const username = session?.user?.globalName || session?.user?.username || 'owner';
+  return `<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex,nofollow">
+  <title>NexaDesk - Dashboard en mantenimiento</title>
+  <link rel="icon" type="image/svg+xml" href="/assets/nexadesk-logo.svg">
+  <style>
+    :root { color-scheme:dark; --bg:#020202; --text:#fff; --muted:#b8b8b8; --line:rgba(255,255,255,.17); --glass:rgba(255,255,255,.07); --ok:#fff; --danger:#ff4d4d; }
+    * { box-sizing:border-box; }
+    body { margin:0; min-height:100vh; overflow-x:hidden; font-family:"Segoe UI",ui-sans-serif,system-ui,sans-serif; color:var(--text); background:radial-gradient(circle at 18% 0%, rgba(255,255,255,.16), transparent 28%), radial-gradient(circle at 80% 8%, rgba(255,255,255,.1), transparent 30%), repeating-linear-gradient(90deg, rgba(255,255,255,.04) 0 1px, transparent 1px 86px), repeating-linear-gradient(0deg, rgba(255,255,255,.025) 0 1px, transparent 1px 86px), var(--bg); }
+    body::before { content:""; position:fixed; inset:-35%; pointer-events:none; background:conic-gradient(from 160deg, transparent, rgba(255,255,255,.12), transparent 28%, rgba(255,255,255,.08), transparent 55%); filter:blur(52px); opacity:.45; animation:spin 28s linear infinite; }
+    main { position:relative; z-index:1; width:min(1180px, calc(100% - 28px)); margin:0 auto; padding:32px 0 46px; display:grid; gap:18px; }
+    .hero { min-height:420px; border:1px solid var(--line); border-radius:34px; padding:clamp(22px, 5vw, 48px); background:linear-gradient(145deg, rgba(255,255,255,.12), rgba(255,255,255,.035) 44%, rgba(0,0,0,.62)); box-shadow:0 42px 160px rgba(0,0,0,.56), 0 0 0 1px rgba(255,255,255,.04) inset; overflow:hidden; position:relative; display:grid; grid-template-columns:minmax(0,1fr) minmax(280px,420px); gap:28px; align-items:center; }
+    .hero::before { content:""; position:absolute; inset:-1px; background:linear-gradient(115deg, transparent 0 30%, rgba(255,255,255,.26) 48%, transparent 68%); transform:translateX(-120%); animation:scan 5.4s ease-in-out infinite; pointer-events:none; }
+    .hero::after { content:""; position:absolute; width:520px; height:520px; right:-210px; top:-220px; border-radius:50%; border:1px solid rgba(255,255,255,.18); box-shadow:0 0 0 52px rgba(255,255,255,.035), 0 0 0 118px rgba(255,255,255,.018); animation:ring 8s ease-in-out infinite; }
+    .eyebrow { margin:0 0 12px; text-transform:uppercase; letter-spacing:.22em; font-size:12px; color:#fff; opacity:.78; font-weight:950; }
+    h1 { margin:0; font-size:clamp(46px, 8vw, 106px); line-height:.86; letter-spacing:-.075em; max-width:780px; }
+    p { color:var(--muted); line-height:1.65; font-size:17px; }
+    .hero p { max-width:660px; font-size:18px; }
+    .actions { display:flex; flex-wrap:wrap; gap:12px; margin-top:24px; }
+    a,button { border:1px solid rgba(255,255,255,.18); border-radius:999px; padding:13px 16px; color:#050505; background:#fff; text-decoration:none; font-weight:950; cursor:pointer; }
+    a.secondary,button.secondary { color:#fff; background:rgba(255,255,255,.07); }
+    .status { display:grid; gap:12px; }
+    .status-card { border:1px solid var(--line); border-radius:24px; padding:18px; background:rgba(0,0,0,.28); backdrop-filter:blur(18px); }
+    .status-card strong { display:block; font-size:26px; margin-top:6px; }
+    .status-card span { color:var(--muted); text-transform:uppercase; letter-spacing:.12em; font-size:12px; font-weight:900; }
+    .game-wrap { border:1px solid var(--line); border-radius:32px; padding:20px; background:linear-gradient(145deg, rgba(255,255,255,.08), rgba(255,255,255,.024)); box-shadow:0 30px 110px rgba(0,0,0,.42); }
+    .game-head { display:flex; justify-content:space-between; gap:12px; align-items:end; margin-bottom:14px; }
+    .game-head h2 { margin:0; font-size:clamp(26px, 4vw, 44px); letter-spacing:-.045em; }
+    .score { display:flex; gap:8px; flex-wrap:wrap; }
+    .score span { border:1px solid rgba(255,255,255,.16); border-radius:999px; padding:8px 10px; color:#fff; background:rgba(0,0,0,.28); font-weight:900; }
+    canvas { width:100%; height:min(430px, 58vh); display:block; border:1px solid rgba(255,255,255,.16); border-radius:24px; background:radial-gradient(circle at 50% 20%, rgba(255,255,255,.12), transparent 28%), #050505; touch-action:none; }
+    .mobile-controls { display:none; gap:10px; margin-top:12px; }
+    .mobile-controls button { flex:1; color:#fff; background:rgba(255,255,255,.08); }
+    .tips { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; }
+    .tip { border:1px solid var(--line); border-radius:22px; padding:16px; background:var(--glass); }
+    .tip strong { display:block; margin-bottom:6px; }
+    @keyframes spin { to { transform:rotate(360deg); } }
+    @keyframes scan { 0%,20% { transform:translateX(-130%); opacity:0; } 44% { opacity:.72; } 72%,100% { transform:translateX(130%); opacity:0; } }
+    @keyframes ring { 0%,100% { transform:scale(.98); opacity:.42; } 50% { transform:scale(1.05); opacity:.9; } }
+    @media (max-width:860px) { .hero { grid-template-columns:1fr; min-height:auto; border-radius:24px; } .tips { grid-template-columns:1fr; } .game-head { display:grid; } .mobile-controls { display:flex; } canvas { height:420px; } }
+    @media (max-width:520px) { main { width:100%; padding:12px 10px 28px; } .hero,.game-wrap { border-radius:22px; padding:16px; } h1 { font-size:clamp(42px, 17vw, 64px); } .hero p,p { font-size:15px; } canvas { height:360px; border-radius:18px; } }
+    @media (prefers-reduced-motion:reduce) { body::before,.hero::before,.hero::after { animation:none; } }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="hero">
+      <div>
+        <p class="eyebrow">Dashboard maintenance</p>
+        <h1>Estamos blindando el centro de control.</h1>
+        <p>Hola ${escapeHtml(username)}. ${escapeHtml(message)}</p>
+        <p>Durante el mantenimiento, la dashboard queda en modo protegido para usuarios Free. Los servidores Premium conservan acceso prioritario mientras desplegamos mejoras.</p>
+        <div class="actions">
+          <a href="/status">Ver estado en vivo</a>
+          <a class="secondary" href="/logout" onclick="event.preventDefault(); document.querySelector('#logoutForm').submit()">Cerrar sesion</a>
+        </div>
+      </div>
+      <aside class="status">
+        <div class="status-card"><span>Acceso dashboard</span><strong>Mantenimiento</strong></div>
+        <div class="status-card"><span>Acceso Premium</span><strong>Prioritario</strong></div>
+        <div class="status-card"><span>Bot Discord</span><strong>Operativo</strong></div>
+      </aside>
+    </section>
+    <section class="game-wrap">
+      <div class="game-head">
+        <div>
+          <p class="eyebrow">Nexa Shield Runner</p>
+          <h2>Protege los tickets mientras volvemos.</h2>
+          <p>Mueve el escudo, recoge tickets blancos y esquiva amenazas rojas. En movil puedes arrastrar o usar botones.</p>
+        </div>
+        <div class="score"><span id="score">Score 0</span><span id="streak">Racha 0</span><span id="time">60s</span></div>
+      </div>
+      <canvas id="shieldGame" width="1100" height="430" aria-label="Mini juego de mantenimiento NexaDesk"></canvas>
+      <div class="mobile-controls"><button type="button" id="leftBtn">Izquierda</button><button type="button" id="rightBtn">Derecha</button></div>
+    </section>
+    <section class="tips">
+      <article class="tip"><strong>Tip NexaDesk</strong><span>Configura un rol de staff: cuando la IA detecta riesgo, escala con resumen claro.</span></article>
+      <article class="tip"><strong>Tip de seguridad</strong><span>Activa Security Guard antes de campañas o alianzas grandes. El mejor raid es el que se corta al principio.</span></article>
+      <article class="tip"><strong>Tip Premium</strong><span>Premium mantiene prioridad durante mantenimientos y desbloquea automatizaciones avanzadas.</span></article>
+    </section>
+  </main>
+  <form id="logoutForm" method="post" action="/logout"></form>
+  <script>
+    const canvas = document.querySelector('#shieldGame');
+    const ctx = canvas.getContext('2d');
+    const scoreEl = document.querySelector('#score');
+    const streakEl = document.querySelector('#streak');
+    const timeEl = document.querySelector('#time');
+    const player = { x: canvas.width / 2, y: canvas.height - 48, w: 118, h: 22, vx: 0 };
+    const drops = [];
+    let score = 0;
+    let streak = 0;
+    let seconds = 60;
+    let last = performance.now();
+    let spawn = 0;
+    function resetDrop(drop) {
+      drop.x = 40 + Math.random() * (canvas.width - 80);
+      drop.y = -30 - Math.random() * 220;
+      drop.r = 13 + Math.random() * 12;
+      drop.speed = 130 + Math.random() * 220;
+      drop.bad = Math.random() < 0.34;
+      drop.spin = Math.random() * 6.28;
+    }
+    for (let i = 0; i < 12; i += 1) {
+      const drop = {};
+      resetDrop(drop);
+      drop.y -= i * 36;
+      drops.push(drop);
+    }
+    function drawLogo(x, y, size) {
+      ctx.save();
+      ctx.strokeStyle = '#fff';
+      ctx.lineWidth = Math.max(2, size * .08);
+      ctx.lineJoin = 'round';
+      ctx.strokeRect(x - size * .48, y - size * .34, size * .96, size * .54);
+      ctx.beginPath();
+      ctx.moveTo(x - size * .08, y + size * .2);
+      ctx.lineTo(x + size * .02, y + size * .42);
+      ctx.lineTo(x + size * .2, y + size * .2);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(x - size * .25, y - size * .08);
+      ctx.lineTo(x + size * .26, y - size * .08);
+      ctx.moveTo(x - size * .2, y + size * .08);
+      ctx.lineTo(x + size * .08, y + size * .08);
+      ctx.stroke();
+      ctx.restore();
+    }
+    function drawDrop(drop) {
+      ctx.save();
+      ctx.translate(drop.x, drop.y);
+      ctx.rotate(drop.spin);
+      if (drop.bad) {
+        ctx.strokeStyle = '#ff4d4d';
+        ctx.lineWidth = 5;
+        ctx.beginPath();
+        ctx.moveTo(-drop.r, -drop.r);
+        ctx.lineTo(drop.r, drop.r);
+        ctx.moveTo(drop.r, -drop.r);
+        ctx.lineTo(-drop.r, drop.r);
+        ctx.stroke();
+      } else {
+        drawLogo(0, 0, drop.r * 2.2);
+      }
+      ctx.restore();
+    }
+    function step(now) {
+      const dt = Math.min(.04, (now - last) / 1000);
+      last = now;
+      spawn += dt;
+      seconds = Math.max(0, seconds - dt);
+      player.x += player.vx * dt;
+      player.x = Math.max(player.w / 2, Math.min(canvas.width - player.w / 2, player.x));
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = 'rgba(255,255,255,.035)';
+      for (let x = 0; x < canvas.width; x += 86) ctx.fillRect(x, 0, 1, canvas.height);
+      for (let y = 0; y < canvas.height; y += 86) ctx.fillRect(0, y, canvas.width, 1);
+      drops.forEach((drop) => {
+        drop.y += drop.speed * dt;
+        drop.spin += (drop.bad ? 1.8 : .8) * dt;
+        const caught = Math.abs(drop.x - player.x) < player.w * .58 && Math.abs(drop.y - player.y) < 36;
+        if (caught) {
+          score += drop.bad ? -20 : 12 + Math.min(streak, 8);
+          streak = drop.bad ? 0 : streak + 1;
+          resetDrop(drop);
+        } else if (drop.y > canvas.height + 40) {
+          if (!drop.bad) streak = 0;
+          resetDrop(drop);
+        }
+        drawDrop(drop);
+      });
+      ctx.fillStyle = '#fff';
+      ctx.shadowColor = 'rgba(255,255,255,.5)';
+      ctx.shadowBlur = 22;
+      ctx.beginPath();
+      ctx.roundRect(player.x - player.w / 2, player.y, player.w, player.h, 14);
+      ctx.fill();
+      ctx.shadowBlur = 0;
+      ctx.fillStyle = '#050505';
+      ctx.font = '900 14px Segoe UI';
+      ctx.textAlign = 'center';
+      ctx.fillText('NEXA SHIELD', player.x, player.y + 16);
+      scoreEl.textContent = 'Score ' + Math.max(0, Math.round(score));
+      streakEl.textContent = 'Racha ' + streak;
+      timeEl.textContent = Math.ceil(seconds) + 's';
+      if (seconds <= 0) {
+        seconds = 60;
+        score = Math.max(0, Math.round(score * .45));
+        streak = 0;
+      }
+      requestAnimationFrame(step);
+    }
+    window.addEventListener('keydown', (event) => {
+      if (event.key === 'ArrowLeft' || event.key.toLowerCase() === 'a') player.vx = -520;
+      if (event.key === 'ArrowRight' || event.key.toLowerCase() === 'd') player.vx = 520;
+    });
+    window.addEventListener('keyup', () => { player.vx = 0; });
+    canvas.addEventListener('pointermove', (event) => {
+      const rect = canvas.getBoundingClientRect();
+      player.x = ((event.clientX - rect.left) / rect.width) * canvas.width;
+    });
+    document.querySelector('#leftBtn')?.addEventListener('pointerdown', () => { player.vx = -520; });
+    document.querySelector('#rightBtn')?.addEventListener('pointerdown', () => { player.vx = 520; });
+    document.querySelectorAll('#leftBtn,#rightBtn').forEach((button) => button.addEventListener('pointerup', () => { player.vx = 0; }));
+    requestAnimationFrame(step);
+  </script>
+</body>
+</html>`;
+}
+
 function renderDiscordAuthComplete(session) {
   const username = session?.user?.username ?? 'tu cuenta';
   const guildCount = session?.guilds?.length ?? 0;
@@ -4840,6 +5163,7 @@ function renderDiscordAuthComplete(session) {
     .progress { height:3px; background:rgba(255,255,255,.12); border-radius:999px; overflow:hidden; margin-top:22px; }
     .progress span { display:block; height:100%; width:100%; background:#fff; transform-origin:left; animation:progress 4.15s cubic-bezier(.2,.8,.2,1) both; }
     .phrase { min-height:24px; font-weight:900; color:#fff; margin-top:18px; }
+    .auth-tip { min-height:22px; margin-top:6px; color:var(--muted); font-size:13px; }
     .auth-rain,.auth-rain::before,.auth-rain::after { content:""; position:absolute; inset:-45% 0; pointer-events:none; background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='1440' height='720' viewBox='0 0 1440 720'%3E%3Cg stroke='%23fff' stroke-linecap='round'%3E%3Cline x1='46' y1='28' x2='46' y2='86' opacity='.46'/%3E%3Cline x1='219' y1='92' x2='219' y2='172' opacity='.56'/%3E%3Cline x1='428' y1='10' x2='428' y2='78' opacity='.5'/%3E%3Cline x1='790' y1='62' x2='790' y2='146' opacity='.58'/%3E%3Cline x1='1088' y1='132' x2='1088' y2='212' opacity='.5'/%3E%3Cline x1='1368' y1='42' x2='1368' y2='124' opacity='.54'/%3E%3Ccircle cx='74' cy='612' r='1' opacity='.6'/%3E%3Ccircle cx='884' cy='584' r='1' opacity='.54'/%3E%3C/g%3E%3C/svg%3E"); background-size:1440px 720px; animation:rain 2.8s linear infinite; opacity:.7; }
     .auth-rain::before { inset:-55% -8% -35% 4%; animation-duration:2.1s; opacity:.42; transform:scaleX(-1); }
     .auth-rain::after { inset:-65% 2% -30% -10%; animation-duration:3.4s; opacity:.3; transform:scale(1.12); }
@@ -4866,24 +5190,26 @@ function renderDiscordAuthComplete(session) {
         <div class="status-line"><span>Consola NexaDesk</span><strong>Desbloqueando</strong></div>
       </div>
       <div class="progress"><span></span></div>
-      <p class="phrase" id="authPhrase">Conectando tu centro de mando</p>
+      <p class="phrase" id="authPhrase">"Confia, pero verifica." - proverbio de seguridad</p>
+      <p class="auth-tip" id="authTip">Tip NexaDesk: revisa permisos del bot antes de publicar paneles.</p>
     </section>
   </main>
   <script>
-    const phrases = [
-      'Conectando tu centro de mando',
-      'Sincronizando permisos de Discord',
-      'Preparando servidores y paneles',
-      'Cargando transcripciones y estadisticas',
-      'Abriendo NexaDesk'
+    const loadingCards = [
+      { quote: '"Confia, pero verifica." - proverbio de seguridad', tip: 'Tip NexaDesk: revisa permisos del bot antes de publicar paneles.' },
+      { quote: '"La seguridad es un proceso, no un boton." - Bruce Schneier', tip: 'Tip NexaDesk: define rol staff para que las escalaciones no se pierdan.' },
+      { quote: '"La privacidad no deberia ser el precio de usar Internet." - Gary Kovacs', tip: 'Tip NexaDesk: evita guardar secretos en prompts o descripciones publicas.' },
+      { quote: '"La simplicidad es la maxima sofisticacion." - atribuido a Leonardo da Vinci', tip: 'Tip NexaDesk: empieza por Resumen y deja que el tutorial te guie.' }
     ];
     let index = 0;
     const phrase = document.querySelector('#authPhrase');
+    const tip = document.querySelector('#authTip');
     const go = () => { window.location.replace('/'); };
     window.setInterval(() => {
-      index = (index + 1) % phrases.length;
-      if (phrase) phrase.textContent = phrases[index];
-    }, 900);
+      index = (index + 1) % loadingCards.length;
+      if (phrase) phrase.textContent = loadingCards[index].quote;
+      if (tip) tip.textContent = loadingCards[index].tip;
+    }, 1100);
     window.setTimeout(go, window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 900 : 4300);
   </script>
 </body>
@@ -5280,7 +5606,8 @@ function renderDashboard({ session, guilds, tickets, stats, dashboardState = {},
     .pulse { position:relative; width:54px; height:54px; margin:0 auto 18px; border-radius:50%; border:2px solid rgba(255,255,255,.18); animation:loaderPulse 1.45s ease-in-out infinite; }
     .pulse::before,.pulse::after { content:""; position:absolute; inset:9px; border:2px solid #fff; border-radius:50%; opacity:.9; }
     .pulse::after { inset:20px; background:#fff; box-shadow:0 0 28px rgba(255,255,255,.42); }
-    #loadingPhrase { color:var(--text); font-weight:900; letter-spacing:.01em; }
+    #loadingPhrase { color:var(--text); font-weight:900; letter-spacing:.01em; margin:0; }
+    #loadingTip { display:block; margin-top:9px; color:var(--muted); line-height:1.45; }
     @keyframes rise { from { opacity:0; transform:translateY(14px); } to { opacity:1; transform:translateY(0); } }
     @keyframes viewIn { from { opacity:0; transform:translateY(14px) scale(.992); filter:blur(4px); } to { opacity:1; transform:translateY(0) scale(1); filter:blur(0); } }
     @keyframes cardReveal { from { opacity:0; transform:translateY(18px) scale(.985); filter:blur(8px); } to { opacity:1; transform:translateY(0) scale(1); filter:blur(0); } }
@@ -5314,10 +5641,15 @@ function renderDashboard({ session, guilds, tickets, stats, dashboardState = {},
     .app-shell { width:min(1540px, calc(100% - 56px)); grid-template-columns:248px minmax(0,1fr); gap:28px; padding-top:28px; padding-bottom:70px; }
     main { animation:dashboardEnter .78s var(--ease-out-pro) both; }
     main.is-switching .dashboard-view.is-active { animation:viewSwitchPro .46s var(--ease-out-pro) both; }
-    .sidebar { top:28px; height:calc(100vh - 56px); border-radius:30px; padding:18px; border-color:rgba(255,255,255,.2); background:linear-gradient(165deg, rgba(255,255,255,.105), rgba(18,18,18,.68) 28%, rgba(2,2,2,.82)); box-shadow:0 36px 120px rgba(0,0,0,.55), 0 0 0 1px rgba(255,255,255,.045) inset; overflow:hidden; }
+    .sidebar { top:28px; height:calc(100vh - 56px); border-radius:30px; padding:18px; border-color:rgba(255,255,255,.2); background:linear-gradient(165deg, rgba(255,255,255,.105), rgba(18,18,18,.68) 28%, rgba(2,2,2,.82)); box-shadow:0 36px 120px rgba(0,0,0,.55), 0 0 0 1px rgba(255,255,255,.045) inset; overflow:hidden; display:flex; flex-direction:column; min-height:0; }
     .sidebar::before { content:""; position:absolute; inset:-120px -70px auto auto; width:220px; height:220px; border-radius:50%; background:rgba(255,255,255,.13); filter:blur(58px); opacity:.62; pointer-events:none; animation:sidebarGlow 8s ease-in-out infinite alternate; }
     .sidebar > * { position:relative; z-index:1; }
-    .nav-brand { margin-bottom:20px; }
+    .nav-brand { margin-bottom:20px; flex:0 0 auto; }
+    .nav-menu { flex:1 1 auto; min-height:0; overflow-y:auto; overflow-x:hidden; padding:2px 6px 8px 0; margin-right:-6px; overscroll-behavior:contain; scrollbar-width:thin; }
+    .nav-menu::-webkit-scrollbar { width:6px; }
+    .nav-menu::-webkit-scrollbar-track { background:transparent; }
+    .nav-menu::-webkit-scrollbar-thumb { background:rgba(255,255,255,.22); border-radius:999px; }
+    .nav-menu:hover::-webkit-scrollbar-thumb { background:rgba(255,255,255,.44); }
     .brand-logo { border-radius:18px; box-shadow:0 18px 54px rgba(255,255,255,.08), 0 0 0 1px rgba(255,255,255,.18) inset; }
     .nav-link { min-height:45px; border-radius:16px; padding:11px 13px; letter-spacing:.01em; position:relative; overflow:hidden; }
     .nav-link span:last-child { font-weight:800; }
@@ -5325,8 +5657,24 @@ function renderDashboard({ session, guilds, tickets, stats, dashboardState = {},
     .nav-link:hover::after,.nav-link.is-active::after { animation:softShimmer 1.8s var(--ease-out-pro) both; }
     .nav-link:hover,.nav-link.is-active { border-color:rgba(255,255,255,.56); background:linear-gradient(135deg, rgba(255,255,255,.18), rgba(255,255,255,.052)); transform:translateX(5px); }
     .nav-icon { width:22px; display:grid; place-items:center; }
+    .nav-foot { position:static; flex:0 0 auto; margin-top:12px; padding-top:12px; border-top:1px solid rgba(255,255,255,.1); }
+    .nav-foot button { width:100%; min-height:44px; white-space:normal; }
     .dashboard-banner-frame { border-radius:28px; height:132px; margin-bottom:18px; border-color:rgba(255,255,255,.16); box-shadow:0 32px 110px rgba(0,0,0,.5); }
     .dashboard-banner-frame::after { content:""; position:absolute; inset:0; pointer-events:none; background:linear-gradient(90deg, rgba(255,255,255,.06), transparent 26%, transparent 72%, rgba(255,255,255,.08)); mix-blend-mode:screen; }
+    .dashboard-command-banner { position:relative; isolation:isolate; overflow:hidden; display:grid; grid-template-columns:190px minmax(0,1fr) auto; gap:24px; align-items:center; min-height:132px; padding:18px 24px; border:1px solid rgba(255,255,255,.16); background:radial-gradient(circle at 12% 50%, rgba(255,255,255,.2), transparent 22%), linear-gradient(135deg, rgba(255,255,255,.105), rgba(255,255,255,.025) 44%, rgba(0,0,0,.8)); animation:bannerIn .8s var(--ease-out-pro) both, commandBannerPulse 6.8s ease-in-out infinite; }
+    .dashboard-command-banner::before { content:""; position:absolute; inset:-40% auto -40% -25%; width:28%; z-index:2; pointer-events:none; background:linear-gradient(90deg, transparent, rgba(255,255,255,.45), transparent); filter:blur(12px); transform:skewX(-18deg); animation:commandBannerSweep 5.2s ease-in-out infinite; }
+    .command-banner-grid { position:absolute; inset:0; z-index:-2; background:repeating-linear-gradient(90deg, rgba(255,255,255,.06) 0 1px, transparent 1px 74px), repeating-linear-gradient(0deg, rgba(255,255,255,.035) 0 1px, transparent 1px 74px); mask-image:linear-gradient(90deg, transparent, #000 14%, #000 86%, transparent); opacity:.9; animation:commandGridDrift 14s linear infinite; }
+    .command-banner-signal { position:absolute; z-index:-1; border:1px solid rgba(255,255,255,.2); border-radius:50%; opacity:.72; animation:commandSignal 4.8s ease-in-out infinite; }
+    .command-banner-signal.one { width:210px; height:210px; left:28px; top:-42px; }
+    .command-banner-signal.two { width:330px; height:330px; right:-110px; bottom:-170px; animation-delay:-1.6s; opacity:.42; }
+    .command-banner-mark { width:104px; height:104px; display:grid; place-items:center; justify-self:center; border-radius:30px; background:linear-gradient(180deg,#fff,#dcdcdc); box-shadow:0 22px 72px rgba(255,255,255,.16), 0 0 0 1px rgba(255,255,255,.42) inset; animation:commandMarkFloat 4.8s ease-in-out infinite; }
+    .command-banner-mark img { width:70px; height:70px; object-fit:contain; filter:invert(1); }
+    .command-banner-copy { min-width:0; }
+    .command-banner-copy span { display:block; color:#d8d8d8; text-transform:uppercase; letter-spacing:.22em; font-size:12px; font-weight:950; }
+    .command-banner-copy strong { display:block; margin-top:6px; font-size:clamp(36px, 5vw, 74px); line-height:.86; letter-spacing:-.08em; color:#fff; text-shadow:0 0 28px rgba(255,255,255,.18); }
+    .command-banner-copy small { display:block; margin-top:10px; color:#cfcfcf; font-size:clamp(14px, 2vw, 18px); white-space:normal; }
+    .command-banner-pills { display:flex; flex-direction:column; gap:8px; align-items:flex-end; }
+    .command-banner-pills i { font-style:normal; border:1px solid rgba(255,255,255,.18); border-radius:999px; padding:8px 10px; color:#fff; background:rgba(0,0,0,.28); font-size:12px; font-weight:900; text-transform:uppercase; letter-spacing:.12em; box-shadow:0 12px 34px rgba(0,0,0,.28); }
     header { border:1px solid rgba(255,255,255,.14); border-radius:30px; padding:28px; background:linear-gradient(145deg, rgba(255,255,255,.105), rgba(255,255,255,.028)); box-shadow:0 34px 120px rgba(0,0,0,.42), 0 0 0 1px rgba(255,255,255,.03) inset; overflow:hidden; }
     header::before { opacity:.75; filter:blur(56px); }
     h1 { letter-spacing:-.065em; }
@@ -5373,24 +5721,39 @@ function renderDashboard({ session, guilds, tickets, stats, dashboardState = {},
     @keyframes proCardIn { from { opacity:0; transform:translateY(26px) scale(.985); filter:blur(12px); } to { opacity:1; transform:translateY(0) scale(1); filter:blur(0); } }
     @keyframes softShimmer { 0% { opacity:0; transform:translateX(-140%); } 35% { opacity:.9; } 100% { opacity:0; transform:translateX(140%); } }
     @keyframes sidebarGlow { from { transform:translate3d(0,0,0) scale(.92); opacity:.38; } to { transform:translate3d(-32px,54px,0) scale(1.16); opacity:.72; } }
-    @media (prefers-reduced-motion:reduce) { body::before,body::after,.ambient-scene,.ambient-scene::before,.ambient-scene::after,.ambient-orb,.ambient-rings,.banner-frame,.banner-frame::before,.banner-frame img,.loader::after,.pulse { animation:none; transition:none; } }
+    @keyframes commandBannerPulse { 0%,100% { box-shadow:0 32px 110px rgba(0,0,0,.5), 0 0 0 1px rgba(255,255,255,.035) inset; } 50% { box-shadow:0 34px 140px rgba(255,255,255,.09), 0 0 52px rgba(255,255,255,.04) inset; } }
+    @keyframes commandBannerSweep { 0%,18% { opacity:0; transform:translateX(0) skewX(-18deg); } 38% { opacity:.9; } 72%,100% { opacity:0; transform:translateX(560%) skewX(-18deg); } }
+    @keyframes commandGridDrift { from { background-position:0 0, 0 0; } to { background-position:74px 0, 0 74px; } }
+    @keyframes commandSignal { 0%,100% { transform:scale(.96); opacity:.35; } 50% { transform:scale(1.07); opacity:.82; } }
+    @keyframes commandMarkFloat { 0%,100% { transform:translateY(0) rotate(-2deg); } 50% { transform:translateY(-5px) rotate(2deg); } }
+    @media (prefers-reduced-motion:reduce) { body::before,body::after,.ambient-scene,.ambient-scene::before,.ambient-scene::after,.ambient-orb,.ambient-rings,.banner-frame,.banner-frame::before,.banner-frame img,.dashboard-command-banner,.dashboard-command-banner::before,.command-banner-grid,.command-banner-signal,.command-banner-mark,.loader::after,.pulse { animation:none; transition:none; } }
     @media (max-width:1120px) { .app-shell,.workspace,.topbar,.command-center,.panel-builder,.premium-grid,.premium-market { grid-template-columns:1fr; } .sidebar { position:relative; height:auto; top:auto; } .nav-foot { position:static; margin-top:18px; } .panel-preview-wrap { position:relative; top:auto; } }
     @media (max-width:760px) {
       body { overflow-x:hidden; background-size:auto; }
       .app-shell { width:100%; gap:12px; padding:0 10px 96px; }
-      .sidebar { position:sticky; top:0; z-index:40; height:auto; margin:0 -10px; padding:10px; display:flex; align-items:center; gap:8px; overflow-x:auto; border-radius:0 0 18px 18px; background:rgba(5,5,5,.92); backdrop-filter:blur(16px); }
+      .sidebar { position:sticky; top:0; z-index:40; height:auto; margin:0 -10px; padding:10px; display:flex; flex-direction:row; align-items:center; gap:8px; overflow:hidden; border-radius:0 0 18px 18px; background:rgba(5,5,5,.92); backdrop-filter:blur(16px); }
       .nav-brand { flex:0 0 auto; margin:0 6px 0 0; }
       .nav-brand strong { display:none; }
       .brand-logo { width:36px; height:36px; border-radius:10px; }
+      .nav-menu { flex:1 1 auto; min-width:0; display:flex; gap:8px; overflow-x:auto; overflow-y:hidden; padding:0 4px; margin:0; overscroll-behavior-x:contain; scrollbar-width:none; }
+      .nav-menu::-webkit-scrollbar { display:none; }
       .nav-link { flex:0 0 auto; display:inline-flex; align-items:center; margin:0; padding:9px 11px; white-space:nowrap; font-size:14px; }
       .nav-link:hover,.nav-link.is-active { transform:none; }
-      .nav-foot { flex:0 0 auto; position:static; margin:0 0 0 auto; }
+      .nav-foot { flex:0 0 auto; position:static; margin:0 0 0 auto; padding:0; border-top:0; }
       .nav-foot form { display:block; }
       .nav-foot button { width:max-content; margin:0; padding:9px 11px; white-space:nowrap; font-size:13px; }
       .nav-legal { flex-wrap:nowrap; margin:0 8px 0 0; }
       .nav-legal a { white-space:nowrap; padding:8px 10px; }
       main { width:100%; }
-      .dashboard-banner-frame { height:86px; margin-top:10px; }
+      .dashboard-banner-frame { height:auto; min-height:136px; margin-top:10px; }
+      .dashboard-command-banner { grid-template-columns:62px minmax(0,1fr); gap:12px; padding:14px; border-radius:18px; }
+      .command-banner-mark { width:58px; height:58px; border-radius:18px; }
+      .command-banner-mark img { width:38px; height:38px; }
+      .command-banner-copy span { font-size:10px; letter-spacing:.16em; }
+      .command-banner-copy strong { font-size:clamp(30px, 11vw, 44px); }
+      .command-banner-copy small { font-size:13px; margin-top:6px; }
+      .command-banner-pills { grid-column:1 / -1; flex-direction:row; align-items:center; justify-content:flex-start; overflow-x:auto; padding-bottom:2px; }
+      .command-banner-pills i { font-size:10px; padding:7px 9px; }
       header,.hero-panel,.surface,.active-server,.control-card { padding:14px; border-radius:14px; }
       h1 { font-size:clamp(31px, 12vw, 44px); }
       h2 { font-size:18px; }
@@ -5401,8 +5764,8 @@ function renderDashboard({ session, guilds, tickets, stats, dashboardState = {},
       .active-server { margin-bottom:12px; }
       form,.control-grid,.stats,.server-status,.server-score,.mini-grid,.discovery-grid,.panel-fields,.form-section,.security-playbook,.readiness-checklist,.recommendation-grid,.premium-feature-grid,.premium-toggle,.premium-wallet,.premium-activation-row { grid-template-columns:1fr; }
       input,select,textarea { font-size:16px; min-height:44px; }
-      .sidebar { scroll-snap-type:x proximity; scrollbar-width:none; }
-      .sidebar::-webkit-scrollbar { display:none; }
+      .nav-menu { scroll-snap-type:x proximity; scrollbar-width:none; }
+      .nav-menu::-webkit-scrollbar { display:none; }
       .nav-link { scroll-snap-align:start; }
       .control-card,.surface,.active-server { scroll-margin-top:86px; }
       label,button { margin-top:0; }
@@ -5454,22 +5817,25 @@ function renderDashboard({ session, guilds, tickets, stats, dashboardState = {},
   <div class="loading" id="loading">
     <div class="loader">
       <div class="pulse"></div>
-      <p id="loadingPhrase">Preparando a tu agente de confianza</p>
+      <p id="loadingPhrase">"La seguridad es un proceso, no un boton." - Bruce Schneier</p>
+      <small id="loadingTip">Tip NexaDesk: usa contexto IA corto, claro y con limites de escalado.</small>
     </div>
   </div>
   <div class="app-shell">
   <aside class="sidebar">
     <div class="nav-brand"><img class="brand-logo" src="/assets/nexadesk-logo.svg" alt="NexaDesk"><strong>NexaDesk</strong></div>
-    <a class="nav-link is-active" href="#overview" data-view="overview"><span class="nav-icon">${renderDashboardEmoji('nexalogo', 'Resumen')}</span><span>Resumen</span></a>
-    <a class="nav-link" href="#servers" data-view="servers"><span class="nav-icon">${renderDashboardEmoji('server', 'Servidores')}</span><span>Servidores</span></a>
-    <a class="nav-link" href="#settings" data-view="settings"><span class="nav-icon">${renderDashboardEmoji('rightArrow', 'Configuracion')}</span><span>Configuracion</span></a>
-    <a class="nav-link" href="#components" data-view="components"><span class="nav-icon">${renderDashboardEmoji('check', 'Componentes')}</span><span>Componentes</span></a>
-    <a class="nav-link" href="#panels" data-view="panels"><span class="nav-icon">${renderDashboardEmoji('global', 'Paneles')}</span><span>Paneles</span></a>
-    <a class="nav-link" href="#growth" data-view="growth"><span class="nav-icon">${renderDashboardEmoji('rightArrow', 'Crecimiento')}</span><span>Crecimiento</span></a>
-    <a class="nav-link" href="#welcome" data-view="welcome"><span class="nav-icon">${renderDashboardEmoji('check', 'Bienvenida')}</span><span>Bienvenida</span></a>
-    <a class="nav-link" href="#premium" data-view="premium"><span class="nav-icon">${renderDashboardEmoji('check', 'Premium')}</span><span>Premium</span></a>
-    <a class="nav-link" href="#tickets" data-view="tickets"><span class="nav-icon">${renderDashboardEmoji('wifi', 'Tickets')}</span><span>Tickets</span></a>
-    <a class="nav-link" href="#logs" data-view="logs"><span class="nav-icon">${renderDashboardEmoji('ban', 'Logs')}</span><span>Logs</span></a>
+    <nav class="nav-menu" aria-label="Secciones de NexaDesk">
+      <a class="nav-link is-active" href="#overview" data-view="overview"><span class="nav-icon">${renderDashboardEmoji('nexalogo', 'Resumen')}</span><span>Resumen</span></a>
+      <a class="nav-link" href="#servers" data-view="servers"><span class="nav-icon">${renderDashboardEmoji('server', 'Servidores')}</span><span>Servidores</span></a>
+      <a class="nav-link" href="#settings" data-view="settings"><span class="nav-icon">${renderDashboardEmoji('rightArrow', 'Configuracion')}</span><span>Configuracion</span></a>
+      <a class="nav-link" href="#components" data-view="components"><span class="nav-icon">${renderDashboardEmoji('check', 'Componentes')}</span><span>Componentes</span></a>
+      <a class="nav-link" href="#panels" data-view="panels"><span class="nav-icon">${renderDashboardEmoji('global', 'Paneles')}</span><span>Paneles</span></a>
+      <a class="nav-link" href="#growth" data-view="growth"><span class="nav-icon">${renderDashboardEmoji('rightArrow', 'Crecimiento')}</span><span>Crecimiento</span></a>
+      <a class="nav-link" href="#welcome" data-view="welcome"><span class="nav-icon">${renderDashboardEmoji('check', 'Bienvenida')}</span><span>Bienvenida</span></a>
+      <a class="nav-link" href="#premium" data-view="premium"><span class="nav-icon">${renderDashboardEmoji('check', 'Premium')}</span><span>Premium</span></a>
+      <a class="nav-link" href="#tickets" data-view="tickets"><span class="nav-icon">${renderDashboardEmoji('wifi', 'Tickets')}</span><span>Tickets</span></a>
+      <a class="nav-link" href="#logs" data-view="logs"><span class="nav-icon">${renderDashboardEmoji('ban', 'Logs')}</span><span>Logs</span></a>
+    </nav>
     <div class="nav-foot">
       <div class="nav-legal"><a href="/terms" target="_blank" rel="noopener">Terms</a><a href="/privacy" target="_blank" rel="noopener">Privacy</a></div>
       <form method="post" action="/logout"><button class="secondary-button" type="submit">Cerrar sesion</button></form>
@@ -5477,7 +5843,18 @@ function renderDashboard({ session, guilds, tickets, stats, dashboardState = {},
   </aside>
   <main>
     <div class="overview-hero" id="overviewHero">
-      <div class="banner-frame dashboard-banner-frame"><img src="/assets/nexadesk-banner.svg" alt="NexaDesk animated monochrome banner"></div>
+      <div class="dashboard-banner-frame dashboard-command-banner" aria-label="NexaDesk secure dashboard banner">
+        <div class="command-banner-grid"></div>
+        <div class="command-banner-signal one"></div>
+        <div class="command-banner-signal two"></div>
+        <div class="command-banner-mark"><img src="/assets/nexadesk-logo.svg" alt=""></div>
+        <div class="command-banner-copy">
+          <span>Secure AI ticket command</span>
+          <strong>NexaDesk</strong>
+          <small>Tickets limpios. Staff en control. Seguridad sin ruido.</small>
+        </div>
+        <div class="command-banner-pills"><i>AI</i><i>Security</i><i>Realtime</i></div>
+      </div>
       <div class="topbar">
         <header>
           <div class="brand-lockup"><img class="brand-logo" src="/assets/nexadesk-logo.svg" alt="NexaDesk"><strong>NexaDesk Command</strong></div>
@@ -6078,19 +6455,20 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
     </article>
   </section>
   <script>
-    const loadingPhrases = [
-      'Preparando a tu agente de confianza',
-      'Sincronizando roles y canales',
-      'Ordenando tickets recientes',
-      'Cargando contexto de tus servidores',
-      'Activando el centro de soporte'
+    const loadingCards = [
+      { quote: '"La seguridad es un proceso, no un boton." - Bruce Schneier', tip: 'Tip NexaDesk: usa contexto IA corto, claro y con limites de escalado.' },
+      { quote: '"Confia, pero verifica." - proverbio de seguridad', tip: 'Tip NexaDesk: mira Logs para entender que hizo el bot y por que.' },
+      { quote: '"La privacidad no deberia ser el precio de usar Internet." - Gary Kovacs', tip: 'Tip NexaDesk: revisa que las transcripciones no contengan datos sensibles antes de compartirlas.' },
+      { quote: '"La simplicidad es la maxima sofisticacion." - atribuido a Leonardo da Vinci', tip: 'Tip NexaDesk: un buen panel tiene pocas opciones, preguntas concretas y un primer mensaje humano.' }
     ];
     let loadingPhraseIndex = 0;
     const loadingPhrase = document.querySelector('#loadingPhrase');
+    const loadingTip = document.querySelector('#loadingTip');
     const loadingTimer = setInterval(() => {
-      loadingPhraseIndex = (loadingPhraseIndex + 1) % loadingPhrases.length;
-      if (loadingPhrase) loadingPhrase.textContent = loadingPhrases[loadingPhraseIndex];
-    }, 1200);
+      loadingPhraseIndex = (loadingPhraseIndex + 1) % loadingCards.length;
+      if (loadingPhrase) loadingPhrase.textContent = loadingCards[loadingPhraseIndex].quote;
+      if (loadingTip) loadingTip.textContent = loadingCards[loadingPhraseIndex].tip;
+    }, 1500);
     window.addEventListener('load', () => {
       setTimeout(() => {
         clearInterval(loadingTimer);
