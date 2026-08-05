@@ -1674,8 +1674,8 @@ async function handleVoiceCreateCommand({ interaction, storage, voiceManager = n
 
   if (!result.ready) {
     await interaction.editReply([
-      'La sala de voz no se pudo activar porque faltan columnas Pro Voice en Supabase.',
-      'Ejecuta la migracion de `supabase/schema.sql` y vuelve a intentarlo.'
+      'La sala de voz no se pudo activar porque faltan columnas Pro Voice en CockroachDB.',
+      'Revisa que el esquema de CockroachDB esté actualizado y vuelve a intentarlo.'
     ].join('\n'));
     return;
   }
@@ -1935,7 +1935,7 @@ async function handleNaturalVoiceRequest({ storage, message, ticket, guildConfig
       ].join('\n')
     : [
         'No pude crear la sala de voz automaticamente.',
-        'Revisa que tenga **Manage Channels**, **Connect**, **Speak** y que la migracion Pro Voice de Supabase este aplicada.'
+        'Revisa que tenga **Manage Channels**, **Connect**, **Speak** y que la migracion Pro Voice de CockroachDB este aplicada.'
       ].join('\n');
 
   const reply = await message.channel.send({ content, allowedMentions: { parse: [] } }).catch(() => null);
@@ -3838,7 +3838,7 @@ function buildHelpEmbed({ view, config, guild }) {
         },
         {
           name: `${EMOJIS.global} Donde se guarda`,
-          value: 'En Supabase, para que la dashboard pueda mostrar historial, estadisticas y transcripciones por servidor.'
+          value: 'En CockroachDB, para que la dashboard pueda mostrar historial, estadisticas y transcripciones por servidor.'
         },
         {
           name: `${EMOJIS.rightArrow} Quien puede verlo`,
@@ -4207,11 +4207,11 @@ async function createTicketFromConfiguredSource({ interaction, storage, guildCon
         voiceStatus.push(`Sala de voz: ${result.channel}`);
       } else {
         const voiceNotice = await channel.send([
-          `${EMOJIS.wifi} No pude vincular la sala de voz porque Supabase no tiene las columnas Pro Voice aplicadas.`,
-          'Ejecuta la migracion de `supabase/schema.sql` y vuelve a publicar o crear el ticket.'
+          `${EMOJIS.wifi} No pude vincular la sala de voz porque CockroachDB no tiene las columnas Pro Voice aplicadas.`,
+          'Revisa que el esquema de CockroachDB esté actualizado y vuelve a publicar o crear el ticket.'
         ].join('\n'));
         await saveTranscript(storage, voiceNotice, 'assistant');
-        voiceStatus.push('Sala de voz pendiente: falta migracion de Supabase.');
+        voiceStatus.push('Sala de voz pendiente: falta migracion de CockroachDB.');
       }
     } catch (error) {
       console.error('Panel voice ticket failed:', error);
@@ -8114,7 +8114,7 @@ async function captureInstalledGuildBackups({ client, storage, source = 'schedul
     });
     if (saved) captured += 1;
     if (saved?.fallback) {
-      stoppedReason = 'Supabase no tiene guild_backups aplicado; detengo el barrido horario tras un snapshot fallback para proteger el lease HA.';
+      stoppedReason = 'CockroachDB no tiene guild_backups aplicado; detengo el barrido horario tras un snapshot fallback para proteger el lease HA.';
     }
     if (stoppedReason) break;
     await sleep(250);
@@ -8146,7 +8146,7 @@ export async function restoreGuildBackup(client, storage, { backupId, targetGuil
     throw new Error('Discord gateway is not active on this NexaDesk instance.');
   }
   const backup = await storage.getGuildBackupSnapshot(backupId);
-  if (!backup) throw new Error('No encuentro ese backup en Supabase.');
+  if (!backup) throw new Error('No encuentro ese backup en CockroachDB.');
   const targetGuild = await client.guilds.fetch(targetGuildId);
   const result = await restoreGuildBackupWithRest({
     rest: client.rest,

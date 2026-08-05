@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { createClient } from '@supabase/supabase-js';
+import { createPostgresClient } from './postgres-client.js';
 import {
   addDays,
   generateAffiliateCode,
@@ -663,13 +663,11 @@ export class JsonStorage {
   }
 }
 
-export class SupabaseStorage {
-  constructor({ url, serviceRoleKey, events = null }) {
-    this.client = createClient(url, serviceRoleKey, {
-      auth: {
-        persistSession: false,
-        autoRefreshToken: false
-      }
+export class PostgresStorage {
+  constructor({ connectionString, poolMax = 5, connectTimeoutMs = 8000, events = null }) {
+    this.client = createPostgresClient(connectionString, {
+      max: poolMax,
+      connectionTimeoutMillis: connectTimeoutMs
     });
     this.events = events;
     this.guildCompatibilityOverlay = new Map();
@@ -677,6 +675,7 @@ export class SupabaseStorage {
   }
 
   async init() {
+    await this.client.query('SELECT 1');
     await this.#loadTicketCompatibilityFallback().catch((error) => {
       console.warn('Could not load ticket compatibility fallback:', error?.message ?? error);
     });
@@ -998,7 +997,7 @@ export class SupabaseStorage {
       .select()
       .single();
     if (isMissingFeedbackTableError(error)) {
-      console.warn('ticket_feedback table missing; feedback not persisted. Run supabase/schema.sql.');
+      console.warn('ticket_feedback table missing; feedback not persisted. Run el esquema de CockroachDB.');
       return { ...normalized, notPersisted: true };
     }
     if (error) throw error;
@@ -1039,7 +1038,7 @@ export class SupabaseStorage {
       .select()
       .single();
     if (isMissingAiQualitySignalTableError(error)) {
-      console.warn('ai_quality_signals table missing; quality signal not persisted. Run supabase/schema.sql.');
+      console.warn('ai_quality_signals table missing; quality signal not persisted. Run el esquema de CockroachDB.');
       return { ...normalized, notPersisted: true };
     }
     if (error) throw error;
@@ -1069,7 +1068,7 @@ export class SupabaseStorage {
       .select()
       .single();
     if (isMissingGuildLogsTableError(error)) {
-      console.warn('guild_logs table missing; persisting server log in Supabase fallback store. Run supabase/schema.sql for full indexes.');
+      console.warn('guild_logs table missing; persisting server log in CockroachDB fallback store. Run el esquema de CockroachDB for full indexes.');
       return this.#addGuildLogFallback(normalized);
     }
     if (error) throw error;
@@ -1132,7 +1131,7 @@ export class SupabaseStorage {
       .select()
       .single();
     if (isMissingGuildBackupsTableError(error)) {
-      console.warn('guild_backups table missing; persisting backup in Supabase fallback store. Run supabase/schema.sql for indexed backups.');
+      console.warn('guild_backups table missing; persisting backup in CockroachDB fallback store. Run el esquema de CockroachDB for indexed backups.');
       return this.#saveGuildBackupSnapshotFallback(normalized);
     }
     if (error) throw error;
@@ -1177,7 +1176,7 @@ export class SupabaseStorage {
       .select()
       .single();
     if (isMissingGuildBackupsTableError(error)) {
-      console.warn('guild_backup_restores table missing; persisting restore record in Supabase fallback store. Run supabase/schema.sql.');
+      console.warn('guild_backup_restores table missing; persisting restore record in CockroachDB fallback store. Run el esquema de CockroachDB.');
       return this.#recordGuildBackupRestoreFallback(normalized);
     }
     if (error) throw error;
@@ -1290,7 +1289,7 @@ export class SupabaseStorage {
       .select()
       .single();
     if (isMissingBlacklistTableError(error)) {
-      throw new Error('Faltan tablas de blacklist en Supabase. Ejecuta el SQL actualizado de supabase/schema.sql.');
+      throw new Error('Faltan tablas de blacklist en CockroachDB. Ejecuta el SQL actualizado de el esquema de CockroachDB.');
     }
     if (error) throw error;
     const saved = fromBlacklistRow(data);
@@ -1316,7 +1315,7 @@ export class SupabaseStorage {
       .select()
       .single();
     if (isMissingBlacklistTableError(error)) {
-      throw new Error('Falta global_blacklist_evidence en Supabase. Ejecuta el SQL actualizado de supabase/schema.sql.');
+      throw new Error('Falta global_blacklist_evidence en CockroachDB. Ejecuta el SQL actualizado de el esquema de CockroachDB.');
     }
     if (error) throw error;
     const saved = fromBlacklistEvidenceRow(data);
@@ -2069,16 +2068,17 @@ export class SupabaseStorage {
 }
 
 export function createStorage(config, events) {
-  if (config.SUPABASE_URL && config.SUPABASE_SERVICE_ROLE_KEY) {
-    console.log('NexaDesk storage backend: Supabase');
-    return new SupabaseStorage({
-      url: config.SUPABASE_URL,
-      serviceRoleKey: config.SUPABASE_SERVICE_ROLE_KEY,
+  if (config.DATABASE_URL) {
+    console.log('NexaDesk storage backend: CockroachDB/PostgreSQL');
+    return new PostgresStorage({
+      connectionString: config.DATABASE_URL,
+      poolMax: config.DATABASE_POOL_MAX,
+      connectTimeoutMs: config.DATABASE_CONNECT_TIMEOUT_MS,
       events
     });
   }
 
-  console.warn('NexaDesk storage backend: local JSON. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY to persist data in Supabase.');
+  console.warn('NexaDesk storage backend: local JSON. Set DATABASE_URL to persist data in CockroachDB/PostgreSQL.');
   return new JsonStorage(config.DATA_DIR, events);
 }
 

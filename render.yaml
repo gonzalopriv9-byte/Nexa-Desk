@@ -50,10 +50,12 @@ services:
         value: https://nexa-desk.onrender.com/health
       - key: KEEPALIVE_INTERVAL_MS
         value: 300000
-      - key: SUPABASE_URL
+      - key: DATABASE_URL
         sync: false
-      - key: SUPABASE_SERVICE_ROLE_KEY
-        sync: false
+      - key: DATABASE_POOL_MAX
+        value: 5
+      - key: DATABASE_CONNECT_TIMEOUT_MS
+        value: 8000
       - key: PAYPAL_CLIENT_ID
         sync: false
       - key: PAYPAL_CLIENT_SECRET

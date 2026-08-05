@@ -179,18 +179,18 @@ async function createInitializedStorage(config, events) {
   const storage = createStorage(config, events);
   try {
     await storage.init();
-    if (config.SUPABASE_URL && config.SUPABASE_SERVICE_ROLE_KEY) {
+    if (config.DATABASE_URL) {
       await withStartupTimeout(
         storage.getGlobalSettings(),
-        4500,
-        'Supabase startup check'
+        config.DATABASE_CONNECT_TIMEOUT_MS,
+        'Database startup check'
       );
     }
     return storage;
   } catch (error) {
-    if (!config.SUPABASE_URL || !config.SUPABASE_SERVICE_ROLE_KEY) throw error;
+    if (!config.DATABASE_URL) throw error;
 
-    console.error('Supabase is unavailable during startup. Falling back to local JSON storage so NexaDesk can keep running.', compactStartupError(error));
+    console.error('CockroachDB/PostgreSQL is unavailable during startup. Falling back to local JSON storage so NexaDesk can keep running.', compactStartupError(error));
     const fallback = new JsonStorage(config.DATA_DIR, events);
     await fallback.init();
     return fallback;
