@@ -5440,7 +5440,7 @@ function renderDiscordAuthComplete(session) {
 
 function getDashboardEmojiUrls() {
   return Object.fromEntries(
-    ['server', 'check', 'nexalogo', 'rightArrow', 'ban', 'wifi', 'global']
+    ['logs', 'gear', 'siren', 'crown', 'ticket', 'server', 'check', 'nexalogo', 'rightArrow', 'ban', 'wifi', 'global']
       .map((key) => [key, discordEmojiUrl(key)])
   );
 }
@@ -6045,14 +6045,14 @@ function renderDashboard({ session, guilds, tickets, stats, dashboardState = {},
     <nav class="nav-menu" aria-label="Secciones de NexaDesk">
       <a class="nav-link is-active" href="#overview" data-view="overview"><span class="nav-icon">${renderDashboardEmoji('nexalogo', 'Resumen')}</span><span>Resumen</span></a>
       <a class="nav-link" href="#servers" data-view="servers"><span class="nav-icon">${renderDashboardEmoji('server', 'Servidores')}</span><span>Servidores</span></a>
-      <a class="nav-link" href="#settings" data-view="settings"><span class="nav-icon">${renderDashboardEmoji('rightArrow', 'Configuracion')}</span><span>Configuracion</span></a>
-      <a class="nav-link" href="#components" data-view="components"><span class="nav-icon">${renderDashboardEmoji('check', 'Componentes')}</span><span>Componentes</span></a>
-      <a class="nav-link" href="#panels" data-view="panels"><span class="nav-icon">${renderDashboardEmoji('global', 'Paneles')}</span><span>Paneles</span></a>
+      <a class="nav-link" href="#settings" data-view="settings"><span class="nav-icon">${renderDashboardEmoji('gear', 'Configuracion')}</span><span>Configuracion</span></a>
+      <a class="nav-link" href="#components" data-view="components"><span class="nav-icon">${renderDashboardEmoji('ticket', 'Componentes')}</span><span>Componentes</span></a>
+      <a class="nav-link" href="#panels" data-view="panels"><span class="nav-icon">${renderDashboardEmoji('ticket', 'Paneles')}</span><span>Paneles</span></a>
       <a class="nav-link" href="#growth" data-view="growth"><span class="nav-icon">${renderDashboardEmoji('rightArrow', 'Crecimiento')}</span><span>Crecimiento</span></a>
       <a class="nav-link" href="#welcome" data-view="welcome"><span class="nav-icon">${renderDashboardEmoji('check', 'Bienvenida')}</span><span>Bienvenida</span></a>
-      <a class="nav-link" href="#premium" data-view="premium"><span class="nav-icon">${renderDashboardEmoji('check', 'Premium')}</span><span>Premium</span></a>
-      <a class="nav-link" href="#tickets" data-view="tickets"><span class="nav-icon">${renderDashboardEmoji('wifi', 'Tickets')}</span><span>Tickets</span></a>
-      <a class="nav-link" href="#logs" data-view="logs"><span class="nav-icon">${renderDashboardEmoji('ban', 'Logs')}</span><span>Logs</span></a>
+      <a class="nav-link" href="#premium" data-view="premium"><span class="nav-icon">${renderDashboardEmoji('crown', 'Premium')}</span><span>Premium</span></a>
+      <a class="nav-link" href="#tickets" data-view="tickets"><span class="nav-icon">${renderDashboardEmoji('ticket', 'Tickets')}</span><span>Tickets</span></a>
+      <a class="nav-link" href="#logs" data-view="logs"><span class="nav-icon">${renderDashboardEmoji('logs', 'Logs')}</span><span>Logs</span></a>
     </nav>
     <div class="nav-foot">
       <div class="nav-legal"><a href="/terms" target="_blank" rel="noopener">Terms</a><a href="/privacy" target="_blank" rel="noopener">Privacy</a></div>
@@ -6098,12 +6098,12 @@ function renderDashboard({ session, guilds, tickets, stats, dashboardState = {},
           <p class="kicker">Servidor activo</p>
           <select id="guildId" required>${guildOptions}</select>
           <div class="server-status">
-            <div><span>${renderDashboardEmoji('server', 'Categoria')}Categoria</span><strong id="activeCategory">Sin configurar</strong></div>
+            <div><span>${renderDashboardEmoji('ticket', 'Categoria')}Categoria</span><strong id="activeCategory">Sin configurar</strong></div>
             <div><span>${renderDashboardEmoji('wifi', 'Staff')}Staff</span><strong id="activeStaff">Sin configurar</strong></div>
-            <div><span>${renderDashboardEmoji('global', 'Paneles')}Paneles</span><strong id="activePanels">0</strong></div>
-            <div><span>${renderDashboardEmoji('ban', 'Seguridad')}Seguridad</span><strong id="activeSecurity">Off</strong></div>
-            <div><span>${renderDashboardEmoji('check', 'Premium')}Premium</span><strong id="activePremium">Free</strong></div>
-            <div><span>${renderDashboardEmoji('nexalogo', 'Transcripciones')}Transcripciones</span><strong id="activeTranscripts">0</strong></div>
+            <div><span>${renderDashboardEmoji('ticket', 'Paneles')}Paneles</span><strong id="activePanels">0</strong></div>
+            <div><span>${renderDashboardEmoji('siren', 'Seguridad')}Seguridad</span><strong id="activeSecurity">Off</strong></div>
+            <div><span>${renderDashboardEmoji('crown', 'Premium')}Premium</span><strong id="activePremium">Free</strong></div>
+            <div><span>${renderDashboardEmoji('logs', 'Transcripciones')}Transcripciones</span><strong id="activeTranscripts">0</strong></div>
             <div><span>${renderDashboardEmoji('global', 'Anuncios')}Anuncios</span><strong id="activeAnnouncements">No detectado</strong></div>
             <div><span>${renderDashboardEmoji('check', 'Bienvenida')}Bienvenida</span><strong id="activeWelcome">Off</strong></div>
           </div>
@@ -6124,8 +6124,8 @@ function renderDashboard({ session, guilds, tickets, stats, dashboardState = {},
         </section>
         <div class="stats" id="overview">
           <div class="stat"><strong id="guildCount">${stats.totalGuilds}</strong><span>${renderDashboardEmoji('server', 'Servidores')}Servidores gestionables</span><small id="guildInstallMeta">${stats.installedGuilds ?? 0} con bot - ${stats.notInstalledGuilds ?? 0} por invitar</small></div>
-          <div class="stat"><strong id="ticketCount">${stats.totalTickets}</strong><span>${renderDashboardEmoji('nexalogo', 'Tickets')}Tickets detectados</span><small>${stats.ticketsToday} hoy - ${stats.ticketsThisWeek} esta semana</small></div>
-          <div class="stat"><strong id="openCount">${stats.openTickets}</strong><span>${renderDashboardEmoji('wifi', 'Abiertos')}Tickets abiertos</span><small>${stats.closedTickets} cerrados o archivados</small></div>
+          <div class="stat"><strong id="ticketCount">${stats.totalTickets}</strong><span>${renderDashboardEmoji('ticket', 'Tickets')}Tickets detectados</span><small>${stats.ticketsToday} hoy - ${stats.ticketsThisWeek} esta semana</small></div>
+          <div class="stat"><strong id="openCount">${stats.openTickets}</strong><span>${renderDashboardEmoji('ticket', 'Abiertos')}Tickets abiertos</span><small>${stats.closedTickets} cerrados o archivados</small></div>
           <div class="stat"><strong id="ratingAverage">${stats.averageRating ?? 0}/5</strong><span>${renderDashboardEmoji('check', 'Growth')}Rating soporte</span><small id="feedbackMeta">${stats.feedbackCount ?? 0} valoraciones - ${stats.promoterRate ?? 0}% promotores</small></div>
         </div>
         <section class="command-center">
@@ -6291,7 +6291,7 @@ function renderDashboard({ session, guilds, tickets, stats, dashboardState = {},
             <select id="componentGuildId" hidden required>${guildOptions}</select>
             <input id="editingComponentId" type="hidden">
             <label>Nombre visible<input id="componentLabel" value="Soporte general" maxlength="100"></label>
-            <label>Emoji<input id="componentEmoji" placeholder="Ej: &lt;a:Global:1499728413974593708&gt;"></label>
+            <label>Emoji<input id="componentEmoji" placeholder="Ej: &lt;:ticket:1535982903534559252&gt;"></label>
             <label class="span-2">Descripcion corta<input id="componentDescription" value="Abre un ticket de soporte general." maxlength="100"></label>
             <label class="span-2">Categoria destino<select id="componentTicketCategoryId"></select></label>
             <label>Tipo de ticket<select id="componentTicketMode">
@@ -6375,7 +6375,7 @@ Antes de empezar, he guardado tus respuestas para que el staff tenga contexto.
                   <option value="success">Verde correcto</option>
                   <option value="danger">Rojo urgente</option>
                 </select></label>
-                <label class="span-2">Emoji del boton<input id="panelButtonEmoji" placeholder="Ej: &lt;a:Global:1499728413974593708&gt;"></label>
+                <label class="span-2">Emoji del boton<input id="panelButtonEmoji" placeholder="Ej: &lt;:ticket:1535982903534559252&gt;"></label>
               </div>
               <div class="form-section">
                 <div class="section-label"><strong>Embed</strong><span>Contenido visual del panel</span></div>
@@ -7485,15 +7485,15 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
     function iconForReadiness(key) {
       return {
         installed: 'server',
-        category: 'server',
+        category: 'ticket',
         announcements: 'global',
         staff: 'wifi',
-        context: 'nexalogo',
-        security: 'ban',
+        context: 'gear',
+        security: 'siren',
         growth: 'rightArrow',
         welcome: 'check',
-        components: 'check',
-        panels: 'rightArrow'
+        components: 'ticket',
+        panels: 'ticket'
       }[key] || 'rightArrow';
     }
     function renderRecommendations(guild = getActiveGuild()) {

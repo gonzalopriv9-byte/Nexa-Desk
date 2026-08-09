@@ -1,4 +1,9 @@
 export const CUSTOM_EMOJIS = {
+  logs: { id: '1535989975017852958', name: 'logs', animated: false },
+  gear: { id: '1535985771121606718', name: 'engranaje', animated: false },
+  siren: { id: '1535984556967071795', name: 'sirena', animated: true },
+  crown: { id: '1535983188554285137', name: 'corona', animated: false },
+  ticket: { id: '1535982903534559252', name: 'ticket', animated: false },
   server: { id: '1504529355030925383', name: 'server', animated: true },
   check: { id: '1504523637506707637', name: 'check', animated: true },
   nexalogo: { id: '1504522931697619085', name: 'nexalogo', animated: true },

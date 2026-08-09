@@ -1712,7 +1712,7 @@ export class SecurityManager {
     const summary = latest?.summary ?? {};
     const embed = new EmbedBuilder()
       .setColor(0xd6b86a)
-      .setTitle(`${EMOJIS.wifi} Recuperacion disponible para ${guild.name}`)
+      .setTitle(`${EMOJIS.siren} Recuperacion disponible para ${guild.name}`)
       .setDescription([
         'NexaDesk ha detectado un posible raid destructivo o acciones sensibles en masa.',
         latest
@@ -1752,7 +1752,7 @@ export class SecurityManager {
   async sendSecurityLog({ guild, config, title, description, fields = [], important = false, evidence = null }) {
     const embed = new EmbedBuilder()
       .setColor(0xffffff)
-      .setTitle(`${EMOJIS.wifi} NexaDesk Security Guard - ${title}`)
+      .setTitle(`${EMOJIS.siren} NexaDesk Security Guard - ${title}`)
       .setDescription(description)
       .addFields(fields.filter((field) => field?.name && field?.value).slice(0, 8))
       .setTimestamp(new Date());
