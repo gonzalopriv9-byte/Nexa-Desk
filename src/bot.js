@@ -153,6 +153,12 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
         });
       }, config.BACKUP_INTERVAL_MS);
     }
+    trackManagedInterval(managedTimers, () => {
+      if (!isClientReadyForDiscordRest(readyClient)) return;
+      processScheduledAnnouncements({ client: readyClient, storage }).catch((error) => {
+        console.error('Scheduled announcements processor failed:', compactRuntimeError(error));
+      });
+    }, 60_000);
     console.log(`NexaDesk online as ${readyClient.user.tag}`);
   });
 
@@ -1615,7 +1621,12 @@ async function handleCloseTicketCommand({ interaction, storage, client, voiceMan
   }
 
   if (!canCloseTicketFromInteraction(interaction, ticket, guildConfig)) {
-    await interaction.reply({ content: 'Solo quien abrio este ticket, el staff configurado o alguien con Manage Server puede cerrarlo.', ephemeral: true });
+    await interaction.reply({
+      content: !canTicketOpenerClose(guildConfig)
+        ? 'En este servidor los tickets solo puede cerrarlos el staff configurado o alguien con Manage Server.'
+        : 'Solo quien abrio este ticket, el staff configurado o alguien con Manage Server puede cerrarlo.',
+      ephemeral: true
+    });
     return;
   }
 
@@ -1779,8 +1790,13 @@ async function handleVoiceCloseCommand({ interaction, storage, voiceManager = nu
   if (!context) return;
   const { ticket, guildConfig } = context;
 
-  if (!canManageVoiceSupport(interaction, ticket, guildConfig)) {
-    await interaction.reply({ content: 'Solo el opener, el staff configurado o alguien con Manage Server puede cerrar la sala de voz.', ephemeral: true });
+  if (!canCloseTicketFromInteraction(interaction, ticket, guildConfig)) {
+    await interaction.reply({
+      content: !canTicketOpenerClose(guildConfig)
+        ? 'En este servidor las salas de voz de ticket solo puede cerrarlas staff o alguien con Manage Server.'
+        : 'Solo el opener, el staff configurado o alguien con Manage Server puede cerrar la sala de voz.',
+      ephemeral: true
+    });
     return;
   }
 
@@ -4812,12 +4828,114 @@ async function applyMaintenanceThrottle({ storage, message, guildConfig }) {
   return true;
 }
 
+async function processScheduledAnnouncements({ client, storage }) {
+  const guildConfigs = await storage.listGuildConfigs().catch((error) => {
+    console.error('Could not load guild configs for scheduled announcements:', compactRuntimeError(error));
+    return [];
+  });
+  const now = Date.now();
+
+  for (const guildConfig of guildConfigs) {
+    const premium = normalizePremiumConfig(guildConfig?.premium, guildConfig ?? {});
+    if (!isPremiumEntitled(guildConfig ?? {}) || premium.scheduledAnnouncements === false) continue;
+    const announcements = Array.isArray(guildConfig.scheduledAnnouncements) ? guildConfig.scheduledAnnouncements : [];
+    if (!announcements.length) continue;
+
+    let changed = false;
+    const nextAnnouncements = [];
+    for (const announcement of announcements) {
+      const dueAt = Date.parse(announcement.nextRunAt ?? '');
+      if (announcement.enabled === false || !Number.isFinite(dueAt) || dueAt > now) {
+        nextAnnouncements.push(announcement);
+        continue;
+      }
+
+      const sent = await sendScheduledAnnouncement({ client, guildConfig, announcement }).catch((error) => {
+        console.error(`Scheduled announcement ${announcement.id} failed in ${guildConfig.guildId}:`, compactRuntimeError(error));
+        return false;
+      });
+      const nextRunAt = sent
+        ? computeNextAnnouncementRun(announcement, now)
+        : new Date(now + 5 * 60_000).toISOString();
+      changed = true;
+      nextAnnouncements.push({
+        ...announcement,
+        enabled: announcement.scheduleType === 'once' ? false : announcement.enabled !== false,
+        lastRunAt: sent ? new Date(now).toISOString() : announcement.lastRunAt ?? null,
+        nextRunAt,
+        runCount: Number(announcement.runCount ?? 0) + (sent ? 1 : 0),
+        updatedAt: new Date().toISOString()
+      });
+    }
+
+    if (changed) {
+      await storage.upsertGuildConfig(guildConfig.guildId, {
+        scheduledAnnouncements: nextAnnouncements
+      }).catch((error) => {
+        console.error(`Could not persist scheduled announcement state for ${guildConfig.guildId}:`, compactRuntimeError(error));
+      });
+    }
+  }
+}
+
+async function sendScheduledAnnouncement({ client, guildConfig, announcement }) {
+  if (!announcement.channelId) return false;
+  const guild = client.guilds.cache.get(guildConfig.guildId)
+    ?? await client.guilds.fetch(guildConfig.guildId).catch(() => null);
+  if (!guild) return false;
+  const channel = guild.channels.cache.get(announcement.channelId)
+    ?? await guild.channels.fetch(announcement.channelId).catch(() => null);
+  if (!channel || ![ChannelType.GuildText, ChannelType.GuildAnnouncement].includes(channel.type)) return false;
+
+  const embed = new EmbedBuilder()
+    .setColor(parseEmbedColor(announcement.embed?.color))
+    .setTitle(String(announcement.embed?.title || announcement.name || 'Anuncio').slice(0, 256))
+    .setDescription(String(announcement.embed?.description || '').slice(0, 4096))
+    .setTimestamp(new Date());
+  if (announcement.embed?.imageUrl) embed.setImage(announcement.embed.imageUrl);
+  if (announcement.embed?.footerText) embed.setFooter({ text: String(announcement.embed.footerText).slice(0, 200) });
+
+  await channel.send({
+    content: announcement.content ? String(announcement.content).slice(0, 1800) : undefined,
+    embeds: [embed],
+    allowedMentions: { parse: ['users', 'roles', 'everyone'] }
+  });
+  return true;
+}
+
+function computeNextAnnouncementRun(announcement, fallbackMs = Date.now()) {
+  if (announcement.scheduleType === 'once') return new Date(fallbackMs).toISOString();
+  const intervalHours = Math.max(1, Math.min(24 * 30, Number(announcement.intervalHours ?? 24) || 24));
+  return new Date(fallbackMs + intervalHours * 60 * 60 * 1000).toISOString();
+}
+
+function parseEmbedColor(value = '#ffffff') {
+  const hex = String(value || '#ffffff').replace('#', '').trim();
+  const parsed = Number.parseInt(hex, 16);
+  return Number.isFinite(parsed) ? Math.max(0, Math.min(0xffffff, parsed)) : 0xffffff;
+}
+
 function isExternalTicketWelcomeContent(content) {
   return /he\s+detectado\s+este\s+ticket\s+de\s+[\s\S]{1,120}?voy\s+a\s+ayudarte\s+aqui/i.test(String(content ?? ''));
 }
 
 function isConfiguredTicketCategory(channel, guildConfig) {
-  return Boolean(channel && guildConfig?.ticketCategoryId && channel.parentId === guildConfig.ticketCategoryId);
+  return Boolean(channel && getWatchedTicketCategoryIds(guildConfig).includes(channel.parentId));
+}
+
+function getWatchedTicketCategoryIds(guildConfig) {
+  const ids = [
+    guildConfig?.ticketCategoryId,
+    ...(Array.isArray(guildConfig?.watchedTicketCategories)
+      ? guildConfig.watchedTicketCategories.map((item) => item?.id ?? item)
+      : [])
+  ]
+    .map((id) => String(id ?? '').trim())
+    .filter(Boolean);
+  const unique = [...new Set(ids)];
+  const premium = isPremiumEntitled(guildConfig ?? {})
+    && normalizePremiumConfig(guildConfig?.premium, guildConfig ?? {}).multiCategoryWatch !== false;
+  return unique.slice(0, premium ? 2 : 1);
 }
 
 async function detectExternalTicketSource(message) {
@@ -5069,8 +5187,11 @@ function buildTicketChannelName(username, componentLabel) {
 
 async function handleNaturalCloseRequest({ client, storage, message, ticket, guildConfig, config }) {
   if (!canCloseTicketFromMessage(message, ticket, guildConfig)) {
+    const staffOnly = !canTicketOpenerClose(guildConfig);
     const reply = await message.reply({
-      content: 'Solo quien abrio este ticket, el staff configurado o alguien con Manage Server puede cerrarlo.',
+      content: staffOnly
+        ? 'En este servidor los tickets solo puede cerrarlos el staff configurado o alguien con Manage Server.'
+        : 'Solo quien abrio este ticket, el staff configurado o alguien con Manage Server puede cerrarlo.',
       allowedMentions: { repliedUser: false }
     });
     await saveTranscript(storage, reply, 'assistant');
@@ -5123,8 +5244,11 @@ async function handleVoiceTicketCloseRequest({ client, storage, voiceManager, co
   }
 
   if (!canCloseTicketFromVoiceMember(member, ticket, guildConfig)) {
+    const staffOnly = !canTicketOpenerClose(guildConfig);
     const reply = await channel.send({
-      content: 'He entendido que quieres cerrar el ticket, pero solo puede hacerlo quien lo abrio, el staff configurado o alguien con Manage Server.',
+      content: staffOnly
+        ? 'He entendido que quieres cerrar el ticket, pero este servidor permite cerrarlo solo al staff configurado o a alguien con Manage Server.'
+        : 'He entendido que quieres cerrar el ticket, pero solo puede hacerlo quien lo abrio, el staff configurado o alguien con Manage Server.',
       allowedMentions: { parse: [] }
     }).catch(() => null);
     if (reply) await saveTranscript(storage, reply, 'assistant');
@@ -6871,6 +6995,7 @@ function canManageTicketTranscripts(interaction, guildConfig) {
 function canCloseTicketFromMessage(message, ticket, guildConfig) {
   if (message.member?.permissions?.has(PermissionFlagsBits.ManageGuild)) return true;
   if (guildConfig?.staffRoleId && memberHasRole(message.member, guildConfig.staffRoleId)) return true;
+  if (!canTicketOpenerClose(guildConfig)) return false;
   if (ticket.openedBy) return ticket.openedBy === message.author.id;
   return true;
 }
@@ -6878,6 +7003,7 @@ function canCloseTicketFromMessage(message, ticket, guildConfig) {
 function canCloseTicketFromVoiceMember(member, ticket, guildConfig) {
   if (member?.permissions?.has(PermissionFlagsBits.ManageGuild)) return true;
   if (guildConfig?.staffRoleId && memberHasRole(member, guildConfig.staffRoleId)) return true;
+  if (!canTicketOpenerClose(guildConfig)) return false;
   if (ticket.openedBy) return ticket.openedBy === member?.user?.id;
   return true;
 }
@@ -6885,8 +7011,14 @@ function canCloseTicketFromVoiceMember(member, ticket, guildConfig) {
 function canCloseTicketFromInteraction(interaction, ticket, guildConfig) {
   if (interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) return true;
   if (guildConfig?.staffRoleId && memberHasRole(interaction.member, guildConfig.staffRoleId)) return true;
+  if (!canTicketOpenerClose(guildConfig)) return false;
   if (ticket.openedBy) return ticket.openedBy === interaction.user.id;
   return true;
+}
+
+function canTicketOpenerClose(guildConfig) {
+  return guildConfig?.ticketClosePolicy?.usersCanClose !== false
+    && guildConfig?.ticketClosePolicy?.mode !== 'staff_only';
 }
 
 function canManageVoiceSupport(interaction, ticket, guildConfig) {
@@ -7574,6 +7706,11 @@ function isAllianceInfoQuestion(content) {
   const normalized = normalizeText(content);
   const talksAboutAlliance = /\b(?:alianz(?:a|as)|partner(?:ship)?s?|colaboracion(?:es)?)\b/.test(normalized);
   if (!talksAboutAlliance) return false;
+  if (/\b(?:cual|cuales|que|where|which|what|list|show|ver|listar|mostrar|muestrame|dime|saber|conocer)\b/.test(normalized)
+    && /\b(?:alianz(?:a|as)|partner(?:ship)?s?|colaboracion(?:es)?)\b/.test(normalized)
+    && !/\b(?:quiero|queria|quisiera|me\s+gustaria|hacer|realizar|proponer|solicitar|tramitar|enviar|mandar)\b/.test(normalized)) {
+    return true;
+  }
   if (/\b(?:quiero|queria|me\s+gustaria|hacer|realizar|proponer|solicitar|mandar|enviar|ofrecer|crear|tramitar)\b.*\b(?:alianz(?:a|as)|partner(?:ship)?s?|colaboracion(?:es)?)\b/.test(normalized)) {
     return false;
   }
@@ -7703,9 +7840,11 @@ function buildRaidReportEscalation(message) {
 
 function isTicketCloseRequest(content) {
   const normalized = normalizeText(content);
+  if (/\b(?:no|nunca|jamas|never|dont|don't)\b.{0,24}\b(?:cerrar|cierres|cierr|close|delete)\b/.test(normalized)) return false;
+  if (/\b(?:cerrar|cierre|close|delete)\b.{0,32}\b(?:cuando|si|solo|solamente|permiso|pueden|pueda|puedo|politica|configuracion)\b/.test(normalized)) return false;
   return [
     /\b(?:cierra|cierralo|cierra\s+el|cierra\s+este|cerrar|cerrad)\s+(?:el\s+|este\s+)?(?:ticket|canal)\b/,
-    /\b(?:puedes|podrias|pueden|quiero|necesito|toca|dale)\s+(?:cerrar|cerrarlo|cerrar\s+el|cerrar\s+este)\b/,
+    /\b(?:puedes|podrias|pueden|quiero|necesito|toca|dale)\s+(?:cerrar|cerrarlo|cerrar\s+el|cerrar\s+este)\s+(?:ticket|canal|esto|este)\b/,
     /\b(?:no|si|vale|ok|perfecto|gracias)[,\s]+(?:cierralo|cerralo|cerrar(?:lo)?|cierra(?:lo)?)\b/,
     /\b(?:cerralo|cierralo|cierrenlo)\b/,
     /\b(?:close|delete|shut)\s+(?:the\s+|this\s+)?ticket\b/,

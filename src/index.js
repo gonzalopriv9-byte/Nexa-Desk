@@ -177,9 +177,10 @@ function hasGroqProvider() {
 
 async function createInitializedStorage(config, events) {
   const storage = createStorage(config, events);
+  const databaseUrl = config.COCKROACH_DATABASE_URL || config.DATABASE_URL;
   try {
     await storage.init();
-    if (config.DATABASE_URL) {
+    if (databaseUrl) {
       await withStartupTimeout(
         storage.getGlobalSettings(),
         config.DATABASE_CONNECT_TIMEOUT_MS,
@@ -188,7 +189,7 @@ async function createInitializedStorage(config, events) {
     }
     return storage;
   } catch (error) {
-    if (!config.DATABASE_URL) throw error;
+    if (!databaseUrl) throw error;
 
     console.error('CockroachDB/PostgreSQL is unavailable during startup. Falling back to local JSON storage so NexaDesk can keep running.', compactStartupError(error));
     const fallback = new JsonStorage(config.DATA_DIR, events);

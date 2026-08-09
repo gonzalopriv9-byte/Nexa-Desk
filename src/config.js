@@ -49,6 +49,7 @@ const schema = z.object({
   AFFILIATE_REWARD_SLOTS: z.coerce.number().int().min(1).max(10).default(1),
   AFFILIATE_REWARD_DAYS: z.coerce.number().int().min(1).max(365).default(30),
   DATA_DIR: z.string().default('./data'),
+  COCKROACH_DATABASE_URL: z.string().optional().default(''),
   DATABASE_URL: z.string().optional().default(''),
   DATABASE_POOL_MAX: z.coerce.number().int().min(1).max(20).default(5),
   DATABASE_CONNECT_TIMEOUT_MS: z.coerce.number().int().min(1000).max(60000).default(8000),

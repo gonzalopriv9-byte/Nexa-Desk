@@ -75,7 +75,9 @@ export const DEFAULT_PREMIUM_MODULES = {
   allianceAutomation: true,
   teamAssist: true,
   premiumAnalytics: true,
-  affiliateBoost: true
+  affiliateBoost: true,
+  multiCategoryWatch: true,
+  scheduledAnnouncements: true
 };
 
 export function normalizePremiumPurchase(value = {}) {

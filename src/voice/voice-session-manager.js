@@ -1394,12 +1394,12 @@ function isBadAudioProcessingAnswer(content) {
 
 function isVoiceTicketCloseRequest(content) {
   const normalized = normalizeComparableText(content);
+  if (/\b(?:no|nunca|jamas|never|dont|don't)\b.{0,24}\b(?:cerrar|cierres|cierr|close|delete)\b/.test(normalized)) return false;
   return [
     /\b(?:cierra|cierralo|cerralo|cerrar|cerrad|cerrame|cerrarme)\b.*\b(?:ticket|canal)\b/,
-    /\b(?:cierra|cierralo|cerralo)\b/,
-    /\b(?:puedes|podrias|quiero|necesito|vale|ok|gracias)\b.*\b(?:cerrar|cerrarlo|cerrarlo|cierra|cierralo|cerralo)\b/,
+    /\b(?:puedes|podrias|quiero|necesito|vale|ok|gracias)\b.*\b(?:cerrar|cerrarlo|cerrarlo|cierra|cierralo|cerralo)\b.*\b(?:ticket|canal|esto)\b/,
     /\b(?:close|delete|shut)\s+(?:the\s+|this\s+)?ticket\b/,
-    /\b(?:you\s+can|please|pls|thanks|thank\s+you)\b.*\b(?:close|delete)\b/
+    /\b(?:you\s+can|please|pls|thanks|thank\s+you)\b.*\b(?:close|delete)\b.*\b(?:ticket|channel|it)\b/
   ].some((pattern) => pattern.test(normalized));
 }
 

@@ -29,6 +29,8 @@ export function normalizePremiumConfig(value = {}, guildConfig = {}) {
     teamAssist: source.teamAssist !== false,
     premiumAnalytics: source.premiumAnalytics !== false,
     affiliateBoost: source.affiliateBoost !== false,
+    multiCategoryWatch: source.multiCategoryWatch !== false,
+    scheduledAnnouncements: source.scheduledAnnouncements !== false,
     expiresAt: source.expiresAt ?? guildConfig?.premiumExpiresAt ?? null
   };
 }
@@ -52,7 +54,9 @@ export function summarizePremiumConfig(guildConfig = {}) {
     premium.allianceAutomation ? 'Alianzas Pro' : null,
     premium.teamAssist ? 'Team Assist' : null,
     premium.premiumAnalytics ? 'Analitica premium' : null,
-    premium.affiliateBoost ? 'Affiliate Boost' : null
+    premium.affiliateBoost ? 'Affiliate Boost' : null,
+    premium.multiCategoryWatch ? '2 categorias vigiladas' : null,
+    premium.scheduledAnnouncements ? 'Anuncios programados' : null
   ].filter(Boolean);
 
   return {

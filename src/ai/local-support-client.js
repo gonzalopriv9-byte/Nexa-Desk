@@ -43,6 +43,10 @@ function buildSupportFallback({ system, messages, lastUser }) {
     return reply.panels;
   }
 
+  if (/\b(funciones|caracteristicas|features|que\s+haces|como\s+funcionas|como\s+funciona|que\s+puedes\s+hacer|ultima\s+actualizacion|version|v1\.\d)\b/iu.test(text)) {
+    return reply.capabilities;
+  }
+
   if (/\b(captura|imagen|foto|screenshot|pantallazo|adjunto|image)\b/iu.test(text)) {
     return reply.image;
   }
@@ -193,6 +197,7 @@ function getLocalizedReplies(language) {
       staffApplication: '如果你想申请 staff，请告诉我你想申请的岗位或区域；如果需要人工审核，我会联系 staff。',
       allianceInfo: '我会先查看服务器真实频道和上下文，不会在你没有明确要求时启动联盟申请流程。',
       alliance: '如果要申请联盟，请发送你的服务器模板，包括邀请链接、成员数量、主题、你们提供什么以及负责人联系方式。',
+      capabilities: 'NexaDesk 可以自动处理 tickets、读取服务器上下文、升级给 staff、保存 transcripts、检测黑名单和恶意内容、支持联盟流程、报告系统、语音支持、考试模式、Security Guard、Premium 多分类监听和定时公告。',
       report: '我可以帮你整理举报。请发送相关用户、发生了什么、时间，以及截图或证据。',
       problem: '我可以帮你。请告诉我你原本想做什么、出现了什么错误；如果可以，请发送截图或错误文字。',
       waiting: '没问题，我会在这里等你。你回来后把下一条关键信息发给我，我继续处理。',
@@ -212,6 +217,7 @@ function getLocalizedReplies(language) {
       staffApplication: 'If you want to apply for staff, tell me the role or area you want and I will help prepare the application or call staff if this server handles it manually.',
       allianceInfo: 'I will check the real server channels and context before answering that. I will not start the alliance request flow unless you explicitly want to create one.',
       alliance: 'For an alliance, send your server template with the invite, member count, theme, what you offer and a contact person. I will keep it organized for staff.',
+      capabilities: 'NexaDesk can answer ticket users with AI, read server context, escalate to staff with summaries, save transcripts, review images, detect blacklist/security risks, handle reports and partnerships, support voice rooms, run exam mode, protect against raids, and unlock Premium features like 2 watched categories and scheduled announcements.',
       report: 'I can help with the report. Send the user involved, what happened, when it happened and any screenshots or proof you have.',
       problem: 'I can help. Tell me what you were trying to do, what error appeared and, if possible, send a screenshot or the exact text of the error.',
       waiting: 'No problem, I will wait here. When you come back, send the next detail and I will continue.',
@@ -232,6 +238,7 @@ function getLocalizedReplies(language) {
     staffApplication: 'Si quieres postular a staff, dime el area o rol al que quieres entrar y te ayudo a preparar la postulacion; si el servidor lo gestiona manualmente, aviso al staff.',
     allianceInfo: 'Voy a revisar los canales y el contexto real del servidor antes de responder eso. No abrire el flujo de alianza salvo que me digas claramente que quieres crear una.',
     alliance: 'Para una alianza, enviame la plantilla de tu servidor con invitacion, miembros, tematica, que ofreceis y contacto responsable. La dejo ordenada para revision.',
+    capabilities: 'NexaDesk atiende tickets con IA, lee contexto real del servidor, escala casos al staff con resumen, guarda transcripciones, revisa imagenes, detecta riesgos de blacklist/seguridad, gestiona reportes y alianzas, abre salas de voz, corrige modo examen, protege contra raids y en Premium permite 2 categorias vigiladas y anuncios programados.',
     report: 'Te ayudo con el reporte. Pasame el usuario implicado, que ocurrio, cuando paso y capturas o pruebas si las tienes.',
     problem: 'Te ayudo. Dime que estabas intentando hacer, que error salio y, si puedes, envia captura o el texto exacto del fallo.',
     waiting: 'Sin problema, te espero por aqui. Cuando vuelvas, mandame el siguiente detalle y continuo.',

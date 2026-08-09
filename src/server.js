@@ -1114,6 +1114,15 @@ export function createServer({ config, storage, bot, events }) {
     for (const key of ['ticketCategoryId', 'ticketCategoryName', 'staffRoleId', 'serverPrompt', 'serverInfo']) {
       if (Object.prototype.hasOwnProperty.call(req.body, key)) patch[key] = req.body[key];
     }
+    if (Object.prototype.hasOwnProperty.call(req.body, 'watchedTicketCategories')) {
+      patch.watchedTicketCategories = normalizeDashboardWatchedCategories(req.body.watchedTicketCategories, patch);
+    }
+    if (Object.prototype.hasOwnProperty.call(req.body, 'ticketClosePolicy')) {
+      patch.ticketClosePolicy = normalizeDashboardTicketClosePolicy(req.body.ticketClosePolicy);
+    }
+    if (Object.prototype.hasOwnProperty.call(req.body, 'scheduledAnnouncements')) {
+      patch.scheduledAnnouncements = normalizeDashboardScheduledAnnouncements(req.body.scheduledAnnouncements);
+    }
     if (req.body.security) patch.security = normalizeSecurityConfig(req.body.security);
     if (req.body.growth) patch.growth = normalizeGrowthConfig(req.body.growth);
     if (req.body.welcome) patch.welcome = normalizeWelcomeConfig(req.body.welcome);
@@ -1399,6 +1408,64 @@ function normalizeDashboardMaintenanceState(value = {}) {
     disabledAt: value?.disabledAt || null,
     updatedAt: value?.updatedAt || null
   };
+}
+
+function normalizeDashboardWatchedCategories(value = [], patch = {}) {
+  const raw = Array.isArray(value) ? value : [];
+  const primary = patch.ticketCategoryId
+    ? [{ id: patch.ticketCategoryId, name: patch.ticketCategoryName, primary: true }]
+    : [];
+  return [...primary, ...raw]
+    .map((item) => ({
+      id: String(item?.id ?? '').trim(),
+      name: item?.name ? String(item.name).slice(0, 120) : null,
+      primary: Boolean(item?.primary)
+    }))
+    .filter((item, index, list) => item.id && list.findIndex((candidate) => candidate.id === item.id) === index)
+    .slice(0, 2)
+    .map((item, index) => ({ ...item, primary: index === 0 || item.primary }));
+}
+
+function normalizeDashboardTicketClosePolicy(value = {}) {
+  const mode = value?.mode === 'staff_only' || value?.usersCanClose === false
+    ? 'staff_only'
+    : 'opener_and_staff';
+  return {
+    mode,
+    usersCanClose: mode !== 'staff_only',
+    updatedAt: new Date().toISOString()
+  };
+}
+
+function normalizeDashboardScheduledAnnouncements(value = []) {
+  const raw = Array.isArray(value) ? value : [];
+  return raw.slice(0, 25).map((item) => {
+    const scheduleType = item?.scheduleType === 'once' ? 'once' : 'interval';
+    const intervalHours = Math.max(1, Math.min(24 * 30, Number(item?.intervalHours ?? 24) || 24));
+    const now = new Date().toISOString();
+    return {
+      id: String(item?.id ?? `ann-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`).slice(0, 80),
+      enabled: item?.enabled !== false,
+      name: String(item?.name ?? 'Anuncio programado').slice(0, 90),
+      channelId: item?.channelId ? String(item.channelId) : null,
+      channelName: item?.channelName ? String(item.channelName).slice(0, 120) : null,
+      content: item?.content ? String(item.content).slice(0, 1800) : '',
+      scheduleType,
+      intervalHours,
+      nextRunAt: item?.nextRunAt ? String(item.nextRunAt) : now,
+      lastRunAt: item?.lastRunAt ? String(item.lastRunAt) : null,
+      runCount: Math.max(0, Number(item?.runCount ?? 0) || 0),
+      embed: {
+        title: String(item?.embed?.title ?? item?.title ?? 'Anuncio').slice(0, 256),
+        description: String(item?.embed?.description ?? item?.description ?? '').slice(0, 3800),
+        color: String(item?.embed?.color ?? item?.color ?? '#ffffff').slice(0, 16),
+        imageUrl: item?.embed?.imageUrl ? String(item.embed.imageUrl).slice(0, 500) : null,
+        footerText: item?.embed?.footerText ? String(item.embed.footerText).slice(0, 200) : null
+      },
+      createdAt: item?.createdAt ? String(item.createdAt) : now,
+      updatedAt: now
+    };
+  }).filter((item) => item.channelId && (item.embed.title || item.embed.description));
 }
 
 function buildPremiumAccountResponse({ account, config }) {
@@ -5855,6 +5922,8 @@ function renderDashboard({ session, guilds, tickets, stats, dashboardState = {},
     .guild-pill:hover,.component-card:hover,.component-choice:hover,.panel-card:hover,.log-entry:hover { transform:translateY(-2px); border-color:rgba(255,255,255,.34); }
     .premium-blocked { border-radius:30px; }
     #view-premium .surface,#view-premium .control-card,#view-premium .premium-buy-card { background:linear-gradient(145deg, rgba(244,201,93,.18), rgba(255,255,255,.055) 40%, rgba(0,0,0,.54)); }
+    .scheduled-announcements-list { display:grid; gap:10px; margin-top:14px; }
+    .scheduled-announcement-card small { line-height:1.45; }
     .toast,.assistant-panel,.assistant-launcher,.tour-replay { border-radius:22px; }
     .loading { background:radial-gradient(circle at 50% 42%, rgba(255,255,255,.16), transparent 28%), radial-gradient(circle at 20% 14%, rgba(255,255,255,.1), transparent 24%), rgba(0,0,0,.88); backdrop-filter:blur(24px) saturate(1.18); }
     .loader { border-radius:30px; background:linear-gradient(145deg, rgba(255,255,255,.15), rgba(12,12,12,.93)); box-shadow:0 40px 150px rgba(0,0,0,.64), 0 0 0 1px rgba(255,255,255,.05) inset; }
@@ -5885,20 +5954,17 @@ function renderDashboard({ session, guilds, tickets, stats, dashboardState = {},
     @media (max-width:1120px) { .app-shell,.workspace,.topbar,.command-center,.panel-builder,.premium-grid,.premium-market { grid-template-columns:1fr; } .sidebar { position:relative; height:auto; top:auto; } .nav-foot { position:static; margin-top:18px; } .panel-preview-wrap { position:relative; top:auto; } }
     @media (max-width:760px) {
       body { overflow-x:hidden; background-size:auto; }
-      .app-shell { width:100%; gap:12px; padding:0 10px 96px; }
-      .sidebar { position:sticky; top:0; z-index:40; height:auto; margin:0 -10px; padding:10px; display:flex; flex-direction:row; align-items:center; gap:8px; overflow:hidden; border-radius:0 0 18px 18px; background:rgba(5,5,5,.92); backdrop-filter:blur(16px); }
-      .nav-brand { flex:0 0 auto; margin:0 6px 0 0; }
-      .nav-brand strong { display:none; }
-      .brand-logo { width:36px; height:36px; border-radius:10px; }
-      .nav-menu { flex:1 1 auto; min-width:0; display:flex; gap:8px; overflow-x:auto; overflow-y:hidden; padding:0 4px; margin:0; overscroll-behavior-x:contain; scrollbar-width:none; }
+      .app-shell { width:100%; display:block; padding:14px 12px 112px; }
+      .sidebar { position:fixed; left:10px; right:10px; bottom:10px; top:auto; z-index:45; width:auto; height:auto; margin:0; padding:8px; display:block; overflow:visible; border-radius:28px; background:linear-gradient(145deg, rgba(255,255,255,.16), rgba(8,8,8,.9)); border:1px solid rgba(255,255,255,.18); box-shadow:0 26px 95px rgba(0,0,0,.68), 0 0 0 1px rgba(255,255,255,.04) inset; backdrop-filter:blur(22px) saturate(1.2); }
+      .nav-brand,.nav-foot { display:none; }
+      .nav-menu { width:100%; min-width:0; display:flex; gap:7px; overflow-x:auto; overflow-y:hidden; padding:0; margin:0; overscroll-behavior-x:contain; scroll-snap-type:x mandatory; scrollbar-width:none; }
       .nav-menu::-webkit-scrollbar { display:none; }
-      .nav-link { flex:0 0 auto; display:inline-flex; align-items:center; margin:0; padding:9px 11px; white-space:nowrap; font-size:14px; }
+      .nav-link { flex:0 0 auto; display:inline-flex; align-items:center; justify-content:center; min-width:48px; min-height:48px; margin:0; padding:10px; border-radius:20px; white-space:nowrap; font-size:14px; scroll-snap-align:center; }
+      .nav-link span:last-child { display:none; }
+      .nav-link.is-active { min-width:max-content; padding:10px 14px; background:rgba(255,255,255,.18); }
+      .nav-link.is-active span:last-child { display:inline; }
       .nav-link:hover,.nav-link.is-active { transform:none; }
-      .nav-foot { flex:0 0 auto; position:static; margin:0 0 0 auto; padding:0; border-top:0; }
-      .nav-foot form { display:block; }
-      .nav-foot button { width:max-content; margin:0; padding:9px 11px; white-space:nowrap; font-size:13px; }
-      .nav-legal { flex-wrap:nowrap; margin:0 8px 0 0; }
-      .nav-legal a { white-space:nowrap; padding:8px 10px; }
+      .nav-icon { width:24px; }
       main { width:100%; }
       .dashboard-banner-frame { height:auto; min-height:136px; margin-top:10px; }
       .dashboard-command-banner { grid-template-columns:62px minmax(0,1fr); gap:12px; padding:14px; border-radius:18px; }
@@ -5919,10 +5985,7 @@ function renderDashboard({ session, guilds, tickets, stats, dashboardState = {},
       .active-server { margin-bottom:12px; }
       form,.control-grid,.stats,.server-status,.server-score,.mini-grid,.discovery-grid,.panel-fields,.form-section,.security-playbook,.readiness-checklist,.recommendation-grid,.premium-feature-grid,.premium-toggle,.premium-wallet,.premium-activation-row { grid-template-columns:1fr; }
       input,select,textarea { font-size:16px; min-height:44px; }
-      .nav-menu { scroll-snap-type:x proximity; scrollbar-width:none; }
-      .nav-menu::-webkit-scrollbar { display:none; }
-      .nav-link { scroll-snap-align:start; }
-      .control-card,.surface,.active-server { scroll-margin-top:86px; }
+      .control-card,.surface,.active-server { scroll-margin-top:16px; }
       label,button { margin-top:0; }
       textarea { min-height:118px; }
       .form-section { padding:10px; }
@@ -5940,11 +6003,11 @@ function renderDashboard({ session, guilds, tickets, stats, dashboardState = {},
       table { display:block; width:100%; overflow-x:auto; white-space:nowrap; -webkit-overflow-scrolling:touch; }
       th,td { padding:10px; }
       .transcript-actions { flex-wrap:wrap; }
-      .toast { left:12px; right:12px; bottom:82px; max-width:none; }
-      .assistant-launcher { right:12px; bottom:12px; min-width:0; padding:11px 13px; }
-      .assistant-panel { left:8px; right:8px; bottom:72px; width:auto; max-height:calc(100dvh - 86px); border-radius:16px; }
-      .tour-replay { right:auto; left:12px; bottom:12px; min-width:0; padding:11px 13px; }
-      .tour-card { left:10px; right:10px; bottom:74px; width:auto; max-height:calc(100dvh - 92px); overflow:auto; border-radius:18px; padding:15px; }
+      .toast { left:12px; right:12px; bottom:100px; max-width:none; }
+      .assistant-launcher { right:18px; bottom:76px; min-width:0; padding:11px 13px; }
+      .assistant-panel { left:8px; right:8px; bottom:136px; width:auto; max-height:calc(100dvh - 154px); border-radius:18px; }
+      .tour-replay { right:auto; left:18px; bottom:76px; min-width:0; padding:11px 13px; }
+      .tour-card { left:10px; right:10px; bottom:136px; width:auto; max-height:calc(100dvh - 154px); overflow:auto; border-radius:22px; padding:15px; }
       .tour-title { font-size:21px; }
       .tour-actions { display:grid; grid-template-columns:1fr; }
       .tour-actions div { display:grid; grid-template-columns:1fr 1fr; }
@@ -6136,10 +6199,13 @@ function renderDashboard({ session, guilds, tickets, stats, dashboardState = {},
           <div class="card-head"><span class="step">1</span><div><h2>IA y contexto</h2><p>Define como debe responder NexaDesk dentro de este servidor.</p></div></div>
           <form onsubmit="return saveConfig(event)">
             <input id="ticketCategoryName" type="hidden">
-            <label>Categoria de tickets<select id="ticketCategoryId"></select></label>
+            <label>Categoria principal<select id="ticketCategoryId"></select></label>
+            <label>Categoria extra Premium<select id="ticketCategoryId2"></select></label>
             <label>Rol staff<select id="staffRoleId"></select></label>
+            <label>Cierre de tickets<select id="ticketCloseMode"><option value="opener_and_staff">Usuario que abrio + staff</option><option value="staff_only">Solo staff</option></select></label>
             <textarea id="serverPrompt" placeholder="Prompt del servidor: personalidad, tono, limites, cuando escalar..."></textarea>
             <textarea id="serverInfo" placeholder="Reglas, FAQs, horarios, precios, enlaces y respuestas frecuentes..."></textarea>
+            <p class="notice span-2">Premium permite vigilar hasta 2 categorias de tickets. En Free solo se usa la principal aunque dejes preparada una extra.</p>
             <label class="span-2">Canal de alianzas<select id="allianceChannelId"></select></label>
             <textarea class="span-2" id="allianceTemplate" placeholder="Plantilla de alianza del servidor. Pegala completa con saltos de linea, emojis, invitacion y @everyone/@here si los usas."></textarea>
             <p class="notice span-2">La plantilla de alianzas se copia exactamente desde aqui. Asi no se rompe con comandos slash y puedes pegar textos largos con enters.</p>
@@ -6507,6 +6573,8 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
               <div class="premium-feature"><strong>Alianzas Pro</strong><span>Flujo mas limpio para plantillas, verificacion y publicacion automatica.</span></div>
               <div class="premium-feature"><strong>Team Assist</strong><span>Briefings para staff, handoff inteligente y sugerencias de cierre.</span></div>
               <div class="premium-feature"><strong>Affiliate Boost</strong><span>Recompensas por crecimiento y slots premium por servidores referidos.</span></div>
+              <div class="premium-feature"><strong>2 categorias vigiladas</strong><span>NexaDesk puede entrar en dos zonas de tickets distintas sin duplicar bots ni paneles.</span></div>
+              <div class="premium-feature"><strong>Anuncios programados</strong><span>Embeds automaticos para eventos, normas, avisos, recordatorios y campanas del servidor.</span></div>
             </div>
           </article>
           <article class="control-card" id="premiumSettingsCard">
@@ -6529,8 +6597,30 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
               <label class="premium-toggle"><span><strong>Team Assist</strong><span>Ayuda al staff con handoff, briefings y respuestas recomendadas.</span></span><select id="premiumTeamAssist"><option value="true">Activo</option><option value="false">Pausado</option></select></label>
               <label class="premium-toggle"><span><strong>Analitica premium</strong><span>Prepara datos para informes de motivos, resultados y calidad de soporte.</span></span><select id="premiumAnalytics"><option value="true">Activo</option><option value="false">Pausado</option></select></label>
               <label class="premium-toggle"><span><strong>Affiliate Boost</strong><span>Activa recompensas por afiliados y crecimiento recomendado.</span></span><select id="premiumAffiliateBoost"><option value="true">Activo</option><option value="false">Pausado</option></select></label>
+              <label class="premium-toggle"><span><strong>2 categorias vigiladas</strong><span>Permite configurar una segunda categoria de tickets desde Configuracion.</span></span><select id="premiumMultiCategoryWatch"><option value="true">Activo</option><option value="false">Pausado</option></select></label>
+              <label class="premium-toggle"><span><strong>Anuncios programados</strong><span>Envia embeds automaticos al canal y fecha/intervalo que elijas.</span></span><select id="premiumScheduledAnnouncements"><option value="true">Activo</option><option value="false">Pausado</option></select></label>
               <button type="submit">Guardar modulos premium</button>
             </form>
+          </article>
+          <article class="control-card wide" id="scheduledAnnouncementsCard">
+            <div class="card-head"><span class="step">A</span><div><h2>Anuncios programados</h2><p>Premium: prepara embeds automaticos para eventos, recordatorios, normas y campanas.</p></div></div>
+            <form onsubmit="return saveScheduledAnnouncement(event)">
+              <label>Canal destino<select id="announcementChannelId"></select></label>
+              <label>Nombre interno<input id="announcementName" placeholder="Recordatorio semanal"></label>
+              <label class="span-2">Texto encima del embed<input id="announcementContent" placeholder="@everyone Nuevo anuncio disponible"></label>
+              <label>Titulo del embed<input id="announcementTitle" placeholder="Nuevo anuncio del servidor"></label>
+              <label>Color<input id="announcementColor" placeholder="#ffffff" value="#ffffff"></label>
+              <textarea class="span-2" id="announcementDescription" placeholder="Mensaje del anuncio. Puedes escribir varias lineas, normas, enlaces y llamadas a la accion."></textarea>
+              <label>Programacion<select id="announcementScheduleType"><option value="interval">Cada X horas</option><option value="once">Fecha exacta una vez</option></select></label>
+              <label>Cada cuantas horas<input id="announcementEveryHours" type="number" min="1" max="720" value="24"></label>
+              <label class="span-2">Proxima ejecucion<input id="announcementNextRunAt" type="datetime-local"></label>
+              <label>Imagen opcional<input id="announcementImageUrl" placeholder="https://..."></label>
+              <label>Footer opcional<input id="announcementFooterText" placeholder="NexaDesk"></label>
+              <button class="span-2" type="submit">Guardar anuncio programado</button>
+            </form>
+            <div class="scheduled-announcements-list" id="scheduledAnnouncementList">
+              <p class="notice">Selecciona un servidor para ver sus anuncios.</p>
+            </div>
           </article>
         </section>
       </section>
@@ -7225,7 +7315,9 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
         allianceAutomation: raw.allianceAutomation !== false,
         teamAssist: raw.teamAssist !== false,
         premiumAnalytics: raw.premiumAnalytics !== false,
-        affiliateBoost: raw.affiliateBoost !== false
+        affiliateBoost: raw.affiliateBoost !== false,
+        multiCategoryWatch: raw.multiCategoryWatch !== false,
+        scheduledAnnouncements: raw.scheduledAnnouncements !== false
       };
     }
     function normalizeGrowth(guild = {}) {
@@ -7269,6 +7361,14 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       if (welcome.channelName) return '#' + welcome.channelName;
       return welcome.dmEnabled ? 'MD activo' : 'Activo';
     }
+    function formatScheduledAnnouncementsState(guild = {}) {
+      const announcements = Array.isArray(guild.scheduledAnnouncements) ? guild.scheduledAnnouncements : [];
+      if (announcements.length) {
+        const active = announcements.filter((item) => item.enabled !== false).length;
+        return active + '/' + announcements.length + ' programados';
+      }
+      return formatDiscoveredChannel(guild.discovery?.announcementChannelName, 'No detectado');
+    }
     function formatDiscoveredChannel(name, fallback = 'No detectado') {
       return name ? '#' + name : fallback;
     }
@@ -7294,7 +7394,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
         }).join('');
       }
       const active = document.querySelector('#activeAnnouncements');
-      if (active) active.textContent = formatDiscoveredChannel(discovery.announcementChannelName, 'No detectado');
+      if (active) active.textContent = formatScheduledAnnouncementsState(guild);
     }
     async function rescanDiscovery() {
       const guildId = document.querySelector('#guildId')?.value;
@@ -7436,7 +7536,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       });
     }
     function setConfigurationDisabled(disabled) {
-      for (const selector of ['#ticketCategoryId', '#staffRoleId', '#serverPrompt', '#serverInfo', '#allianceChannelId', '#allianceTemplate', '#categoryName', '#securityEnabled', '#securityLevel', '#securityLogChannelId', '#securityMinAccountAgeDays', '#securityAntiFlood', '#securityAntiScamLinks', '#securityAntiOffensive', '#securityAntiBot', '#securityAntiAlt', '#securityAntiNuke', '#componentLabel', '#componentEmoji', '#componentDescription', '#componentTicketCategoryId', '#componentTicketMode', '#componentQuestions', '#componentExamFormUrl', '#componentExamReviewEnabled', '#componentExamPassScore', '#componentWelcomeMessage', '#panelType', '#panelSelectPlaceholder', '#panelComponentIds', '#panelChannelId', '#panelTicketCategoryId', '#panelTicketMode', '#panelExamQuestions', '#panelExamFormUrl', '#panelExamReviewEnabled', '#panelExamPassScore', '#panelButtonLabel', '#panelButtonStyle', '#panelButtonEmoji', '#panelTitle', '#panelEmbedColor', '#panelAuthorName', '#panelAuthorIconUrl', '#panelDescription', '#panelThumbnailUrl', '#panelImageUrl', '#panelThumbnailFile', '#panelImageFile', '#panelFooterText', '#panelWelcomeMessage', '#growthEnabled', '#growthFeedbackDm', '#growthPublicReviews', '#growthReviewChannelId', '#growthTestimonialMinRating', '#growthLowRatingAlerts', '#growthInviteCta', '#welcomeEnabled', '#welcomeChannelId', '#welcomeRoleId', '#welcomeDmEnabled', '#welcomeMessage', '#welcomeDmMessage', '#premiumVoiceSupport', '#premiumPriorityAi', '#premiumSmartTranscripts', '#premiumSecurityPlus', '#premiumCustomBranding', '#premiumWeeklyInsights', '#premiumGrowthEngine', '#premiumPublicReviews', '#premiumChurnRadar', '#premiumConversionInsights', '#premiumSlaRadar', '#premiumAutoSetupPlus', '#premiumAllianceAutomation', '#premiumTeamAssist', '#premiumAnalytics', '#premiumAffiliateBoost']) {
+      for (const selector of ['#ticketCategoryId', '#ticketCategoryId2', '#ticketCloseMode', '#staffRoleId', '#serverPrompt', '#serverInfo', '#allianceChannelId', '#allianceTemplate', '#categoryName', '#securityEnabled', '#securityLevel', '#securityLogChannelId', '#securityMinAccountAgeDays', '#securityAntiFlood', '#securityAntiScamLinks', '#securityAntiOffensive', '#securityAntiBot', '#securityAntiAlt', '#securityAntiNuke', '#componentLabel', '#componentEmoji', '#componentDescription', '#componentTicketCategoryId', '#componentTicketMode', '#componentQuestions', '#componentExamFormUrl', '#componentExamReviewEnabled', '#componentExamPassScore', '#componentWelcomeMessage', '#panelType', '#panelSelectPlaceholder', '#panelComponentIds', '#panelChannelId', '#panelTicketCategoryId', '#panelTicketMode', '#panelExamQuestions', '#panelExamFormUrl', '#panelExamReviewEnabled', '#panelExamPassScore', '#panelButtonLabel', '#panelButtonStyle', '#panelButtonEmoji', '#panelTitle', '#panelEmbedColor', '#panelAuthorName', '#panelAuthorIconUrl', '#panelDescription', '#panelThumbnailUrl', '#panelImageUrl', '#panelThumbnailFile', '#panelImageFile', '#panelFooterText', '#panelWelcomeMessage', '#growthEnabled', '#growthFeedbackDm', '#growthPublicReviews', '#growthReviewChannelId', '#growthTestimonialMinRating', '#growthLowRatingAlerts', '#growthInviteCta', '#welcomeEnabled', '#welcomeChannelId', '#welcomeRoleId', '#welcomeDmEnabled', '#welcomeMessage', '#welcomeDmMessage', '#premiumVoiceSupport', '#premiumPriorityAi', '#premiumSmartTranscripts', '#premiumSecurityPlus', '#premiumCustomBranding', '#premiumWeeklyInsights', '#premiumGrowthEngine', '#premiumPublicReviews', '#premiumChurnRadar', '#premiumConversionInsights', '#premiumSlaRadar', '#premiumAutoSetupPlus', '#premiumAllianceAutomation', '#premiumTeamAssist', '#premiumAnalytics', '#premiumAffiliateBoost', '#premiumMultiCategoryWatch', '#premiumScheduledAnnouncements', '#announcementChannelId', '#announcementName', '#announcementContent', '#announcementTitle', '#announcementDescription', '#announcementColor', '#announcementScheduleType', '#announcementEveryHours', '#announcementNextRunAt', '#announcementImageUrl', '#announcementFooterText']) {
         const element = document.querySelector(selector);
         if (element) element.disabled = disabled;
       }
@@ -7454,9 +7554,11 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       document.querySelector('#installLink').textContent = 'Invitar bot';
       document.querySelector('#installLink').target = '';
       document.querySelector('#ticketCategoryId').innerHTML = '<option>Instala NexaDesk para cargar categorias</option>';
+      document.querySelector('#ticketCategoryId2').innerHTML = '<option>Instala NexaDesk para cargar categorias</option>';
       document.querySelector('#staffRoleId').innerHTML = '<option>Instala NexaDesk para cargar roles</option>';
       document.querySelector('#securityLogChannelId').innerHTML = '<option>Instala NexaDesk para cargar canales</option>';
       document.querySelector('#allianceChannelId').innerHTML = '<option>Instala NexaDesk para cargar canales</option>';
+      document.querySelector('#announcementChannelId').innerHTML = '<option>Instala NexaDesk para cargar canales</option>';
       document.querySelector('#componentTicketCategoryId').innerHTML = '<option>Instala NexaDesk para cargar categorias</option>';
       document.querySelector('#panelChannelId').innerHTML = '<option>Instala NexaDesk para cargar canales</option>';
       document.querySelector('#panelTicketCategoryId').innerHTML = '<option>Instala NexaDesk para cargar categorias</option>';
@@ -7470,11 +7572,12 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       document.querySelector('#activeSecurity').textContent = formatSecurityState(guild);
       document.querySelector('#activePremium').textContent = formatPremiumState(guild);
       document.querySelector('#activeTranscripts').textContent = formatTranscriptState(guild);
-      document.querySelector('#activeAnnouncements').textContent = formatDiscoveredChannel(guild.discovery?.announcementChannelName);
+      document.querySelector('#activeAnnouncements').textContent = formatScheduledAnnouncementsState(guild);
       document.querySelector('#activeWelcome').textContent = formatWelcomeState(guild);
       renderComponentHistory(guild);
       renderPanelHistory(guild);
       renderPremiumPanel(guild);
+      renderScheduledAnnouncementsPanel(guild);
       renderGrowthPanel(guild);
       renderWelcomePanel(guild);
       renderSecurityCommercialPanel(guild);
@@ -7493,9 +7596,11 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       document.querySelector('#installLink').target = '_blank';
       document.querySelector('#installLink').textContent = 'Abrir Render';
       document.querySelector('#ticketCategoryId').innerHTML = '<option>No se pudieron cargar categorias</option>';
+      document.querySelector('#ticketCategoryId2').innerHTML = '<option>No se pudieron cargar categorias</option>';
       document.querySelector('#staffRoleId').innerHTML = '<option>No se pudieron cargar roles</option>';
       document.querySelector('#securityLogChannelId').innerHTML = '<option>No se pudieron cargar canales</option>';
       document.querySelector('#allianceChannelId').innerHTML = '<option>No se pudieron cargar canales</option>';
+      document.querySelector('#announcementChannelId').innerHTML = '<option>No se pudieron cargar canales</option>';
       document.querySelector('#componentTicketCategoryId').innerHTML = '<option>No se pudieron cargar categorias</option>';
       document.querySelector('#panelChannelId').innerHTML = '<option>No se pudieron cargar canales</option>';
       document.querySelector('#panelTicketCategoryId').innerHTML = '<option>No se pudieron cargar categorias</option>';
@@ -7509,11 +7614,12 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       document.querySelector('#activeSecurity').textContent = formatSecurityState(guild);
       document.querySelector('#activePremium').textContent = formatPremiumState(guild);
       document.querySelector('#activeTranscripts').textContent = formatTranscriptState(guild);
-      document.querySelector('#activeAnnouncements').textContent = formatDiscoveredChannel(guild.discovery?.announcementChannelName);
+      document.querySelector('#activeAnnouncements').textContent = formatScheduledAnnouncementsState(guild);
       document.querySelector('#activeWelcome').textContent = formatWelcomeState(guild);
       renderComponentHistory(guild);
       renderPanelHistory(guild);
       renderPremiumPanel(guild);
+      renderScheduledAnnouncementsPanel(guild);
       renderGrowthPanel(guild);
       renderWelcomePanel(guild);
       renderSecurityCommercialPanel(guild);
@@ -7549,13 +7655,16 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       const config = guildConfigs.find((guild) => guild.guildId === guildId) || {};
       const categories = meta.channels.filter((channel) => channel.type === 4);
       const textChannels = meta.channels.filter((channel) => channel.type === 0);
-      document.querySelector('#ticketCategoryId').innerHTML = '<option value="">Sin categoria</option>' + categories.map((channel) => '<option value="' + channel.id + '">' + escapeHtml(channel.name) + '</option>').join('');
+      const categoryOptions = '<option value="">Sin categoria</option>' + categories.map((channel) => '<option value="' + channel.id + '">' + escapeHtml(channel.name) + '</option>').join('');
+      document.querySelector('#ticketCategoryId').innerHTML = categoryOptions;
+      document.querySelector('#ticketCategoryId2').innerHTML = '<option value="">Sin categoria extra</option>' + categories.map((channel) => '<option value="' + channel.id + '">' + escapeHtml(channel.name) + '</option>').join('');
       document.querySelector('#staffRoleId').innerHTML = '<option value="">Sin rol staff</option>' + meta.roles.map((role) => '<option value="' + role.id + '">' + escapeHtml(role.name) + '</option>').join('');
       document.querySelector('#componentTicketCategoryId').innerHTML = '<option value="">Usar categoria principal</option>' + categories.map((channel) => '<option value="' + channel.id + '">' + escapeHtml(channel.name) + '</option>').join('');
       document.querySelector('#panelChannelId').innerHTML = textChannels.map((channel) => '<option value="' + channel.id + '">#' + escapeHtml(channel.name) + '</option>').join('');
       document.querySelector('#panelTicketCategoryId').innerHTML = '<option value="">Usar categoria principal</option>' + categories.map((channel) => '<option value="' + channel.id + '">' + escapeHtml(channel.name) + '</option>').join('');
       document.querySelector('#securityLogChannelId').innerHTML = '<option value="">Sin canal de logs</option>' + textChannels.map((channel) => '<option value="' + channel.id + '">#' + escapeHtml(channel.name) + '</option>').join('');
       document.querySelector('#allianceChannelId').innerHTML = '<option value="">Sin canal de alianzas</option>' + textChannels.map((channel) => '<option value="' + channel.id + '">#' + escapeHtml(channel.name) + '</option>').join('');
+      document.querySelector('#announcementChannelId').innerHTML = '<option value="">Sin canal</option>' + textChannels.map((channel) => '<option value="' + channel.id + '">#' + escapeHtml(channel.name) + '</option>').join('');
       document.querySelector('#growthReviewChannelId').innerHTML = '<option value="">Sin canal de reviews</option>' + textChannels.map((channel) => '<option value="' + channel.id + '">#' + escapeHtml(channel.name) + '</option>').join('');
       document.querySelector('#welcomeChannelId').innerHTML = '<option value="">Sin canal publico</option>' + textChannels.map((channel) => '<option value="' + channel.id + '">#' + escapeHtml(channel.name) + '</option>').join('');
       document.querySelector('#welcomeRoleId').innerHTML = '<option value="">Sin rol automatico</option>' + meta.roles.map((role) => '<option value="' + role.id + '">' + escapeHtml(role.name) + '</option>').join('');
@@ -7566,6 +7675,12 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       document.querySelector('#componentTicketCategoryId').value = config.ticketCategoryId || '';
       document.querySelector('#panelTicketCategoryId').value = config.ticketCategoryId || '';
       document.querySelector('#ticketCategoryId').value = config.ticketCategoryId || '';
+      const watched = Array.isArray(config.watchedTicketCategories) ? config.watchedTicketCategories : [];
+      const secondWatched = watched.find((item) => item?.id && item.id !== config.ticketCategoryId);
+      document.querySelector('#ticketCategoryId2').value = secondWatched?.id || '';
+      const premiumForCategories = normalizePremium(config);
+      document.querySelector('#ticketCategoryId2').disabled = !(premiumForCategories.entitled && premiumForCategories.multiCategoryWatch);
+      document.querySelector('#ticketCloseMode').value = config.ticketClosePolicy?.mode === 'staff_only' ? 'staff_only' : 'opener_and_staff';
       document.querySelector('#staffRoleId').value = config.staffRoleId || '';
       document.querySelector('#ticketCategoryName').value = config.ticketCategoryName || selectedOptionText('#ticketCategoryId');
       document.querySelector('#serverPrompt').value = config.serverPrompt || '';
@@ -7605,11 +7720,12 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       document.querySelector('#activeSecurity').textContent = formatSecurityState(config);
       document.querySelector('#activePremium').textContent = formatPremiumState(config);
       document.querySelector('#activeTranscripts').textContent = formatTranscriptState(config);
-      document.querySelector('#activeAnnouncements').textContent = formatDiscoveredChannel(config.discovery?.announcementChannelName);
+      document.querySelector('#activeAnnouncements').textContent = formatScheduledAnnouncementsState(config);
       document.querySelector('#activeWelcome').textContent = formatWelcomeState(config);
       renderComponentHistory(config);
       renderPanelHistory(config);
       renderPremiumPanel(config);
+      renderScheduledAnnouncementsPanel(config);
       renderGrowthPanel(config);
       renderWelcomePanel(config);
       renderSecurityCommercialPanel(config);
@@ -7647,9 +7763,20 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       event.preventDefault();
       const guildId = document.querySelector('#guildId').value;
       const categoryName = selectedOptionText('#ticketCategoryId') || document.querySelector('#ticketCategoryName').value;
+      const primaryCategoryId = document.querySelector('#ticketCategoryId').value;
+      const secondaryCategoryId = document.querySelector('#ticketCategoryId2').value;
+      const watchedTicketCategories = [
+        primaryCategoryId ? { id: primaryCategoryId, name: categoryName, primary: true } : null,
+        secondaryCategoryId ? { id: secondaryCategoryId, name: selectedOptionText('#ticketCategoryId2'), primary: false } : null
+      ].filter(Boolean);
       const updated = await postJson('/api/guilds/' + guildId, {
-        ticketCategoryId: document.querySelector('#ticketCategoryId').value,
+        ticketCategoryId: primaryCategoryId,
         ticketCategoryName: categoryName,
+        watchedTicketCategories,
+        ticketClosePolicy: {
+          mode: document.querySelector('#ticketCloseMode').value,
+          usersCanClose: document.querySelector('#ticketCloseMode').value !== 'staff_only'
+        },
         staffRoleId: document.querySelector('#staffRoleId').value,
         serverPrompt: document.querySelector('#serverPrompt').value,
         serverInfo: document.querySelector('#serverInfo').value,
@@ -7716,7 +7843,9 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
           allianceAutomation: document.querySelector('#premiumAllianceAutomation').value === 'true',
           teamAssist: document.querySelector('#premiumTeamAssist').value === 'true',
           premiumAnalytics: document.querySelector('#premiumAnalytics').value === 'true',
-          affiliateBoost: document.querySelector('#premiumAffiliateBoost').value === 'true'
+          affiliateBoost: document.querySelector('#premiumAffiliateBoost').value === 'true',
+          multiCategoryWatch: document.querySelector('#premiumMultiCategoryWatch').value === 'true',
+          scheduledAnnouncements: document.querySelector('#premiumScheduledAnnouncements').value === 'true'
         }
       }).catch((error) => showToast(error.message));
       if (updated) {
@@ -7981,12 +8110,147 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
         premiumAllianceAutomation: premium.allianceAutomation,
         premiumTeamAssist: premium.teamAssist,
         premiumAnalytics: premium.premiumAnalytics,
-        premiumAffiliateBoost: premium.affiliateBoost
+        premiumAffiliateBoost: premium.affiliateBoost,
+        premiumMultiCategoryWatch: premium.multiCategoryWatch,
+        premiumScheduledAnnouncements: premium.scheduledAnnouncements
       };
       for (const [id, value] of Object.entries(values)) {
         const element = document.querySelector('#' + id);
         if (element) element.value = value ? 'true' : 'false';
       }
+    }
+    function renderScheduledAnnouncementsPanel(guild = getActiveGuild()) {
+      const list = document.querySelector('#scheduledAnnouncementList');
+      if (!list) return;
+      const premium = normalizePremium(guild || {});
+      const announcements = Array.isArray(guild?.scheduledAnnouncements) ? guild.scheduledAnnouncements : [];
+      document.querySelector('#scheduledAnnouncementsCard')?.classList.toggle('premium-locked', !premium.entitled || !premium.scheduledAnnouncements);
+      if (!premium.entitled || !premium.scheduledAnnouncements) {
+        list.innerHTML = '<p class="notice">Disponible en Premium. Puedes dejar el anuncio preparado, pero solo se enviara cuando el modulo este activo.</p>';
+        return;
+      }
+      list.innerHTML = announcements.length
+        ? announcements.slice().reverse().map((item) => (
+          '<article class="panel-card scheduled-announcement-card">' +
+          '<strong>' + escapeHtml(item.name || item.embed?.title || 'Anuncio') + '</strong>' +
+          '<small>Canal: ' + escapeHtml(item.channelName || item.channelId || 'sin canal') + '</small>' +
+          '<small>Estado: ' + escapeHtml(item.enabled === false ? 'Pausado' : 'Activo') + ' - Proximo: ' + escapeHtml(formatAnnouncementDate(item.nextRunAt)) + '</small>' +
+          '<small>' + escapeHtml((item.embed?.title || 'Sin titulo') + ' - ' + (item.scheduleType === 'once' ? 'una vez' : ('cada ' + (item.intervalHours || 24) + 'h'))) + '</small>' +
+          '<div class="card-actions"><button class="secondary-button table-action" type="button" data-edit-announcement="' + escapeHtml(item.id) + '">Editar</button><button class="secondary-button table-action danger-action" type="button" data-delete-announcement="' + escapeHtml(item.id) + '">Eliminar</button></div>' +
+          '</article>'
+        )).join('')
+        : '<p class="notice">Aun no hay anuncios programados. Crea uno con un embed limpio y NexaDesk lo enviara solo.</p>';
+      bindScheduledAnnouncementButtons(list);
+    }
+    async function saveScheduledAnnouncement(event) {
+      event.preventDefault();
+      const guildId = document.querySelector('#premiumGuildId')?.value || document.querySelector('#guildId').value;
+      const guild = getGuildConfig(guildId) || {};
+      const editingId = document.querySelector('#announcementName')?.dataset.editingId;
+      const channelId = document.querySelector('#announcementChannelId').value;
+      if (!channelId) {
+        showToast('Elige un canal destino para el anuncio.');
+        return false;
+      }
+      const existing = Array.isArray(guild.scheduledAnnouncements) ? guild.scheduledAnnouncements.slice() : [];
+      const announcement = {
+        id: editingId || 'ann-' + Date.now().toString(36),
+        enabled: true,
+        name: document.querySelector('#announcementName').value || 'Anuncio programado',
+        channelId,
+        channelName: selectedOptionText('#announcementChannelId'),
+        content: document.querySelector('#announcementContent').value || '',
+        scheduleType: document.querySelector('#announcementScheduleType').value,
+        intervalHours: Number(document.querySelector('#announcementEveryHours').value || 24),
+        nextRunAt: datetimeLocalToIso(document.querySelector('#announcementNextRunAt').value) || new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+        embed: {
+          title: document.querySelector('#announcementTitle').value || 'Anuncio',
+          description: document.querySelector('#announcementDescription').value,
+          color: document.querySelector('#announcementColor').value || '#ffffff',
+          imageUrl: document.querySelector('#announcementImageUrl').value || null,
+          footerText: document.querySelector('#announcementFooterText').value || null
+        },
+        createdAt: existing.find((item) => item.id === editingId)?.createdAt || new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      };
+      const next = [announcement, ...existing.filter((item) => item.id !== announcement.id)].slice(0, 25);
+      const updated = await postJson('/api/guilds/' + guildId, {
+        scheduledAnnouncements: next
+      }).catch((error) => showToast(error.message));
+      if (updated) {
+        const index = guildConfigs.findIndex((item) => item.guildId === guildId);
+        if (index >= 0) guildConfigs[index] = { ...guildConfigs[index], ...updated };
+        clearAnnouncementForm();
+        renderGuildSelectors(guildId);
+        showToast('Anuncio programado guardado.');
+      }
+      return false;
+    }
+    function bindScheduledAnnouncementButtons(root = document) {
+      root.querySelectorAll('[data-edit-announcement]').forEach((button) => {
+        button.onclick = () => editScheduledAnnouncement(button.dataset.editAnnouncement);
+      });
+      root.querySelectorAll('[data-delete-announcement]').forEach((button) => {
+        button.onclick = () => deleteScheduledAnnouncement(button.dataset.deleteAnnouncement);
+      });
+    }
+    function editScheduledAnnouncement(id) {
+      const guild = getActiveGuild() || {};
+      const announcement = (guild.scheduledAnnouncements || []).find((item) => item.id === id);
+      if (!announcement) return;
+      document.querySelector('#announcementName').dataset.editingId = announcement.id;
+      document.querySelector('#announcementChannelId').value = announcement.channelId || '';
+      document.querySelector('#announcementName').value = announcement.name || '';
+      document.querySelector('#announcementContent').value = announcement.content || '';
+      document.querySelector('#announcementTitle').value = announcement.embed?.title || '';
+      document.querySelector('#announcementDescription').value = announcement.embed?.description || '';
+      document.querySelector('#announcementColor').value = announcement.embed?.color || '#ffffff';
+      document.querySelector('#announcementScheduleType').value = announcement.scheduleType || 'interval';
+      document.querySelector('#announcementEveryHours').value = announcement.intervalHours || 24;
+      document.querySelector('#announcementNextRunAt').value = isoToDatetimeLocal(announcement.nextRunAt);
+      document.querySelector('#announcementImageUrl').value = announcement.embed?.imageUrl || '';
+      document.querySelector('#announcementFooterText').value = announcement.embed?.footerText || '';
+      showToast('Editando anuncio programado.');
+    }
+    async function deleteScheduledAnnouncement(id) {
+      const guildId = document.querySelector('#guildId').value;
+      const guild = getGuildConfig(guildId) || {};
+      const next = (guild.scheduledAnnouncements || []).filter((item) => item.id !== id);
+      const updated = await postJson('/api/guilds/' + guildId, { scheduledAnnouncements: next }).catch((error) => showToast(error.message));
+      if (updated) {
+        const index = guildConfigs.findIndex((item) => item.guildId === guildId);
+        if (index >= 0) guildConfigs[index] = { ...guildConfigs[index], ...updated };
+        renderGuildSelectors(guildId);
+        showToast('Anuncio eliminado.');
+      }
+    }
+    function clearAnnouncementForm() {
+      document.querySelector('#announcementName').dataset.editingId = '';
+      for (const selector of ['#announcementName', '#announcementContent', '#announcementTitle', '#announcementDescription', '#announcementImageUrl', '#announcementFooterText']) {
+        const element = document.querySelector(selector);
+        if (element) element.value = '';
+      }
+      document.querySelector('#announcementColor').value = '#ffffff';
+      document.querySelector('#announcementEveryHours').value = '24';
+      document.querySelector('#announcementScheduleType').value = 'interval';
+      document.querySelector('#announcementNextRunAt').value = isoToDatetimeLocal(new Date(Date.now() + 60 * 60 * 1000).toISOString());
+    }
+    function isoToDatetimeLocal(value) {
+      const date = value ? new Date(value) : new Date(Date.now() + 60 * 60 * 1000);
+      if (!Number.isFinite(date.getTime())) return '';
+      const offset = date.getTimezoneOffset() * 60000;
+      return new Date(date.getTime() - offset).toISOString().slice(0, 16);
+    }
+    function datetimeLocalToIso(value) {
+      if (!value) return '';
+      const date = new Date(value);
+      return Number.isFinite(date.getTime()) ? date.toISOString() : '';
+    }
+    function formatAnnouncementDate(value) {
+      const date = value ? new Date(value) : null;
+      return date && Number.isFinite(date.getTime())
+        ? date.toLocaleString()
+        : 'sin fecha';
     }
     async function renderGrowthPanel(guild = getActiveGuild()) {
       const growth = normalizeGrowth(guild || {});
@@ -8537,6 +8801,9 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       document.querySelector('#ticketCategoryName').value = selectedOptionText('#ticketCategoryId');
       if (!document.querySelector('#panelTicketCategoryId')?.value) {
         document.querySelector('#panelTicketCategoryId').value = document.querySelector('#ticketCategoryId').value;
+      }
+      if (document.querySelector('#ticketCategoryId2')?.value === document.querySelector('#ticketCategoryId').value) {
+        document.querySelector('#ticketCategoryId2').value = '';
       }
     });
     document.querySelector('#componentTicketMode')?.addEventListener('input', updateComponentMode);

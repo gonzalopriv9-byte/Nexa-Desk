@@ -7,14 +7,14 @@ import { hasVisualAttachments } from './visual-analyzer.js';
 import { LocalSupportClient } from './local-support-client.js';
 
 const SERVER_CONTEXT_MAX_CHANNELS = 6;
-const SERVER_CONTEXT_FULL_SCAN_MAX_CHANNELS = 18;
+const SERVER_CONTEXT_FULL_SCAN_MAX_CHANNELS = 28;
 const SERVER_CONTEXT_FETCH_LIMIT = 10;
-const SERVER_CONTEXT_FULL_SCAN_FETCH_LIMIT = 6;
+const SERVER_CONTEXT_FULL_SCAN_FETCH_LIMIT = 8;
 const SERVER_CONTEXT_MAX_SNIPPETS = 5;
 const SERVER_CONTEXT_CHANNEL_LOOKUP_SNIPPETS = 4;
 const SERVER_CONTEXT_CACHE_TTL_MS = 120_000;
-const SERVER_CONTEXT_FETCH_TIMEOUT_MS = 1300;
-const SERVER_CONTEXT_CONCURRENCY = 8;
+const SERVER_CONTEXT_FETCH_TIMEOUT_MS = 1700;
+const SERVER_CONTEXT_CONCURRENCY = 10;
 const AI_HISTORY_MESSAGE_LIMIT = 8;
 const AI_HISTORY_MESSAGE_CHARS = 650;
 const AI_CONTEXT_TEXT_CHARS = 1600;
@@ -566,7 +566,9 @@ export class SupportAgent {
       'No inventes politicas, precios, sanciones, garantias ni informacion privada.',
       'Tono natural: responde como una persona de soporte tranquila. No suenes como formulario ni como robot.',
       'Regla 70/30: el 70% de la respuesta debe ser informacion util, decision o siguiente paso; como maximo el 30% debe ser preguntas.',
+      'Antes de contestar, identifica la intencion real del ultimo mensaje: saludo, reporte, postulacion, alianza, pregunta de servidor, queja o cierre. No cambies de flujo por una palabra suelta.',
       'Pregunta solo UNA cosa concreta si de verdad bloquea el avance. Si no bloquea, avanza con lo que ya sabes.',
+      'Si falta informacion, da primero un plan util o los datos que si tienes, y despues pide solo el dato minimo que falta.',
       'No transformes mensajes de prueba o saludos simples en un flujo de setup. "prueba", "buenas" o "que tal" no significan que el usuario este configurando el bot.',
       'Si el usuario envia algo minimo como ".-.", "ok", "vale", "nexa" o "bueno nexa", no lo reganes ni pidas repetir; continua suavemente desde el ultimo tema real o pregunta "dime" de forma breve.',
       'Usa las respuestas previas del formulario como contexto inicial fuerte del ticket.',
@@ -581,6 +583,7 @@ export class SupportAgent {
       'Si un miembro del staff ya dio una respuesta en este ticket, puedes usarla como contexto fiable diciendo "segun lo que indico staff". No conviertas esa informacion en promesas tuyas.',
       'Si el usuario dice algo como "me ayudas tu?", responde continuando el caso ya descrito, no con un saludo generico.',
       'Si el usuario pregunta algo del servidor que no aparece en el prompt, usa el contexto adicional del servidor. Si tampoco aparece ahi, no inventes: di que no lo tienes confirmado y ofrece pedir o esperar confirmacion de staff.',
+      'Si pregunta por tus funciones, explica NexaDesk con seguridad: IA en tickets, compatibilidad con bots externos, paneles, componentes, transcripciones, escalado a staff, seguridad, blacklist, reportes, voz/premium, modo examen, anuncios programados y dashboard. Ajusta la lista a lo que tenga sentido en el ticket.',
       'Si el usuario pregunta en que canal, donde encontrar algo, ejemplos, guias o documentacion, usa SOLO canales reales listados en "Contexto adicional" o "Canales importantes". Nunca inventes canales como #dudas, #faq o #soporte si no aparecen ahi.',
       'Si el contexto adicional muestra "Canal real del servidor", priorizalo como fuente de verdad para responder ubicaciones dentro del servidor.',
       'Si el usuario pregunta por actualizaciones, version, changelog, novedades o "que incluye", busca esa informacion en el contexto adicional. No digas que la version es igual si no hay una fuente que lo confirme.',
@@ -1238,18 +1241,19 @@ function getServerKnowledgeSearchMode(content = '', intakeContext = '', history 
   const isCorrection = /\b(no|nope|nono|no\s+digo|me\s+refiero|digo\s+que|eso\s+no|ese\s+no|no\s+es\s+el\s+tema)\b/iu.test(latestText);
   const isUpdateQuestion = /\b(actualizacion|actualizaciones|version|versiones|changelog|novedad|novedades|cambios|update|updates|release|ultima\s+actualizacion|que\s+incluye|incluia|incluye\s+esta\s+version)\b/iu.test(latestText);
   const isChannelLookup = isChannelLookupQuestion(latestText);
-  const isServerInfoQuestion = /\b(cuando|donde|quien|resultado|resultados|postulacion|postulaciones|staff|formulario|formularios|nota|notas|aprobar|aprobado|aprobacion|canal|canales|norma|normas|regla|reglas|precio|precios|horario|evento|eventos|anuncio|anuncios|alianza|alianzas|requisito|requisitos|soporte|dashboard|premium|owner|encargado|encargados)\b/iu.test(combinedText);
+  const isCapabilityQuestion = /\b(?:funciones|caracteristicas|features|que\s+haces|como\s+funcionas|como\s+funciona|ejemplos|demo|guia|tutorial|documentacion|docs)\b/iu.test(latestText);
+  const isServerInfoQuestion = /\b(cuando|donde|quien|resultado|resultados|postulacion|postulaciones|staff|formulario|formularios|nota|notas|aprobar|aprobado|aprobacion|canal|canales|norma|normas|regla|reglas|precio|precios|horario|evento|eventos|anuncio|anuncios|alianza|alianzas|partner|partnership|partners|requisito|requisitos|soporte|dashboard|premium|owner|encargado|encargados)\b/iu.test(combinedText);
   const isWeirdButContextual = latestText.length > 0
     && latestText.length <= 18
     && history.slice(-6).some((item) => /\b(actualizacion|version|resultado|postulacion|alianza|canal|staff|norma|dashboard)\b/iu.test(normalizeKnowledgeText(item.content)));
 
   return {
-    enabled: isUpdateQuestion || isChannelLookup || isServerInfoQuestion || isWeirdButContextual,
-    fullScan: isUpdateQuestion || isChannelLookup || (isCorrection && isServerInfoQuestion),
-    useHistoryTerms: !isUpdateQuestion && !isCorrection,
-    latestOnly: isUpdateQuestion || isCorrection,
+    enabled: isUpdateQuestion || isChannelLookup || isCapabilityQuestion || isServerInfoQuestion || isWeirdButContextual,
+    fullScan: isUpdateQuestion || isChannelLookup || isCapabilityQuestion || (isCorrection && isServerInfoQuestion),
+    useHistoryTerms: !isUpdateQuestion && !isCorrection && !isCapabilityQuestion,
+    latestOnly: isUpdateQuestion || isCorrection || isCapabilityQuestion,
     channelLookup: isChannelLookup,
-    reason: isUpdateQuestion ? 'update_question' : isChannelLookup ? 'channel_lookup_question' : isServerInfoQuestion ? 'server_info_question' : 'contextual_short_message'
+    reason: isUpdateQuestion ? 'update_question' : isChannelLookup ? 'channel_lookup_question' : isCapabilityQuestion ? 'capability_question' : isServerInfoQuestion ? 'server_info_question' : 'contextual_short_message'
   };
 }
 
@@ -1576,9 +1580,10 @@ function shouldRetryForNaturalness(answer = '', latestContent = '') {
   const refusalNoise = /\b(no puedo ayudarte con eso|no puedo entender tu mensaje|repite(?:lo)?|idioma quieres)\b/iu.test(text);
   const staleTopicAnswer = /\b(no\s+especificaste|estabas\s+buscando\s+ayuda|la\s+version\s+actual\s+.*\bmisma\b|la\s+version\s+actual\s+.*\bigual\b)\b/iu.test(normalizeKnowledgeText(text))
     && /\b(actualizacion|actualizaciones|version|changelog|novedades|incluye|incluia|update|release)\b/iu.test(latest);
+  const genericLoop = /\b(i\s+am\s+with\s+you|estoy\s+contigo|send\s+me\s+the\s+key\s+detail|pasame\s+el\s+dato\s+clave)\b/iu.test(normalizeKnowledgeText(text));
   const latestIsTiny = latest.split(/\s+/).filter(Boolean).length <= 3;
 
-  return staleTopicAnswer || refusalNoise || questionCount >= 3 || (asksForTooMuch && (questionCount >= 1 || latestIsTiny));
+  return staleTopicAnswer || genericLoop || refusalNoise || questionCount >= 3 || (asksForTooMuch && (questionCount >= 1 || latestIsTiny));
 }
 
 function buildServerKnowledgeCacheKey(guildId, terms = [], searchMode = {}) {

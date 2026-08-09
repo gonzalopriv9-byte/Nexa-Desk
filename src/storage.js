@@ -2068,17 +2068,18 @@ export class PostgresStorage {
 }
 
 export function createStorage(config, events) {
-  if (config.DATABASE_URL) {
+  const databaseUrl = config.COCKROACH_DATABASE_URL || config.DATABASE_URL;
+  if (databaseUrl) {
     console.log('NexaDesk storage backend: CockroachDB/PostgreSQL');
     return new PostgresStorage({
-      connectionString: config.DATABASE_URL,
+      connectionString: databaseUrl,
       poolMax: config.DATABASE_POOL_MAX,
       connectTimeoutMs: config.DATABASE_CONNECT_TIMEOUT_MS,
       events
     });
   }
 
-  console.warn('NexaDesk storage backend: local JSON. Set DATABASE_URL to persist data in CockroachDB/PostgreSQL.');
+  console.warn('NexaDesk storage backend: local JSON. Set COCKROACH_DATABASE_URL or DATABASE_URL to persist data in CockroachDB/PostgreSQL.');
   return new JsonStorage(config.DATA_DIR, events);
 }
 
@@ -2133,6 +2134,12 @@ function fromGuildRow(row) {
     discovery: panelStore.discovery,
     announcementChannelId: panelStore.discovery.announcementChannelId,
     announcementChannelName: panelStore.discovery.announcementChannelName,
+    watchedTicketCategories: normalizeWatchedTicketCategories(panelStore.watchedTicketCategories, {
+      ticketCategoryId: row.ticket_category_id,
+      ticketCategoryName: row.ticket_category_name
+    }),
+    ticketClosePolicy: panelStore.ticketClosePolicy,
+    scheduledAnnouncements: panelStore.scheduledAnnouncements,
     panels: panelStore.panels,
     components: panelStore.components,
     security: panelStore.security,
@@ -2152,7 +2159,10 @@ function toGuildPanelStore(guild) {
     alliance: normalizeAllianceConfig(guild),
     allianceDetection: normalizeAllianceDetection(guild.allianceDetection),
     install: normalizeInstallMetadata(guild),
-    discovery: normalizeDiscoveryConfig(guild.discovery ?? guild)
+    discovery: normalizeDiscoveryConfig(guild.discovery ?? guild),
+    watchedTicketCategories: normalizeWatchedTicketCategories(guild.watchedTicketCategories, guild),
+    ticketClosePolicy: normalizeTicketClosePolicy(guild.ticketClosePolicy),
+    scheduledAnnouncements: normalizeScheduledAnnouncements(guild.scheduledAnnouncements)
   };
 }
 
@@ -2169,7 +2179,10 @@ function fromGuildPanelStore(value) {
       alliance: normalizeAllianceConfig(),
       allianceDetection: normalizeAllianceDetection(),
       install: normalizeInstallMetadata(),
-      discovery: normalizeDiscoveryConfig()
+      discovery: normalizeDiscoveryConfig(),
+      watchedTicketCategories: normalizeWatchedTicketCategories(),
+      ticketClosePolicy: normalizeTicketClosePolicy(),
+      scheduledAnnouncements: normalizeScheduledAnnouncements()
     };
   }
 
@@ -2185,7 +2198,10 @@ function fromGuildPanelStore(value) {
       alliance: normalizeAllianceConfig(value.alliance),
       allianceDetection: normalizeAllianceDetection(value.allianceDetection),
       install: normalizeInstallMetadata(value.install),
-      discovery: normalizeDiscoveryConfig(value.discovery)
+      discovery: normalizeDiscoveryConfig(value.discovery),
+      watchedTicketCategories: normalizeWatchedTicketCategories(value.watchedTicketCategories),
+      ticketClosePolicy: normalizeTicketClosePolicy(value.ticketClosePolicy),
+      scheduledAnnouncements: normalizeScheduledAnnouncements(value.scheduledAnnouncements)
     };
   }
 
@@ -2200,8 +2216,87 @@ function fromGuildPanelStore(value) {
     alliance: normalizeAllianceConfig(),
     allianceDetection: normalizeAllianceDetection(),
     install: normalizeInstallMetadata(),
-    discovery: normalizeDiscoveryConfig()
+    discovery: normalizeDiscoveryConfig(),
+    watchedTicketCategories: normalizeWatchedTicketCategories(),
+    ticketClosePolicy: normalizeTicketClosePolicy(),
+    scheduledAnnouncements: normalizeScheduledAnnouncements()
   };
+}
+
+function normalizeWatchedTicketCategories(value = [], guild = {}) {
+  const candidates = [];
+  if (guild?.ticketCategoryId) {
+    candidates.push({
+      id: guild.ticketCategoryId,
+      name: guild.ticketCategoryName,
+      primary: true
+    });
+  }
+  const raw = Array.isArray(value)
+    ? value
+    : value?.id
+      ? [value]
+      : [];
+  for (const item of raw) {
+    const id = String(item?.id ?? item?.categoryId ?? item ?? '').trim();
+    if (!id || candidates.some((candidate) => candidate.id === id)) continue;
+    candidates.push({
+      id,
+      name: item?.name ? String(item.name).slice(0, 120) : undefined,
+      primary: Boolean(item?.primary)
+    });
+  }
+  return candidates
+    .filter((item) => item.id)
+    .slice(0, 2)
+    .map((item, index) => ({
+      id: item.id,
+      name: item.name ?? null,
+      primary: index === 0 || Boolean(item.primary)
+    }));
+}
+
+function normalizeTicketClosePolicy(value = {}) {
+  const source = value && typeof value === 'object' ? value : {};
+  const mode = source.mode === 'staff_only' || source.usersCanClose === false
+    ? 'staff_only'
+    : 'opener_and_staff';
+  return {
+    mode,
+    usersCanClose: mode !== 'staff_only',
+    updatedAt: source.updatedAt ? String(source.updatedAt) : null
+  };
+}
+
+function normalizeScheduledAnnouncements(value = []) {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, 25).map((item) => {
+    const intervalHours = Math.max(1, Math.min(24 * 30, Number(item?.intervalHours ?? 24) || 24));
+    const scheduleType = item?.scheduleType === 'once' ? 'once' : 'interval';
+    const now = new Date().toISOString();
+    return {
+      id: String(item?.id ?? `ann-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`).slice(0, 80),
+      enabled: item?.enabled !== false,
+      name: String(item?.name ?? 'Anuncio programado').slice(0, 90),
+      channelId: item?.channelId ? String(item.channelId) : null,
+      channelName: item?.channelName ? String(item.channelName).slice(0, 120) : null,
+      content: item?.content ? String(item.content).slice(0, 1800) : '',
+      scheduleType,
+      intervalHours,
+      nextRunAt: item?.nextRunAt ? String(item.nextRunAt) : now,
+      lastRunAt: item?.lastRunAt ? String(item.lastRunAt) : null,
+      runCount: Math.max(0, Number(item?.runCount ?? 0) || 0),
+      embed: {
+        title: String(item?.embed?.title ?? item?.title ?? 'Anuncio').slice(0, 256),
+        description: String(item?.embed?.description ?? item?.description ?? '').slice(0, 3800),
+        color: String(item?.embed?.color ?? item?.color ?? '#ffffff').slice(0, 16),
+        imageUrl: item?.embed?.imageUrl ? String(item.embed.imageUrl).slice(0, 500) : null,
+        footerText: item?.embed?.footerText ? String(item.embed.footerText).slice(0, 200) : null
+      },
+      createdAt: item?.createdAt ? String(item.createdAt) : now,
+      updatedAt: item?.updatedAt ? String(item.updatedAt) : now
+    };
+  }).filter((item) => item.channelId && (item.embed.title || item.embed.description));
 }
 
 function normalizeAutoConfig(value = {}) {
