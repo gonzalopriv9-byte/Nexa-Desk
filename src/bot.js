@@ -72,6 +72,8 @@ const ALLIANCE_MARKER = '[NexaDesk alliance]';
 const CRISIS_MARKER = '[NexaDesk crisis]';
 const STAFF_HANDOFF_MARKER = '[NexaDesk staff handoff]';
 const STAFF_ESCALATION_MARKER = '[NexaDesk staff escalation]';
+const SCHEDULED_ANNOUNCEMENT_STATUS_LOG_MS = 5 * 60 * 1000;
+const scheduledAnnouncementStatusLogCache = new Map();
 
 export function createBot({ config, storage, supportAgent, voiceManager = null }) {
   const intents = [
@@ -153,6 +155,12 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
         });
       }, config.BACKUP_INTERVAL_MS);
     }
+    trackManagedTimeout(managedTimers, () => {
+      if (!isClientReadyForDiscordRest(readyClient)) return;
+      processScheduledAnnouncements({ client: readyClient, storage }).catch((error) => {
+        console.error('Initial scheduled announcements processor failed:', compactRuntimeError(error));
+      });
+    }, 15_000);
     trackManagedInterval(managedTimers, () => {
       if (!isClientReadyForDiscordRest(readyClient)) return;
       processScheduledAnnouncements({ client: readyClient, storage }).catch((error) => {
@@ -4836,17 +4844,35 @@ async function processScheduledAnnouncements({ client, storage }) {
   const now = Date.now();
 
   for (const guildConfig of guildConfigs) {
-    const premium = normalizePremiumConfig(guildConfig?.premium, guildConfig ?? {});
-    if (!isPremiumEntitled(guildConfig ?? {}) || premium.scheduledAnnouncements === false) continue;
     const announcements = Array.isArray(guildConfig.scheduledAnnouncements) ? guildConfig.scheduledAnnouncements : [];
     if (!announcements.length) continue;
+    const premium = normalizePremiumConfig(guildConfig?.premium, guildConfig ?? {});
+    const isPremium = isPremiumEntitled(guildConfig ?? {});
+    if (!isPremium || premium.scheduledAnnouncements === false) {
+      if (shouldLogScheduledAnnouncementStatus(`${guildConfig.guildId}:premium`, now)) {
+        console.warn(`Scheduled announcements skipped for ${guildConfig.guildName ?? guildConfig.guildId}: premium required or module disabled.`);
+      }
+      continue;
+    }
 
     let changed = false;
     const nextAnnouncements = [];
     for (const announcement of announcements) {
       const dueAt = Date.parse(announcement.nextRunAt ?? '');
-      if (announcement.enabled === false || !Number.isFinite(dueAt) || dueAt > now) {
+      if (announcement.enabled === false || dueAt > now) {
         nextAnnouncements.push(announcement);
+        continue;
+      }
+      if (!Number.isFinite(dueAt)) {
+        if (shouldLogScheduledAnnouncementStatus(`${guildConfig.guildId}:${announcement.id}:invalid-date`, now)) {
+          console.warn(`Scheduled announcement ${announcement.id} in ${guildConfig.guildName ?? guildConfig.guildId} has an invalid nextRunAt value.`);
+        }
+        changed = true;
+        nextAnnouncements.push({
+          ...announcement,
+          nextRunAt: new Date(now + 5 * 60_000).toISOString(),
+          updatedAt: new Date().toISOString()
+        });
         continue;
       }
 
@@ -4879,13 +4905,22 @@ async function processScheduledAnnouncements({ client, storage }) {
 }
 
 async function sendScheduledAnnouncement({ client, guildConfig, announcement }) {
-  if (!announcement.channelId) return false;
+  if (!announcement.channelId) {
+    console.warn(`Scheduled announcement ${announcement.id} skipped in ${guildConfig.guildName ?? guildConfig.guildId}: no target channel configured.`);
+    return false;
+  }
   const guild = client.guilds.cache.get(guildConfig.guildId)
     ?? await client.guilds.fetch(guildConfig.guildId).catch(() => null);
-  if (!guild) return false;
+  if (!guild) {
+    console.warn(`Scheduled announcement ${announcement.id} skipped: guild ${guildConfig.guildId} is not available to the bot.`);
+    return false;
+  }
   const channel = guild.channels.cache.get(announcement.channelId)
     ?? await guild.channels.fetch(announcement.channelId).catch(() => null);
-  if (!channel || ![ChannelType.GuildText, ChannelType.GuildAnnouncement].includes(channel.type)) return false;
+  if (!channel || ![ChannelType.GuildText, ChannelType.GuildAnnouncement].includes(channel.type)) {
+    console.warn(`Scheduled announcement ${announcement.id} skipped in ${guild.name}: target channel ${announcement.channelId} is missing or not a text channel.`);
+    return false;
+  }
 
   const embed = new EmbedBuilder()
     .setColor(parseEmbedColor(announcement.embed?.color))
@@ -4900,6 +4935,7 @@ async function sendScheduledAnnouncement({ client, guildConfig, announcement }) 
     embeds: [embed],
     allowedMentions: { parse: ['users', 'roles', 'everyone'] }
   });
+  console.log(`Scheduled announcement ${announcement.id} delivered in ${guild.name} / #${channel.name}.`);
   return true;
 }
 
@@ -4913,6 +4949,13 @@ function parseEmbedColor(value = '#ffffff') {
   const hex = String(value || '#ffffff').replace('#', '').trim();
   const parsed = Number.parseInt(hex, 16);
   return Number.isFinite(parsed) ? Math.max(0, Math.min(0xffffff, parsed)) : 0xffffff;
+}
+
+function shouldLogScheduledAnnouncementStatus(key, now = Date.now()) {
+  const previous = scheduledAnnouncementStatusLogCache.get(key) ?? 0;
+  if (now - previous < SCHEDULED_ANNOUNCEMENT_STATUS_LOG_MS) return false;
+  scheduledAnnouncementStatusLogCache.set(key, now);
+  return true;
 }
 
 function isExternalTicketWelcomeContent(content) {
