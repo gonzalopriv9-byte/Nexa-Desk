@@ -57,12 +57,14 @@ try {
 
   const trigger = await client.query(`
     SELECT trigger_name
-    FROM [SHOW TRIGGERS FROM public.affiliate_redemptions]
-    WHERE trigger_name = 'affiliate_redemptions_sync_profile_trigger'
+    FROM information_schema.triggers
+    WHERE event_object_schema = 'public'
+      AND event_object_table = 'affiliate_redemptions'
+      AND trigger_name = 'affiliate_redemptions_sync_profile_trigger'
   `);
   if (trigger.rowCount !== 1) throw new Error('No se encontró el trigger de afiliados.');
 
-  console.log('OK: CockroachDB está listo para NexaDesk.');
+  console.log('OK: PostgreSQL está listo para NexaDesk.');
 } catch (error) {
   console.error('ERROR:', error?.message ?? error);
   process.exitCode = 1;
