@@ -997,7 +997,7 @@ export class PostgresStorage {
       .select()
       .single();
     if (isMissingFeedbackTableError(error)) {
-      console.warn('ticket_feedback table missing; feedback not persisted. Run el esquema de CockroachDB.');
+      console.warn('ticket_feedback table missing; feedback not persisted. Run el esquema de PostgreSQL.');
       return { ...normalized, notPersisted: true };
     }
     if (error) throw error;
@@ -1038,7 +1038,7 @@ export class PostgresStorage {
       .select()
       .single();
     if (isMissingAiQualitySignalTableError(error)) {
-      console.warn('ai_quality_signals table missing; quality signal not persisted. Run el esquema de CockroachDB.');
+      console.warn('ai_quality_signals table missing; quality signal not persisted. Run el esquema de PostgreSQL.');
       return { ...normalized, notPersisted: true };
     }
     if (error) throw error;
@@ -1068,7 +1068,7 @@ export class PostgresStorage {
       .select()
       .single();
     if (isMissingGuildLogsTableError(error)) {
-      console.warn('guild_logs table missing; persisting server log in CockroachDB fallback store. Run el esquema de CockroachDB for full indexes.');
+      console.warn('guild_logs table missing; persisting server log in PostgreSQL fallback store. Run el esquema de PostgreSQL for full indexes.');
       return this.#addGuildLogFallback(normalized);
     }
     if (error) throw error;
@@ -1131,7 +1131,7 @@ export class PostgresStorage {
       .select()
       .single();
     if (isMissingGuildBackupsTableError(error)) {
-      console.warn('guild_backups table missing; persisting backup in CockroachDB fallback store. Run el esquema de CockroachDB for indexed backups.');
+      console.warn('guild_backups table missing; persisting backup in PostgreSQL fallback store. Run el esquema de PostgreSQL for indexed backups.');
       return this.#saveGuildBackupSnapshotFallback(normalized);
     }
     if (error) throw error;
@@ -1176,7 +1176,7 @@ export class PostgresStorage {
       .select()
       .single();
     if (isMissingGuildBackupsTableError(error)) {
-      console.warn('guild_backup_restores table missing; persisting restore record in CockroachDB fallback store. Run el esquema de CockroachDB.');
+      console.warn('guild_backup_restores table missing; persisting restore record in PostgreSQL fallback store. Run el esquema de PostgreSQL.');
       return this.#recordGuildBackupRestoreFallback(normalized);
     }
     if (error) throw error;
@@ -1289,7 +1289,7 @@ export class PostgresStorage {
       .select()
       .single();
     if (isMissingBlacklistTableError(error)) {
-      throw new Error('Faltan tablas de blacklist en CockroachDB. Ejecuta el SQL actualizado de el esquema de CockroachDB.');
+      throw new Error('Faltan tablas de blacklist en PostgreSQL. Ejecuta el SQL actualizado del esquema de PostgreSQL.');
     }
     if (error) throw error;
     const saved = fromBlacklistRow(data);
@@ -1315,7 +1315,7 @@ export class PostgresStorage {
       .select()
       .single();
     if (isMissingBlacklistTableError(error)) {
-      throw new Error('Falta global_blacklist_evidence en CockroachDB. Ejecuta el SQL actualizado de el esquema de CockroachDB.');
+      throw new Error('Falta global_blacklist_evidence en PostgreSQL. Ejecuta el SQL actualizado del esquema de PostgreSQL.');
     }
     if (error) throw error;
     const saved = fromBlacklistEvidenceRow(data);
@@ -2068,9 +2068,9 @@ export class PostgresStorage {
 }
 
 export function createStorage(config, events) {
-  const databaseUrl = config.COCKROACH_DATABASE_URL || config.DATABASE_URL;
+  const databaseUrl = config.DATABASE_URL;
   if (databaseUrl) {
-    console.log('NexaDesk storage backend: CockroachDB/PostgreSQL');
+    console.log('NexaDesk storage backend: PostgreSQL');
     return new PostgresStorage({
       connectionString: databaseUrl,
       poolMax: config.DATABASE_POOL_MAX,
@@ -2079,7 +2079,7 @@ export function createStorage(config, events) {
     });
   }
 
-  console.warn('NexaDesk storage backend: local JSON. Set COCKROACH_DATABASE_URL or DATABASE_URL to persist data in CockroachDB/PostgreSQL.');
+  console.warn('NexaDesk storage backend: local JSON. Set DATABASE_URL to persist data in PostgreSQL.');
   return new JsonStorage(config.DATA_DIR, events);
 }
 
