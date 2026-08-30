@@ -1,4 +1,4 @@
-﻿import express from 'express';
+import express from 'express';
 import helmet from 'helmet';
 import morgan from 'morgan';
 import cookieParser from 'cookie-parser';
@@ -2301,7 +2301,7 @@ function defaultStatusComponents() {
     { name: 'Bot Discord', state: 'operational', detail: 'Atendiendo tickets y comandos.' },
     { name: 'Dashboard', state: 'operational', detail: 'Panel web disponible.' },
     { name: 'IA de soporte', state: 'operational', detail: 'Respuestas y contexto activos.' },
-    { name: 'CockroachDB', state: 'operational', detail: 'Datos y transcripciones sincronizados.' },
+    { name: 'PostgreSQL', state: 'operational', detail: 'Datos y transcripciones sincronizados.' },
     { name: 'Voz Pro', state: 'operational', detail: 'STT/TTS disponible segun plan.' }
   ];
 }
@@ -3690,7 +3690,7 @@ function renderDocsVault({ config, session }) {
           <div>
             <p class="kicker">NexaDesk confidential</p>
             <h1>Documentacion sensible del bot</h1>
-            <p>Arquitectura, secretos, despliegue, seguridad, IA, voz, CockroachDB y playbooks operativos. Valores criticos redacted por seguridad.</p>
+            <p>Arquitectura, secretos, despliegue, seguridad, IA, voz, PostgreSQL y playbooks operativos. Valores criticos redacted por seguridad.</p>
           </div>
           <aside>
             <strong>Sesion protegida</strong>
@@ -3770,7 +3770,7 @@ function buildDocsSections(config) {
     ['DISCORD_CLIENT_SECRET', secretState(config.DISCORD_CLIENT_SECRET), 'OAuth Discord para login de dashboard.'],
     ['SESSION_SECRET', secretState(config.SESSION_SECRET), 'Firma sesiones dashboard y docs. Debe ser largo y privado.'],
     ['DOCS_TOTP_SECRET', secretState(config.DOCS_TOTP_SECRET), 'Secreto base32 para Google Authenticator. No subir a GitHub.'],
-    ['DATABASE_URL', secretState(config.DATABASE_URL), 'Conexión privada a CockroachDB/PostgreSQL. Nunca exponer al cliente.'],
+    ['DATABASE_URL', secretState(config.DATABASE_URL), 'Conexión privada a PostgreSQL. Nunca exponer al cliente.'],
     ['GROQ_API_KEY', secretState(config.GROQ_API_KEY), 'Cuenta IA primaria.'],
     ['GROQ_FALLBACK_API_KEYS', secretState(config.GROQ_FALLBACK_API_KEYS), 'Cuentas IA backup separadas por coma.'],
     ['AKIOMAE_API_KEY', secretState(config.AKIOMAE_API_KEY), 'Fallback externo cuando Groq agote limites.'],
@@ -3798,7 +3798,7 @@ function buildDocsSections(config) {
         { type: 'list', items: [
           'Render sirve la dashboard publica y puede actuar como standby HA con RUN_BOT=true + BOT_HA_ENABLED=true.',
           'La Raspberry Pi mantiene el liderazgo principal del bot con BOT_INSTANCE_ID=pi-main.',
-          'CockroachDB guarda configuracion, paneles, componentes, tickets, transcripciones, feedback de tickets y blacklist interna.',
+          'PostgreSQL guarda configuracion, paneles, componentes, tickets, transcripciones, feedback de tickets y blacklist interna.',
           'Quality Radar guarda senales en ai_quality_signals cuando el usuario se queja de que NexaDesk/IA funciona mal, se equivoca, repite, no ve imagenes, falla en voz o genera enfado.',
           'Groq procesa soporte IA, vision, STT y parte de TTS; Akiomae queda como fallback final.',
           'XN Protect aporta blacklist global, Automod textual ofensivo/malicioso y Antiscam de imagenes. NexaDesk acredita la fuente y no banea automaticamente por blacklist externa.',
@@ -3869,7 +3869,7 @@ function buildDocsSections(config) {
           ['Otros bots/categorias', 'Nuevo canal en categoria configurada por /setup o dashboard.', 'Registra ticket si encaja, guarda transcript y atiende segun prompt del servidor.'],
           ['Staff humano', 'Staff escribe, responde o toma el ticket.', 'NexaDesk pregunta si se encargan; si aceptan, IA queda en modo silencio salvo mencion directa.'],
           ['Cierre propio', '/ticket cerrar o cierre por intencion clara del usuario.', 'Guarda transcripcion, intenta enviar MD al opener, pide rating y actualiza dashboard.'],
-          ['Cierre de terceros', 'Canal eliminado por otro bot.', 'El bot intenta capturar transcript previo con mensajes guardados, manda MD con feedback y deja registro en CockroachDB si la tabla esta aplicada.'],
+          ['Cierre de terceros', 'Canal eliminado por otro bot.', 'El bot intenta capturar transcript previo con mensajes guardados, manda MD con feedback y deja registro en PostgreSQL si la tabla esta aplicada.'],
           ['Growth Engine', 'Usuario pulsa rating en el MD post-ticket.', 'Guarda ticket_feedback, actualiza estadisticas, publica review si Premium lo permite o avisa Churn Radar si rating bajo.']
         ] },
         { type: 'list', items: [
@@ -3882,7 +3882,7 @@ function buildDocsSections(config) {
       ]
     },
     {
-      title: 'CockroachDB y datos guardados',
+      title: 'PostgreSQL y datos guardados',
       classification: 'Data model',
       summary: 'Tablas, contenido guardado y decisiones de privacidad.',
       blocks: [
@@ -3896,7 +3896,7 @@ function buildDocsSections(config) {
           ['global_blacklist_evidence', 'URLs de pruebas y adjuntos.', 'Alto: evidencias privadas.']
         ] },
         { type: 'list', items: [
-          'Produccion debe mostrar "NexaDesk storage backend: CockroachDB" al arrancar.',
+          'Produccion debe mostrar "NexaDesk storage backend: PostgreSQL" al arrancar.',
           'El service_role solo vive en backend. Nunca se manda al navegador.',
           'La dashboard filtra servidores por OAuth: owner, Administrator o Manage Server.'
         ] }
@@ -3945,7 +3945,7 @@ function buildDocsSections(config) {
           'La seccion Premium usa paleta dorada y solo abre si el usuario tiene al menos un servidor con premium activo.',
           'Premium no se ralentiza durante mantenimiento global; los servidores Free reciben aviso al abrir ticket.',
           'El antiguo modulo de musica fue retirado para centrar el producto en soporte, seguridad, voz, alianzas y transcripciones.',
-          'Premium se activa con /activarpremium servidor:<ID> por el owner autorizado o manualmente en CockroachDB.'
+          'Premium se activa con /activarpremium servidor:<ID> por el owner autorizado o manualmente en PostgreSQL.'
         ] }
       ]
     },
@@ -3974,8 +3974,8 @@ function buildDocsSections(config) {
         { type: 'table', headers: ['Incidente', 'Accion inmediata', 'Despues'], rows: [
           ['Token Discord reseteado', 'Actualizar DISCORD_TOKEN en Pi y Render; reiniciar nexadesk.', 'Revisar logs de reconnect y evitar loops.'],
           ['Bot offline', 'systemctl restart nexadesk; revisar journalctl.', 'Verificar intents, token y conectividad.'],
-          ['Render dashboard falla', 'Revisar env vars y logs de Render.', 'Confirmar token, CockroachDB y estado del lease HA si RUN_BOT=true.'],
-          ['CockroachDB missing column/table', 'Revisar el esquema migrado en CockroachDB.', 'Verificar tablas, índices y permisos SQL.'],
+          ['Render dashboard falla', 'Revisar env vars y logs de Render.', 'Confirmar token, PostgreSQL y estado del lease HA si RUN_BOT=true.'],
+          ['PostgreSQL missing column/table', 'Revisar el esquema migrado en PostgreSQL.', 'Verificar tablas, índices y permisos SQL.'],
           ['Groq sin creditos', 'Confirmar GROQ_FALLBACK_API_KEYS y AKIOMAE_API_KEY.', 'Reducir modelo o limits si hay costes.'],
           ['Leak de secreto', 'Rotar secreto inmediatamente.', 'Actualizar Pi, Render y revocar claves antiguas.']
         ] }
@@ -3989,7 +3989,7 @@ function buildDocsSections(config) {
         { type: 'list', items: [
           'Render actualizado desde main y /health operativo.',
           'Pi activa con NexaDesk online y presencia actualizada.',
-          'CockroachDB schema aplicado y transcripciones guardando.',
+          'PostgreSQL schema aplicado y transcripciones guardando.',
           'OAuth Discord con redirect correcto.',
           'DOCS_TOTP_SECRET configurado y probado desde Google Authenticator.',
           'No hay tokens ni service_role keys en commits, screenshots ni mensajes publicos.',
@@ -4609,7 +4609,7 @@ function renderBackupsPage({ session, guilds = [], backups = [], restores = [], 
     <section class="hero">
       <p class="kicker">Security Recovery Center</p>
       <h1>Backups de servidor, listos para un mal dia.</h1>
-      <p>NexaDesk indexa roles, categorias, canales y permisos cada hora. Si un raid destruye el servidor, invita el bot a un servidor nuevo, entra aqui y recrea la estructura desde CockroachDB.</p>
+      <p>NexaDesk indexa roles, categorias, canales y permisos cada hora. Si un raid destruye el servidor, invita el bot a un servidor nuevo, entra aqui y recrea la estructura desde PostgreSQL.</p>
       <div class="stat-row">
         <div class="stat"><strong id="statBackups">${backups.length}</strong><span>Snapshots</span></div>
         <div class="stat"><strong id="statGuilds">${guilds.filter((guild) => guild.installed).length}</strong><span>Destinos instalados</span></div>
@@ -4698,7 +4698,7 @@ function renderBackupsPage({ session, guilds = [], backups = [], restores = [], 
       render();
     }
     $('refreshBtn').addEventListener('click', async () => { state.busy = true; render(); try { await reload(); toast('Backups actualizados.'); } catch (error) { toast(error.message); } finally { state.busy = false; render(); } });
-    $('captureBtn').addEventListener('click', async () => { state.busy = true; render(); try { const payload = await api('/api/backups/capture', { guildId:$('captureGuild').value }); state.backups.unshift(payload.backup); state.selectedBackupId = payload.backup.id; toast('Backup creado y guardado en CockroachDB.'); await reload(); } catch (error) { toast(error.message); } finally { state.busy = false; render(); } });
+    $('captureBtn').addEventListener('click', async () => { state.busy = true; render(); try { const payload = await api('/api/backups/capture', { guildId:$('captureGuild').value }); state.backups.unshift(payload.backup); state.selectedBackupId = payload.backup.id; toast('Backup creado y guardado en PostgreSQL.'); await reload(); } catch (error) { toast(error.message); } finally { state.busy = false; render(); } });
     $('restoreBtn').addEventListener('click', async () => {
       const backup = selectedBackup();
       const targetGuildId = $('targetGuild').value;
@@ -4867,10 +4867,10 @@ function buildPrivacySections() {
     {
       title: '3. Donde se guardan',
       items: [
-        'La configuracion, tickets y transcripciones se guardan en CockroachDB desde el backend de NexaDesk.',
+        'La configuracion, tickets y transcripciones se guardan en PostgreSQL desde el backend de NexaDesk.',
         'La dashboard usa cookies de sesion firmadas para mantener login con Discord OAuth.',
         'Los tokens, claves de servicio y secretos se mantienen como variables de entorno del backend y no deben exponerse al cliente.',
-        'Si faltan variables de CockroachDB en desarrollo, NexaDesk puede usar almacenamiento JSON local.'
+        'Si faltan variables de PostgreSQL en desarrollo, NexaDesk puede usar almacenamiento JSON local.'
       ]
     },
     {
@@ -5061,7 +5061,7 @@ function renderLogin(config) {
       <h2>Entrar con Discord</h2>
       <p>Solo veras servidores donde tengas permisos de gestion.</p>
       <div class="status-line"><span>${renderDashboardEmoji('rightArrow', 'OAuth')}OAuth</span><strong>Discord</strong></div>
-      <div class="status-line"><span>${renderDashboardEmoji('server', 'Datos')}Datos</span><strong>CockroachDB</strong></div>
+      <div class="status-line"><span>${renderDashboardEmoji('server', 'Datos')}Datos</span><strong>PostgreSQL</strong></div>
       <div class="status-line"><span>${renderDashboardEmoji('check', 'Realtime')}Realtime</span><strong>Activo</strong></div>
       ${isReady ? '<a class="login-button" id="loginButton" href="/auth/discord">Continuar con Discord</a>' : '<p class="error">Falta DISCORD_CLIENT_SECRET en el entorno.</p>'}
       <div class="legal-links"><a href="/terms">Terms and Conditions</a><a href="/privacy">Privacy Policy</a></div>
@@ -5132,7 +5132,7 @@ function renderError(message) {
     <h1>No se pudo cargar el dashboard</h1>
     <p>La sesion de Discord funciona, pero fallo una dependencia del dashboard.</p>
     <code>${escapeHtml(message)}</code>
-    <p>Revisa variables de CockroachDB o ejecuta el schema si el error menciona tablas.</p>
+    <p>Revisa variables de PostgreSQL o ejecuta el schema si el error menciona tablas.</p>
     <a href="/logout" onclick="event.preventDefault(); document.querySelector('form').submit()">Cerrar sesion</a>
     <form method="post" action="/logout"></form>
   </main>
@@ -6556,7 +6556,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
             <p id="premiumHeroText">Premium desbloquea voz natural, examenes supervisados, IA mas proactiva, transcripciones accionables, seguridad reforzada, branding propio, Growth Engine, SLA Radar y afiliados para que el owner vea valor real.</p>
             <div class="premium-lock" id="premiumLockNotice">
               <strong>Plan no activo todavia</strong>
-              <p>Activalo con <code>/activarpremium servidor:&lt;ID&gt;</code> o poniendo <code>plan = pro</code> / <code>voice_support_enabled = true</code> en CockroachDB. Las preferencias se pueden dejar preparadas.</p>
+              <p>Activalo con <code>/activarpremium servidor:&lt;ID&gt;</code> o poniendo <code>plan = pro</code> / <code>voice_support_enabled = true</code> en PostgreSQL. Las preferencias se pueden dejar preparadas.</p>
             </div>
             <div class="premium-feature-grid">
               <div class="premium-feature"><strong>Voz Pro</strong><span>Tickets con sala privada, STT/TTS y transcripcion en el canal.</span></div>
