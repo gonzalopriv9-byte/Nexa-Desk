@@ -20,7 +20,7 @@ NexaDesk is not trying to replace every ticket bot. Its strongest position is be
 - Professional ticket close flow with `/ticket cerrar`.
 - Owner onboarding DM when NexaDesk joins a new server.
 - Interactive `/ayuda` guide with buttons for users, staff, setup and data.
-- Pro voice support rooms with `/voz crear` or dashboard panels/components, gated per server from Supabase.
+- Pro voice support rooms with `/voz crear` or dashboard panels/components, gated per server from PostgreSQL.
 - Voice tickets can use Groq STT/TTS to transcribe users, answer in voice, and save the conversation in transcripts.
 - Automatic transcript delivery when another ticket bot closes a ticket by deleting the channel.
 - Global bot metrics with `/globalstats`.
@@ -108,7 +108,7 @@ Render still needs `DISCORD_TOKEN` even with `RUN_BOT=false`, because the dashbo
 
 ## High availability worker
 
-NexaDesk can run a safe active/standby worker pair. Keep one instance on the Raspberry Pi and a second instance in Render with the same Discord/Supabase environment. Enable the lease so only one gateway session responds at a time:
+NexaDesk can run a safe active/standby worker pair. Keep one instance on the Raspberry Pi and a second instance in Render with the same Discord environment and a shared PostgreSQL connection. Enable the lease so only one gateway session responds at a time:
 
 ```text
 RUN_BOT=true
@@ -119,7 +119,7 @@ BOT_LEASE_RENEW_MS=4000
 BOT_FAILOVER_POLL_MS=2500
 ```
 
-Use a different `BOT_INSTANCE_ID` on the standby, for example `oci-standby`. The lease is stored in Supabase global settings. This avoids active-active duplicate Discord replies while allowing a standby worker to take over within seconds if the Pi loses power.
+Use a different `BOT_INSTANCE_ID` on the standby, for example `oci-standby`. The lease is stored in PostgreSQL global settings. This avoids active-active duplicate Discord replies while allowing a standby worker to take over within seconds if the Pi loses power.
 
 Preferred standby target for this repo: the Render dashboard service. Set `RUN_BOT=true`, `BOT_HA_ENABLED=true`, and `BOT_INSTANCE_ID=render-dashboard-standby` there. Keep the Raspberry Pi as `BOT_INSTANCE_ID=pi-main`.
 
@@ -206,31 +206,51 @@ DISCORD_MESSAGE_CONTENT_INTENT=true
 DISCORD_GUILD_MEMBERS_INTENT=true
 ```
 
-## Supabase
+## PostgreSQL local
 
-Run [supabase/schema.sql](./supabase/schema.sql) in the Supabase SQL editor, then set:
+NexaDesk usa PostgreSQL local como almacenamiento de producción en la Raspberry Pi. No depende de créditos, Request Units ni límites mensuales de un proveedor externo; el límite práctico es el disco y los recursos de la propia Pi.
 
-```text
-SUPABASE_URL=...
-SUPABASE_SERVICE_ROLE_KEY=...
-```
-
-If Supabase vars are missing, NexaDesk falls back to local JSON storage for development.
-
-The current schema includes `ticket_feedback` for Growth Engine and `ai_quality_signals` for Quality Radar complaints/frustration detected during AI conversations. If ratings or AI quality signals do not appear in Supabase/admin, rerun `supabase/schema.sql`.
-
-The bot logs the active storage backend on startup. Production should say:
-
-```text
-NexaDesk storage backend: Supabase
-```
-
-If the Pi previously ran without Supabase vars, migrate the local JSON data after setting the Supabase env vars:
+Instala PostgreSQL y aplica el esquema desde la raíz del repositorio:
 
 ```bash
-npm run migrate:supabase
+npm run db:setup
 ```
 
+El instalador crea la base de datos `nexadesk`, el usuario `nexa`, aplica [postgres/schema.sql](./postgres/schema.sql) y muestra la variable de conexión. Déjala en el `.env` de la Raspberry Pi:
+
+```text
+DATABASE_URL=postgresql://nexa:TU_PASSWORD@127.0.0.1:5432/nexadesk?sslmode=disable
+DATABASE_POOL_MAX=5
+DATABASE_CONNECT_TIMEOUT_MS=8000
+```
+
+Comprueba la instalación con:
+
+```bash
+npm run test:database
+```
+
+Si NexaDesk tenía datos en el almacenamiento JSON de fallback, mígralos antes de retirar esos archivos:
+
+```bash
+npm run db:migrate:json
+```
+
+El arranque correcto debe mostrar:
+
+```text
+NexaDesk storage backend: PostgreSQL
+```
+
+Si `DATABASE_URL` falta o PostgreSQL no está disponible, NexaDesk conserva un fallback JSON para desarrollo y arranque de emergencia; no lo uses como almacenamiento de producción con varios procesos.
+
+Crea backups periódicos con:
+
+```bash
+npm run db:backup
+```
+
+El backup usa `pg_dump` en formato comprimido y conserva por defecto 14 días. Cambia `BACKUP_DIR` o `BACKUP_RETENTION_DAYS` si necesitas otra ubicación o retención.
 ## Top.gg Anti-Bots
 
 Security Guard can use Top.gg as a safe-list before banning new bots. Get the token from your Top.gg bot dashboard under `Integrations & API`, then set it on the Pi:
@@ -343,9 +363,9 @@ DISCORD_GUILD_ID=your_server_id npm run register -- --clear-guild
 
 `/ticket resumen` gives staff a concise AI handoff, `/ticket prioridad` calculates risk, SLA and next action, `/ticket estado` shows the operational state of the current ticket, and `/ticket cerrar` closes the ticket, sends the transcript by DM, and deletes the channel after a short delay.
 
-Premium monetization is built into the dashboard. Configure `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET`, `PAYPAL_MODE=live`, `PREMIUM_PACK_PRICE_CENTS=300`, `PREMIUM_PACK_SLOTS=3`, and `PREMIUM_PACK_CURRENCY=eur` for automatic PayPal Checkout. If you need to start selling before PayPal API verification is complete, set `PREMIUM_PAYMENT_URL` to a manual PayPal/payment link; the dashboard will open that link and record a pending manual intent in Supabase for validation through support. Users can run `/premium` to see the price, features, dashboard checkout, and support link.
+Premium monetization is built into the dashboard. Configure `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET`, `PAYPAL_MODE=live`, `PREMIUM_PACK_PRICE_CENTS=300`, `PREMIUM_PACK_SLOTS=3`, and `PREMIUM_PACK_CURRENCY=eur` for automatic PayPal Checkout. If you need to start selling before PayPal API verification is complete, set `PREMIUM_PAYMENT_URL` to a manual PayPal/payment link; the dashboard will open that link and record a pending manual intent in PostgreSQL for validation through support. Users can run `/premium` to see the price, features, dashboard checkout, and support link.
 
-Voice support is a Pro feature activated by Premium slots, `/activarpremium`, or manually from Supabase. For a server, set either `plan = 'pro'` or `voice_support_enabled = true` in `guild_configs`. Optional columns `voice_category_id` and `voice_category_name` let you choose where Pro voice rooms should be created. In the dashboard, set a panel button or menu component to `Voz Pro + STT/TTS` to open a normal private text ticket with a linked private voice room.
+Voice support is a Pro feature activated by Premium slots, `/activarpremium`, or manually from PostgreSQL. For a server, set either `plan = 'pro'` or `voice_support_enabled = true` in `guild_configs`. Optional columns `voice_category_id` and `voice_category_name` let you choose where Pro voice rooms should be created. In the dashboard, set a panel button or menu component to `Voz Pro + STT/TTS` to open a normal private text ticket with a linked private voice room.
 
 When a ticket channel registered by NexaDesk is deleted by another ticket bot, NexaDesk marks the ticket as closed, keeps the transcript available in the dashboard, and tries to DM the transcript to the opener automatically.
 
