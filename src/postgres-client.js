@@ -1,6 +1,6 @@
 import { Pool, types } from 'pg';
 
-// Keep timestamp values compatible with the strings returned by Supabase.
+// Keep timestamp values as strings for consistent API responses.
 types.setTypeParser(1114, (value) => value);
 types.setTypeParser(1184, (value) => value);
 
