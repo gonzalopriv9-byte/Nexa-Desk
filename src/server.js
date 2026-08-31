@@ -2592,7 +2592,7 @@ async function buildDashboardAssistantReply({ config, message, guild, stats, act
         'Posicionamiento clave: NexaDesk no sustituye sistemas de tickets; actua como capa IA compatible con Ticket King, XN Tickets, Guild Manager y paneles propios.',
         'En Configuracion se elige categoria, rol staff, prompt del servidor, informacion del servidor, canal/plantilla de alianzas y Security Guard.',
         'Descubrimiento inteligente escanea canales y detecta anuncios, normas, FAQ, soporte y categorias aunque usen tipografias raras.',
-        'En Componentes se crean, editan y eliminan opciones del menu con preguntas previas, primer mensaje y modo Texto, Voz Pro o Modo examen.',
+        'En Componentes se crean, editan y eliminan opciones del menu con preguntas previas, primer mensaje y modo Texto, Voz Pro, Modo examen o Solo staff (sin IA).',
         'En Paneles se publica, edita y elimina el embed, boton o menu en un canal de Discord; los botones tambien pueden abrir tickets de voz Pro o examenes.',
         'Para borrar paneles: Paneles > Paneles de este servidor > Eliminar panel. Para borrar componentes: Componentes > Componentes activos > Eliminar.',
         'Las imagenes de panel se suben desde el dispositivo en Paneles > Embed > Subir thumbnail/Subir imagen grande.',
@@ -6298,6 +6298,7 @@ function renderDashboard({ session, guilds, tickets, stats, dashboardState = {},
               <option value="text">Texto + IA</option>
               <option value="voice">Voz Pro + STT/TTS</option>
               <option value="exam">Modo examen</option>
+              <option value="staff">Solo staff (sin IA)</option>
             </select></label>
             <label class="span-2">Preguntas antes de crear el ticket<textarea id="componentQuestions" placeholder="Una pregunta por linea. Maximo 5.&#10;Ej: Cual es tu nick?&#10;Describe el problema"></textarea></label>
             <div class="span-2 form-section compact is-hidden" id="componentExamSettings" data-release-feature="v15-web-exam-mode" data-release-lock-mode="disabled">
@@ -6348,6 +6349,7 @@ Antes de empezar, he guardado tus respuestas para que el staff tenga contexto.
                   <option value="text">Texto + IA</option>
                   <option value="voice">Voz Pro + STT/TTS</option>
                   <option value="exam">Modo examen</option>
+              <option value="staff">Solo staff (sin IA)</option>
                 </select></label>
               </div>
               <div class="form-section is-hidden" id="panelExamSettings" data-release-feature="v15-web-exam-mode" data-release-lock-mode="disabled">
@@ -8049,6 +8051,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
     function formatTicketMode(mode) {
       if (mode === 'voice') return 'Voz Pro + STT/TTS';
       if (mode === 'exam') return 'Modo examen';
+      if (mode === 'staff') return 'Solo staff (sin IA)';
       return 'Texto + IA';
     }
     function updateComponentMode() {
