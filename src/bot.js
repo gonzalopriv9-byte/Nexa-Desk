@@ -4166,7 +4166,19 @@ async function createTicketFromConfiguredSource({ interaction, storage, guildCon
     return;
   }
 
-  const welcome = await channel.send(buildTicketWelcomeMessage({
+  const welcomePayload = ticketMode === 'staff' ? {
+    content: buildStaffOnlyTicketWelcomeMessage({
+      answers,
+      userMention: `${interaction.user}`,
+      guildConfig,
+      serverName: interaction.guild.name,
+      channelName: channel.name
+    }),
+    allowedMentions: {
+      users: [interaction.user.id],
+      roles: guildConfig?.staffRoleId ? [guildConfig.staffRoleId] : []
+    }
+  } : buildTicketWelcomeMessage({
     panel: normalizedPanel,
     component: normalizedComponent,
     answers,
@@ -4174,7 +4186,8 @@ async function createTicketFromConfiguredSource({ interaction, storage, guildCon
     username: interaction.user.username,
     serverName: interaction.guild.name,
     channelName: channel.name
-  }));
+  });
+  const welcome = await channel.send(welcomePayload);
   await saveTranscript(storage, welcome, 'assistant');
   if (isExamTicketMode(ticketMode)) {
     const startedExamTicket = await startExamTicket({
