@@ -195,6 +195,7 @@ function normalizeTicketMode(mode) {
   const normalized = String(mode ?? '').toLowerCase();
   if (normalized === 'voice') return 'voice';
   if (normalized === 'exam') return 'exam';
+  if (normalized === 'staff') return 'staff';
   return DEFAULT_PANEL.ticketMode;
 }
 
