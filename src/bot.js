@@ -4203,7 +4203,7 @@ async function createTicketFromConfiguredSource({ interaction, storage, guildCon
       voiceManager
     });
     ticket = startedExamTicket ?? ticket;
-  } else {
+  } else if (ticketMode !== 'staff') {
     await sendContextualTicketOpening({
       storage,
       supportAgent,
