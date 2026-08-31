@@ -1370,6 +1370,11 @@ async function handleEnableAiCommand({ interaction, storage }) {
     return;
   }
 
+  if (isStaffOnlyTicket(ticket)) {
+    await interaction.reply({ content: 'Este ticket pertenece a un componente Solo staff (sin IA); el staff debe atenderlo manualmente.', ephemeral: true });
+    return;
+  }
+
   if (!isAiDisabledTicket(ticket)) {
     await interaction.reply({ content: 'La IA ya estaba activa en este ticket.', ephemeral: true });
     return;
@@ -6743,8 +6748,13 @@ function splitDiscordText(content, maxLength = 1900) {
   return chunks;
 }
 
+function isStaffOnlyTicket(ticket) {
+  return ticket?.ticketMode === 'staff'
+    || String(ticket?.aiDisabledBy ?? '') === STAFF_ONLY_COMPONENT_MARKER;
+}
+
 function isAiDisabledTicket(ticket) {
-  return ticket?.aiDisabled || ticket?.status === 'ai_disabled';
+  return isStaffOnlyTicket(ticket) || ticket?.aiDisabled || ticket?.status === 'ai_disabled';
 }
 
 function isClosedTicket(ticket) {
