@@ -320,7 +320,8 @@ async function listPresentJsonFiles(directory) {
 
 async function readJson(filePath, fallback = {}) {
   try {
-    return JSON.parse((await fs.readFile(filePath, 'utf8')).replace(/^\uFEFF/, ''));
+    const raw = (await fs.readFile(filePath, 'utf8')).replace(/^\uFEFF/, '');
+    return raw.trim() ? JSON.parse(raw) : fallback;
   } catch (error) {
     if (error.code === 'ENOENT') return fallback;
     throw error;
