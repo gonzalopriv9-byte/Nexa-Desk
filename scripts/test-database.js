@@ -95,13 +95,13 @@ try {
   console.table(counts.rows);
 
   const trigger = await client.query(`
-    SELECT trigger_name
+    SELECT count(DISTINCT trigger_name)::INT AS trigger_count
     FROM information_schema.triggers
     WHERE event_object_schema = 'public'
       AND event_object_table = 'affiliate_redemptions'
       AND trigger_name = 'affiliate_redemptions_sync_profile_trigger'
   `);
-  if (trigger.rowCount !== 1) throw new Error('No se encontró el trigger de afiliados.');
+  if (Number(trigger.rows[0]?.trigger_count ?? 0) !== 1) throw new Error('No se encontró el trigger de afiliados.');
 
   console.log('OK: PostgreSQL está listo para NexaDesk.');
 } catch (error) {
