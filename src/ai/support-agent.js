@@ -1555,7 +1555,7 @@ function redactSensitiveContext(value = '') {
     .replace(/\bmfa\.[A-Za-z0-9_-]{20,}\b/g, '[token oculto]')
     .replace(/\b(?:gsk|sk|ak-live)-[A-Za-z0-9_-]{8,}\b/g, '[clave IA oculta]')
     .replace(/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g, '[jwt oculto]')
-    .replace(/\b(?:service_role|supabase|client_secret|bot token|token|password|contraseña|contrasena)\s*[:=]\s*\S+/giu, '$1=[valor oculto]')
+    .replace(/\b(?:service_role|database|client_secret|bot token|token|password|contraseña|contrasena)\s*[:=]\s*\S+/giu, '$1=[valor oculto]')
     .replace(/XN Protect globalban alert[^:]*:\s*.+/giu, 'Aviso de blacklist interno [oculto]')
     .replace(/\b\d{17,20}\b/g, '[id oculto]');
 }
