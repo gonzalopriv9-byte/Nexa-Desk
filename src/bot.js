@@ -66,7 +66,7 @@ import { formatWelcomeTemplate as formatMemberWelcomeTemplate, normalizeWelcomeC
 import { XNPROTECT_BLACKLIST_CREDIT, checkXnProtectGlobalBan } from './xnprotect-blacklist.js';
 
 const BOT_INVITE_PERMISSIONS = '1099780451478';
-const PUBLIC_DASHBOARD_URL = 'https://nexa-desk.onrender.com/';
+const PUBLIC_DASHBOARD_URL = 'https://nexa-desk.com/';
 const PREMIUM_ADMIN_USER_ID = '1352652366330986526';
 const ALLIANCE_MARKER = '[NexaDesk alliance]';
 const CRISIS_MARKER = '[NexaDesk crisis]';
@@ -1693,8 +1693,8 @@ async function handleVoiceCreateCommand({ interaction, storage, voiceManager = n
 
   if (!result.ready) {
     await interaction.editReply([
-      'La sala de voz no se pudo activar porque faltan columnas Pro Voice en CockroachDB.',
-      'Revisa que el esquema de CockroachDB esté actualizado y vuelve a intentarlo.'
+      'La sala de voz no se pudo activar porque faltan columnas Pro Voice en PostgreSQL.',
+      'Revisa que el esquema de PostgreSQL esté actualizado y vuelve a intentarlo.'
     ].join('\n'));
     return;
   }
@@ -1959,7 +1959,7 @@ async function handleNaturalVoiceRequest({ storage, message, ticket, guildConfig
       ].join('\n')
     : [
         'No pude crear la sala de voz automaticamente.',
-        'Revisa que tenga **Manage Channels**, **Connect**, **Speak** y que la migracion Pro Voice de CockroachDB este aplicada.'
+        'Revisa que tenga **Manage Channels**, **Connect**, **Speak** y que la migracion Pro Voice de PostgreSQL este aplicada.'
       ].join('\n');
 
   const reply = await message.channel.send({ content, allowedMentions: { parse: [] } }).catch(() => null);
@@ -2976,7 +2976,7 @@ async function handleAdminCodeCommand({ interaction, storage, config }) {
       `${EMOJIS.ban} No pude pedir el codigo a la web de NexaDesk.`,
       `Motivo: ${String(error?.message ?? error).slice(0, 500)}`,
       `Ruta admin: ${new URL('/admin', config.DASHBOARD_PUBLIC_URL || PUBLIC_DASHBOARD_URL).toString()}`,
-      'Mientras la web no emita el codigo, no genero codigos locales para evitar errores de expirado entre PI y Render.'
+      'Mientras la web no emita el codigo, no genero codigos locales para evitar errores de expirado entre la Pi y el dashboard local.'
     ].join('\n'));
     return;
   }
@@ -3862,7 +3862,7 @@ function buildHelpEmbed({ view, config, guild }) {
         },
         {
           name: `${EMOJIS.global} Donde se guarda`,
-          value: 'En CockroachDB, para que la dashboard pueda mostrar historial, estadisticas y transcripciones por servidor.'
+          value: 'En PostgreSQL, para que la dashboard pueda mostrar historial, estadisticas y transcripciones por servidor.'
         },
         {
           name: `${EMOJIS.rightArrow} Quien puede verlo`,
@@ -4231,11 +4231,11 @@ async function createTicketFromConfiguredSource({ interaction, storage, guildCon
         voiceStatus.push(`Sala de voz: ${result.channel}`);
       } else {
         const voiceNotice = await channel.send([
-          `${EMOJIS.wifi} No pude vincular la sala de voz porque CockroachDB no tiene las columnas Pro Voice aplicadas.`,
-          'Revisa que el esquema de CockroachDB esté actualizado y vuelve a publicar o crear el ticket.'
+          `${EMOJIS.wifi} No pude vincular la sala de voz porque PostgreSQL no tiene las columnas Pro Voice aplicadas.`,
+          'Revisa que el esquema de PostgreSQL esté actualizado y vuelve a publicar o crear el ticket.'
         ].join('\n'));
         await saveTranscript(storage, voiceNotice, 'assistant');
-        voiceStatus.push('Sala de voz pendiente: falta migracion de CockroachDB.');
+        voiceStatus.push('Sala de voz pendiente: falta migracion de PostgreSQL.');
       }
     } catch (error) {
       console.error('Panel voice ticket failed:', error);
@@ -8296,7 +8296,7 @@ async function captureInstalledGuildBackups({ client, storage, source = 'schedul
     });
     if (saved) captured += 1;
     if (saved?.fallback) {
-      stoppedReason = 'CockroachDB no tiene guild_backups aplicado; detengo el barrido horario tras un snapshot fallback para proteger el lease HA.';
+      stoppedReason = 'PostgreSQL no tiene guild_backups aplicado; detengo el barrido horario tras un snapshot fallback para proteger el lease HA.';
     }
     if (stoppedReason) break;
     await sleep(250);
@@ -8328,7 +8328,7 @@ export async function restoreGuildBackup(client, storage, { backupId, targetGuil
     throw new Error('Discord gateway is not active on this NexaDesk instance.');
   }
   const backup = await storage.getGuildBackupSnapshot(backupId);
-  if (!backup) throw new Error('No encuentro ese backup en CockroachDB.');
+  if (!backup) throw new Error('No encuentro ese backup en PostgreSQL.');
   const targetGuild = await client.guilds.fetch(targetGuildId);
   const result = await restoreGuildBackupWithRest({
     rest: client.rest,
