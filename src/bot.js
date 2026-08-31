@@ -72,6 +72,7 @@ const ALLIANCE_MARKER = '[NexaDesk alliance]';
 const CRISIS_MARKER = '[NexaDesk crisis]';
 const STAFF_HANDOFF_MARKER = '[NexaDesk staff handoff]';
 const STAFF_ESCALATION_MARKER = '[NexaDesk staff escalation]';
+const STAFF_ONLY_COMPONENT_MARKER = 'component:staff-only';
 const SCHEDULED_ANNOUNCEMENT_STATUS_LOG_MS = 5 * 60 * 1000;
 const scheduledAnnouncementStatusLogCache = new Map();
 
@@ -4151,7 +4152,13 @@ async function createTicketFromConfiguredSource({ interaction, storage, guildCon
     channelId: channel.id,
     channelName: channel.name,
     categoryId: ticketCategory.id,
-    openedBy: interaction.user.id
+    openedBy: interaction.user.id,
+    ...(ticketMode === 'staff' ? {
+      status: 'ai_disabled',
+      aiDisabled: true,
+      aiDisabledBy: STAFF_ONLY_COMPONENT_MARKER,
+      aiDisabledAt: new Date().toISOString()
+    } : {})
   });
 
   if (ticket.alreadyExists) {
