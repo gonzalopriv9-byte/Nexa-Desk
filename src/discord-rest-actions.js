@@ -207,7 +207,7 @@ export function createDiscordRestActions({ config, storage }) {
     async restoreGuildBackup({ backupId, targetGuildId, requestedBy = null }) {
       requireBotToken(botToken);
       const backup = await storage.getGuildBackupSnapshot(backupId);
-      if (!backup) throw new Error('No encuentro ese backup en Supabase.');
+      if (!backup) throw new Error('No encuentro ese backup en PostgreSQL.');
       const targetGuild = await rest.get(Routes.guild(targetGuildId));
       const result = await restoreGuildBackupWithRest({
         rest,
@@ -246,6 +246,6 @@ export function createDiscordRestActions({ config, storage }) {
 
 function requireBotToken(botToken) {
   if (!botToken) {
-    throw new Error('Falta DISCORD_TOKEN en Render. Pon el token actual del bot en Environment y redeploy para cargar roles, canales y paneles.');
+    throw new Error('Falta DISCORD_TOKEN en la Raspberry Pi. Configura el token en el .env local y reinicia PM2 para cargar roles, canales y paneles.');
   }
 }
