@@ -109,6 +109,7 @@ create table if not exists public.global_blacklist_evidence (
 
 create index if not exists global_blacklist_evidence_user_id_idx on public.global_blacklist_evidence (user_id);
 create index if not exists global_blacklist_evidence_ban_code_idx on public.global_blacklist_evidence (ban_code);
+create unique index if not exists global_blacklist_evidence_source_key_idx on public.global_blacklist_evidence (source_key);
 
 create table if not exists public.ticket_feedback (
   id text primary key,
