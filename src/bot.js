@@ -4068,6 +4068,11 @@ async function createTicketFromConfiguredSource({ interaction, storage, guildCon
     return;
   }
 
+  if (ticketMode === 'staff' && !guildConfig?.staffRoleId) {
+    await interaction.reply({ content: 'Configura primero un rol de staff desde la dashboard para usar componentes Solo staff.', ephemeral: true });
+    return;
+  }
+
   if (ticketMode === 'voice' && !isVoiceSupportEnabled(guildConfig)) {
     await interaction.reply({
       content: [
