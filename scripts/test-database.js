@@ -18,6 +18,15 @@ const expectedTables = [
   'transcript_messages'
 ];
 
+const expectedIndexes = [
+  'transcript_messages_channel_id_idx',
+  'transcript_messages_guild_id_idx',
+  'transcript_messages_channel_message_idx',
+  'global_blacklist_evidence_source_key_idx',
+  'affiliate_redemptions_one_per_guild_idx',
+  'premium_slot_activations_one_active_guild_idx'
+];
+
 if (!process.env.DATABASE_URL) {
   console.error('DATABASE_URL no está configurada en .env.');
   process.exit(1);
@@ -40,9 +49,38 @@ try {
       AND table_type = 'BASE TABLE'
     ORDER BY table_name
   `);
-  const present = new Set(tables.rows.map((row) => row.table_name));
-  const missing = expectedTables.filter((table) => !present.has(table));
-  if (missing.length) throw new Error(`Faltan tablas: ${missing.join(', ')}`);
+  const presentTables = new Set(tables.rows.map((row) => row.table_name));
+  const missingTables = expectedTables.filter((table) => !presentTables.has(table));
+  if (missingTables.length) throw new Error(`Faltan tablas: ${missingTables.join(', ')}`);
+
+  const columns = await client.query(`
+    SELECT table_name, column_name
+    FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND (table_name, column_name) IN (
+        ('global_blacklist_evidence', 'source_key'),
+        ('transcript_messages', 'message_id'),
+        ('guild_configs', 'panels')
+      )
+  `);
+  const presentColumns = new Set(columns.rows.map((row) => `${row.table_name}.${row.column_name}`));
+  const requiredColumns = [
+    'global_blacklist_evidence.source_key',
+    'transcript_messages.message_id',
+    'guild_configs.panels'
+  ];
+  const missingColumns = requiredColumns.filter((column) => !presentColumns.has(column));
+  if (missingColumns.length) throw new Error(`Faltan columnas: ${missingColumns.join(', ')}`);
+
+  const indexes = await client.query(`
+    SELECT indexname
+    FROM pg_indexes
+    WHERE schemaname = 'public'
+      AND indexname = ANY($1::text[])
+  `, [expectedIndexes]);
+  const presentIndexes = new Set(indexes.rows.map((row) => row.indexname));
+  const missingIndexes = expectedIndexes.filter((index) => !presentIndexes.has(index));
+  if (missingIndexes.length) throw new Error(`Faltan índices: ${missingIndexes.join(', ')}`);
 
   const counts = await client.query(`
     SELECT 'guild_configs' AS table_name, count(*)::INT AS rows FROM public.guild_configs
@@ -50,6 +88,7 @@ try {
     UNION ALL SELECT 'transcript_messages', count(*)::INT FROM public.transcript_messages
     UNION ALL SELECT 'guild_logs', count(*)::INT FROM public.guild_logs
     UNION ALL SELECT 'guild_backups', count(*)::INT FROM public.guild_backups
+    UNION ALL SELECT 'global_blacklist_evidence', count(*)::INT FROM public.global_blacklist_evidence
     ORDER BY table_name
   `);
   console.log('Filas principales:');
