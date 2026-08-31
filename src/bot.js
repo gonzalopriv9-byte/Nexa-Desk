@@ -5178,6 +5178,17 @@ function buildTicketComponentModal(component) {
   return modal;
 }
 
+function buildStaffOnlyTicketWelcomeMessage({ answers = [], userMention, guildConfig, serverName = 'este servidor', channelName = 'ticket' }) {
+  const staffMention = guildConfig?.staffRoleId ? `<@&${guildConfig.staffRoleId}>` : 'el staff';
+  const answerBlock = buildWelcomeAnswersBlock(answers);
+  return [
+    `${EMOJIS.nexalogo} Ticket creado para ${userMention}.`,
+    'Este ticket esta configurado como **solo staff (sin IA)**. NexaDesk no respondera automaticamente aqui.',
+    `${staffMention}, he dejado el contexto listo para que atendais manualmente el ticket en #${channelName} de ${serverName}.`,
+    answerBlock ? `Contexto inicial:\n${answerBlock}` : '',
+  ].filter(Boolean).join('\n').slice(0, 1950);
+}
+
 function buildTicketWelcomeMessage({ panel, component, answers = [], userMention, username = 'usuario', serverName = 'este servidor', channelName = 'ticket' }) {
   const rawTemplate = component?.welcomeMessage || panel?.welcomeMessage || '';
   const template = rawTemplate || (component
