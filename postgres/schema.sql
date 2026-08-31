@@ -105,8 +105,11 @@ create table if not exists public.global_blacklist_evidence (
   content_type text,
   description text,
   created_by text,
+  source_key text,
   created_at timestamptz not null default now()
 );
+
+alter table public.global_blacklist_evidence add column if not exists source_key text;
 
 create index if not exists global_blacklist_evidence_user_id_idx on public.global_blacklist_evidence (user_id);
 create index if not exists global_blacklist_evidence_ban_code_idx on public.global_blacklist_evidence (ban_code);
