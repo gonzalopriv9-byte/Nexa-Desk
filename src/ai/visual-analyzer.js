@@ -214,7 +214,7 @@ async function attachmentToDataUrl(attachment, maxBytes) {
 async function downloadBuffer(url, maxBytes) {
   const response = await fetch(url, {
     headers: {
-      'user-agent': 'NexaDesk/1.0 (+https://nexa-desk.onrender.com)'
+      'user-agent': 'NexaDesk/1.0 (+https://nexa-desk.com)'
     }
   });
   if (!response.ok) {
