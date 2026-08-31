@@ -97,7 +97,7 @@ export class JsonStorage {
 
     tickets[ticket.channelId] = {
       ...ticket,
-      status: 'open',
+      status: ticket.status ?? 'open',
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()
     };
