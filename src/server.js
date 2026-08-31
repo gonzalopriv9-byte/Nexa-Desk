@@ -841,7 +841,7 @@ export function createServer({ config, storage, bot, events }) {
   app.post('/api/premium/checkout', asyncHandler(async (req, res) => {
     const checkoutConfig = getPremiumCheckoutConfig(config);
     if (!checkoutConfig.configured) {
-      res.status(503).json({ error: 'PayPal no esta configurado todavia. Anade PAYPAL_CLIENT_ID/PAYPAL_CLIENT_SECRET o PREMIUM_PAYMENT_URL en Render.' });
+      res.status(503).json({ error: 'PayPal no esta configurado todavia. Anade PAYPAL_CLIENT_ID/PAYPAL_CLIENT_SECRET o PREMIUM_PAYMENT_URL en el .env de la Raspberry Pi.' });
       return;
     }
 
@@ -1647,10 +1647,10 @@ function getPayPalApprovalUrl(order = {}) {
 function normalizeError(error) {
   const message = error instanceof Error ? error.message : String(error ?? '');
   if (/Expected token to be set/i.test(message)) {
-    return 'Falta DISCORD_TOKEN en Render. Pon el token actual del bot en Environment y redeploy para cargar roles, canales y paneles.';
+    return 'Falta DISCORD_TOKEN en la Raspberry Pi. Configura el token actual en el .env local y reinicia PM2 para cargar roles, canales y paneles.';
   }
   if (/401|Unauthorized|Invalid Form Body|TOKEN_INVALID|invalid token/i.test(message)) {
-    return 'El DISCORD_TOKEN configurado en Render no es valido o fue reseteado. Actualizalo con el token actual del bot y redeploy.';
+    return 'El DISCORD_TOKEN configurado en la Raspberry Pi no es valido o fue reseteado. Actualiza el .env y reinicia PM2.';
   }
   if (error instanceof Error) return error.message;
   if (typeof error === 'string') return error;
@@ -3091,7 +3091,7 @@ function renderDocsDisabled(config) {
         <img src="/assets/nexadesk-logo.svg" alt="NexaDesk" class="gate-logo">
         <p class="kicker">NexaDesk internal vault</p>
         <h1>Docs aun no esta configurado.</h1>
-        <p>Define <code>DOCS_TOTP_SECRET</code> en Render y en la Pi para activar el acceso con Google Authenticator.</p>
+        <p>Define <code>DOCS_TOTP_SECRET</code> en el .env de la Raspberry Pi para activar el acceso con Google Authenticator.</p>
         <div class="notice">
           <strong>Setup recomendado</strong>
           <span>Genera un secreto base32 privado, guardalo como variable de entorno y anadelo manualmente a Google Authenticator con issuer <code>${escapeHtml(config.DOCS_TOTP_ISSUER)}</code>.</span>
@@ -3166,7 +3166,7 @@ function renderAdminGate({ config, error = '', codeStatus = null }) {
         <img src="/assets/nexadesk-logo.svg" alt="NexaDesk" class="gate-logo">
         <p class="kicker">Panel oculto</p>
         <h1>Introduce el codigo de rotacion</h1>
-        <p>Pide un codigo temporal con <code>/code</code> en Discord. La web lo emite y el bot solo lo solicita, asi evitamos codigos creados en la PI que Render no pueda validar. Esta sesion caduca en ${escapeHtml(String(config.DOCS_SESSION_MINUTES))} minutos.</p>
+        <p>Pide un codigo temporal con <code>/code</code> en Discord. La web lo emite y el bot solo lo solicita, asi mantenemos la validacion en la misma Raspberry Pi. Esta sesion caduca en ${escapeHtml(String(config.DOCS_SESSION_MINUTES))} minutos.</p>
         <div class="notice">
           <strong>${escapeHtml(status.label)}</strong>
           <span>${escapeHtml(statusText)}</span>
@@ -3796,7 +3796,7 @@ function buildDocsSections(config) {
       summary: 'Vision global de como esta dividido NexaDesk y que piezas no deben filtrarse.',
       blocks: [
         { type: 'list', items: [
-          'Render sirve la dashboard publica y puede actuar como standby HA con RUN_BOT=true + BOT_HA_ENABLED=true.',
+          'La Raspberry Pi sirve la dashboard publica y ejecuta el worker del bot con PM2.',
           'La Raspberry Pi mantiene el liderazgo principal del bot con BOT_INSTANCE_ID=pi-main.',
           'PostgreSQL guarda configuracion, paneles, componentes, tickets, transcripciones, feedback de tickets y blacklist interna.',
           'Quality Radar guarda senales en ai_quality_signals cuando el usuario se queja de que NexaDesk/IA funciona mal, se equivoca, repite, no ve imagenes, falla en voz o genera enfado.',
@@ -3834,10 +3834,10 @@ function buildDocsSections(config) {
       summary: 'Donde corre cada parte y como recuperarla si se cae.',
       blocks: [
         { type: 'table', headers: ['Pieza', 'Ubicacion', 'Notas'], rows: [
-          ['Dashboard web + standby', 'Render Web Service', 'Puede correr RUN_BOT=true con BOT_HA_ENABLED=true como backup del worker.'],
+          ['Dashboard web + worker', 'Raspberry Pi + PM2', 'Ejecuta la dashboard y el worker en el mismo equipo.'],
           ['Bot worker principal', 'Raspberry Pi /home/pi/nexadesk', 'PM2 NexaDesk con BOT_INSTANCE_ID=pi-main; health local en puerto 3010.'],
-          ['Repositorio', 'github.com/gonzalopriv9-byte/Nexa-Desk', 'main despliega Render si auto-deploy esta activo.'],
-          ['Dominio dashboard', 'https://nexa-desk.onrender.com/', 'OAuth redirect debe apuntar a /auth/discord/callback.']
+          ['Repositorio', 'github.com/gonzalopriv9-byte/Nexa-Desk', 'main contiene la version que se actualiza en la Raspberry Pi.'],
+          ['Dominio dashboard', 'https://nexa-desk.com/', 'OAuth redirect debe apuntar a /auth/discord/callback.']
         ] },
         { type: 'code', value: 'systemctl status nexadesk\njournalctl -u nexadesk -n 80 --no-pager\ncurl -fsS http://127.0.0.1:3010/health' }
       ]
@@ -3972,12 +3972,12 @@ function buildDocsSections(config) {
       summary: 'Que hacer cuando algo se rompe o hay riesgo.',
       blocks: [
         { type: 'table', headers: ['Incidente', 'Accion inmediata', 'Despues'], rows: [
-          ['Token Discord reseteado', 'Actualizar DISCORD_TOKEN en Pi y Render; reiniciar nexadesk.', 'Revisar logs de reconnect y evitar loops.'],
+          ['Token Discord reseteado', 'Actualizar DISCORD_TOKEN en el .env de la Pi y reiniciar PM2.', 'Revisar logs de reconnect y evitar loops.'],
           ['Bot offline', 'systemctl restart nexadesk; revisar journalctl.', 'Verificar intents, token y conectividad.'],
-          ['Render dashboard falla', 'Revisar env vars y logs de Render.', 'Confirmar token, PostgreSQL y estado del lease HA si RUN_BOT=true.'],
+          ['Dashboard de la Pi falla', 'Revisar el .env y los logs de PM2.', 'Confirmar token, PostgreSQL y estado del servicio.'],
           ['PostgreSQL missing column/table', 'Revisar el esquema migrado en PostgreSQL.', 'Verificar tablas, índices y permisos SQL.'],
           ['Groq sin creditos', 'Confirmar GROQ_FALLBACK_API_KEYS y AKIOMAE_API_KEY.', 'Reducir modelo o limits si hay costes.'],
-          ['Leak de secreto', 'Rotar secreto inmediatamente.', 'Actualizar Pi, Render y revocar claves antiguas.']
+          ['Leak de secreto', 'Rotar secreto inmediatamente.', 'Actualizar la Pi y revocar claves antiguas.']
         ] }
       ]
     },
@@ -3987,7 +3987,7 @@ function buildDocsSections(config) {
       summary: 'Antes de vender o anunciar NexaDesk.',
       blocks: [
         { type: 'list', items: [
-          'Render actualizado desde main y /health operativo.',
+          'Raspberry Pi actualizada desde main y /health operativo.',
           'Pi activa con NexaDesk online y presencia actualizada.',
           'PostgreSQL schema aplicado y transcripciones guardando.',
           'OAuth Discord con redirect correcto.',
@@ -4880,7 +4880,7 @@ function buildPrivacySections() {
         'Groq u otros proveedores IA pueden recibir fragmentos necesarios para generar respuestas, analizar imagenes, transcribir voz o revisar enlaces.',
         'XN Protect puede recibir contenido textual o IDs para automod y blacklist global.',
         'Top.gg puede recibir IDs de bots para comprobar si estan listados antes de aplicar Anti-bots.',
-        'Render aloja la dashboard publica y la Raspberry Pi ejecuta el worker del bot.'
+        'La Raspberry Pi aloja la dashboard publica y ejecuta el worker del bot.'
       ]
     },
     {
@@ -7135,7 +7135,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
           ? checkout.apiConfigured
             ? 'Pago seguro con PayPal Checkout. NexaDesk solo recibe confirmacion del pago y los slots.'
             : 'Pago manual activo: tras pagar, abre ticket de soporte para validar y activar slots.'
-          : 'Faltan PAYPAL_CLIENT_ID/PAYPAL_CLIENT_SECRET o PREMIUM_PAYMENT_URL en Render para activar pagos reales.';
+          : 'Faltan PAYPAL_CLIENT_ID/PAYPAL_CLIENT_SECRET o PREMIUM_PAYMENT_URL en el .env de la Raspberry Pi para activar pagos reales.';
       }
 
       const target = document.querySelector('#premiumActivationList');
@@ -7590,11 +7590,11 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       const guild = getGuildConfig(guildId) || {};
       setConfigurationDisabled(true);
       document.querySelector('#installBanner').hidden = false;
-      document.querySelector('#installTitle').textContent = 'Render necesita el token del bot.';
+      document.querySelector('#installTitle').textContent = 'La Pi necesita el token del bot.';
       document.querySelector('#installText').textContent = message;
-      document.querySelector('#installLink').href = 'https://dashboard.render.com/';
+      document.querySelector('#installLink').href = 'https://nexa-desk.com/';
       document.querySelector('#installLink').target = '_blank';
-      document.querySelector('#installLink').textContent = 'Abrir Render';
+      document.querySelector('#installLink').textContent = 'Abrir dashboard';
       document.querySelector('#ticketCategoryId').innerHTML = '<option>No se pudieron cargar categorias</option>';
       document.querySelector('#ticketCategoryId2').innerHTML = '<option>No se pudieron cargar categorias</option>';
       document.querySelector('#staffRoleId').innerHTML = '<option>No se pudieron cargar roles</option>';
