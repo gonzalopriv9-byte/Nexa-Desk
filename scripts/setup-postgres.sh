@@ -6,6 +6,9 @@ DB_USER="${NEXADESK_DB_USER:-nexa}"
 DB_PORT="${NEXADESK_DB_PORT:-5432}"
 DB_PASSWORD="${NEXADESK_DB_PASSWORD:-}"
 ROTATE_PASSWORD="${NEXADESK_ROTATE_PASSWORD:-false}"
+PG_CONTAINER="${NEXADESK_PG_CONTAINER:-nexadesk-postgres-1}"
+PG_ADMIN_USER="${NEXADESK_PG_ADMIN_USER:-nexa_user}"
+PG_ADMIN_DB="${NEXADESK_PG_ADMIN_DB:-nexadesk_db}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 SCHEMA_FILE="$REPO_ROOT/postgres/schema.sql"
@@ -16,26 +19,46 @@ if [[ ! -f "$SCHEMA_FILE" ]]; then
   exit 1
 fi
 if ! command -v sudo >/dev/null 2>&1; then
-  echo "sudo es necesario para instalar y configurar PostgreSQL." >&2
+  echo "sudo es necesario para configurar PostgreSQL." >&2
   exit 1
 fi
 
-if ! command -v psql >/dev/null 2>&1; then
-  echo "Instalando PostgreSQL..."
-  sudo apt-get update
-  sudo apt-get install -y postgresql postgresql-client
-fi
-
-if ! sudo systemctl is-active --quiet postgresql 2>/dev/null; then
-  sudo systemctl enable --now postgresql
-fi
-if ! sudo systemctl is-active --quiet postgresql 2>/dev/null; then
-  echo "El servicio PostgreSQL del sistema no está activo." >&2
-  echo "Si usas Docker, configura ese contenedor por separado; no mezclo sus credenciales automáticamente." >&2
+BACKEND=""
+if sudo systemctl is-active --quiet postgresql 2>/dev/null; then
+  BACKEND="system"
+elif command -v docker >/dev/null 2>&1 && sudo docker inspect -f '{{.State.Running}}' "$PG_CONTAINER" 2>/dev/null | grep -qx true; then
+  BACKEND="docker"
+else
+  if ! command -v psql >/dev/null 2>&1; then
+    echo "No encuentro PostgreSQL activo ni el contenedor Docker $PG_CONTAINER." >&2
+    exit 1
+  fi
+  if ! command -v pg_isready >/dev/null 2>&1 || ! pg_isready -h 127.0.0.1 -p "$DB_PORT" -t 3 >/dev/null 2>&1; then
+    echo "PostgreSQL no está escuchando en 127.0.0.1:$DB_PORT." >&2
+    exit 1
+  fi
+  echo "Hay un PostgreSQL TCP activo, pero falta una cuenta administrativa segura para preparar el esquema." >&2
+  echo "Define NEXADESK_PG_CONTAINER para un contenedor o prepara el rol/base manualmente." >&2
   exit 1
 fi
 
-ROLE_EXISTS="$(sudo -u postgres psql -AtX -v ON_ERROR_STOP=1 --set=db_user="$DB_USER" -c "SELECT 1 FROM pg_roles WHERE rolname = :'db_user'")"
+admin_psql() {
+  if [[ "$BACKEND" == "docker" ]]; then
+    sudo docker exec -i "$PG_CONTAINER" psql -X -U "$PG_ADMIN_USER" "$@"
+  else
+    sudo -u postgres psql -X "$@"
+  fi
+}
+
+run_schema() {
+  if [[ "$BACKEND" == "docker" ]]; then
+    sudo docker exec -i "$PG_CONTAINER" psql -X -v ON_ERROR_STOP=1 -1 -U "$PG_ADMIN_USER" -d "$DB_NAME" < "$SCHEMA_FILE"
+  else
+    sudo -u postgres psql -X -v ON_ERROR_STOP=1 -1 -d "$DB_NAME" -f "$SCHEMA_FILE"
+  fi
+}
+
+ROLE_EXISTS="$(admin_psql -AtX -v ON_ERROR_STOP=1 --set=db_user="$DB_USER" -d "$PG_ADMIN_DB" -c "SELECT 1 FROM pg_roles WHERE rolname = :'db_user'")"
 PASSWORD_AVAILABLE=false
 
 if [[ "$ROLE_EXISTS" == "1" ]]; then
@@ -44,9 +67,7 @@ if [[ "$ROLE_EXISTS" == "1" ]]; then
       echo "NEXADESK_ROTATE_PASSWORD=true requiere NEXADESK_DB_PASSWORD." >&2
       exit 1
     fi
-    sudo -u postgres psql -v ON_ERROR_STOP=1 \
-      --set=db_user="$DB_USER" \
-      --set=db_password="$DB_PASSWORD" <<'SQL'
+    admin_psql -v ON_ERROR_STOP=1 --set=db_user="$DB_USER" --set=db_password="$DB_PASSWORD" -d "$PG_ADMIN_DB" <<'SQL'
 SELECT format('ALTER ROLE %I WITH LOGIN PASSWORD %L', :'db_user', :'db_password')\gexec
 SQL
     PASSWORD_AVAILABLE=true
@@ -63,23 +84,19 @@ else
     fi
     DB_PASSWORD="$(openssl rand -hex 24)"
   fi
-  sudo -u postgres psql -v ON_ERROR_STOP=1 \
-    --set=db_user="$DB_USER" \
-    --set=db_password="$DB_PASSWORD" <<'SQL'
+  admin_psql -v ON_ERROR_STOP=1 --set=db_user="$DB_USER" --set=db_password="$DB_PASSWORD" -d "$PG_ADMIN_DB" <<'SQL'
 SELECT format('CREATE ROLE %I LOGIN PASSWORD %L', :'db_user', :'db_password')\gexec
 SQL
   PASSWORD_AVAILABLE=true
 fi
 
-DB_EXISTS="$(sudo -u postgres psql -AtX -v ON_ERROR_STOP=1 --set=db_name="$DB_NAME" -c "SELECT 1 FROM pg_database WHERE datname = :'db_name'")"
+DB_EXISTS="$(admin_psql -AtX -v ON_ERROR_STOP=1 --set=db_name="$DB_NAME" -d "$PG_ADMIN_DB" -c "SELECT 1 FROM pg_database WHERE datname = :'db_name'")"
 if [[ "$DB_EXISTS" != "1" ]]; then
-  sudo -u postgres psql -v ON_ERROR_STOP=1 \
-    --set=db_name="$DB_NAME" \
-    --set=db_user="$DB_USER" <<'SQL'
+  admin_psql -v ON_ERROR_STOP=1 --set=db_name="$DB_NAME" --set=db_user="$DB_USER" -d "$PG_ADMIN_DB" <<'SQL'
 SELECT format('CREATE DATABASE %I OWNER %I', :'db_name', :'db_user')\gexec
 SQL
 else
-  DB_OWNER="$(sudo -u postgres psql -AtX -v ON_ERROR_STOP=1 --set=db_name="$DB_NAME" -c "SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname = :'db_name'")"
+  DB_OWNER="$(admin_psql -AtX -v ON_ERROR_STOP=1 --set=db_name="$DB_NAME" -d "$PG_ADMIN_DB" -c "SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname = :'db_name'")"
   if [[ "$DB_OWNER" != "$DB_USER" ]]; then
     echo "La base $DB_NAME ya existe y pertenece a $DB_OWNER, no a $DB_USER." >&2
     echo "Usa NEXADESK_DB_NAME para una base nueva; no la sobrescribo." >&2
@@ -87,7 +104,7 @@ else
   fi
 fi
 
-sudo -u postgres psql -v ON_ERROR_STOP=1 -1 -d "$DB_NAME" -f "$SCHEMA_FILE" >/dev/null
+run_schema >/dev/null
 
 write_database_url() {
   local target="$1"
