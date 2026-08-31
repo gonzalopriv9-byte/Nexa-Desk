@@ -56,6 +56,7 @@ create table if not exists public.transcript_messages (
 );
 
 create index if not exists transcript_messages_channel_id_idx on public.transcript_messages (channel_id);
+create index if not exists transcript_messages_guild_id_idx on public.transcript_messages (guild_id);
 create index if not exists transcript_messages_created_at_idx on public.transcript_messages (created_at);
 
 create unique index if not exists transcript_messages_channel_message_idx
