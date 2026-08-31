@@ -590,10 +590,16 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
     if (!ticket) return;
 
     await saveTranscript(storage, message, 'user');
+    if (isClosedTicket(ticket)) return;
+    if (isStaffOnlyTicket(ticket)) {
+      if (isTicketCloseRequest(message.content)) {
+        await handleNaturalCloseRequest({ client, storage, message, ticket, guildConfig, config });
+      }
+      return;
+    }
     void maybeRecordAiQualitySignal({ storage, supportAgent, message, ticket, guildConfig }).catch((error) => {
       console.warn(`AI quality signal capture failed in ${message.channelId}:`, error?.message ?? error);
     });
-    if (isClosedTicket(ticket)) return;
 
     // Always reload the latest server context before asking the AI.
     if (!guildConfig) return;
