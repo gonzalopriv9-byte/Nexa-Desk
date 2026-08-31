@@ -50,6 +50,30 @@ class PostgresClient {
     return this.pool.query(text, values);
   }
 
+  async withTransaction(callback) {
+    const connection = await this.pool.connect();
+    const transaction = {
+      query: (text, values = []) => connection.query(text, values),
+      from: (table) => new PostgresQuery(connection, table)
+    };
+
+    try {
+      await connection.query('BEGIN');
+      const result = await callback(transaction);
+      await connection.query('COMMIT');
+      return result;
+    } catch (error) {
+      try {
+        await connection.query('ROLLBACK');
+      } catch (rollbackError) {
+        console.error('PostgreSQL rollback failed:', rollbackError?.message ?? rollbackError);
+      }
+      throw error;
+    } finally {
+      connection.release();
+    }
+  }
+
   async close() {
     await this.pool.end();
   }
