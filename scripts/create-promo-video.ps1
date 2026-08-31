@@ -305,7 +305,7 @@ function DrawFrame([int]$frame) {
     DrawLogo $g 780 230 360 $p
     Text $g 'NexaDesk' $fontTitle $script:White 500 620 920 92 $p 'Center'
     Text $g 'Soporte rapido. Escalados limpios. Humano cuando importa.' $fontMed $script:Muted 340 720 1240 58 $p 'Center'
-    Text $g 'https://nexa-desk.onrender.com  |  discord.gg/vVXbq7ePEZ' $fontBody $script:White 360 835 1200 44 (Clamp01 (($t - 44) / 2)) 'Center'
+    Text $g 'https://nexa-desk.com  |  discord.gg/vVXbq7ePEZ' $fontBody $script:White 360 835 1200 44 (Clamp01 (($t - 44) / 2)) 'Center'
   }
 
   $scanAlpha = .16 * [Math]::Max(0, [Math]::Sin($t * 2.2))
