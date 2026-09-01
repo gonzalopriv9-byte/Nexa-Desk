@@ -6,6 +6,7 @@ import os from 'node:os';
 import { AkiomaeClient } from './ai/akiomae-client.js';
 import { FallbackAiClient, createAiProvider } from './ai/fallback-ai-client.js';
 import { GroqClient } from './ai/groq-client.js';
+import { GoogleAiStudioClient } from './ai/google-ai-studio-client.js';
 import { LocalSupportClient } from './ai/local-support-client.js';
 import { OllamaClient } from './ai/ollama-client.js';
 import { OpenAICompatibleClient } from './ai/openai-compatible-client.js';
@@ -94,6 +95,10 @@ if (config.BOT_HA_ENABLED) {
 }
 
 function createAiClient() {
+  if (config.AI_PROVIDER === 'google-ai-studio') {
+    return createGoogleFallbackClient();
+  }
+
   if (config.AI_PROVIDER === 'groq') {
     return createGroqFallbackClient();
   }
@@ -114,10 +119,12 @@ function createAiClient() {
 }
 
 function createVisualAnalyzer() {
-  if (!config.AI_VISUAL_ANALYSIS || !hasGroqProvider()) return null;
+  if (!config.AI_VISUAL_ANALYSIS) return null;
 
   return new VisualAnalyzer({
-    visionClient: createGroqFallbackClient(),
+    visionClient: config.AI_PROVIDER === 'google-ai-studio'
+      ? createGoogleFallbackClient()
+      : createGroqFallbackClient(),
     enabled: config.AI_VISUAL_ANALYSIS,
     videoFrameCount: config.AI_VIDEO_FRAME_COUNT,
     videoMaxBytes: config.AI_VIDEO_MAX_BYTES
@@ -125,7 +132,7 @@ function createVisualAnalyzer() {
 }
 
 function createVoiceManager() {
-  if (!config.VOICE_STT_ENABLED || config.AI_PROVIDER !== 'groq' || !hasGroqProvider()) {
+  if (!config.VOICE_STT_ENABLED || !hasGroqProvider()) {
     return null;
   }
 
@@ -137,8 +144,30 @@ function createVoiceManager() {
   });
 }
 
+function createGoogleFallbackClient() {
+  const providers = [];
+  const googleApiKey = getGoogleApiKey();
+  if (googleApiKey) {
+    providers.push(createAiProvider('google-ai-studio-primary', new GoogleAiStudioClient({
+      apiKey: googleApiKey,
+      model: config.GOOGLE_AI_STUDIO_MODEL,
+      thinkingBudget: config.GOOGLE_AI_STUDIO_THINKING_BUDGET,
+      timeoutMs: config.AI_PROVIDER_TIMEOUT_MS
+    })));
+  }
+  addGroqProviders(providers);
+  addSecondaryFallbacks(providers);
+  return createFallbackClient(providers);
+}
+
 function createGroqFallbackClient() {
   const providers = [];
+  addGroqProviders(providers);
+  addSecondaryFallbacks(providers);
+  return createFallbackClient(providers);
+}
+
+function addGroqProviders(providers) {
   if (config.GROQ_API_KEY) {
     providers.push(createAiProvider('groq-primary', new GroqClient({
       apiKey: config.GROQ_API_KEY,
@@ -148,13 +177,15 @@ function createGroqFallbackClient() {
   }
 
   for (const [index, apiKey] of parseFallbackKeys(config.GROQ_FALLBACK_API_KEYS).entries()) {
-    providers.push(createAiProvider(`groq-backup-${index + 1}`, new GroqClient({
+    providers.push(createAiProvider('groq-backup-' + (index + 1), new GroqClient({
       apiKey,
       model: EFFECTIVE_GROQ_MODEL,
       visionModel: config.GROQ_VISION_MODEL
     })));
   }
+}
 
+function addSecondaryFallbacks(providers) {
   if (config.AKIOMAE_API_KEY) {
     providers.push(createAiProvider('akiomae', new AkiomaeClient({
       apiKey: config.AKIOMAE_API_KEY,
@@ -167,13 +198,19 @@ function createGroqFallbackClient() {
       enabled: config.AI_LOCAL_FALLBACK_ENABLED
     })));
   }
+}
 
+function createFallbackClient(providers) {
   return new FallbackAiClient(providers, {
     generateTimeoutMs: config.AI_PROVIDER_TIMEOUT_MS,
     providerCooldownMs: config.AI_PROVIDER_COOLDOWN_MS
   });
 }
 
+function getGoogleApiKey() {
+  const value = String(config.GOOGLE_AI_STUDIO_API_KEY || config.GEMINI_API_KEY || '').trim();
+  return value && value !== 'replace_me' ? value : '';
+}
 function parseFallbackKeys(value) {
   return String(value ?? '')
     .split(',')
