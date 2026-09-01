@@ -523,16 +523,16 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
     if (!guildId || !channelId) return;
     if (await maybeMirrorGlobalAnnouncement({ client, storage, config, message })) return;
 
-    const handledBySecurity = await securityManager.handleMessageCreate(message).catch((error) => {
-      console.error(`Security message guard failed in ${guildId}:`, error);
-      return false;
-    });
-    if (handledBySecurity) return;
-
     let [ticket, guildConfig] = await Promise.all([
       storage.getTicket(channelId),
       storage.getGuildConfig(guildId)
     ]);
+
+    const handledBySecurity = await securityManager.handleMessageCreate(message, guildConfig).catch((error) => {
+      console.error(`Security message guard failed in ${guildId}:`, error);
+      return false;
+    });
+    if (handledBySecurity) return;
 
     const externalTicketSource = (!ticket || !ticket.openedBy)
       ? await detectExternalTicketSource(message)
