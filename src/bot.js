@@ -62,6 +62,7 @@ import { analyzeGuildChannelsForDiscovery, hasUsefulDiscovery, normalizeChannelN
 import { buildTranscriptReplayUrl } from './transcripts.js';
 import { hasVisualAttachments } from './ai/visual-analyzer.js';
 import { detectAiQualitySignalHeuristic } from './ai-quality.js';
+import { buildAiLearningLesson } from './ai/learning-memory.js';
 import { createTicketFlowCard } from './welcome-card.js';
 import { formatWelcomeTemplate as formatMemberWelcomeTemplate, normalizeWelcomeConfig } from './welcome.js';
 import { XNPROTECT_BLACKLIST_CREDIT, checkXnProtectGlobalBan } from './xnprotect-blacklist.js';
@@ -73,6 +74,8 @@ const ALLIANCE_MARKER = '[NexaDesk alliance]';
 const CRISIS_MARKER = '[NexaDesk crisis]';
 const STAFF_HANDOFF_MARKER = '[NexaDesk staff handoff]';
 const STAFF_ESCALATION_MARKER = '[NexaDesk staff escalation]';
+const REPORT_MARKER = '[NexaDesk report]';
+const AI_LEARNING_MARKER = '[NexaDesk AI learning]';
 const STAFF_ONLY_COMPONENT_MARKER = 'component:staff-only';
 const SCHEDULED_ANNOUNCEMENT_STATUS_LOG_MS = 5 * 60 * 1000;
 const scheduledAnnouncementStatusLogCache = new Map();
@@ -631,6 +634,9 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
       await handleNaturalCloseRequest({ client, storage, message, ticket, guildConfig, config });
       return;
     }
+
+    const handledByReportFlow = await handleTicketReportMessage({ storage, message, ticket, guildConfig });
+    if (handledByReportFlow) return;
 
     const examHandled = await handleExamModeMessage({
       storage,
@@ -5800,6 +5806,23 @@ async function handleAiFeedbackButton({ interaction, storage }) {
     console.error(`Failed to save AI feedback ${id}:`, error);
   });
 
+  await persistAiLearningLesson({
+    storage,
+    guildId: ticket.guildId,
+    channelId,
+    authorId: interaction.user.id,
+    authorName: interaction.user.username,
+    sourceId: id,
+    sourceMessage: reason,
+    detection: {
+      detected: true,
+      category: positive ? 'general' : 'wrong_answer',
+      severity: positive ? 'low' : 'medium',
+      confidence: 100,
+      detectedBy: 'dm_feedback'
+    }
+  });
+
   await storage.addGuildLog?.({
     guildId: ticket.guildId,
     guildName: ticket.guildName,
@@ -8221,9 +8244,178 @@ async function notifyStaffRole(message, guildConfig, ticket, reason) {
   }
 }
 
-async function maybeRecordAiQualitySignal({ storage, message, ticket, guildConfig }) {
-  if (typeof storage.addAiQualitySignal !== 'function') return;
+async function handleTicketReportMessage({ storage, message, ticket, guildConfig }) {
+  if (!isUserReportMessage(message.content)) return false;
 
+  const transcript = await storage.listTranscriptMessages(message.channel.id, { limit: 36 }).catch(() => []);
+  const userMessages = transcript
+    .filter((entry) => entry.role === 'user' || (!entry.role && !entry.authorBot))
+    .map((entry) => String(entry.content ?? '').trim())
+    .filter(Boolean);
+  const combinedUserText = userMessages.concat([String(message.content ?? '')]).join('\n');
+  const targetUser = resolveReportedUser(message, userMessages);
+  const incident = extractReportedIncident(combinedUserText);
+  const targetLabel = targetUser?.id ? '<@' + targetUser.id + '>' : 'el usuario implicado';
+
+  if (!targetUser?.id || !incident) {
+    const missing = [];
+    if (!targetUser?.id) missing.push('la mención o ID del usuario implicado');
+    if (!incident) missing.push('qué ocurrió exactamente');
+    const prompt = missing.length === 2
+      ? 'Pásame la mención o ID del usuario implicado y qué ocurrió exactamente.'
+      : 'Solo me falta ' + missing[0] + '.';
+    const reply = await sendTicketResponse(message, {
+      content: [
+        '<@' + message.author.id + '>, entendido: te ayudo con el reporte.',
+        prompt,
+        'Si tienes la hora aproximada, una captura o un enlace al mensaje, añádelo también; no borres pruebas.'
+      ].join('\n'),
+      allowedMentions: { users: [message.author.id], roles: [] }
+    });
+    await saveTranscript(storage, reply, 'assistant');
+    await markTicketReportState({ storage, message, stage: 'collecting', targetUserId: targetUser?.id, incident });
+    await persistAiLearningLesson({
+      storage,
+      guildId: message.guild.id,
+      channelId: message.channel.id,
+      authorId: message.author.id,
+      authorName: message.author.username,
+      sourceId: message.id + '-report-collecting',
+      sourceMessage: message.content,
+      detection: { detected: true, category: 'report', severity: 'medium', confidence: 95, detectedBy: 'report_flow' }
+    });
+    return true;
+  }
+
+  const reason = 'Reporte de ' + targetLabel + ' por ' + incident + '.';
+  const mentionStaff = await registerTicketEscalation({ storage, message, guildConfig, ticket, reason });
+  const staffStatus = mentionStaff
+    ? 'He avisado al staff para que lo revise.'
+    : 'He dejado el reporte preparado para revisión del staff.';
+  const evidenceHint = hasReportEvidence(message, transcript)
+    ? 'Ya veo que hay pruebas adjuntas; el staff podrá revisarlas.'
+    : 'Si tienes la hora aproximada, una captura o un enlace al mensaje, envíalo aquí para que el staff tenga más contexto.';
+  const reply = await sendTicketResponse(message, {
+    content: [
+      '<@' + message.author.id + '>, he registrado el reporte de ' + targetLabel + ' por **' + incident + '**.',
+      staffStatus,
+      evidenceHint
+    ].join('\n'),
+    allowedMentions: {
+      users: [message.author.id, targetUser.id],
+      roles: mentionStaff && guildConfig.staffRoleId ? [guildConfig.staffRoleId] : []
+    }
+  });
+  await saveTranscript(storage, reply, 'assistant');
+  await markTicketReportState({ storage, message, stage: 'escalated', targetUserId: targetUser.id, incident });
+  await persistAiLearningLesson({
+    storage,
+    guildId: message.guild.id,
+    channelId: message.channel.id,
+    authorId: message.author.id,
+    authorName: message.author.username,
+    sourceId: message.id + '-report-escalated',
+    sourceMessage: message.content,
+    detection: { detected: true, category: 'report', severity: 'high', confidence: 98, detectedBy: 'report_flow' }
+  });
+  return true;
+}
+
+function isUserReportMessage(content = '') {
+  const text = normalizeText(content);
+  if (!text) return false;
+  const mentionsTarget = /<@!?\d{16,24}>|@(?:\w[\w-]{1,31})/u.test(text);
+  const hasTargetWord = /\b(?:usuario|user|miembro|member|persona|alguien|moderador|moderadora)\b/.test(text);
+  const aboutAi = /\b(?:nexa|nexadesk|ia|ai|bot|asistente|robot)\b/.test(text);
+  if (aboutAi && !hasTargetWord && !mentionsTarget) return false;
+
+  const reportVerb = /\b(?:reportar|reporte|reporto|denunciar|denuncia|denuncio|queja|quejarme)\b/.test(text);
+  const incident = /\b(?:insult(?:o|os|ar|ado|ada|aron)?|amenaz(?:a|as|ar|ado|aron)?|acoso|acosar|abuso|abusar|spam|estafa|phishing|racismo|discriminacion|chantaje|dox(?:xing)?)\b/.test(text);
+  const explicitTarget = hasTargetWord || mentionsTarget;
+  const firstPersonIncident = /\b(?:me|mi|nos|nuestro|nuestra)\b/.test(text);
+  return (reportVerb && explicitTarget) || (incident && (explicitTarget || firstPersonIncident));
+}
+
+function resolveReportedUser(message, userMessages = []) {
+  const mentioned = [...(message.mentions?.users?.values?.() ?? [])]
+    .find((user) => user.id !== message.client?.user?.id);
+  if (mentioned) return { id: mentioned.id, label: mentioned.tag ?? mentioned.username ?? mentioned.id };
+
+  const currentIds = extractRawIds(message.content)
+    .filter((id) => id !== message.author?.id && id !== message.guild?.id && id !== message.client?.user?.id);
+  if (currentIds.length) return { id: currentIds[0], label: currentIds[0] };
+
+  for (const text of [...userMessages].reverse()) {
+    const ids = [...String(text).matchAll(/<@!?(\d{16,24})>/g)].map((match) => match[1]);
+    if (ids.length) return { id: ids[0], label: ids[0] };
+  }
+  return null;
+}
+
+function extractReportedIncident(text = '') {
+  const normalized = normalizeText(text);
+  if (/\binsult/.test(normalized)) return 'insultos';
+  if (/\bamenaz/.test(normalized)) return 'amenazas';
+  if (/\bacos|\babus/.test(normalized)) return 'acoso o abuso';
+  if (/\b(?:estafa|phishing|chantaje|dox|racismo|discriminacion)/.test(normalized)) return 'conducta grave';
+  if (/\bspam/.test(normalized)) return 'spam';
+  return '';
+}
+
+function hasReportEvidence(message, transcript = []) {
+  if (message.attachments?.size) return true;
+  return transcript.some((entry) => /\[adjunto:|\[attachment:|captura|imagen|video|enlace al mensaje/i.test(String(entry.content ?? '')));
+}
+
+async function markTicketReportState({ storage, message, stage, targetUserId = null, incident = '' }) {
+  await Promise.resolve(storage.addTranscriptMessage?.({
+    guildId: message.guild.id,
+    channelId: message.channel.id,
+    messageId: REPORT_MARKER + '-' + message.id + '-' + stage,
+    authorId: message.client.user?.id,
+    authorName: message.client.user?.username ?? 'NexaDesk',
+    authorBot: true,
+    role: 'system',
+    content: REPORT_MARKER + ' stage=' + stage + ' target=' + (targetUserId ?? 'pending') + ' incident=' + (incident || 'pending'),
+    createdAt: new Date().toISOString()
+  })).catch((error) => {
+    console.warn('Could not persist report state in ' + message.channel.id + ':', error?.message ?? error);
+  });
+}
+
+async function persistAiLearningLesson({ storage, guildId, channelId, authorId = null, authorName = null, sourceId = null, sourceMessage = '', detection }) {
+  if (typeof storage.addAiLearningLesson !== 'function' || !detection?.detected) return null;
+
+  const lesson = buildAiLearningLesson({
+    message: sourceMessage,
+    category: detection.category,
+    confidence: detection.confidence,
+    severity: detection.severity,
+    source: detection.detectedBy ?? 'quality_signal'
+  });
+  const updatedGuild = await storage.addAiLearningLesson(guildId, lesson).catch((error) => {
+    console.warn('Could not persist AI lesson in guild ' + guildId + ':', error?.message ?? error);
+    return null;
+  });
+  if (!updatedGuild) return null;
+
+  await Promise.resolve(storage.addTranscriptMessage?.({
+    guildId,
+    channelId,
+    messageId: AI_LEARNING_MARKER + '-' + (sourceId ?? Date.now()),
+    authorId,
+    authorName: authorName ?? 'NexaDesk Quality Radar',
+    authorBot: true,
+    role: 'system',
+    content: AI_LEARNING_MARKER + ' category=' + lesson.category + ' source=' + lesson.source + ' confidence=' + lesson.confidence + ' occurrences=' + lesson.occurrences + ' guidance=' + lesson.guidance,
+    createdAt: new Date().toISOString()
+  })).catch((error) => {
+    console.warn('Could not persist AI lesson note in ' + channelId + ':', error?.message ?? error);
+  });
+  return lesson;
+}
+
+async function maybeRecordAiQualitySignal({ storage, message, ticket, guildConfig }) {
   const heuristic = detectAiQualitySignalHeuristic(message.content);
   if (!heuristic.detected) return;
 
@@ -8231,25 +8423,41 @@ async function maybeRecordAiQualitySignal({ storage, message, ticket, guildConfi
   const previousAiMessage = findPreviousAssistantTranscriptMessage(transcript, message.id);
   const detection = heuristic;
 
-  await storage.addAiQualitySignal({
-    id: `ai-quality-${message.id}`,
+  if (typeof storage.addAiQualitySignal === 'function') {
+    await storage.addAiQualitySignal({
+      id: 'ai-quality-' + message.id,
+      guildId: message.guild.id,
+      guildName: guildConfig?.guildName ?? ticket.guildName ?? message.guild.name,
+      channelId: message.channel.id,
+      channelName: message.channel.name ?? ticket.channelName,
+      messageId: message.id,
+      userId: message.author.id,
+      username: message.author.username,
+      category: detection.category,
+      severity: detection.severity,
+      sentiment: detection.sentiment,
+      confidence: detection.confidence,
+      reason: detection.reason,
+      userMessage: buildTranscriptMessageContent(message).slice(0, 2400),
+      previousAiMessage: previousAiMessage?.content?.slice(0, 2400),
+      detectedBy: detection.detectedBy ?? 'heuristic',
+      createdAt: message.createdAt?.toISOString?.() ?? new Date().toISOString()
+    });
+  }
+
+  const lesson = await persistAiLearningLesson({
+    storage,
     guildId: message.guild.id,
-    guildName: guildConfig?.guildName ?? ticket.guildName ?? message.guild.name,
     channelId: message.channel.id,
-    channelName: message.channel.name ?? ticket.channelName,
-    messageId: message.id,
-    userId: message.author.id,
-    username: message.author.username,
-    category: detection.category,
-    severity: detection.severity,
-    sentiment: detection.sentiment,
-    confidence: detection.confidence,
-    reason: detection.reason,
-    userMessage: buildTranscriptMessageContent(message).slice(0, 2400),
-    previousAiMessage: previousAiMessage?.content?.slice(0, 2400),
-    detectedBy: detection.detectedBy ?? 'heuristic',
-    createdAt: message.createdAt?.toISOString?.() ?? new Date().toISOString()
+    authorId: message.author.id,
+    authorName: message.author.username,
+    sourceId: message.id,
+    sourceMessage: message.content,
+    detection
   });
+  if (lesson) {
+    console.log('NexaDesk AI lesson recorded in guild ' + message.guild.id + ': ' + lesson.category + ' (' + lesson.occurrences + ')');
+  }
 }
 
 function findPreviousAssistantTranscriptMessage(transcript = [], currentMessageId = null) {
