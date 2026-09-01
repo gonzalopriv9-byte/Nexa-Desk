@@ -94,10 +94,10 @@ export function createServer({ config, storage, bot, events }) {
   app.get('/terms', (_req, res) => {
     res.type('html').send(renderLegalPage({
       type: 'terms',
-      updatedAt: '14 de mayo de 2026',
-      title: 'Terms and Conditions',
+      updatedAt: '1 de septiembre de 2026',
+      title: 'Términos y condiciones',
       eyebrow: 'NexaDesk Legal',
-      intro: 'Estas condiciones explican como puede usarse NexaDesk, que responsabilidades mantiene cada servidor y que limites tiene el servicio.',
+      intro: 'Estas condiciones describen el uso actual de NexaDesk, las responsabilidades del servidor y los límites del servicio.',
       sections: buildTermsSections()
     }));
   });
@@ -105,10 +105,10 @@ export function createServer({ config, storage, bot, events }) {
   app.get('/privacy', (_req, res) => {
     res.type('html').send(renderLegalPage({
       type: 'privacy',
-      updatedAt: '14 de mayo de 2026',
-      title: 'Privacy Policy',
+      updatedAt: '1 de septiembre de 2026',
+      title: 'Política de privacidad',
       eyebrow: 'NexaDesk Privacy',
-      intro: 'Esta politica resume que datos procesa NexaDesk para funcionar como bot de soporte, seguridad, voz, dashboard y transcripciones.',
+      intro: 'Esta política describe los datos que NexaDesk procesa para funcionar como bot de soporte, seguridad, voz, dashboard, IA y transcripciones.',
       sections: buildPrivacySections()
     }));
   });
@@ -4824,59 +4824,161 @@ function renderLegalPage({ title, eyebrow, intro, updatedAt, sections }) {
 function buildTermsSections() {
   return [
     {
-      title: '1. Aceptacion del servicio',
-      body: 'Al invitar NexaDesk a un servidor, iniciar sesion en la dashboard o usar sus comandos, aceptas estas condiciones en nombre propio o del servidor que administras.'
-    },
-    {
-      title: '2. Que ofrece NexaDesk',
+      title: '1. Identidad y objeto',
       items: [
-        'Bot de Discord para tickets de soporte con IA, escalado a staff, paneles, menus, componentes, transcripciones y configuracion por servidor.',
-        'Compatibilidad con sistemas externos de tickets como Ticket King y canales creados en categorias configuradas.',
-        'Dashboard web con OAuth de Discord para administrar servidores donde tengas permisos.',
-        'Funciones de seguridad como anti-flood, analisis de links, XN Protect Automod, avisos de blacklist global, Anti-bots Top.gg, anti-alts y anti-nuke.',
-        'Funciones premium por servidor como voz con STT/TTS, Modo examen supervisado, IA prioritaria, transcripciones inteligentes, Growth Engine, reviews, Churn Radar, branding e informes.'
+        'NexaDesk es un servicio de soporte para comunidades de Discord que combina un bot, una dashboard web y funciones de automatizacion para tickets.',
+        'El operador del servicio es [PENDIENTE], con domicilio en [PENDIENTE], NIF o identificador fiscal [PENDIENTE] y contacto [PENDIENTE].',
+        'Estos Términos regulan el acceso a la dashboard, el inicio de sesión mediante Discord, la instalación o uso del bot, sus comandos y las funciones de tickets, seguridad, transcripciones, IA, voz y servicios premium.'
       ]
     },
     {
-      title: '3. Responsabilidades del servidor',
+      title: '2. Aceptación y autoridad',
       items: [
-        'El owner o administradores del servidor son responsables de configurar roles, permisos, prompts, paneles y canales adecuados.',
-        'El staff humano debe revisar escalados, avisos de seguridad, blacklist externa y decisiones sensibles antes de tomar medidas definitivas.',
-        'No debes usar NexaDesk para acosar, vigilar indebidamente, extraer datos privados, automatizar abuso o infringir las normas de Discord.',
-        'Debes informar a tus usuarios si usas transcripciones, IA, analisis visual, voz o sistemas de moderacion automatizada en tus tickets.'
+        'Al iniciar sesión, invitar NexaDesk a un servidor, usar sus comandos o utilizar la dashboard, aceptas estos Términos en la medida permitida por la ley aplicable.',
+        'Si actúas en nombre de un servidor, una comunidad o una organización, declaras que tienes autorización suficiente para configurarlo y para impartir instrucciones sobre los datos y contenidos que se introduzcan en NexaDesk.',
+        'Debes cumplir las normas de Discord, la legislación aplicable, los derechos de las personas afectadas y las reglas internas del servidor.',
+        'La edad mínima y las reglas específicas para menores deben completarse según la jurisdicción aplicable: [PENDIENTE].'
       ]
     },
     {
-      title: '4. IA y moderacion',
+      title: '3. Qué ofrece NexaDesk',
       items: [
-        'NexaDesk usa IA para responder tickets, resumir, analizar enlaces, interpretar pruebas visuales cuando este activado y ayudar en la dashboard.',
-        'La IA puede equivocarse, omitir contexto o generar respuestas incompletas. Las decisiones importantes deben ser revisadas por staff humano.',
-        'En casos de autolesion, amenazas, acoso, abuso legal o seguridad critica, NexaDesk intenta escalar a staff, pero no sustituye servicios profesionales o emergencias reales.'
+        'Detectar y gestionar tickets propios o creados por sistemas externos como Ticket King, XN Tickets, Guild Manager u otros paneles compatibles.',
+        'Responder mensajes de tickets mediante IA, mantener contexto, resumir conversaciones, generar informes y escalar asuntos al staff.',
+        'Permitir takeover humano, pausa determinista de la IA, reanudación y cierre de tickets.',
+        'Crear categorías, paneles, menús, componentes y formularios configurados por el servidor.',
+        'Guardar transcripciones, feedback, señales de calidad y aprendizajes operativos asociados a un servidor.',
+        'Analizar texto, enlaces, imágenes o archivos cuando la función correspondiente esté activada.',
+        'Ofrecer funciones de voz, incluida transcripción de voz (STT) y síntesis de voz (TTS), cuando estén activadas y disponibles.',
+        'Ofrecer controles de seguridad como anti-flood, análisis de enlaces, XN Protect, avisos de blacklist, comprobaciones de Top.gg, anti-alt y protecciones anti-nuke.',
+        'Ofrecer dashboard, estadísticas, funciones de crecimiento y módulos premium.',
+        'Proteger el acceso web con Discord OAuth y Cloudflare Turnstile.'
       ]
     },
     {
-      title: '5. Seguridad y servicios externos',
+      title: '4. Discord, permisos y responsabilidad del servidor',
       items: [
-        'XN Protect se usa para blacklist global y automod ofensivo/malicioso. NexaDesk muestra fuente, motivo y pruebas cuando estan disponibles.',
-        'Top.gg se usa como referencia para Anti-bots. NexaDesk solo banea bots por esta capa si Top.gg confirma que no estan listados.',
-        'Groq u otros proveedores compatibles pueden procesar mensajes, imagenes, audio o contexto necesario para prestar funciones de IA.'
+        'NexaDesk opera dentro de Discord y necesita los permisos e intents que el servidor le conceda.',
+        'El owner y los administradores del servidor son responsables de revisar permisos, categorías, roles, canales y configuración, así como de informar a sus usuarios.',
+        'El servidor debe revisar las respuestas de IA, los informes, los avisos de seguridad, los falsos positivos y cualquier acción que pueda afectar a una persona.',
+        'NexaDesk no sustituye al owner, a los administradores ni al staff humano. El servidor mantiene el control sobre usuarios, canales, permisos, moderación y decisiones finales.'
       ]
     },
     {
-      title: '6. Disponibilidad y cambios',
+      title: '5. IA, automatización y revisión humana',
       items: [
-        'NexaDesk se ofrece tal como esta y puede cambiar, pausar funciones, entrar en mantenimiento o modificar limites para proteger estabilidad y costes.',
-        'Las funciones premium pueden activarse o desactivarse por servidor segun plan, configuracion o incidencias tecnicas.',
-        'Podemos actualizar estas condiciones cuando el producto cambie. La version publicada en esta pagina sera la referencia vigente.'
+        'La IA de NexaDesk puede utilizar Google AI Studio como proveedor principal, Groq como fallback y mecanismos locales de emergencia, además de otros proveedores configurados para funciones concretas.',
+        'La ruta efectiva puede cambiar por disponibilidad, límites, errores, tiempo de respuesta o configuración.',
+        'Las respuestas generadas pueden ser incorrectas, incompletas, descontextualizadas, repetitivas o inadecuadas. Las señales de calidad y los aprendizajes operativos no garantizan exactitud.',
+        'No debes basarte exclusivamente en NexaDesk para decisiones médicas, legales, financieras, laborales, de emergencia, de seguridad personal, de expulsión o de sanción.',
+        'Las decisiones importantes deben revisarse por una persona autorizada. En una emergencia real, contacta con servicios de emergencia o moderadores humanos.',
+        'Los controles deterministas de silencio, takeover, reanudación y cierre tienen prioridad frente a una respuesta ordinaria de IA, pero dependen de permisos, conectividad y estado válido del ticket.'
       ]
     },
     {
-      title: '7. Contacto y soporte',
-      body: 'Para dudas, soporte, apelaciones o incidencias, utiliza el servidor oficial de soporte: https://discord.gg/vVXbq7ePEZ'
+      title: '6. Seguridad y moderación',
+      items: [
+        'NexaDesk puede consultar XN Protect, Top.gg y otros servicios para detectar riesgos, bots no listados, abuso, fraude, enlaces sospechosos, alts, flood, cambios peligrosos de configuración o actividad anti-nuke.',
+        'Los resultados de terceros pueden ser incompletos, erróneos, estar desactualizados o no estar disponibles.',
+        'Las acciones automáticas, incluidos avisos, bloqueos, silencios, escalados o baneos, solo deben habilitarse después de revisar la configuración y los permisos.',
+        'El staff debe comprobar los hechos antes de adoptar medidas definitivas. NexaDesk no garantiza que detecte todos los abusos ni que evite todos los falsos positivos.'
+      ]
+    },
+    {
+      title: '7. Contenidos del servidor',
+      items: [
+        'El servidor y sus usuarios conservan sus derechos sobre mensajes, archivos, imágenes, audio y demás contenidos que introduzcan.',
+        'Concedes a NexaDesk únicamente los permisos necesarios para alojar, reproducir, transformar, analizar, transcribir, resumir y transmitir esos contenidos con el fin de prestar las funciones solicitadas.',
+        'No debes introducir información que no tengas derecho a procesar ni enviar datos sensibles innecesarios.',
+        'El owner o administrador debe informar a los usuarios cuando el servidor utilice IA, transcripciones, análisis visual, voz, seguridad automatizada o transcripciones compartidas con staff.'
+      ]
+    },
+    {
+      title: '8. Proveedores externos y transferencias',
+      items: [
+        'Para prestar las funciones, NexaDesk puede comunicarse con Discord, Cloudflare Turnstile, Google AI Studio, Groq, XN Protect, Top.gg, PayPal y otros proveedores configurados.',
+        'Cada proveedor puede aplicar sus propios términos, medidas de seguridad, ubicaciones y políticas de privacidad.',
+        'Algunos proveedores pueden estar fuera del Espacio Económico Europeo. Las transferencias internacionales, garantías aplicables y acuerdos de encargo deben verificarse para la versión definitiva.'
+      ]
+    },
+    {
+      title: '9. Funciones premium y pagos',
+      items: [
+        'NexaDesk puede ofrecer planes, packs o módulos premium por servidor. La dashboard mostrará, cuando corresponda, precio, moneda, impuestos y condiciones de la oferta aplicable.',
+        'El pago puede procesarse mediante PayPal o mediante un enlace de pago manual configurado por el operador.',
+        'NexaDesk puede guardar identificadores de pedido, estado de la compra, servidor asociado, usuario que la solicita, importe, moneda y datos necesarios para validar el acceso premium.',
+        'Los datos completos de tarjeta se procesan por el proveedor de pago y no deben introducirse en NexaDesk.',
+        'Las reglas detalladas de contratación, renovación, cancelación, reembolsos, desistimiento, impuestos y facturación son: [PENDIENTE].'
+      ]
+    },
+    {
+      title: '10. Uso prohibido',
+      items: [
+        'Infringir la ley, las normas de Discord o los derechos de terceros.',
+        'Acosar, amenazar, discriminar, doxxear, vigilar indebidamente o perseguir a personas.',
+        'Procesar o divulgar datos personales sin base legítima o autorización.',
+        'Automatizar abuso, spam, fraude, phishing, malware o extracción masiva de datos.',
+        'Manipular informes, señales de calidad, listas de bloqueo o transcripciones.',
+        'Eludir permisos, límites, protecciones anti-bot o medidas de seguridad.',
+        'Tomar decisiones sensibles exclusivamente mediante IA.',
+        'Usar el servicio para emergencias o como sustituto de profesionales.'
+      ]
+    },
+    {
+      title: '11. Disponibilidad, cambios y mantenimiento',
+      items: [
+        'NexaDesk se ofrece según disponibilidad y puede experimentar errores, latencia, límites de proveedores, mantenimiento, pérdida de conectividad de Discord, fallos de PostgreSQL, indisponibilidad de terceros o cambios de API.',
+        'Podemos modificar, retirar, pausar o sustituir funciones, proveedores, modelos, límites y planes.',
+        'Procuraremos mantener actualizada la información publicada y comunicar cambios relevantes cuando sea razonable.'
+      ]
+    },
+    {
+      title: '12. Transcripciones, datos y eliminación',
+      items: [
+        'Las transcripciones y registros se conservan conforme a la Política de privacidad.',
+        'En la infraestructura de producción basada en PostgreSQL no existe actualmente un plazo fijo automático para borrar todo el historial; puede conservarse mientras sea necesario para prestar el servicio, resolver incidencias, investigar abuso o incidentes de seguridad, atender reclamaciones y cumplir obligaciones legales.',
+        'También puede haber purgas técnicas por capacidad. La retención por investigación o por una posible infracción no autoriza a conservar indiscriminadamente todos los datos sin necesidad ni controles.',
+        'Las solicitudes de revisión o eliminación se tramitan a través del contacto indicado en la Política de privacidad, sin perjuicio de las obligaciones legales y de las instrucciones del servidor responsable.',
+        'Los plazos o criterios objetivos de conservación por categoría están pendientes de completar: [PENDIENTE].'
+      ]
+    },
+    {
+      title: '13. Propiedad intelectual',
+      items: [
+        'NexaDesk, su código, marca, diseño, documentación y componentes propios pertenecen al operador o a sus licenciantes.',
+        'Estos Términos no transfieren propiedad intelectual al usuario.',
+        'Discord, Cloudflare, Google, Groq, XN Protect, Top.gg, PayPal y las demás marcas pertenecen a sus respectivos titulares. NexaDesk no afirma estar afiliado a ellos salvo que se indique expresamente.'
+      ]
+    },
+    {
+      title: '14. Responsabilidad',
+      items: [
+        'En la máxima medida permitida por la ley, NexaDesk no garantiza que el servicio sea ininterrumpido, exacto, seguro o adecuado para una finalidad concreta.',
+        'No respondemos de decisiones del owner o del staff, contenidos de usuarios, permisos mal configurados, indisponibilidad de Discord o terceros, ni daños derivados de utilizar respuestas de IA sin revisión humana.',
+        'Nada de esta cláusula limita los derechos imperativos de consumidores ni la responsabilidad que no pueda excluirse legalmente en España o en la jurisdicción aplicable.'
+      ]
+    },
+    {
+      title: '15. Ley aplicable y contacto',
+      items: [
+        'Estos Términos se interpretan conforme al derecho español, sin perjuicio de las normas imperativas que protejan a consumidores de otros Estados miembros de la Unión Europea.',
+        'Para soporte, incidencias, apelaciones o consultas sobre el servicio, utiliza el servidor oficial: https://discord.gg/vVXbq7ePEZ',
+        'Para consultas legales, contratación, facturación o protección de datos, el contacto del operador será [PENDIENTE] hasta completar la información legal obligatoria.'
+      ]
+    },
+    {
+      title: '16. Cambios de estos Términos',
+      items: [
+        'La versión publicada en /terms indicará la fecha de última actualización.',
+        'Si un cambio es material, procuraremos comunicarlo por un canal razonable antes de que resulte aplicable, cuando la ley lo exija.'
+      ]
     },
     {
       title: 'Nota legal',
-      body: 'Este documento es una politica operativa del proyecto NexaDesk y no constituye asesoramiento legal profesional. Si necesitas cumplimiento legal especifico, revisalo con un especialista.',
+      items: [
+        'Este documento es una política operativa del proyecto NexaDesk y no constituye asesoramiento legal profesional.',
+        'La identidad del operador, contacto formal, reglas comerciales, plazos de conservación y condiciones de proveedores deben completarse y revisarse antes de tratarlo como texto legal definitivo.'
+      ],
       notice: true
     }
   ];
@@ -4885,73 +4987,178 @@ function buildTermsSections() {
 function buildPrivacySections() {
   return [
     {
-      title: '1. Datos que podemos procesar',
+      title: '1. Responsable y alcance',
       items: [
-        'Datos de Discord necesarios para funcionar: IDs de usuario, servidor, canal, mensaje, rol, nombres visibles, avatar y permisos de servidores gestionables.',
-        'Configuracion por servidor: categoria de tickets, rol staff, prompt del servidor, informacion del servidor, paneles, componentes, seguridad, alianzas, crecimiento y premium.',
-        'Contenido de tickets: mensajes, respuestas de formularios, adjuntos enlazados, transcripciones, resumenes, estado del ticket y datos de cierre.',
-        'Datos de voz premium: transcripciones STT, mensajes de voz convertidos a texto, respuestas TTS y metadatos de sala/canal cuando la funcion esta activa.',
-        'Eventos de seguridad: flood, links analizados, resultados de XN Protect Automod, avisos de blacklist, checks de Top.gg, acciones anti-nuke y logs de moderacion.'
+        'El responsable del tratamiento de los datos gestionados por NexaDesk es [PENDIENTE], con domicilio en [PENDIENTE], NIF o identificador fiscal [PENDIENTE] y contacto de privacidad [PENDIENTE].',
+        'NexaDesk es un servicio de soporte para Discord formado por un bot, una dashboard y funciones de IA, transcripción, seguridad, voz y módulos premium.',
+        'Cuando un servidor usa NexaDesk para gestionar mensajes, tickets y usuarios, el owner u organización del servidor puede determinar las finalidades y medios de ese tratamiento. El servidor puede actuar como responsable y NexaDesk como proveedor o encargado, según el caso y el acuerdo aplicable.',
+        'NexaDesk también trata determinados datos como responsable propio para gestionar cuentas de dashboard, seguridad, facturación, prevención del abuso, soporte y funcionamiento del servicio. Esta distribución debe confirmarse jurídicamente para cada modalidad de uso.'
       ]
     },
     {
-      title: '2. Para que usamos los datos',
+      title: '2. Datos de cuenta y Discord OAuth',
       items: [
-        'Responder tickets con IA y mantener contexto conversacional.',
-        'Avisar a staff con resumen cuando la IA detecta que hace falta asistencia humana.',
-        'Guardar transcripciones y valoraciones post-ticket para consulta en dashboard, envio por MD, mejora del soporte y trazabilidad.',
-        'Crear paneles, categorias, menus y componentes configurados por el servidor.',
-        'Proteger servidores con sistemas anti-flood, anti-scam, automod, anti-bots, anti-alts y anti-nuke.',
-        'Mejorar la experiencia de dashboard, estadisticas globales, diagnosticos y funciones premium.'
+        'Al iniciar sesión, NexaDesk puede recibir de Discord el ID de usuario, nombre de usuario, avatar y datos básicos de identidad.',
+        'También puede recibir la lista de servidores comunicada mediante el alcance OAuth guilds y filtrarla para mostrar aquellos en los que puedes gestionar o configurar NexaDesk.',
+        'Puede tratar identificadores, nombres, iconos y datos de titularidad de esos servidores, además de información técnica necesaria para validar OAuth, prevenir fraude y mantener la sesión.',
+        'NexaDesk no recibe tu contraseña de Discord. La autenticación depende de Discord y de sus propios términos y política de privacidad.'
       ]
     },
     {
-      title: '3. Donde se guardan',
+      title: '3. Tickets y contenido de la comunidad',
       items: [
-        'La configuracion, tickets y transcripciones se guardan en PostgreSQL desde el backend de NexaDesk.',
-        'La dashboard usa cookies de sesion firmadas para mantener login con Discord OAuth.',
-        'Los tokens, claves de servicio y secretos se mantienen como variables de entorno del backend y no deben exponerse al cliente.',
-        'Si faltan variables de PostgreSQL en desarrollo, NexaDesk puede usar almacenamiento JSON local.'
+        'El bot puede tratar IDs y nombres de servidores, categorías, canales, mensajes, usuarios y roles.',
+        'Puede tratar autor, fecha, estado, apertura, cierre, escalado, takeover y pausa de IA de un ticket.',
+        'Puede tratar mensajes de usuarios y respuestas del bot o del staff, respuestas de formularios, adjuntos, enlaces, imágenes, archivos, resúmenes e informes.',
+        'Puede tratar transcripciones y enlaces de reproducción o descarga de transcripciones.',
+        'Puede tratar información necesaria para detectar tickets externos y asociarlos a su opener cuando sea posible.',
+        'El contenido enviado por usuarios puede incluir datos personales o categorías especiales que NexaDesk no solicita de forma intencionada. Los administradores deben evitar pedir o conservar datos sensibles innecesarios.'
       ]
     },
     {
-      title: '4. Servicios externos',
+      title: '4. IA, calidad y aprendizaje operativo',
       items: [
-        'Discord proporciona OAuth, datos de servidor, mensajes y acciones del bot.',
-        'Groq u otros proveedores IA pueden recibir fragmentos necesarios para generar respuestas, analizar imagenes, transcribir voz o revisar enlaces.',
-        'XN Protect puede recibir contenido textual o IDs para automod y blacklist global.',
-        'Top.gg puede recibir IDs de bots para comprobar si estan listados antes de aplicar Anti-bots.',
-        'La Raspberry Pi aloja la dashboard publica y ejecuta el worker del bot.'
+        'Para generar respuestas, resúmenes, análisis o acciones sugeridas, NexaDesk puede enviar a proveedores de IA fragmentos del mensaje, historial reciente, instrucciones del servidor, contexto del ticket, enlaces y, cuando la función está activa, imágenes, audio u otros archivos.',
+        'NexaDesk puede registrar señales de calidad de IA, como categoría, severidad, confianza, motivo, mensaje que originó la señal y respuesta anterior.',
+        'También puede guardar aprendizajes operativos agregados o asociados a la configuración del servidor para reducir respuestas repetitivas y mejorar el flujo de soporte.',
+        'Las señales y aprendizajes no deben utilizarse como única base para decisiones con efectos jurídicos o efectos igualmente significativos sobre una persona.'
       ]
     },
     {
-      title: '5. Retencion y control',
+      title: '5. Voz y análisis visual',
       items: [
-        'Las transcripciones se conservan para soporte y auditoria hasta que el owner del proyecto o administradores autorizados las eliminen o se aplique una politica de limpieza.',
-        'Los servidores pueden ajustar prompts, paneles, seguridad y funciones premium desde la dashboard.',
-        'Si quieres pedir revision o eliminacion de datos asociados a un servidor, contacta con soporte aportando ID de servidor y contexto.'
+        'Si un servidor activa las funciones correspondientes, NexaDesk puede tratar audio o mensajes de voz para generar transcripciones STT.',
+        'Puede tratar texto para producir respuestas TTS, imágenes, vídeos, capturas y metadatos necesarios para análisis visual.',
+        'Puede tratar IDs de sala, canal, ticket y participantes necesarios para la función de voz.',
+        'Estas funciones solo deben activarse cuando el servidor tenga una base válida para tratar y comunicar ese contenido.'
       ]
     },
     {
-      title: '6. Seguridad',
+      title: '6. Seguridad y moderación',
       items: [
-        'NexaDesk limita el acceso a dashboard a usuarios con permisos de gestion en el servidor.',
-        'La vault interna requiere codigo dinamico TOTP y no aparece enlazada desde la dashboard normal.',
-        'Las acciones de seguridad intentan evitar baneos automaticos sin certeza cuando dependen de APIs externas.',
-        'Ningun sistema es perfecto: los administradores deben revisar logs, permisos y escalados importantes.'
+        'NexaDesk puede tratar datos relacionados con flood, spam, enlaces sospechosos, imágenes potencialmente maliciosas y señales de abuso.',
+        'Puede tratar resultados de XN Protect Automod y consultas de blacklist global, incluidos IDs de usuario, motivo, duración, estado, evidencias y registros de una entrada.',
+        'Puede consultar Top.gg sobre bots o aplicaciones y registrar el resultado.',
+        'Puede registrar eventos anti-alt, anti-bots, webhooks, cambios de permisos, canales, roles, integraciones y protecciones anti-nuke.',
+        'Puede registrar logs operativos de moderación, alertas, acciones y fallos. Los resultados externos pueden ser incorrectos o no estar disponibles.'
       ]
     },
     {
-      title: '7. Menores, contenido sensible y emergencias',
-      body: 'NexaDesk puede procesar mensajes sensibles dentro de tickets. No debe usarse como sustituto de ayuda profesional, legal, medica o de emergencia. En situaciones de riesgo real, contacta con servicios de emergencia o moderadores humanos inmediatamente.'
+      title: '7. Dashboard, archivos y pagos',
+      items: [
+        'La dashboard puede tratar configuraciones de paneles, componentes, prompts, información del servidor, funciones premium, estadísticas, feedback, imágenes que un administrador suba para paneles y registros de cambios.',
+        'Si se utiliza premium, NexaDesk puede tratar identificadores de pedido, estado de pago, importe, moneda, servidor, usuario solicitante, módulo activado y datos necesarios para conciliación.',
+        'PayPal procesa los datos completos de pago conforme a su propia política; NexaDesk no debe recibir ni almacenar números completos de tarjeta.'
+      ]
     },
     {
-      title: '8. Contacto',
-      body: 'Para consultas de privacidad, soporte o apelaciones, usa el servidor oficial: https://discord.gg/vVXbq7ePEZ'
+      title: '8. Datos técnicos y cookies',
+      items: [
+        'El servicio puede tratar temporalmente IP, fecha y hora, ruta, navegador, errores y metadatos técnicos para seguridad, Turnstile, rate limiting, diagnóstico y funcionamiento.',
+        'nexadesk_oauth_state se utiliza para proteger el flujo OAuth durante aproximadamente diez minutos.',
+        'nexadesk_session es una cookie firmada y HttpOnly de sesión web, con una duración aproximada de doce horas.',
+        'Las áreas de documentación o administración pueden utilizar cookies firmadas adicionales con la duración configurada para ellas.',
+        'Estas cookies son necesarias para prestar las funciones solicitadas, mantener la sesión y proteger el servicio. No se describen cookies publicitarias o analíticas porque no forman parte de la configuración actual revisada.',
+        'Cloudflare Turnstile puede utilizar sus propios mecanismos técnicos de seguridad.'
+      ]
+    },
+    {
+      title: '9. Finalidades y bases jurídicas propuestas',
+      items: [
+        'Cuenta de dashboard: tratar identidad Discord, servidores gestionables y sesión para ejecutar la relación solicitada o contractual; base propuesta: artículo 6.1.b RGPD.',
+        'Bot, tickets, transcripciones y funciones configuradas: tratar mensajes, tickets, configuración, usuarios y canales según las instrucciones del servidor y la prestación del servicio; la modalidad de responsable/encargado debe confirmarse.',
+        'IA y resúmenes: tratar mensajes, contexto y archivos necesarios para ejecutar el servicio y, cuando corresponda, el interés legítimo; la base y la transparencia deben confirmarse.',
+        'Seguridad, antiabuso, blacklist, diagnóstico y prevención de fraude: tratar IDs, eventos, IP técnica, logs y evidencias por interés legítimo en seguridad y continuidad u obligación legal cuando corresponda.',
+        'Calidad y aprendizajes operativos: tratar señales, respuesta previa, contexto limitado y configuración por interés legítimo o ejecución del servicio, sujeto a minimización y revisión.',
+        'Pagos y premium: tratar pedido, pago, usuario, servidor, importe y estado para ejecutar el contrato y cumplir obligaciones legales.',
+        'Soporte, reclamaciones y derechos: tratar los datos incluidos en la solicitud y los registros necesarios por ejecución del servicio, obligación legal o interés legítimo.',
+        'Cuando el tratamiento se base en consentimiento, podrás retirarlo en cualquier momento sin afectar a la licitud del tratamiento anterior. Retirar un consentimiento puede impedir una función concreta.'
+      ]
+    },
+    {
+      title: '10. Proveedores y destinatarios',
+      items: [
+        'Discord: OAuth, identidad, servidores, bot y operaciones de Discord; pueden tratarse IDs, nombres, servidores, canales, mensajes, permisos y eventos necesarios.',
+        'Cloudflare Turnstile y Cloudflare Tunnel: protección anti-bot y transporte o proxy de la web; pueden tratarse IP, señales técnicas, navegador, solicitudes y datos necesarios para seguridad.',
+        'Google AI Studio: proveedor primario de generación y, si se configura, análisis multimodal; pueden enviarse prompts, contexto, instrucciones, mensajes, imágenes o archivos necesarios.',
+        'Groq: fallback de generación, visión, STT o TTS; pueden enviarse prompts, contexto, imágenes, audio y texto necesarios.',
+        'XN Protect: blacklist global y automod; pueden enviarse IDs, señales, texto o metadatos necesarios para la consulta.',
+        'Top.gg: comprobación de bots listados; pueden enviarse IDs de bots y el resultado de la consulta.',
+        'PayPal: checkout y captura de pagos premium; pueden tratarse datos de pedido, importe, moneda, estado y cuenta de pago según PayPal.',
+        'PostgreSQL autogestionado por el operador: almacenamiento principal de configuración, tickets y transcripciones.',
+        'Los proveedores pueden cambiar por disponibilidad, seguridad, costes o evolución del producto. La versión definitiva debe verificar cada acuerdo, subencargo, ubicación, política, conservación y transferencia.'
+      ]
+    },
+    {
+      title: '11. Transferencias internacionales',
+      items: [
+        'Algunos proveedores pueden tratar datos fuera del Espacio Económico Europeo.',
+        'No debe afirmarse que una transferencia está cubierta por adecuación, cláusulas contractuales tipo u otra garantía hasta comprobar la documentación vigente del proveedor y el contrato aplicable.',
+        'La versión final deberá identificar, cuando sea necesario, las garantías utilizadas y cómo obtener información adicional.'
+      ]
+    },
+    {
+      title: '12. Conservación',
+      items: [
+        'En producción, NexaDesk utiliza PostgreSQL para configuración, tickets, transcripciones, señales de calidad, aprendizajes operativos, seguridad, feedback y funciones premium.',
+        'La tabla de transcripciones no aplica actualmente un plazo fijo automático ni un límite global de antigüedad. El almacenamiento JSON de fallback conserva como máximo los últimos 500 mensajes por canal, pero no es el backend principal de producción.',
+        'Los datos se conservarán mientras sean necesarios para prestar y proteger el servicio, mantener el contexto del ticket, investigar abuso o incidentes de seguridad, resolver reclamaciones, ejercer o defender derechos y cumplir obligaciones legales.',
+        'El operador puede ejecutar purgas técnicas por capacidad de la base de datos.',
+        'Una investigación concreta o una obligación legal puede justificar conservar determinados registros limitados durante más tiempo, con acceso restringido. La posibilidad abstracta de que un dato pueda servir para investigar un delito no justifica conservar indiscriminadamente todos los datos.',
+        'Los plazos o criterios objetivos de conservación por categoría están pendientes de completar: [PENDIENTE].'
+      ]
+    },
+    {
+      title: '13. Acceso y control dentro del servicio',
+      items: [
+        'El acceso a la dashboard se limita mediante Discord OAuth y la comprobación de servidores que el usuario puede gestionar.',
+        'Las transcripciones y datos de tickets se exponen a usuarios autorizados por el servidor y a los enlaces firmados o mecanismos de acceso previstos por NexaDesk.',
+        'Los administradores del servidor deben controlar permisos, informar a sus usuarios y solicitar la eliminación de datos que ya no sean necesarios.',
+        'NexaDesk puede conservar una parte limitada cuando exista obligación legal, investigación de seguridad, reclamación o necesidad de defender derechos.'
+      ]
+    },
+    {
+      title: '14. Derechos de las personas',
+      items: [
+        'Según la base jurídica y el papel de cada parte, puedes solicitar acceso, rectificación, supresión, limitación del tratamiento, oposición, portabilidad cuando sea aplicable y retirada del consentimiento.',
+        'También tienes derecho a no quedar sujeto a una decisión basada únicamente en tratamiento automatizado cuando produzca efectos jurídicos o efectos igualmente significativos, salvo las excepciones legales.',
+        'Para ejercer derechos, utiliza temporalmente el servidor oficial de soporte de NexaDesk: https://discord.gg/vVXbq7ePEZ e indica que se trata de una solicitud de privacidad.',
+        'El contacto formal de privacidad será [PENDIENTE]. Si el tratamiento corresponde principalmente a un servidor cliente, podremos pedir que la solicitud se dirija también a su owner o administrador.',
+        'También puedes presentar una reclamación ante la Agencia Española de Protección de Datos (AEPD) o ante la autoridad de control competente.'
+      ]
+    },
+    {
+      title: '15. Seguridad',
+      items: [
+        'NexaDesk aplica medidas técnicas y organizativas proporcionales al servicio, que pueden incluir cookies firmadas y HttpOnly, control de acceso por servidor, protección Turnstile, variables de entorno para secretos, permisos de base de datos, registros de seguridad y controles antiabuso.',
+        'Ningún sistema conectado a Internet es completamente seguro. No envíes secretos ni credenciales en tickets.',
+        'Si detectas una vulnerabilidad o una exposición de datos, comunícala por el canal oficial y evita divulgarla públicamente mientras se investiga.'
+      ]
+    },
+    {
+      title: '16. Menores y contenido sensible',
+      items: [
+        'NexaDesk no solicita intencionadamente categorías especiales de datos ni está diseñado para sustituir a servicios médicos, legales, psicológicos, financieros o de emergencia.',
+        'Los owners y administradores deben establecer reglas adecuadas para sus comunidades y cumplir las restricciones de edad y protección de menores que les sean aplicables.',
+        'La edad mínima y el procedimiento específico para solicitudes relacionadas con menores son: [PENDIENTE].'
+      ]
+    },
+    {
+      title: '17. Cambios y contacto',
+      items: [
+        'Podemos actualizar esta Política cuando cambien el producto, los proveedores, las finalidades o las obligaciones legales.',
+        'La versión publicada en /privacy mostrará la fecha de última actualización. Cuando el cambio sea material, procuraremos comunicarlo por un medio razonable cuando sea necesario.',
+        'Soporte temporal y solicitudes de privacidad: servidor oficial de NexaDesk, https://discord.gg/vVXbq7ePEZ.',
+        'Responsable del tratamiento: [PENDIENTE]. Contacto de privacidad: [PENDIENTE].',
+        'Autoridad de control española: Agencia Española de Protección de Datos, https://www.aepd.es/.'
+      ]
     },
     {
       title: 'Nota legal',
-      body: 'Esta politica es una descripcion operativa de privacidad para NexaDesk y no sustituye asesoramiento legal profesional.',
+      items: [
+        'Esta política es una descripción operativa de privacidad para NexaDesk y no sustituye asesoramiento legal profesional.',
+        'La identidad del responsable, el contacto formal, los roles de responsable/encargado, los proveedores, las transferencias y los plazos de conservación deben verificarse antes de tratarla como política definitiva.'
+      ],
       notice: true
     }
   ];
