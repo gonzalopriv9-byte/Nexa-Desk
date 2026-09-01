@@ -630,10 +630,15 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
       ticket = checkedTicket ?? ticket;
     }
 
-    if (isTicketCloseRequest(message.content)) {
-      await handleNaturalCloseRequest({ client, storage, message, ticket, guildConfig, config });
-      return;
-    }
+    const deterministicControl = await handleDeterministicTicketControl({
+      client,
+      storage,
+      message,
+      ticket,
+      guildConfig,
+      config
+    });
+    if (deterministicControl.handled) return;
 
     const handledByReportFlow = await handleTicketReportMessage({ storage, message, ticket, guildConfig });
     if (handledByReportFlow) return;
@@ -6836,6 +6841,89 @@ async function shouldStaySilentInTicket({ storage, message, ticket, guildConfig,
   }
 
   return false;
+}
+
+function isDeterministicSilenceRequest(content) {
+  const normalized = normalizeText(content);
+  return [
+    /^\s*(?:ya\s+)?callate\b/,
+    /^\s*(?:deja\s+de\s+responder|deja\s+de\s+hablar|no\s+respondas|silencio|para\s+ya)\b/,
+    /\b(?:nexa|nexadesk)\b.{0,48}\b(?:callate|deja\s+de\s+responder|deja\s+de\s+hablar|no\s+respondas|quedate\s+en\s+silencio|silencio|para\s+ya)\b/
+  ].some((pattern) => pattern.test(normalized));
+}
+
+function isDeterministicTakeoverRequest(content) {
+  const normalized = normalizeText(content);
+  return [
+    /\b(?:nexa|nexadesk)\b.{0,48}\b(?:dejame\s+a\s+mi|yo\s+me\s+encargo|me\s+encargo\s+yo|yo\s+lo\s+llevo|lo\s+llevo\s+yo|yo\s+sigo|me\s+quedo\s+yo|no\s+necesito\s+tu\s+ayuda|no\s+hace\s+falta\s+tu\s+ayuda)\b/,
+    /^\s*(?:dejame\s+a\s+mi|yo\s+me\s+encargo|me\s+encargo\s+yo|yo\s+lo\s+llevo|lo\s+llevo\s+yo|yo\s+sigo)\b/
+  ].some((pattern) => pattern.test(normalized));
+}
+
+async function handleDeterministicTicketControl({ client, storage, message, ticket, guildConfig, config }) {
+  if (!ticket || isClosedTicket(ticket)) return { handled: false, ticket };
+
+  // Close always wins over any other interpretation and uses the existing permission/transcript flow.
+  if (isTicketCloseRequest(message.content)) {
+    await handleNaturalCloseRequest({ client, storage, message, ticket, guildConfig, config });
+    return { handled: true, ticket };
+  }
+
+  const isStaff = isConfiguredStaffMember(message.member, message.author, guildConfig);
+  const canControl = isStaff || isTicketOpener(message, ticket) || !ticket.openedBy;
+  const isResumeRequest = isStaffHandoffFinish(message.content) && isAiDisabledTicket(ticket);
+
+  if (isResumeRequest) {
+    // Only the opener, the actor who paused the AI, or configured staff may resume it.
+    const canResume = isStaff
+      || isTicketOpener(message, ticket)
+      || String(ticket.aiDisabledBy ?? '') === String(message.author.id);
+    if (!canResume) return { handled: true, ticket };
+
+    await markStaffHandoffState(storage, message, 'finished', message.author.id);
+    const updatedTicket = await storage.updateTicket(ticket.channelId, {
+      status: 'open',
+      aiDisabled: false,
+      aiDisabledBy: null,
+      aiDisabledAt: null
+    }).catch((error) => {
+      console.error('Failed to resume AI from deterministic control in ' + ticket.channelId + ':', error);
+      return null;
+    });
+    const reply = await sendTicketResponse(message, {
+      content: EMOJIS.check + ' Perfecto, vuelvo a atender este ticket.',
+      allowedMentions: { parse: [], repliedUser: false }
+    });
+    await saveTranscript(storage, reply, 'assistant');
+    return { handled: true, ticket: updatedTicket ?? ticket };
+  }
+
+  const silenceRequested = isDeterministicSilenceRequest(message.content);
+  const takeoverRequested = isDeterministicTakeoverRequest(message.content);
+  if (!silenceRequested && !takeoverRequested) return { handled: false, ticket };
+
+  // An already paused ticket must not generate another acknowledgement or wake the AI.
+  if (isAiDisabledTicket(ticket)) return { handled: true, ticket };
+  if (!canControl) return { handled: false, ticket };
+
+  await pauseAiForHumanTakeover({
+    storage,
+    message,
+    ticket,
+    reason: takeoverRequested
+      ? 'El usuario solicito continuar el ticket sin respuestas automaticas.'
+      : 'El usuario solicito que NexaDesk dejara de responder.',
+    actorId: message.author.id
+  });
+
+  const reply = await sendTicketResponse(message, {
+    content: takeoverRequested
+      ? 'Vale, te dejo continuar. Escribe **Nexa, he terminado** cuando quieras que vuelva a atenderlo.'
+      : 'Entendido. Pauso la IA en este ticket y dejo que continues.',
+    allowedMentions: { parse: [], repliedUser: false }
+  });
+  await saveTranscript(storage, reply, 'assistant');
+  return { handled: true, ticket };
 }
 
 async function handleStaffHandoffMessage({ storage, message, ticket, guildConfig, client }) {
