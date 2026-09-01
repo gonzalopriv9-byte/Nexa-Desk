@@ -16,6 +16,14 @@ import { captureGuildBackup, createBot, createTicketCategory, createTicketPanel,
 import { createServer } from './server.js';
 import { createDiscordRestActions } from './discord-rest-actions.js';
 
+const LEGACY_GROQ_MODEL = 'llama-3.1-8b-instant';
+const EFFECTIVE_GROQ_MODEL = String(config.GROQ_MODEL).trim() === LEGACY_GROQ_MODEL
+  ? 'openai/gpt-oss-20b'
+  : config.GROQ_MODEL;
+if (EFFECTIVE_GROQ_MODEL !== config.GROQ_MODEL) {
+  console.warn(`Deprecated GROQ_MODEL detected; using ${EFFECTIVE_GROQ_MODEL} instead.`);
+}
+
 process.on('unhandledRejection', (reason) => {
   console.error('Unhandled rejection:', reason);
 });
@@ -35,6 +43,7 @@ const supportAgent = new SupportAgent({
   aiClient,
   storage,
   maxHistoryMessages: config.AI_MAX_HISTORY_MESSAGES,
+  serverContextTimeoutMs: config.AI_SERVER_CONTEXT_TIMEOUT_MS,
   visualAnalyzer
 });
 
@@ -133,7 +142,7 @@ function createGroqFallbackClient() {
   if (config.GROQ_API_KEY) {
     providers.push(createAiProvider('groq-primary', new GroqClient({
       apiKey: config.GROQ_API_KEY,
-      model: config.GROQ_MODEL,
+      model: EFFECTIVE_GROQ_MODEL,
       visionModel: config.GROQ_VISION_MODEL
     })));
   }
@@ -141,7 +150,7 @@ function createGroqFallbackClient() {
   for (const [index, apiKey] of parseFallbackKeys(config.GROQ_FALLBACK_API_KEYS).entries()) {
     providers.push(createAiProvider(`groq-backup-${index + 1}`, new GroqClient({
       apiKey,
-      model: config.GROQ_MODEL,
+      model: EFFECTIVE_GROQ_MODEL,
       visionModel: config.GROQ_VISION_MODEL
     })));
   }
@@ -160,7 +169,8 @@ function createGroqFallbackClient() {
   }
 
   return new FallbackAiClient(providers, {
-    generateTimeoutMs: config.AI_PROVIDER_TIMEOUT_MS
+    generateTimeoutMs: config.AI_PROVIDER_TIMEOUT_MS,
+    providerCooldownMs: config.AI_PROVIDER_COOLDOWN_MS
   });
 }
 
