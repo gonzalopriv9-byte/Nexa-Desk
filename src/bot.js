@@ -61,6 +61,7 @@ import { SecurityManager, SECURITY_LEVELS, normalizeSecurityConfig, normalizeSec
 import { analyzeGuildChannelsForDiscovery, hasUsefulDiscovery, normalizeChannelNameForDiscovery, normalizeDiscoveryConfig } from './server-discovery.js';
 import { buildTranscriptReplayUrl } from './transcripts.js';
 import { hasVisualAttachments } from './ai/visual-analyzer.js';
+import { detectAiQualitySignalHeuristic } from './ai-quality.js';
 import { createTicketFlowCard } from './welcome-card.js';
 import { formatWelcomeTemplate as formatMemberWelcomeTemplate, normalizeWelcomeConfig } from './welcome.js';
 import { XNPROTECT_BLACKLIST_CREDIT, checkXnProtectGlobalBan } from './xnprotect-blacklist.js';
@@ -8220,19 +8221,15 @@ async function notifyStaffRole(message, guildConfig, ticket, reason) {
   }
 }
 
-async function maybeRecordAiQualitySignal({ storage, supportAgent, message, ticket, guildConfig }) {
+async function maybeRecordAiQualitySignal({ storage, message, ticket, guildConfig }) {
   if (typeof storage.addAiQualitySignal !== 'function') return;
-  if (typeof supportAgent.detectAiQualitySignal !== 'function') return;
 
-  const transcript = await storage.listTranscriptMessages(message.channel.id).catch(() => []);
+  const heuristic = detectAiQualitySignalHeuristic(message.content);
+  if (!heuristic.detected) return;
+
+  const transcript = await storage.listTranscriptMessages(message.channel.id, { limit: 24 }).catch(() => []);
   const previousAiMessage = findPreviousAssistantTranscriptMessage(transcript, message.id);
-  const detection = await supportAgent.detectAiQualitySignal({
-    message,
-    ticket,
-    guildConfig,
-    previousAiMessage
-  });
-  if (!detection?.detected) return;
+  const detection = heuristic;
 
   await storage.addAiQualitySignal({
     id: `ai-quality-${message.id}`,
@@ -8250,7 +8247,7 @@ async function maybeRecordAiQualitySignal({ storage, supportAgent, message, tick
     reason: detection.reason,
     userMessage: buildTranscriptMessageContent(message).slice(0, 2400),
     previousAiMessage: previousAiMessage?.content?.slice(0, 2400),
-    detectedBy: detection.detectedBy ?? 'ai',
+    detectedBy: detection.detectedBy ?? 'heuristic',
     createdAt: message.createdAt?.toISOString?.() ?? new Date().toISOString()
   });
 }
