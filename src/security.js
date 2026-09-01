@@ -218,10 +218,10 @@ export class SecurityManager {
     return runtime.security;
   }
 
-  async handleMessageCreate(message) {
+  async handleMessageCreate(message, guildConfigOverride = null) {
     if (!message.guild || message.author?.id === this.client.user?.id) return false;
 
-    const guildConfig = await this.storage.getGuildConfig(message.guild.id);
+    const guildConfig = guildConfigOverride ?? await this.storage.getGuildConfig(message.guild.id);
     const security = this.getRuntimeSecurity(guildConfig, message.guild);
     if (!security.enabled) return false;
 
