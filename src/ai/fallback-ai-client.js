@@ -7,6 +7,8 @@ export class FallbackAiClient {
       transcribeAudio: Number(options.transcribeAudioTimeoutMs ?? 25000),
       synthesizeSpeech: Number(options.synthesizeSpeechTimeoutMs ?? 25000)
     };
+    this.providerCooldownMs = Number(options.providerCooldownMs ?? 60000);
+    this.providerCooldowns = new Map();
   }
 
   async generate(input) {
@@ -32,7 +34,11 @@ export class FallbackAiClient {
     }
 
     let lastError = null;
-    for (const [index, provider] of candidates.entries()) {
+    const now = Date.now();
+    const readyCandidates = candidates.filter((provider) => (this.providerCooldowns.get(provider.name) ?? 0) <= now);
+    const orderedCandidates = readyCandidates.length ? readyCandidates : candidates;
+
+    for (const [index, provider] of orderedCandidates.entries()) {
       const startedAt = Date.now();
       try {
         const result = await withProviderTimeout(
@@ -47,6 +53,7 @@ export class FallbackAiClient {
           error.status = 502;
           throw error;
         }
+        this.providerCooldowns.delete(provider.name);
         const elapsed = Date.now() - startedAt;
         if (method === 'generate' && elapsed > 5000) {
           console.warn(`AI ${method} provider ${provider.name} answered slowly in ${elapsed}ms.`);
@@ -56,9 +63,10 @@ export class FallbackAiClient {
         lastError = error;
         const elapsed = Date.now() - startedAt;
         console.warn(`AI ${method} provider ${provider.name} failed after ${elapsed}ms: ${compactAiError(error)}`);
-        if (!shouldFallbackAiError(error) || index === candidates.length - 1) {
+        if (!shouldFallbackAiError(error) || index === orderedCandidates.length - 1) {
           throw decorateAiFallbackError(error, provider.name, method);
         }
+        this.providerCooldowns.set(provider.name, Date.now() + Math.max(5000, this.providerCooldownMs));
         console.warn(`AI ${method} provider ${provider.name} hit a recoverable issue. Trying fallback provider.`);
       }
     }
