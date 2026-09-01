@@ -13,7 +13,8 @@
     "db:setup": "bash scripts/setup-postgres.sh",
     "db:migrate:json": "node scripts/migrate-json-to-postgres.js",
     "db:backup": "bash scripts/backup-postgres.sh",
-    "db:test": "node scripts/test-database.js"
+    "db:test": "node scripts/test-database.js",
+    "test:turnstile": "node scripts/test-turnstile.js"
   },
   "dependencies": {
     "@discordjs/voice": "^0.19.2",
