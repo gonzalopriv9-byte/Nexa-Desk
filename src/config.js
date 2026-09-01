@@ -66,7 +66,7 @@ const schema = z.object({
   AI_LOCAL_FALLBACK_ENABLED: envBoolean.default(true),
   GOOGLE_AI_STUDIO_API_KEY: z.string().optional().default(''),
   GEMINI_API_KEY: z.string().optional().default(''),
-  GOOGLE_AI_STUDIO_MODEL: z.string().default('gemini-2.5-flash-lite'),
+  GOOGLE_AI_STUDIO_MODEL: z.string().default('gemini-3.5-flash-lite'),
   GOOGLE_AI_STUDIO_THINKING_BUDGET: z.coerce.number().int().min(0).max(24576).default(0),
   GROQ_API_KEY: z.string().optional(),
   GROQ_FALLBACK_API_KEYS: z.string().optional().default(''),
