@@ -6870,7 +6870,7 @@ async function handleDeterministicTicketControl({ client, storage, message, tick
   }
 
   const isStaff = isConfiguredStaffMember(message.member, message.author, guildConfig);
-  const canControl = isStaff || isTicketOpener(message, ticket) || !ticket.openedBy;
+  const canControl = isStaff || isTicketOpener(message, ticket);
   const isResumeRequest = isStaffHandoffFinish(message.content) && isAiDisabledTicket(ticket);
 
   if (isResumeRequest) {
