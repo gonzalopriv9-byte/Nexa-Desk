@@ -119,7 +119,7 @@ function createAiClient() {
 }
 
 function createVisualAnalyzer() {
-  if (!config.AI_VISUAL_ANALYSIS) return null;
+  if (!config.AI_VISUAL_ANALYSIS || (!getGoogleApiKey() && !hasGroqProvider())) return null;
 
   return new VisualAnalyzer({
     visionClient: config.AI_PROVIDER === 'google-ai-studio'
