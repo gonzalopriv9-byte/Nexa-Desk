@@ -80,6 +80,7 @@ export class SupportAgent {
         needsNaturalnessCorrection ? [
           'CRITICAL STYLE CORRECTION:',
           'Rewrite the answer so it sounds like a natural Discord support agent, not a questionnaire.',
+          'If the latest message reports an insult, threat, harassment, spam or another incident involving a user, acknowledge that report and ask only for the missing target or minimum evidence; never restart with a generic waiting phrase.',
           'Use 2-4 short sentences. Give useful context or next steps first. Ask at most ONE question, only if it is necessary.',
           'Do not say you cannot help unless it is genuinely impossible or sensitive. Do not ask what language to use.',
           'If the answer depends on staff/server policy and context is insufficient, say that staff can confirm it instead of inventing.'
@@ -1598,7 +1599,7 @@ function shouldRetryForNaturalness(answer = '', latestContent = '') {
   const refusalNoise = /\b(no puedo ayudarte con eso|no puedo entender tu mensaje|repite(?:lo)?|idioma quieres)\b/iu.test(text);
   const staleTopicAnswer = /\b(no\s+especificaste|estabas\s+buscando\s+ayuda|la\s+version\s+actual\s+.*\bmisma\b|la\s+version\s+actual\s+.*\bigual\b)\b/iu.test(normalizeKnowledgeText(text))
     && /\b(actualizacion|actualizaciones|version|changelog|novedades|incluye|incluia|update|release)\b/iu.test(latest);
-  const genericLoop = /\b(i\s+am\s+with\s+you|estoy\s+contigo|send\s+me\s+the\s+key\s+detail|pasame\s+el\s+dato\s+clave)\b/iu.test(normalizeKnowledgeText(text));
+  const genericLoop = /\b(i\s+am\s+with\s+you|estoy\s+contigo|sigo\s+contigo|send\s+me\s+the\s+key\s+detail|pasame\s+el\s+(?:dato\s+clave|detalle\s+principal))\b/iu.test(normalizeKnowledgeText(text));
   const latestIsTiny = latest.split(/\s+/).filter(Boolean).length <= 3;
 
   return staleTopicAnswer || genericLoop || refusalNoise || questionCount >= 3 || (asksForTooMuch && (questionCount >= 1 || latestIsTiny));
