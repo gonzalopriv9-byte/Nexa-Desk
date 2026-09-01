@@ -95,6 +95,8 @@ if (config.BOT_HA_ENABLED) {
 }
 
 function createAiClient() {
+  console.log(`NexaDesk AI route: primary=${config.AI_PROVIDER} google=${getGoogleApiKey() ? 'configured' : 'missing'} groq=${hasGroqProvider() ? 'configured' : 'missing'} local=${config.AI_LOCAL_FALLBACK_ENABLED ? 'enabled' : 'disabled'}`);
+
   if (config.AI_PROVIDER === 'google-ai-studio') {
     return createGoogleFallbackClient();
   }
