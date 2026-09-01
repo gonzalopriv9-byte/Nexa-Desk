@@ -345,3 +345,15 @@ Your ticket bot opens the channel. NexaDesk handles the conversation.
 Growth Engine asks for a rating by DM when a ticket closes. Free servers get internal ratings and dashboard metrics. Premium servers can publish high ratings to a configured review channel and alert staff when low ratings indicate a user may leave.
 
 When NexaDesk joins a new server, it sends the owner a private onboarding message with setup steps, staff instructions, data/transcript details, dashboard link, and the official support server.
+## Cloudflare Turnstile
+
+NexaDesk protects the Discord login with Cloudflare Turnstile. Create a Managed widget for `nexa-desk.com` and `www.nexa-desk.com`, then configure these variables privately on the production host:
+
+```text
+TURNSTILE_ENABLED=true
+TURNSTILE_SITE_KEY=your_public_site_key
+TURNSTILE_SECRET_KEY=your_private_rotated_secret
+TURNSTILE_VERIFY_TIMEOUT_MS=5000
+```
+
+Keep `TURNSTILE_SECRET_KEY` only in the private `.env` file. It must never be committed, printed in logs, or sent through chat. Direct GET requests to `/auth/discord` return to `/login`; OAuth starts only after the server validates the Turnstile response.
