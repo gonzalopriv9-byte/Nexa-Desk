@@ -21,8 +21,15 @@ const LEGACY_GROQ_MODEL = 'llama-3.1-8b-instant';
 const EFFECTIVE_GROQ_MODEL = String(config.GROQ_MODEL).trim() === LEGACY_GROQ_MODEL
   ? 'openai/gpt-oss-20b'
   : config.GROQ_MODEL;
+const LEGACY_GOOGLE_MODEL = 'gemini-2.5-flash-lite';
+const EFFECTIVE_GOOGLE_MODEL = String(config.GOOGLE_AI_STUDIO_MODEL).trim() === LEGACY_GOOGLE_MODEL
+  ? 'gemini-3.5-flash-lite'
+  : config.GOOGLE_AI_STUDIO_MODEL;
 if (EFFECTIVE_GROQ_MODEL !== config.GROQ_MODEL) {
   console.warn(`Deprecated GROQ_MODEL detected; using ${EFFECTIVE_GROQ_MODEL} instead.`);
+}
+if (EFFECTIVE_GOOGLE_MODEL !== config.GOOGLE_AI_STUDIO_MODEL) {
+  console.warn(`Deprecated GOOGLE_AI_STUDIO_MODEL detected; using ${EFFECTIVE_GOOGLE_MODEL} instead.`);
 }
 
 process.on('unhandledRejection', (reason) => {
@@ -95,7 +102,7 @@ if (config.BOT_HA_ENABLED) {
 }
 
 function createAiClient() {
-  console.log(`NexaDesk AI route: primary=${config.AI_PROVIDER} google=${getGoogleApiKey() ? 'configured' : 'missing'} groq=${hasGroqProvider() ? 'configured' : 'missing'} local=${config.AI_LOCAL_FALLBACK_ENABLED ? 'enabled' : 'disabled'}`);
+  console.log(`NexaDesk AI route: primary=${config.AI_PROVIDER} google=${getGoogleApiKey() ? 'configured' : 'missing'} model=${EFFECTIVE_GOOGLE_MODEL} groq=${hasGroqProvider() ? 'configured' : 'missing'} local=${config.AI_LOCAL_FALLBACK_ENABLED ? 'enabled' : 'disabled'}`);
 
   if (config.AI_PROVIDER === 'google-ai-studio') {
     return createGoogleFallbackClient();
@@ -152,7 +159,7 @@ function createGoogleFallbackClient() {
   if (googleApiKey) {
     providers.push(createAiProvider('google-ai-studio-primary', new GoogleAiStudioClient({
       apiKey: googleApiKey,
-      model: config.GOOGLE_AI_STUDIO_MODEL,
+      model: EFFECTIVE_GOOGLE_MODEL,
       thinkingBudget: config.GOOGLE_AI_STUDIO_THINKING_BUDGET,
       timeoutMs: config.AI_PROVIDER_TIMEOUT_MS
     })));
