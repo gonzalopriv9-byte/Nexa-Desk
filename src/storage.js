@@ -922,16 +922,18 @@ export class PostgresStorage {
   }
 
   async listTranscriptMessages(channelId, { limit = null } = {}) {
+    const normalizedLimit = Number.parseInt(limit, 10);
+    const hasLimit = Number.isInteger(normalizedLimit) && normalizedLimit > 0;
     const query = this.client
       .from('transcript_messages')
       .select('*')
       .eq('channel_id', channelId)
-      .order('created_at', { ascending: true });
-    const normalizedLimit = Number.parseInt(limit, 10);
-    if (Number.isInteger(normalizedLimit) && normalizedLimit > 0) query.limit(normalizedLimit);
+      .order('created_at', { ascending: !hasLimit });
+    if (hasLimit) query.limit(normalizedLimit);
     const { data, error } = await query;
     if (error) throw error;
-    return data.map(fromTranscriptRow);
+    const messages = data.map(fromTranscriptRow);
+    return hasLimit ? messages.reverse() : messages;
   }
 
   async searchGuildTranscriptMessages(guildId, terms = [], { limit = 10, scanLimit = 400 } = {}) {
