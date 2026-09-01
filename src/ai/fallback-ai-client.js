@@ -66,7 +66,11 @@ export class FallbackAiClient {
         if (!shouldFallbackAiError(error) || index === orderedCandidates.length - 1) {
           throw decorateAiFallbackError(error, provider.name, method);
         }
-        this.providerCooldowns.set(provider.name, Date.now() + Math.max(5000, this.providerCooldownMs));
+        const retryAfterMs = Number(error?.retryAfterMs);
+        const cooldownMs = Number.isFinite(retryAfterMs) && retryAfterMs > 0
+          ? Math.min(Math.max(retryAfterMs, 5000), 15 * 60 * 1000)
+          : Math.max(5000, this.providerCooldownMs);
+        this.providerCooldowns.set(provider.name, Date.now() + cooldownMs);
         console.warn(`AI ${method} provider ${provider.name} hit a recoverable issue. Trying fallback provider.`);
       }
     }
@@ -93,6 +97,8 @@ function shouldFallbackAiError(error) {
     .filter(Boolean)
     .join(' ')
     .toLowerCase();
+
+  if (/google.?ai.?studio|invalid.?model|unsupported.*model/.test(message)) return true;
 
   return /api.?key|unauthori[sz]ed|forbidden|invalid.?key|clave|token|rate.?limit|quota|limit.*exceed|exceed.*limit|token.*exceed|exceed.*token|insufficient|temporar|timeout|timed out|overloaded|unavailable|tpm|rpm|aborted|provider_timeout|empty_response|failed\s+to\s+retrieve\s+media|model_not_found|does\s+not\s+exist|decommissioned/.test(message);
 }
