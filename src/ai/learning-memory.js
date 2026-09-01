@@ -130,7 +130,7 @@ export function formatAiLearningContext(lessons = []) {
   return [
     'Memoria operativa aprendida y validada:',
     ...normalized.map((lesson) => '- ' + lesson.guidance)
-  ].join('\\n').slice(0, 2600);
+  ].join('\n').slice(0, 2600);
 }
 
 export function buildAiLearningLesson({ message = '', category = '', confidence = 80, severity = 'medium', source = 'quality_signal' } = {}) {
@@ -173,20 +173,20 @@ function normalizeLesson(value) {
 
 function inferCategory(value) {
   const normalized = normalizeSearch(value);
-  if (/\\b(reportar|reporte|denunciar|denuncia|insulto|insultos|amenaza|amenazas|acoso|abuso)\\b/.test(normalized)) return 'report';
-  if (/\\b(lento|lentisimo|tarda|demora|delay)\\b/.test(normalized)) return 'latency';
-  if (/\\b(repetitivo|repetida|otra vez|pesado|robotico)\\b/.test(normalized)) return 'repetition';
-  if (/\\b(imagen|captura|foto|screenshot|video)\\b/.test(normalized)) return 'vision';
-  if (/\\b(voz|audio|tts|stt|suena)\\b/.test(normalized)) return 'voice';
-  if (/\\b(idioma|espanol|ingles|language)\\b/.test(normalized)) return 'language';
-  if (/\\b(incorrecta|incorrecto|inventas|sin sentido|no entiendes)\\b/.test(normalized)) return 'wrong_answer';
-  if (/\\b(tono|frio|robotico|robotica)\\b/.test(normalized)) return 'tone';
-  if (/\\b(enfadado|cabrea|harto|mierda|idiota|subnormal|inutil)\\b/.test(normalized)) return 'anger';
+  if (/\b(reportar|reporte|denunciar|denuncia|insulto|insultos|amenaza|amenazas|acoso|abuso)\b/.test(normalized)) return 'report';
+  if (/\b(lento|lentisimo|tarda|demora|delay)\b/.test(normalized)) return 'latency';
+  if (/\b(repetitivo|repetida|otra vez|pesado|robotico)\b/.test(normalized)) return 'repetition';
+  if (/\b(imagen|captura|foto|screenshot|video)\b/.test(normalized)) return 'vision';
+  if (/\b(voz|audio|tts|stt|suena)\b/.test(normalized)) return 'voice';
+  if (/\b(idioma|espanol|ingles|language)\b/.test(normalized)) return 'language';
+  if (/\b(incorrecta|incorrecto|inventas|sin sentido|no entiendes)\b/.test(normalized)) return 'wrong_answer';
+  if (/\b(tono|frio|robotico|robotica)\b/.test(normalized)) return 'tone';
+  if (/\b(enfadado|cabrea|harto|mierda|idiota|subnormal|inutil)\b/.test(normalized)) return 'anger';
   return 'general';
 }
 
 function normalizeCategory(value) {
-  const normalized = normalizeSearch(value).replace(/\\s+/g, '_');
+  const normalized = normalizeSearch(value).replace(/\s+/g, '_');
   return VALID_CATEGORIES.has(normalized) ? normalized : 'general';
 }
 
@@ -198,15 +198,15 @@ function normalizeSeverity(value) {
 function normalizeSearch(value) {
   return String(value ?? '')
     .normalize('NFD')
-    .replace(/[\\u0300-\\u036f]/g, '')
+    .replace(/[\u0300-\u036f]/g, '')
     .toLowerCase()
-    .replace(/[^\\p{L}\\p{N}\\s_-]/gu, ' ')
-    .replace(/\\s+/g, ' ')
+    .replace(/[^\p{L}\p{N}\s_-]/gu, ' ')
+    .replace(/\s+/g, ' ')
     .trim();
 }
 
 function cleanText(value, maxLength) {
-  return String(value ?? '').replace(/\\s+/g, ' ').trim().slice(0, maxLength);
+  return String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, maxLength);
 }
 
 function clampInteger(value, min, max, fallback = min) {
