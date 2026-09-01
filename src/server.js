@@ -26,6 +26,7 @@ import { DEFAULT_PREMIUM_MODULES, PREMIUM_ADDONS, PREMIUM_SALES_FEATURES, getPre
 import { isPremiumEntitled, normalizePremiumConfig, summarizePremiumConfig } from './premium.js';
 import { addManualPendingItem, buildLaunchPatch, buildReleaseState } from './release-gates.js';
 import { normalizeSecurityConfig, summarizeSecurityConfig } from './security.js';
+import { isTurnstileConfigured, verifyTurnstileToken } from './turnstile.js';
 import { buildTranscriptFileName, buildTranscriptText, verifyTranscriptAccessToken } from './transcripts.js';
 import { normalizeWelcomeConfig } from './welcome.js';
 
@@ -294,7 +295,30 @@ export function createServer({ config, storage, bot, events }) {
     res.type('html').send(renderLogin(config));
   });
 
-  app.get('/auth/discord', (req, res) => {
+  app.post('/auth/discord', asyncHandler(async (req, res) => {
+    if (!config.DISCORD_CLIENT_SECRET) {
+      res.status(500).type('html').send(renderLogin(config, {
+        error: 'DISCORD_CLIENT_SECRET is not configured.'
+      }));
+      return;
+    }
+
+    if (config.TURNSTILE_ENABLED) {
+      const verification = await verifyTurnstileToken({
+        config,
+        token: req.body['cf-turnstile-response'],
+        remoteIp: getRequestIp(req)
+      });
+
+      if (!verification.ok) {
+        console.warn(`Turnstile login verification failed: ${verification.reason}`);
+        res.status(403).type('html').send(renderLogin(config, {
+          error: turnstileErrorMessage(verification.reason)
+        }));
+        return;
+      }
+    }
+
     const state = crypto.randomBytes(18).toString('hex');
     res.cookie('nexadesk_oauth_state', state, {
       httpOnly: true,
@@ -311,6 +335,10 @@ export function createServer({ config, storage, bot, events }) {
     url.searchParams.set('scope', 'identify guilds');
     url.searchParams.set('state', state);
     res.redirect(url.toString());
+  }));
+
+  app.get('/auth/discord', (_req, res) => {
+    res.redirect('/login');
   });
 
   app.get('/auth/discord/complete', (req, res) => {
@@ -1825,6 +1853,19 @@ async function discordFetch(path, accessToken) {
 
 function getRedirectUri(config) {
   return `${config.DASHBOARD_PUBLIC_URL.replace(/\/$/, '')}/auth/discord/callback`;
+}
+
+function turnstileErrorMessage(reason) {
+  switch (reason) {
+    case 'missing-token':
+      return 'Completa la verificación de seguridad antes de continuar.';
+    case 'timeout':
+      return 'La verificación tardó demasiado. Recarga la página e inténtalo de nuevo.';
+    case 'not_configured':
+      return 'La protección anti-bots no está configurada correctamente.';
+    default:
+      return 'No hemos podido validar la verificación de seguridad. Inténtalo de nuevo.';
+  }
 }
 
 function canManageGuild(guild) {
@@ -4916,8 +4957,17 @@ function buildPrivacySections() {
   ];
 }
 
-function renderLogin(config) {
-  const isReady = Boolean(config.DISCORD_CLIENT_SECRET);
+function renderLogin(config, { error = '' } = {}) {
+  const turnstileEnabled = Boolean(config.TURNSTILE_ENABLED);
+  const turnstileConfigured = isTurnstileConfigured(config);
+  const turnstileRequired = turnstileEnabled && turnstileConfigured;
+  const isReady = Boolean(config.DISCORD_CLIENT_SECRET)
+    && (!turnstileEnabled || turnstileConfigured);
+  const setupError = !config.DISCORD_CLIENT_SECRET
+    ? 'Falta DISCORD_CLIENT_SECRET en el entorno.'
+    : turnstileEnabled && !turnstileConfigured
+      ? 'Falta configurar TURNSTILE_SITE_KEY y TURNSTILE_SECRET_KEY en el entorno.'
+      : '';
 
   return `<!doctype html>
 <html lang="es">
@@ -4927,6 +4977,7 @@ function renderLogin(config) {
   <title>NexaDesk Login</title>
   <link rel="icon" type="image/svg+xml" href="/assets/nexadesk-logo.svg">
   <link rel="apple-touch-icon" href="/assets/nexadesk-logo.svg">
+  ${turnstileRequired ? '<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>' : ''}
   <style>
     :root { color-scheme: dark; --bg:#050505; --panel:#101010; --panel-2:#181818; --line:#343434; --text:#ffffff; --muted:#a8a8a8; --ink:#050505; --paper:#ffffff; --danger:#ff5f57; --ok:#ffffff; }
     * { box-sizing: border-box; }
@@ -4978,7 +5029,10 @@ function renderLogin(config) {
     .status-line { display:flex; justify-content:space-between; gap:12px; color:var(--muted); border-bottom:1px solid rgba(255,255,255,.08); padding:11px 0; }
     .status-line strong { color:var(--text); }
     .dash-emoji { width:18px; height:18px; object-fit:contain; margin-right:7px; vertical-align:-4px; }
-    a.login-button { display:block; text-align:center; width:100%; border-radius:6px; background:#fff; color:#050505; padding:13px; font-weight:900; text-decoration:none; margin-top:22px; }
+    .login-button { display:block; text-align:center; width:100%; border:0; border-radius:6px; background:#fff; color:#050505; padding:13px; font:inherit; font-weight:900; text-decoration:none; margin-top:22px; cursor:pointer; }
+    .login-button:disabled { opacity:.5; cursor:not-allowed; }
+    .turnstile-wrap { margin-top:18px; min-height:66px; }
+    .turnstile-help { color:var(--muted); font-size:12px; margin:8px 0 0; }
     .legal-links { display:flex; flex-wrap:wrap; gap:10px; margin-top:16px; font-size:13px; }
     .legal-links a { color:#fff; text-decoration:none; border:1px solid rgba(255,255,255,.18); border-radius:999px; padding:8px 10px; background:rgba(255,255,255,.045); }
     .loading { position:fixed; inset:0; z-index:10; display:none; place-items:center; background:rgba(5,8,10,.88); backdrop-filter:blur(12px); }
@@ -5063,7 +5117,13 @@ function renderLogin(config) {
       <div class="status-line"><span>${renderDashboardEmoji('rightArrow', 'OAuth')}OAuth</span><strong>Discord</strong></div>
       <div class="status-line"><span>${renderDashboardEmoji('server', 'Datos')}Datos</span><strong>PostgreSQL</strong></div>
       <div class="status-line"><span>${renderDashboardEmoji('check', 'Realtime')}Realtime</span><strong>Activo</strong></div>
-      ${isReady ? '<a class="login-button" id="loginButton" href="/auth/discord">Continuar con Discord</a>' : '<p class="error">Falta DISCORD_CLIENT_SECRET en el entorno.</p>'}
+      ${error ? `<p class="error" role="alert">${escapeHtml(error)}</p>` : ''}
+      ${isReady ? `
+        <form class="login-form" id="loginForm" method="post" action="/auth/discord">
+          ${turnstileRequired ? `<div class="turnstile-wrap"><div class="cf-turnstile" data-sitekey="${escapeHtml(config.TURNSTILE_SITE_KEY)}" data-theme="dark" data-action="login" data-callback="nexaTurnstileSuccess" data-expired-callback="nexaTurnstileExpired" data-error-callback="nexaTurnstileError"></div><p class="turnstile-help" id="turnstileHelp">Completa la verificación para continuar.</p></div>` : ''}
+          <button class="login-button" id="loginButton" type="submit"${turnstileRequired ? ' disabled' : ''}>Continuar con Discord</button>
+        </form>
+      ` : `<p class="error">${escapeHtml(setupError)}</p>`}
       <div class="legal-links"><a href="/terms">Terms and Conditions</a><a href="/privacy">Privacy Policy</a></div>
     </aside>
   </main>
@@ -5102,7 +5162,44 @@ function renderLogin(config) {
       if (phrase) phrase.textContent = loadingCards[phraseIndex].quote;
       if (tip) tip.textContent = loadingCards[phraseIndex].tip;
     }, 1500);
-    document.querySelector('#loginButton')?.addEventListener('click', () => {
+    const turnstileRequired = ${turnstileRequired ? 'true' : 'false'};
+    const loginForm = document.querySelector('#loginForm');
+    const loginButton = document.querySelector('#loginButton');
+    const turnstileHelp = document.querySelector('#turnstileHelp');
+
+    const setTurnstileState = (ready, message) => {
+      if (loginButton && turnstileRequired) {
+        loginButton.disabled = !ready;
+      }
+      if (turnstileHelp && message) {
+        turnstileHelp.textContent = message;
+      }
+    };
+
+    window.nexaTurnstileSuccess = (token) => {
+      if (token) {
+        setTurnstileState(true, 'Verificación completada.');
+      }
+    };
+
+    window.nexaTurnstileExpired = () => {
+      setTurnstileState(false, 'La verificación ha caducado. Complétala de nuevo.');
+    };
+
+    window.nexaTurnstileError = () => {
+      setTurnstileState(false, 'No se pudo cargar la verificación. Recarga la página.');
+    };
+
+    loginForm?.addEventListener('submit', (event) => {
+      const response = loginForm.querySelector('input[name="cf-turnstile-response"]')?.value || '';
+
+      if (turnstileRequired && !response) {
+        event.preventDefault();
+        setTurnstileState(false, 'Completa la verificación antes de continuar.');
+        return;
+      }
+
+      loginButton?.setAttribute('disabled', '');
       document.querySelector('#loading')?.classList.add('is-active');
     });
   </script>
