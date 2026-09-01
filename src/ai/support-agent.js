@@ -6,42 +6,46 @@ import { buildExamEvaluationInput, parseExamEvaluationJson } from '../exam-mode.
 import { hasVisualAttachments } from './visual-analyzer.js';
 import { LocalSupportClient } from './local-support-client.js';
 
-const SERVER_CONTEXT_MAX_CHANNELS = 6;
-const SERVER_CONTEXT_FULL_SCAN_MAX_CHANNELS = 28;
-const SERVER_CONTEXT_FETCH_LIMIT = 10;
-const SERVER_CONTEXT_FULL_SCAN_FETCH_LIMIT = 8;
+const SERVER_CONTEXT_MAX_CHANNELS = 4;
+const SERVER_CONTEXT_FULL_SCAN_MAX_CHANNELS = 10;
+const SERVER_CONTEXT_FETCH_LIMIT = 6;
+const SERVER_CONTEXT_FULL_SCAN_FETCH_LIMIT = 5;
 const SERVER_CONTEXT_MAX_SNIPPETS = 5;
 const SERVER_CONTEXT_CHANNEL_LOOKUP_SNIPPETS = 4;
 const SERVER_CONTEXT_CACHE_TTL_MS = 120_000;
-const SERVER_CONTEXT_FETCH_TIMEOUT_MS = 1700;
-const SERVER_CONTEXT_CONCURRENCY = 10;
+const SERVER_CONTEXT_FETCH_TIMEOUT_MS = 900;
+const SERVER_CONTEXT_CONCURRENCY = 5;
 const AI_HISTORY_MESSAGE_LIMIT = 8;
 const AI_HISTORY_MESSAGE_CHARS = 650;
 const AI_CONTEXT_TEXT_CHARS = 1600;
 const AI_SERVER_KNOWLEDGE_CHARS = 2800;
 
 export class SupportAgent {
-  constructor({ aiClient, storage, maxHistoryMessages, visualAnalyzer = null }) {
+  constructor({ aiClient, storage, maxHistoryMessages, serverContextTimeoutMs = 900, visualAnalyzer = null }) {
     this.aiClient = aiClient;
     this.storage = storage;
     this.maxHistoryMessages = maxHistoryMessages;
+    this.serverContextTimeoutMs = Number(serverContextTimeoutMs) > 0 ? Number(serverContextTimeoutMs) : 900;
     this.visualAnalyzer = visualAnalyzer;
     this.serverKnowledgeCache = new Map();
     this.localFallback = new LocalSupportClient({ enabled: true });
   }
 
   async answerTicketMessage({ message, ticket, guildConfig }) {
-    const latestGuildConfig = await this.storage.getGuildConfig(message.guild.id) ?? guildConfig;
+    const latestGuildConfig = guildConfig ?? await this.storage.getGuildConfig(message.guild.id);
     const userLanguage = detectUserLanguage(message.content);
     const history = await this.#loadHistory(message.channel);
     const intakeContext = extractTicketIntakeContext(history);
     const visualContext = await this.#analyzeVisualContext({ message, guildConfig: latestGuildConfig });
-    const serverKnowledgeContext = await this.#buildServerKnowledgeContext({
-      message,
-      guildConfig: latestGuildConfig,
-      history,
-      intakeContext
-    });
+    const serverKnowledgeContext = await withTimeout(
+      this.#buildServerKnowledgeContext({
+        message,
+        guildConfig: latestGuildConfig,
+        history,
+        intakeContext
+      }),
+      this.serverContextTimeoutMs
+    ).catch(() => '');
     const system = this.#buildSystemPrompt({
       ticket,
       guildConfig: latestGuildConfig,
@@ -52,39 +56,36 @@ export class SupportAgent {
     });
 
     const guardedMessages = applyLanguageGuard(history, userLanguage, message);
+    const answerOptions = { maxTokens: 260, temperature: 0.2 };
     let answer = await this.aiClient.generate({
       system,
-      messages: guardedMessages
+      messages: guardedMessages,
+      ...answerOptions
     });
 
-    if (shouldRetryForLanguage(answer, userLanguage)) {
-      answer = await this.aiClient.generate({
-        system: [
-          system,
-          '',
-          `CRITICAL LANGUAGE CORRECTION: Your previous answer ignored the target language.`,
+    const needsLanguageCorrection = shouldRetryForLanguage(answer, userLanguage);
+    const needsNaturalnessCorrection = shouldRetryForNaturalness(answer, message.content);
+    if (needsLanguageCorrection || needsNaturalnessCorrection) {
+      const correctionInstructions = [
+        needsLanguageCorrection ? [
+          'CRITICAL LANGUAGE CORRECTION: Your previous answer ignored the target language.',
           userLanguage.instruction,
           'Rewrite the answer in the target language only. Do not mention this correction.'
-        ].join('\n'),
-        messages: guardedMessages
-      });
-    }
-
-    if (shouldRetryForNaturalness(answer, message.content)) {
-      answer = await this.aiClient.generate({
-        system: [
-          system,
-          '',
+        ].join('\n') : '',
+        needsNaturalnessCorrection ? [
           'CRITICAL STYLE CORRECTION:',
           'Rewrite the answer so it sounds like a natural Discord support agent, not a questionnaire.',
           'Use 2-4 short sentences. Give useful context or next steps first. Ask at most ONE question, only if it is necessary.',
           'Do not say you cannot help unless it is genuinely impossible or sensitive. Do not ask what language to use.',
           'If the answer depends on staff/server policy and context is insufficient, say that staff can confirm it instead of inventing.'
-        ].join('\n'),
-        messages: guardedMessages
+        ].join('\n') : ''
+      ].filter(Boolean).join('\n');
+      answer = await this.aiClient.generate({
+        system: [system, correctionInstructions].join('\n\n'),
+        messages: guardedMessages,
+        ...answerOptions
       });
     }
-
     return answer;
   }
 
@@ -637,9 +638,13 @@ export class SupportAgent {
   }
 
   async #loadHistory(channel) {
+    const historyLimit = Math.min(
+      Math.max(Number(this.maxHistoryMessages) || AI_HISTORY_MESSAGE_LIMIT, 1),
+      AI_HISTORY_MESSAGE_LIMIT
+    );
     const [messages, transcriptMessages] = await Promise.all([
-      channel.messages.fetch({ limit: this.maxHistoryMessages }).catch(() => new Map()),
-      this.storage.listTranscriptMessages(channel.id).catch(() => [])
+      channel.messages.fetch({ limit: historyLimit }).catch(() => new Map()),
+      this.storage.listTranscriptMessages(channel.id, { limit: historyLimit }).catch(() => [])
     ]);
 
     const discordHistory = [...messages.values()]
@@ -1228,7 +1233,7 @@ function looksEnglish(text) {
 
 function shouldSearchRecentVisualMessage(message) {
   if (hasVisualAttachments(message)) return false;
-  return /\b(no\s+ves|ves|mira|esta|esa|esta|captura|imagen|foto|pantallazo|screenshot|adjunto|dashboard|web|error|fallo)\b/iu.test(message.content ?? '');
+  return /\b(no\s+ves|ves|mira|captura|imagen|foto|pantallazo|screenshot|adjunto)\b/iu.test(message.content ?? '');
 }
 
 function getServerKnowledgeSearchMode(content = '', intakeContext = '', history = []) {
