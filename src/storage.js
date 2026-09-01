@@ -162,9 +162,13 @@ export class JsonStorage {
     return saved;
   }
 
-  async listTranscriptMessages(channelId) {
+  async listTranscriptMessages(channelId, { limit = null } = {}) {
     const transcripts = await this.#readJson(this.transcriptsFile);
-    return transcripts[channelId] ?? [];
+    const messages = transcripts[channelId] ?? [];
+    const normalizedLimit = Number.parseInt(limit, 10);
+    return Number.isInteger(normalizedLimit) && normalizedLimit > 0
+      ? messages.slice(-normalizedLimit)
+      : messages;
   }
 
   async searchGuildTranscriptMessages(guildId, terms = [], { limit = 10, scanLimit = 400 } = {}) {
@@ -917,12 +921,15 @@ export class PostgresStorage {
     return saved;
   }
 
-  async listTranscriptMessages(channelId) {
-    const { data, error } = await this.client
+  async listTranscriptMessages(channelId, { limit = null } = {}) {
+    const query = this.client
       .from('transcript_messages')
       .select('*')
       .eq('channel_id', channelId)
       .order('created_at', { ascending: true });
+    const normalizedLimit = Number.parseInt(limit, 10);
+    if (Number.isInteger(normalizedLimit) && normalizedLimit > 0) query.limit(normalizedLimit);
+    const { data, error } = await query;
     if (error) throw error;
     return data.map(fromTranscriptRow);
   }
