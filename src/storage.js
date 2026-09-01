@@ -10,6 +10,7 @@ import {
   normalizeAffiliateRedemption
 } from './affiliates.js';
 import { normalizeAiQualitySignal } from './ai-quality.js';
+import { mergeAiLearningLesson, normalizeAiLearning } from './ai/learning-memory.js';
 import { normalizeGuildBackupSnapshot } from './backups.js';
 import { normalizeBlacklistEntry, normalizeBlacklistEvidence, normalizeBlacklistLookup } from './blacklist.js';
 import { buildFeedbackStats, normalizeGrowthConfig, normalizeTicketFeedback } from './growth.js';
@@ -254,6 +255,18 @@ export class JsonStorage {
     return signals
       .filter((item) => !guildIdSet.size || guildIdSet.has(item.guildId))
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+
+  async addAiLearningLesson(guildId, lesson) {
+    const guild = await this.getGuildConfig(guildId);
+    if (!guild) return null;
+    const aiLearning = mergeAiLearningLesson(guild.aiLearning, lesson);
+    return this.upsertGuildConfig(guildId, { aiLearning });
+  }
+
+  async listAiLearningLessons(guildId) {
+    const guild = await this.getGuildConfig(guildId);
+    return normalizeAiLearning(guild?.aiLearning);
   }
 
   async addGuildLog(entry) {
@@ -1067,6 +1080,18 @@ export class PostgresStorage {
     if (isMissingAiQualitySignalTableError(error)) return [];
     if (error) throw error;
     return data.map(fromAiQualitySignalRow);
+  }
+
+  async addAiLearningLesson(guildId, lesson) {
+    const guild = await this.getGuildConfig(guildId);
+    if (!guild) return null;
+    const aiLearning = mergeAiLearningLesson(guild.aiLearning, lesson);
+    return this.upsertGuildConfig(guildId, { aiLearning });
+  }
+
+  async listAiLearningLessons(guildId) {
+    const guild = await this.getGuildConfig(guildId);
+    return normalizeAiLearning(guild?.aiLearning);
   }
 
   async addGuildLog(entry) {
@@ -2149,6 +2174,7 @@ function fromGuildRow(row) {
     }),
     ticketClosePolicy: panelStore.ticketClosePolicy,
     scheduledAnnouncements: panelStore.scheduledAnnouncements,
+    aiLearning: panelStore.aiLearning,
     panels: panelStore.panels,
     components: panelStore.components,
     security: panelStore.security,
@@ -2171,7 +2197,8 @@ function toGuildPanelStore(guild) {
     discovery: normalizeDiscoveryConfig(guild.discovery ?? guild),
     watchedTicketCategories: normalizeWatchedTicketCategories(guild.watchedTicketCategories, guild),
     ticketClosePolicy: normalizeTicketClosePolicy(guild.ticketClosePolicy),
-    scheduledAnnouncements: normalizeScheduledAnnouncements(guild.scheduledAnnouncements)
+    scheduledAnnouncements: normalizeScheduledAnnouncements(guild.scheduledAnnouncements),
+    aiLearning: normalizeAiLearning(guild.aiLearning)
   };
 }
 
@@ -2191,7 +2218,8 @@ function fromGuildPanelStore(value) {
       discovery: normalizeDiscoveryConfig(),
       watchedTicketCategories: normalizeWatchedTicketCategories(),
       ticketClosePolicy: normalizeTicketClosePolicy(),
-      scheduledAnnouncements: normalizeScheduledAnnouncements()
+      scheduledAnnouncements: normalizeScheduledAnnouncements(),
+      aiLearning: normalizeAiLearning()
     };
   }
 
@@ -2210,7 +2238,8 @@ function fromGuildPanelStore(value) {
       discovery: normalizeDiscoveryConfig(value.discovery),
       watchedTicketCategories: normalizeWatchedTicketCategories(value.watchedTicketCategories),
       ticketClosePolicy: normalizeTicketClosePolicy(value.ticketClosePolicy),
-      scheduledAnnouncements: normalizeScheduledAnnouncements(value.scheduledAnnouncements)
+      scheduledAnnouncements: normalizeScheduledAnnouncements(value.scheduledAnnouncements),
+      aiLearning: normalizeAiLearning(value.aiLearning)
     };
   }
 
@@ -2228,7 +2257,8 @@ function fromGuildPanelStore(value) {
     discovery: normalizeDiscoveryConfig(),
     watchedTicketCategories: normalizeWatchedTicketCategories(),
     ticketClosePolicy: normalizeTicketClosePolicy(),
-    scheduledAnnouncements: normalizeScheduledAnnouncements()
+    scheduledAnnouncements: normalizeScheduledAnnouncements(),
+    aiLearning: normalizeAiLearning()
   };
 }
 
