@@ -215,8 +215,9 @@ function detectMp4Duration(buffer) {
     const box = readMp4Box(buffer, offset);
     if (!box) break;
     if (box.type === 'moov') {
-      const nested = findMp4Atom(buffer.subarray(box.contentStart, box.end), 'mvhd');
-      if (nested) return parseMvhdDuration(buffer, nested);
+      const moov = buffer.subarray(box.contentStart, box.end);
+      const nested = findMp4Atom(moov, 'mvhd');
+      if (nested) return parseMvhdDuration(moov, nested);
     }
     offset = box.end;
   }
@@ -301,8 +302,9 @@ function readEbmlVint(buffer, offset, { keepMarker, limit }) {
   for (let index = 0; index < length; index += 1) value = (value << 8n) | BigInt(buffer[offset + index]);
   if (!keepMarker) value &= (1n << BigInt(length * 7)) - 1n;
   const unknown = !keepMarker && value === (1n << BigInt(length * 7)) - 1n;
+  if (unknown) return { value: 0, unknown: true, nextOffset: offset + length };
   if (value > BigInt(Number.MAX_SAFE_INTEGER)) return null;
-  return { value: Number(value), unknown, nextOffset: offset + length };
+  return { value: Number(value), unknown: false, nextOffset: offset + length };
 }
 
 function readUnsignedBigEndian(buffer, start, end) {
