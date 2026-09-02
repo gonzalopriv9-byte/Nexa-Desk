@@ -40,6 +40,7 @@ const schema = z.object({
   ADMIN_CODE_ROLE_ID: z.string().default('1499803857042280488'),
   ADMIN_CODE_SECRET: z.string().optional().default(''),
   ADMIN_CODE_INTERNAL_URL: z.string().url().optional().or(z.literal('')).default(''),
+  PARTNER_EDITOR_USER_IDS: z.string().default('960165728051425392'),
   PAYPAL_CLIENT_ID: z.string().optional().default(''),
   PAYPAL_CLIENT_SECRET: z.string().optional().default(''),
   PAYPAL_MODE: z.enum(['sandbox', 'live']).default('sandbox'),
