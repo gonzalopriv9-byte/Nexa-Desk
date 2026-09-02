@@ -864,7 +864,7 @@ export function createServer({ config, storage, bot, events }) {
     }));
   }));
 
-  app.post('/partners/api/upload', requireGlobalAdmin, express.raw({
+  app.post('/partners/api/upload', requirePartnerEditor(config), express.raw({
     type: ['image/*', 'video/*'],
     limit: '50mb'
   }), asyncHandler(async (req, res) => {
