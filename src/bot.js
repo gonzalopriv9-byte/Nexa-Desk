@@ -61,6 +61,7 @@ import { SecurityManager, SECURITY_LEVELS, normalizeSecurityConfig, normalizeSec
 import { analyzeGuildChannelsForDiscovery, hasUsefulDiscovery, normalizeChannelNameForDiscovery, normalizeDiscoveryConfig } from './server-discovery.js';
 import { buildTranscriptReplayUrl } from './transcripts.js';
 import { hasVisualAttachments } from './ai/visual-analyzer.js';
+import { createWatermarkedEvidenceAttachment } from './blacklist-watermark.js';
 import { detectAiQualitySignalHeuristic } from './ai-quality.js';
 import { buildAiLearningLesson } from './ai/learning-memory.js';
 import { createTicketFlowCard } from './welcome-card.js';
@@ -3360,6 +3361,24 @@ async function handleGlobalBlacklistMemberJoin({ member, storage }) {
 
 async function sendGlobalBlacklistDm({ user, guild, entry, evidence = [] }) {
   const activeEvidence = evidence.filter((item) => item.attachmentUrl || item.proxyUrl);
+  const imageEvidence = activeEvidence.filter((item) => isImageEvidence(item)).slice(0, 4);
+  const watermarkedEvidence = [];
+
+  for (const [index, item] of imageEvidence.entries()) {
+    const attachment = await createWatermarkedEvidenceAttachment(item, index);
+    if (attachment) watermarkedEvidence.push({ item, attachment });
+    else console.warn(`Could not watermark blacklist evidence ${item.fileName || item.attachmentUrl || 'unknown'}.`);
+  }
+
+  const otherEvidence = activeEvidence
+    .filter((item) => !isImageEvidence(item) && (item.attachmentUrl || item.proxyUrl))
+    .slice(0, 8);
+  const proofStatus = watermarkedEvidence.length || otherEvidence.length
+    ? `${watermarkedEvidence.length} imagen(es) con marca de agua y ${otherEvidence.length} archivo(s) enlazado(s).`
+    : imageEvidence.length
+      ? 'Las imágenes de prueba no pudieron prepararse con marca de agua.'
+      : 'No hay pruebas por imagen adjuntas aun.';
+
   const mainEmbed = new EmbedBuilder()
     .setColor(0xffffff)
     .setTitle(`${EMOJIS.ban} Baneo global NexaDesk`)
@@ -3369,32 +3388,28 @@ async function sendGlobalBlacklistDm({ user, guild, entry, evidence = [] }) {
       { name: 'Duracion', value: entry.duration || 'permanente', inline: true },
       { name: 'Codigo de baneo', value: `\`${entry.banCode}\``, inline: true },
       { name: 'Apelacion', value: `Puedes apelar en el servidor de soporte: ${SUPPORT_SERVER_URL}` },
-      { name: 'Pruebas adjuntas', value: activeEvidence.length ? `${activeEvidence.length} archivo(s) adjunto(s) abajo.` : 'No hay pruebas por imagen adjuntas aun.' }
+      { name: 'Pruebas adjuntas', value: proofStatus }
     )
     .setFooter({ text: 'NexaDesk Global Safety' })
     .setTimestamp(new Date());
 
-  const evidenceEmbeds = activeEvidence
-    .filter((item) => isImageEvidence(item))
-    .slice(0, 4)
-    .map((item, index) => new EmbedBuilder()
-      .setColor(0xffffff)
-      .setTitle(`Prueba ${index + 1}`)
-      .setDescription(item.description || item.fileName || 'Imagen adjunta como prueba.')
-      .setImage(item.proxyUrl || item.attachmentUrl));
+  const evidenceEmbeds = watermarkedEvidence.map(({ item, attachment }, index) => new EmbedBuilder()
+    .setColor(0xffffff)
+    .setTitle(`Prueba ${index + 1} · Verificada por NexaDesk`)
+    .setDescription(item.description || item.fileName || 'Imagen adjunta como prueba.')
+    .setImage(`attachment://${attachment.name}`));
 
-  const links = activeEvidence
-    .filter((item) => !isImageEvidence(item))
-    .slice(0, 8)
-    .map((item, index) => `${index + 1}. ${item.fileName || 'Archivo'}: ${item.attachmentUrl}`)
+  const links = otherEvidence
+    .map((item, index) => `${index + 1}. ${item.fileName || 'Archivo'}: ${item.proxyUrl || item.attachmentUrl}`)
     .join('\n');
+  const files = watermarkedEvidence.map(({ attachment }) => new AttachmentBuilder(attachment.buffer, { name: attachment.name }));
 
   await user.send({
     content: links ? `Archivos de prueba no embebidos:\n${links}` : undefined,
-    embeds: [mainEmbed, ...evidenceEmbeds]
+    embeds: [mainEmbed, ...evidenceEmbeds],
+    files
   });
 }
-
 function buildBlacklistEntryEmbed(entry, evidence = []) {
   return new EmbedBuilder()
     .setColor(0xffffff)
