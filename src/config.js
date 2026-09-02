@@ -135,7 +135,7 @@ const schema = z.object({
   SECURITY_LAB_BOT_IDS: z.string().optional().default(''),
   VOICE_STT_ENABLED: envBoolean.default(true),
   VOICE_TTS_ENABLED: envBoolean.default(true),
-  VOICE_TTS_PROVIDER: z.enum(['auto', 'gemini', 'fish', 'groq', 'edge', 'piper', 'espeak']).default('auto'),
+  VOICE_TTS_PROVIDER: z.enum(['auto', 'gemini', 'fish', 'groq', 'edge', 'piper', 'espeak']).default('gemini'),
   VOICE_TTS_LOCAL_FIRST: envBoolean.default(false),
   VOICE_TTS_STREAMING_ENABLED: envBoolean.default(true),
   VOICE_TTS_PREWARM_ENABLED: envBoolean.default(true),
