@@ -34,9 +34,10 @@ const EDGE_TTS_GEC_VERSION = `1-${EDGE_TTS_CHROMIUM_VERSION}`;
 const EDGE_TTS_USER_AGENT = `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${EDGE_TTS_CHROMIUM_MAJOR}.0.0.0 Safari/537.36 Edg/${EDGE_TTS_CHROMIUM_MAJOR}.0.0.0`;
 
 export class VoiceSessionManager {
-  constructor({ storage, aiClient, config, visualAnalyzer = null }) {
+  constructor({ storage, aiClient, ttsClient = null, config, visualAnalyzer = null }) {
     this.storage = storage;
     this.aiClient = aiClient;
+    this.ttsClient = ttsClient;
     this.config = config;
     this.visualAnalyzer = visualAnalyzer;
     this.ticketCloseHandler = null;
@@ -48,7 +49,7 @@ export class VoiceSessionManager {
   }
 
   async startTicketSession({ guild, textChannel, voiceChannel, ticket, guildConfig }) {
-    if (!this.aiClient?.transcribeAudio || !this.aiClient?.synthesizeSpeech) {
+    if (!this.aiClient?.transcribeAudio || (!this.aiClient?.synthesizeSpeech && !this.ttsClient?.synthesizeSpeech && !this.ttsClient?.createSpeechStream)) {
       return { started: false, reason: 'El cliente de IA no tiene STT/TTS disponible.' };
     }
 
@@ -534,6 +535,15 @@ export class VoiceSessionManager {
     const safeText = prepareVoiceSpeechText(text, this.config.VOICE_TTS_MAX_CHARS);
     if (!safeText) return;
 
+    if (shouldUseGeminiStreaming(this.config, this.ttsClient)) {
+      try {
+        await this.#speakGeminiStream(session, safeText);
+        return;
+      } catch (error) {
+        console.error('Gemini TTS streaming failed, using buffered fallback:', normalizeProcessError(error));
+      }
+    }
+
     if (shouldUseFishStreaming(this.config)) {
       try {
         await this.#speakFishStream(session, safeText);
@@ -544,6 +554,29 @@ export class VoiceSessionManager {
     }
 
     await this.#speakBuffered(session, safeText);
+  }
+
+  async #speakGeminiStream(session, text) {
+    const startedAt = Date.now();
+    const { audioStream, contentType } = await this.ttsClient.createSpeechStream({
+      text,
+      model: this.config.GEMINI_TTS_MODEL,
+      voice: this.config.GEMINI_TTS_VOICE,
+      timeoutMs: this.config.GEMINI_TTS_TIMEOUT_MS,
+      maxStreamMs: this.config.GEMINI_TTS_MAX_STREAM_MS
+    });
+    const pcmStream = decodeGeminiTtsStreamToDiscordPcm(audioStream, this.config);
+    session.currentAudioStream = audioStream;
+    session.currentPcmStream = pcmStream;
+
+    session.connection.subscribe(session.player);
+    await entersState(session.connection, VoiceConnectionStatus.Ready, 5_000);
+    const resource = createAudioResource(pcmStream, { inputType: StreamType.Raw, inlineVolume: true });
+    resource.volume?.setVolume(1.35);
+    session.player.play(resource);
+    await entersState(session.player, AudioPlayerStatus.Playing, 8_000);
+    console.log('Voice TTS streaming started using Gemini ' + (this.config.GEMINI_TTS_MODEL || 'gemini-3.1-flash-tts-preview') + ' (' + (contentType || 'audio stream') + ', ' + (Date.now() - startedAt) + 'ms to playback).');
+    await entersState(session.player, AudioPlayerStatus.Idle, 45_000).catch(() => {});
   }
 
   async #speakFishStream(session, text) {
@@ -586,6 +619,20 @@ export class VoiceSessionManager {
 
   async #synthesizeSpeechWithFallback(text) {
     const provider = this.config.VOICE_TTS_PROVIDER || 'auto';
+
+    if (provider === 'gemini') {
+      try {
+        if (!this.ttsClient?.synthesizeSpeech) throw new Error('Gemini TTS client is not configured.');
+        return await this.ttsClient.synthesizeSpeech({
+          text,
+          model: this.config.GEMINI_TTS_MODEL,
+          voice: this.config.GEMINI_TTS_VOICE
+        });
+      } catch (error) {
+        console.error('Gemini TTS failed, trying local TTS fallback:', normalizeProcessError(error));
+        return synthesizeLocalSpeech(text, this.config);
+      }
+    }
 
     if (provider === 'fish') {
       try {
@@ -714,6 +761,14 @@ function decodeTtsToDiscordPcm(audioBuffer, config = {}) {
   ], audioBuffer);
 }
 
+function shouldUseGeminiStreaming(config = {}, ttsClient = null) {
+  return Boolean(
+    config.VOICE_TTS_STREAMING_ENABLED
+      && String(config.VOICE_TTS_PROVIDER || '').trim() === 'gemini'
+      && typeof ttsClient?.createSpeechStream === 'function'
+  );
+}
+
 function shouldUseFishStreaming(config = {}) {
   if (!config.VOICE_TTS_STREAMING_ENABLED || !String(config.FISH_AUDIO_API_KEY ?? '').trim()) return false;
   const provider = config.VOICE_TTS_PROVIDER || 'auto';
@@ -772,6 +827,67 @@ async function createFishAudioStream(text, config = {}) {
   } finally {
     clearTimeout(timeout);
   }
+}
+
+
+function decodeGeminiTtsStreamToDiscordPcm(audioStream, config = {}) {
+  const child = spawn(config.FFMPEG_BIN || 'ffmpeg', [
+    '-hide_banner',
+    '-loglevel',
+    'error',
+    '-fflags',
+    'nobuffer',
+    '-flags',
+    'low_delay',
+    '-f',
+    's16le',
+    '-ar',
+    '24000',
+    '-ac',
+    '1',
+    '-i',
+    'pipe:0',
+    '-af',
+    'volume=1.25',
+    '-f',
+    's16le',
+    '-ar',
+    String(SAMPLE_RATE),
+    '-ac',
+    String(CHANNELS),
+    'pipe:1'
+  ], { stdio: ['pipe', 'pipe', 'pipe'] });
+
+  const output = new PassThrough({
+    highWaterMark: SAMPLE_RATE * CHANNELS * BYTES_PER_SAMPLE
+  });
+  const stderr = [];
+  let inputErrored = false;
+
+  child.stdout.pipe(output);
+  child.stderr.on('data', (chunk) => {
+    if (stderr.length < 8) stderr.push(chunk);
+  });
+  child.once('error', (error) => {
+    if (!output.destroyed) output.destroy(error);
+  });
+  child.once('close', (code) => {
+    if (code === 0 || inputErrored || output.destroyed) return;
+    const message = Buffer.concat(stderr).toString('utf8').trim();
+    output.destroy(new Error(message || 'ffmpeg Gemini PCM decoder exited with code ' + code));
+  });
+
+  child.stdin.once('error', (error) => {
+    if (error.code !== 'EPIPE' && !output.destroyed) output.destroy(error);
+  });
+  audioStream.once('error', (error) => {
+    inputErrored = true;
+    child.stdin.destroy(error);
+    if (!output.destroyed) output.destroy(error);
+  });
+  audioStream.pipe(child.stdin);
+
+  return output;
 }
 
 function decodeTtsStreamToDiscordPcm(audioStream, config = {}) {
