@@ -41,7 +41,25 @@ process.on('uncaughtException', (error) => {
 });
 
 const events = new AppEvents();
+const runtime = {
+  storage: null,
+  botActions: null
+};
+const app = createServer({
+  config,
+  storage: createDeferredRuntimeTarget(runtime, 'storage'),
+  bot: createDeferredRuntimeTarget(runtime, 'botActions'),
+  events
+});
+const httpServer = app.listen(config.PORT, () => {
+  console.log(`NexaDesk dashboard listener bound on http://localhost:${config.PORT}`);
+});
+httpServer.on('error', (error) => {
+  console.error('NexaDesk dashboard listener error:', error);
+});
+
 const storage = await createInitializedStorage(config, events);
+runtime.storage = storage;
 
 const aiClient = createAiClient();
 const visualAnalyzer = createVisualAnalyzer();
@@ -74,16 +92,9 @@ const botActions = botGatewayEligible && !config.BOT_HA_ENABLED
     }
   : createDiscordRestActions({ config, storage });
 
-const app = createServer({
-  config,
-  storage,
-  bot: botActions,
-  events
-});
-app.listen(config.PORT, () => {
-  console.log(`NexaDesk dashboard listening on http://localhost:${config.PORT}`);
-  console.log(`NexaDesk runtime: RUN_BOT=${config.RUN_BOT} BOT_HA_ENABLED=${config.BOT_HA_ENABLED} BOT_GATEWAY_ELIGIBLE=${botGatewayEligible} BOT_INSTANCE_ID=${config.BOT_INSTANCE_ID || 'auto'} KEEPALIVE_ENABLED=${config.KEEPALIVE_ENABLED}`);
-});
+runtime.botActions = botActions;
+console.log(`NexaDesk dashboard ready on http://localhost:${config.PORT}`);
+console.log(`NexaDesk runtime: RUN_BOT=${config.RUN_BOT} BOT_HA_ENABLED=${config.BOT_HA_ENABLED} BOT_GATEWAY_ELIGIBLE=${botGatewayEligible} BOT_INSTANCE_ID=${config.BOT_INSTANCE_ID || 'auto'} KEEPALIVE_ENABLED=${config.KEEPALIVE_ENABLED}`);
 
 startKeepAliveLoop(config);
 
@@ -520,6 +531,25 @@ function startKeepAliveLoop(config) {
   setTimeout(ping, 10_000).unref?.();
   const timer = setInterval(ping, config.KEEPALIVE_INTERVAL_MS);
   timer.unref?.();
+}
+
+function createDeferredRuntimeTarget(runtime, key) {
+  return new Proxy({}, {
+    get(_target, property) {
+      if (property === 'then' || typeof property === 'symbol') return undefined;
+      const target = runtime[key];
+      if (target && !(property in target)) return undefined;
+      if (target) {
+        const value = target[property];
+        return typeof value === 'function' ? value.bind(target) : value;
+      }
+      return (...args) => {
+        const error = new Error(`NexaDesk runtime target '${key}' is not ready.`);
+        error.code = 'runtime_not_ready';
+        return Promise.reject(error);
+      };
+    }
+  });
 }
 
 function wait(ms) {
