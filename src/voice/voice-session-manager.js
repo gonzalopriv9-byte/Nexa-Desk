@@ -3,7 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { PassThrough, Readable } from 'node:stream';
+import { PassThrough, Readable, Transform } from 'node:stream';
 import WebSocket from 'ws';
 import {
   AudioPlayerStatus,
@@ -565,7 +565,7 @@ export class VoiceSessionManager {
       timeoutMs: this.config.GEMINI_TTS_TIMEOUT_MS,
       maxStreamMs: this.config.GEMINI_TTS_MAX_STREAM_MS
     });
-    const pcmStream = decodeGeminiTtsStreamToDiscordPcm(audioStream, this.config);
+    const pcmStream = convertGeminiPcmToDiscordPcm(audioStream);
     session.currentAudioStream = audioStream;
     session.currentPcmStream = pcmStream;
 
@@ -830,63 +830,62 @@ async function createFishAudioStream(text, config = {}) {
 }
 
 
-function decodeGeminiTtsStreamToDiscordPcm(audioStream, config = {}) {
-  const child = spawn(config.FFMPEG_BIN || 'ffmpeg', [
-    '-hide_banner',
-    '-loglevel',
-    'error',
-    '-fflags',
-    'nobuffer',
-    '-flags',
-    'low_delay',
-    '-f',
-    's16le',
-    '-ar',
-    '24000',
-    '-ac',
-    '1',
-    '-i',
-    'pipe:0',
-    '-af',
-    'volume=1.25',
-    '-f',
-    's16le',
-    '-ar',
-    String(SAMPLE_RATE),
-    '-ac',
-    String(CHANNELS),
-    'pipe:1'
-  ], { stdio: ['pipe', 'pipe', 'pipe'] });
+function convertGeminiPcmToDiscordPcm(audioStream) {
+  // Gemini TTS emits signed 16-bit, 24 kHz, mono PCM. Discord voice expects
+  // signed 16-bit, 48 kHz, stereo PCM. Duplicating samples is intentional:
+  // it starts playback immediately without waiting for an FFmpeg process.
+  let pendingByte = null;
+  let previousSample = null;
+  let peak = 0;
 
-  const output = new PassThrough({
-    highWaterMark: SAMPLE_RATE * CHANNELS * BYTES_PER_SAMPLE
-  });
-  const stderr = [];
-  let inputErrored = false;
+  const output = new Transform({
+    highWaterMark: SAMPLE_RATE * CHANNELS * BYTES_PER_SAMPLE,
+    transform(chunk, _encoding, callback) {
+      try {
+        let input = chunk;
+        if (pendingByte !== null) {
+          input = Buffer.concat([Buffer.from([pendingByte]), chunk]);
+          pendingByte = null;
+        }
+        if (input.length % 2 === 1) {
+          pendingByte = input[input.length - 1];
+          input = input.subarray(0, input.length - 1);
+        }
 
-  child.stdout.pipe(output);
-  child.stderr.on('data', (chunk) => {
-    if (stderr.length < 8) stderr.push(chunk);
-  });
-  child.once('error', (error) => {
-    if (!output.destroyed) output.destroy(error);
-  });
-  child.once('close', (code) => {
-    if (code === 0 || inputErrored || output.destroyed) return;
-    const message = Buffer.concat(stderr).toString('utf8').trim();
-    output.destroy(new Error(message || 'ffmpeg Gemini PCM decoder exited with code ' + code));
+        const converted = Buffer.allocUnsafe((input.length / 2) * 8);
+        let outputOffset = 0;
+        for (let offset = 0; offset < input.length; offset += 2) {
+          const sample = input.readInt16LE(offset);
+          const normalized = Math.abs(sample) / 32768;
+          peak = Math.max(peak, normalized);
+          const boosted = Math.max(-32768, Math.min(32767, Math.round(sample * 1.25)));
+          // Two 48 kHz frames for each 24 kHz source sample; stereo duplicate.
+          for (let copy = 0; copy < 2; copy += 1) {
+            converted.writeInt16LE(boosted, outputOffset);
+            converted.writeInt16LE(boosted, outputOffset + 2);
+            outputOffset += 4;
+          }
+          previousSample = sample;
+        }
+        callback(null, converted.subarray(0, outputOffset));
+      } catch (error) {
+        callback(error);
+      }
+    },
+    flush(callback) {
+      if (pendingByte !== null) {
+        pendingByte = null;
+      }
+      if (previousSample !== null && peak < 0.0008) {
+        callback(new Error('Gemini TTS stream decoded as silence.'));
+        return;
+      }
+      callback();
+    }
   });
 
-  child.stdin.once('error', (error) => {
-    if (error.code !== 'EPIPE' && !output.destroyed) output.destroy(error);
-  });
-  audioStream.once('error', (error) => {
-    inputErrored = true;
-    child.stdin.destroy(error);
-    if (!output.destroyed) output.destroy(error);
-  });
-  audioStream.pipe(child.stdin);
-
+  audioStream.once('error', (error) => output.destroy(error));
+  audioStream.pipe(output);
   return output;
 }
 
