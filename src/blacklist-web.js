@@ -6,6 +6,7 @@ import {
   isBlacklistEntryActive,
   normalizeBlacklistEvidence,
   normalizeBlacklistLookup,
+  normalizeDiscordUserId,
   parseBlacklistDuration
 } from './blacklist.js';
 
@@ -26,14 +27,15 @@ const DISCORD_MEDIA_HOSTS = new Set([
 ]);
 
 export function normalizeBlacklistWebLookup(value) {
-  const raw = String(value ?? '').trim();
+  const raw = normalizeDiscordUserId(value);
   const lookup = normalizeBlacklistLookup(raw);
-  if (!DISCORD_USER_ID_RE.test(lookup.userId)) {
+  const userId = normalizeDiscordUserId(lookup.userId);
+  if (!DISCORD_USER_ID_RE.test(userId)) {
     throw new Error('Introduce un ID de usuario de Discord válido o un código baneo-global válido.');
   }
   return {
-    userId: lookup.userId,
-    banCode: buildGlobalBanCode(lookup.userId)
+    userId,
+    banCode: buildGlobalBanCode(userId)
   };
 }
 
@@ -309,7 +311,7 @@ export function renderBlacklistPage({ query = '', record = null, error = '', isO
       function loadRecord(record) { const entry = record?.entry; if (!entry) { el('blacklistCreatedAt').value = ''; el('blacklistExpiresAt').value = ''; el('blacklistDuration').value = 'permanente'; el('blacklistActive').value = 'true'; el('blacklistSource').value = ''; el('blacklistReason').value = ''; return; } el('blacklistUserId').value = entry.userId || ''; el('blacklistSource').value = entry.createdBy || ''; el('blacklistCreatedAt').value = toLocal(entry.createdAt) || ''; el('blacklistDuration').value = entry.duration || 'permanente'; el('blacklistExpiresAt').value = toLocal(entry.expiresAt) || ''; el('blacklistActive').value = entry.active === false ? 'false' : 'true'; el('blacklistReason').value = entry.reason || ''; renderEvidence(); }
       el('blacklistProofFile')?.addEventListener('change', async (event) => { const file = event.target.files?.[0]; if (!file) return; const status = el('blacklistProofStatus'); try { if (!file.type.startsWith('image/')) throw new Error('Solo se admiten imágenes.'); status.textContent = 'Subiendo prueba...'; const response = await fetch('/blacklist/api/upload', { method:'POST', credentials:'same-origin', headers:{ 'content-type':file.type, 'x-file-name':encodeURIComponent(file.name) }, body:file }); const data = await response.json().catch(() => ({})); if (!response.ok) throw new Error(data.error || 'No se pudo subir la imagen.'); state.evidence.push({ attachmentUrl:data.url, fileName:data.fileName, contentType:data.contentType, description:'Prueba documental', createdBy:el('blacklistSource').value.trim() || 'owner' }); renderEvidence(); status.textContent = 'Prueba lista. Guarda el registro para publicarla.'; event.target.value = ''; } catch (error) { status.textContent = error.message; } });
       document.addEventListener('click', (event) => { const button = event.target.closest('[data-remove-proof]'); if (!button) return; state.evidence.splice(Number(button.dataset.removeProof), 1); renderEvidence(); });
-      form.addEventListener('submit', async (event) => { event.preventDefault(); const userId = el('blacklistUserId').value.trim(); if (!/^\d{15,21}$/.test(userId)) return setStatus('El ID de Discord debe tener entre 15 y 21 dígitos.', true); const payload = { userId, source:el('blacklistSource').value.trim(), createdAt:fromLocal(el('blacklistCreatedAt').value), expiresAt:fromLocal(el('blacklistExpiresAt').value), duration:el('blacklistDuration').value.trim() || 'permanente', active:el('blacklistActive').value === 'true', reason:el('blacklistReason').value.trim(), evidence:state.evidence }; try { setStatus('Guardando...'); const response = await fetch('/blacklist/api', { method:'PUT', credentials:'same-origin', headers:{ 'content-type':'application/json' }, body:JSON.stringify(payload) }); const data = await response.json().catch(() => ({})); if (!response.ok) throw new Error(data.error || 'No se pudo guardar el registro.'); window.location.href = '/blacklist?q=' + encodeURIComponent(userId); } catch (error) { setStatus(error.message, true); } });
+      form.addEventListener('submit', async (event) => { event.preventDefault(); const userId = normalizeDiscordUserId(el('blacklistUserId').value); el('blacklistUserId').value = userId; if (!/^[0-9]{15,21}$/.test(userId)) return setStatus('El ID de Discord debe tener entre 15 y 21 dígitos.', true); const payload = { userId, source:el('blacklistSource').value.trim(), createdAt:fromLocal(el('blacklistCreatedAt').value), expiresAt:fromLocal(el('blacklistExpiresAt').value), duration:el('blacklistDuration').value.trim() || 'permanente', active:el('blacklistActive').value === 'true', reason:el('blacklistReason').value.trim(), evidence:state.evidence }; try { setStatus('Guardando...'); const response = await fetch('/blacklist/api', { method:'PUT', credentials:'same-origin', headers:{ 'content-type':'application/json' }, body:JSON.stringify(payload) }); const data = await response.json().catch(() => ({})); if (!response.ok) throw new Error(data.error || 'No se pudo guardar el registro.'); window.location.href = '/blacklist?q=' + encodeURIComponent(userId); } catch (error) { setStatus(error.message, true); } });
       loadRecord(initial); renderEvidence();
     })();
   </script>` : ''}
