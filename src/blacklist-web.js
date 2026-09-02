@@ -47,7 +47,7 @@ export async function getBlacklistWebRecord({ storage, value }) {
   return serializeBlacklistWebRecord({ entry, evidence });
 }
 
-export function serializeBlacklistWebRecord({ entry, evidence = [] }) {
+export function serializeBlacklistWebRecord({ entry, evidence = [], proofNote = '' }) {
   const userId = String(entry?.userId ?? '').trim();
   const normalizedEvidence = (Array.isArray(evidence) ? evidence : [])
     .map((item) => normalizeBlacklistEvidence(item))
@@ -65,6 +65,7 @@ export function serializeBlacklistWebRecord({ entry, evidence = [] }) {
       updatedAt: entry?.updatedAt ?? null
     },
     evidence: normalizedEvidence,
+    proofNote: String(proofNote ?? '').slice(0, 320),
     profileUrl: `https://discord.com/users/${encodeURIComponent(userId)}`,
     activeNow: isBlacklistEntryActive(entry)
   };
@@ -246,9 +247,13 @@ function renderEvidence(evidence) {
 }
 
 function renderRecord(record, isOwner) {
-  const { entry, evidence, profileUrl, activeNow } = record;
+  const { entry, evidence, proofNote = '', profileUrl, activeNow } = record;
   const status = activeNow ? 'Activa' : entry.active ? 'Caducada' : 'Inactiva';
   const statusClass = activeNow ? 'active' : 'inactive';
+  const proofLabel = evidence.length ? `${evidence.length} archivo${evidence.length === 1 ? '' : 's'}` : proofNote ? 'No disponible' : 'Sin adjuntos';
+  const proofContent = proofNote
+    ? `<div class="proof-empty">${escapeHtml(proofNote)}</div>`
+    : renderEvidence(evidence);
   return `<section class="result-card" id="result" aria-live="polite">
     <div class="result-top"><div><p class="eyebrow">Resultado de búsqueda</p><h2>Registro global encontrado</h2></div><span class="status ${statusClass}">${status}</span></div>
     <div class="identity-row"><div class="avatar-mark">⌁</div><div><strong>Usuario de Discord</strong><span class="mono">${escapeHtml(entry.userId)}</span></div><a class="profile-link" href="${escapeHtml(profileUrl)}" target="_blank" rel="noopener noreferrer">Ver perfil ↗</a></div>
@@ -259,7 +264,7 @@ function renderRecord(record, isOwner) {
       <div class="info"><span>Caduca</span><strong>${entry.expiresAt ? escapeHtml(formatDate(entry.expiresAt)) : 'Sin caducidad'}</strong></div>
     </div>
     <div class="reason"><span>Argumento del baneo</span><p>${escapeHtml(entry.reason || 'Sin motivo especificado')}</p></div>
-    <div class="proof-section"><div class="proof-heading"><span>Prueba</span><small>${evidence.length ? `${evidence.length} archivo${evidence.length === 1 ? '' : 's'}` : 'Sin adjuntos'}</small></div>${renderEvidence(evidence)}</div>
+    <div class="proof-section"><div class="proof-heading"><span>Prueba</span><small>${proofLabel}</small></div>${proofContent}</div>
     ${isOwner ? '<a class="owner-edit-link" href="#owner-editor">Editar este registro ↓</a>' : ''}
   </section>`;
 }
