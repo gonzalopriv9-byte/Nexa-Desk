@@ -31,6 +31,7 @@ import { buildTranscriptFileName, buildTranscriptText, verifyTranscriptAccessTok
 import { normalizeWelcomeConfig } from './welcome.js';
 import { normalizePartners, removeUnreferencedPartnerUploads, renderPartnersPage, savePartnerUpload } from './partners.js';
 import { buildBlacklistWebEntry, getBlacklistWebRecord, normalizeBlacklistWebEvidenceList, normalizeBlacklistWebLookup, renderBlacklistPage, serializeBlacklistWebRecord, saveBlacklistProofUpload } from './blacklist-web.js';
+import { checkXnProtectGlobalBan } from './xnprotect-blacklist.js';
 
 const DISCORD_API = 'https://discord.com/api/v10';
 const MANAGE_GUILD = 0x20n;
@@ -122,7 +123,26 @@ export function createServer({ config, storage, bot, events }) {
     let error = '';
     if (query) {
       try {
-        record = await getBlacklistWebRecord({ storage, value: query });
+        const lookup = normalizeBlacklistWebLookup(query);
+        const [localLookup, xnLookup] = await Promise.all([
+          getBlacklistWebRecord({ storage, value: lookup.userId })
+            .then((value) => ({ ok: true, value }))
+            .catch((lookupError) => ({ ok: false, error: lookupError })),
+          checkXnProtectGlobalBan(lookup.userId)
+            .then((value) => ({ ok: true, value }))
+            .catch((lookupError) => ({ ok: false, error: lookupError }))
+        ]);
+
+        if (xnLookup.ok && xnLookup.value?.checked && xnLookup.value.blacklisted) {
+          record = buildXnProtectBlacklistWebRecord({
+            userId: lookup.userId,
+            result: xnLookup.value
+          });
+        } else if (localLookup.ok) {
+          record = localLookup.value;
+        } else {
+          throw localLookup.error || xnLookup.error || new Error('No se pudo consultar el registro.');
+        }
       } catch (lookupError) {
         error = lookupError?.message ?? 'La búsqueda no es válida.';
       }
@@ -134,6 +154,49 @@ export function createServer({ config, storage, bot, events }) {
       isOwner: session?.user?.id === GLOBAL_BLACKLIST_ADMIN_USER_ID
     }));
   }));
+
+  function buildXnProtectBlacklistWebRecord({ userId, result }) {
+    const banCode = buildGlobalBanCode(userId);
+    const createdAt = normalizeXnProtectBlacklistDate(result?.since);
+    const expiresAt = normalizeXnProtectBlacklistDate(result?.expires);
+    const evidence = result?.proof
+      ? [{
+          id: 'xnprotect-web-' + userId,
+          userId,
+          banCode,
+          attachmentUrl: String(result.proof).trim(),
+          description: 'Prueba proporcionada por XN Protect',
+          createdBy: 'XN Protect Database',
+          createdAt: createdAt || new Date().toISOString()
+        }]
+      : [];
+
+    return serializeBlacklistWebRecord({
+      entry: {
+        userId,
+        banCode,
+        reason: String(result?.reason ?? '').trim() || 'XN Protect no devolvió un motivo.',
+        duration: expiresAt ? 'Hasta la fecha indicada por XN Protect' : 'Permanente',
+        expiresAt,
+        active: true,
+        createdBy: 'XN Protect Database',
+        createdAt,
+        updatedAt: createdAt
+      },
+      evidence
+    });
+  }
+
+  function normalizeXnProtectBlacklistDate(value) {
+    if (value === null || value === undefined || String(value).trim() === '') return null;
+    const numeric = Number(value);
+    if (Number.isFinite(numeric)) {
+      const date = new Date(numeric < 10_000_000_000 ? numeric * 1000 : numeric);
+      return Number.isFinite(date.getTime()) ? date.toISOString() : null;
+    }
+    const date = new Date(String(value));
+    return Number.isFinite(date.getTime()) ? date.toISOString() : null;
+  }
 
   app.get('/partners', asyncHandler(async (req, res) => {
     const settings = await storage.getGlobalSettings().catch(() => ({}));
