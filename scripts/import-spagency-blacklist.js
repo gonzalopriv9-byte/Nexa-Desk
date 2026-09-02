@@ -48,7 +48,7 @@ async function main() {
     throw new Error('El JSON debe contener un array de registros.');
   }
 
-  const mapped = [];
+  const rawMapped = [];
   const evidence = [];
   const invalid = [];
   const reasonCounts = new Map();
@@ -60,17 +60,16 @@ async function main() {
       invalid.push({ index, id: record?.id ?? null });
       continue;
     }
-    mapped.push(result.entry);
+    rawMapped.push(result.entry);
     evidence.push(...result.evidence);
-    reasonCounts.set(result.entry.reason, (reasonCounts.get(result.entry.reason) || 0) + 1);
   }
 
-  const duplicateIds = findDuplicates(mapped.map((entry) => entry.userId));
-  if (duplicateIds.length) {
-    throw new Error(`El histórico contiene IDs duplicados: ${duplicateIds.slice(0, 10).join(', ')}`);
+  const { entries: mapped, duplicateUsers, duplicateRows } = consolidateEntries(rawMapped, nowMs);
+  for (const entry of mapped) {
+    reasonCounts.set(entry.reason, (reasonCounts.get(entry.reason) || 0) + 1);
   }
 
-  const summary = buildSummary({ source, mapped, evidence, invalid, reasonCounts, proofStats, now, mode, nullDuration, conflict, inputPath, proofRoot });
+  const summary = buildSummary({ source, mapped, evidence, invalid, reasonCounts, proofStats, duplicateUsers, duplicateRows, now, mode, nullDuration, conflict, inputPath, proofRoot });
   printSummary(summary);
 
   if (!options.apply) {
@@ -243,6 +242,50 @@ async function copyProofAsset(sourcePath, userId, proof) {
   return { fileName };
 }
 
+function consolidateEntries(entries) {
+  const groups = new Map();
+  for (const entry of entries) {
+    if (!groups.has(entry.userId)) groups.set(entry.userId, []);
+    groups.get(entry.userId).push(entry);
+  }
+
+  const consolidated = [];
+  let duplicateRows = 0;
+  for (const [userId, group] of groups) {
+    duplicateRows += Math.max(0, group.length - 1);
+    if (group.length === 1) {
+      consolidated.push(group[0]);
+      continue;
+    }
+
+    const reasons = [...new Set(group.map((entry) => entry.reason).filter(Boolean))];
+    const durations = [...new Set(group.map((entry) => entry.duration).filter(Boolean))];
+    const activeEntries = group.filter((entry) => entry.active);
+    const hasActivePermanent = activeEntries.some((entry) => !entry.expiresAt);
+    const expiryCandidates = group.map((entry) => entry.expiresAt).filter(Boolean).sort((a, b) => Date.parse(b) - Date.parse(a));
+    const createdAt = group.map((entry) => entry.createdAt).sort((a, b) => Date.parse(a) - Date.parse(b))[0];
+    const updatedAt = group.map((entry) => entry.updatedAt).sort((a, b) => Date.parse(b) - Date.parse(a))[0];
+
+    consolidated.push({
+      userId,
+      banCode: group[0].banCode,
+      reason: reasons.join(' | ').slice(0, 900),
+      duration: durations.join(' + ').slice(0, 120),
+      expiresAt: hasActivePermanent ? null : (expiryCandidates[0] || null),
+      active: activeEntries.length > 0,
+      createdBy: SOURCE_LABEL,
+      createdAt,
+      updatedAt
+    });
+  }
+
+  return {
+    entries: consolidated,
+    duplicateUsers: [...groups.values()].filter((group) => group.length > 1).length,
+    duplicateRows
+  };
+}
+
 function buildBlacklistQuery(conflict) {
   const insert = `insert into public.global_blacklist
     (user_id, ban_code, reason, duration, expires_at, active, created_by, created_at, updated_at)
@@ -276,7 +319,7 @@ function buildEvidenceQuery(conflict) {
       created_at = excluded.created_at`;
 }
 
-function buildSummary({ source, mapped, evidence, invalid, reasonCounts, proofStats, now, mode, nullDuration, conflict, inputPath, proofRoot }) {
+function buildSummary({ source, mapped, evidence, invalid, reasonCounts, proofStats, duplicateUsers, duplicateRows, now, mode, nullDuration, conflict, inputPath, proofRoot }) {
   const active = mapped.filter((entry) => entry.active).length;
   const expired = mapped.filter((entry) => !entry.active && entry.expiresAt).length;
   const noDuration = mapped.filter((entry) => entry.duration === 'historico-sin-duracion').length;
@@ -290,6 +333,8 @@ function buildSummary({ source, mapped, evidence, invalid, reasonCounts, proofSt
     sourceRecords: source.length,
     validRecords: mapped.length,
     invalidRecords: invalid.length,
+    duplicateUsersConsolidated: duplicateUsers,
+    duplicateRowsConsolidated: duplicateRows,
     activeAfterMapping: active,
     inactiveOrExpiredAfterMapping: mapped.length - active,
     expiredByPunishmentDate: expired,
