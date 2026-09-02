@@ -43,6 +43,16 @@ const UPLOADS_DIR = path.resolve(process.cwd(), 'data', 'uploads');
 const docsAuthAttempts = new Map();
 const adminAuthAttempts = new Map();
 const ADMIN_CODE_REPLAY_GRACE_MS = 2 * 60 * 1000;
+const XNPROTECT_PROOF_HOSTS = new Set([
+  'cdn.discordapp.com',
+  'media.discordapp.net',
+  'images-ext-1.discordapp.net',
+  'images-ext-2.discordapp.net'
+]);
+const XNPROTECT_PROOF_CACHE_TTL_MS = 5 * 60 * 1000;
+const XNPROTECT_PROOF_TIMEOUT_MS = 3_500;
+const XNPROTECT_PROOF_MAX_BYTES = 10_000_000;
+const xnProtectProofCache = new Map();
 
 export function createServer({ config, storage, bot, events }) {
   const app = express();
@@ -134,7 +144,7 @@ export function createServer({ config, storage, bot, events }) {
         ]);
 
         if (xnLookup.ok && xnLookup.value?.checked && xnLookup.value.blacklisted) {
-          record = buildXnProtectBlacklistWebRecord({
+          record = await buildXnProtectBlacklistWebRecord({
             userId: lookup.userId,
             result: xnLookup.value
           });
@@ -155,16 +165,17 @@ export function createServer({ config, storage, bot, events }) {
     }));
   }));
 
-  function buildXnProtectBlacklistWebRecord({ userId, result }) {
+  async function buildXnProtectBlacklistWebRecord({ userId, result }) {
     const banCode = buildGlobalBanCode(userId);
     const createdAt = normalizeXnProtectBlacklistDate(result?.since);
     const expiresAt = normalizeXnProtectBlacklistDate(result?.expires);
-    const evidence = result?.proof
+    const proof = await cacheXnProtectProof(result?.proof);
+    const evidence = proof.url
       ? [{
           id: 'xnprotect-web-' + userId,
           userId,
           banCode,
-          attachmentUrl: String(result.proof).trim(),
+          attachmentUrl: proof.url,
           description: 'Prueba proporcionada por XN Protect',
           createdBy: 'XN Protect Database',
           createdAt: createdAt || new Date().toISOString()
@@ -183,8 +194,73 @@ export function createServer({ config, storage, bot, events }) {
         createdAt,
         updatedAt: createdAt
       },
-      evidence
+      evidence,
+      proofNote: proof.note
     });
+  }
+
+  async function cacheXnProtectProof(value) {
+    const raw = String(value ?? '').trim();
+    if (!raw) return { url: '', note: '' };
+
+    let source;
+    try {
+      source = new URL(raw);
+    } catch {
+      return { url: '', note: 'XN Protect indicó una prueba, pero la URL no es válida.' };
+    }
+    if (source.protocol !== 'https:' || !XNPROTECT_PROOF_HOSTS.has(source.hostname.toLowerCase())) {
+      return { url: '', note: 'XN Protect indicó una prueba, pero su origen no está disponible para visualización segura.' };
+    }
+
+    const cacheKey = source.origin + source.pathname;
+    const cached = xnProtectProofCache.get(cacheKey);
+    if (cached && Date.now() - cached.checkedAt < XNPROTECT_PROOF_CACHE_TTL_MS) return cached.value;
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), XNPROTECT_PROOF_TIMEOUT_MS);
+    let valueToCache;
+    try {
+      const response = await fetch(source.toString(), {
+        headers: { accept: 'image/png,image/jpeg,image/webp,image/gif' },
+        signal: controller.signal
+      });
+      if (!response.ok) throw new Error('origin HTTP ' + response.status);
+      const declaredLength = Number(response.headers.get('content-length') || 0);
+      if (declaredLength > XNPROTECT_PROOF_MAX_BYTES) throw new Error('proof too large');
+      const buffer = Buffer.from(await response.arrayBuffer());
+      if (!buffer.length || buffer.length > XNPROTECT_PROOF_MAX_BYTES) throw new Error('invalid proof size');
+      const mimeType = inferXnProtectProofMimeType(response.headers.get('content-type'), source.pathname);
+      if (!mimeType) throw new Error('unsupported proof type');
+      const upload = await saveBlacklistProofUpload({
+        buffer,
+        mimeType,
+        fileName: path.basename(source.pathname)
+      });
+      valueToCache = { url: upload.url, note: '' };
+    } catch (error) {
+      console.warn('Could not cache XN Protect proof ' + cacheKey + ': ' + (error?.message ?? error));
+      valueToCache = { url: '', note: 'XN Protect indicó una prueba, pero la imagen ya no está disponible en su origen.' };
+    } finally {
+      clearTimeout(timeout);
+    }
+
+    xnProtectProofCache.set(cacheKey, { checkedAt: Date.now(), value: valueToCache });
+    if (xnProtectProofCache.size > 256) xnProtectProofCache.delete(xnProtectProofCache.keys().next().value);
+    return valueToCache;
+  }
+
+  function inferXnProtectProofMimeType(contentType, pathname) {
+    const header = String(contentType ?? '').toLowerCase().split(';')[0].trim();
+    if (['image/png', 'image/jpeg', 'image/jpg', 'image/webp', 'image/gif'].includes(header)) return header;
+    const extension = path.extname(pathname).toLowerCase();
+    return ({
+      '.png': 'image/png',
+      '.jpg': 'image/jpeg',
+      '.jpeg': 'image/jpeg',
+      '.webp': 'image/webp',
+      '.gif': 'image/gif'
+    })[extension] || '';
   }
 
   function normalizeXnProtectBlacklistDate(value) {
