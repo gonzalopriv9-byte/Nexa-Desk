@@ -460,7 +460,7 @@ export function renderPartnersPage({ partners = [], isOwner = false, session = n
     .partner-footer small { color:var(--soft); text-transform:uppercase; letter-spacing:.13em; font-size:10px; font-weight:900; }
     .partner-link { display:inline-flex; align-items:center; gap:7px; color:#050505; background:#fff; border-radius:999px; padding:10px 13px; text-decoration:none; font-size:13px; font-weight:950; transition:transform .22s var(--ease), background .22s ease; }
     .partner-link:hover { transform:translateY(-2px); background:var(--gold); }
-    .empty-state { padding:70px 24px; border:1px dashed rgba(255,255,255,.2); border-radius:28px; text-align:center; background:rgba(255,255,255,.025); }
+    .empty-state { grid-column:1 / -1; padding:70px 24px; border:1px dashed rgba(255,255,255,.2); border-radius:28px; text-align:center; background:rgba(255,255,255,.025); }
     .empty-mark { display:grid; place-items:center; width:64px; height:64px; margin:0 auto 20px; border:1px solid rgba(214,184,106,.55); border-radius:20px; color:var(--gold); font-size:28px; }
     .empty-state h2 { max-width:620px; margin:0 auto 12px; font-size:clamp(28px, 4vw, 50px); line-height:.98; letter-spacing:-.07em; }
     .empty-state p:last-child { max-width:620px; margin:0 auto; color:var(--muted); line-height:1.6; }
