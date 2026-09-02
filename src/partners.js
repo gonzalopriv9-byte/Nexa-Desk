@@ -511,7 +511,7 @@ export function renderPartnersPage({ partners = [], isOwner = false, session = n
         <a href="/">Dashboard</a>
         <a href="/status">Status</a>
         <a href="https://discord.gg/vVXbq7ePEZ" target="_blank" rel="noopener">Soporte</a>
-        ${isOwner ? `<span class="owner-pill">Owner mode · ${escapeHtml(ownerName)}</span>` : ''}
+        ${isOwner ? `<span class="owner-pill">Partner editor · ${escapeHtml(ownerName)}</span>` : ''}
       </nav>
     </header>
 
@@ -582,7 +582,7 @@ function renderOwnerEditor(partners, initialState) {
     ? partners.map((partner) => `<div class="editor-item" data-editor-item="${escapeHtml(partner.id)}"><span class="partner-icon partner-icon-fallback">✦</span><div><strong>${escapeHtml(partner.title)}</strong><small>${escapeHtml(partner.discordUrl || 'Sin enlace Discord')}</small></div><div class="mini-actions"><button class="mini-button" type="button" data-edit-partner="${escapeHtml(partner.id)}">Editar</button><button class="mini-button danger" type="button" data-delete-partner="${escapeHtml(partner.id)}">Borrar</button></div></div>`).join('')
     : '<p class="editor-status">Todavía no hay partners. Crea el primero desde aquí.</p>';
   return `<section class="editor-shell" id="partner-editor" data-initial-partners="${escapeHtml(initialState)}">
-    <div class="editor-head"><div><p class="eyebrow">Zona privada</p><h2>Construye la página de partners.</h2><p>Solo el owner global puede editarla. Las imágenes se guardan en la Raspberry Pi y los vídeos se limitan a 30 segundos antes de publicarse.</p></div><span class="owner-badge">Owner only</span></div>
+    <div class="editor-head"><div><p class="eyebrow">Zona privada</p><h2>Construye la página de partners.</h2><p>Solo el owner global y los editores autorizados pueden editarla. Las imágenes se guardan en la Raspberry Pi y los vídeos se limitan a 30 segundos antes de publicarse.</p></div><span class="owner-badge">Editor autorizado</span></div>
     <div class="editor-grid">
       <form class="editor-form" id="partnerForm">
         <input type="hidden" id="partnerId">
