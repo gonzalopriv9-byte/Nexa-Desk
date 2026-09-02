@@ -129,7 +129,7 @@ export class GoogleAiStudioClient {
     if (!response.ok) {
       const body = await response.text().catch(() => '');
       const data = parseJson(body);
-      const message = data?.error?.message || body.replace(/\\s+/g, ' ').slice(0, 500);
+      const message = data?.error?.message || body.replace(/\s+/g, ' ').slice(0, 500);
       const error = new Error('Gemini TTS streaming returned ' + response.status + ': ' + (message || 'request failed'));
       error.status = response.status;
       error.code = response.status === 429 ? 'rate_limit' : 'google_tts_error';
@@ -180,7 +180,7 @@ export class GoogleAiStudioClient {
       const body = await response.text().catch(() => '');
       const data = parseJson(body);
       if (!response.ok) {
-        const apiMessage = data?.error?.message || body.replace(/\\s+/g, ' ').slice(0, 500);
+        const apiMessage = data?.error?.message || body.replace(/\s+/g, ' ').slice(0, 500);
         const error = new Error(
           'Google AI Studio returned ' + response.status + ': ' + (apiMessage || 'request failed')
         );
@@ -223,7 +223,7 @@ function buildSpeechGenerationConfig(voice) {
 
 function normalizeTtsInput(value) {
   return String(value ?? '')
-    .replace(/\\s+/g, ' ')
+    .replace(/\s+/g, ' ')
     .trim()
     .slice(0, 9000);
 }
@@ -286,10 +286,10 @@ async function* iterateGeminiSpeechAudio(body, { controller, firstAudioTimeoutMs
     while (true) {
       const { value, done } = await reader.read();
       if (done) break;
-      pending += decoder.decode(value, { stream: true }).replace(/\\r\\n/g, '\\n').replace(/\\r/g, '\\n');
+      pending += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n').replace(/\r/g, '\n');
 
       let separator;
-      while ((separator = pending.indexOf('\\n\\n')) >= 0) {
+      while ((separator = pending.indexOf('\n\n')) >= 0) {
         const event = pending.slice(0, separator);
         pending = pending.slice(separator + 2);
         for (const chunk of parseGeminiSseAudioEvent(event)) {
@@ -300,7 +300,7 @@ async function* iterateGeminiSpeechAudio(body, { controller, firstAudioTimeoutMs
       }
     }
 
-    pending += decoder.decode().replace(/\\r\\n/g, '\\n').replace(/\\r/g, '\\n');
+    pending += decoder.decode().replace(/\r\n/g, '\n').replace(/\r/g, '\n');
     if (pending.trim()) {
       for (const chunk of parseGeminiSseAudioEvent(pending)) {
         audioSeen = true;
@@ -327,12 +327,12 @@ async function* iterateGeminiSpeechAudio(body, { controller, firstAudioTimeoutMs
 
 function parseGeminiSseAudioEvent(event) {
   const dataLines = String(event ?? '')
-    .split('\\n')
+    .split('\n')
     .filter((line) => line.startsWith('data:'))
     .map((line) => line.slice(5).trim());
   if (!dataLines.length) return [];
 
-  const payload = dataLines.join('\\n').trim();
+  const payload = dataLines.join('\n').trim();
   if (!payload || payload === '[DONE]') return [];
 
   const data = parseJson(payload);
