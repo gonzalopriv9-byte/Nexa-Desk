@@ -113,7 +113,7 @@ if (config.BOT_HA_ENABLED) {
 }
 
 function createAiClient() {
-  console.log(`NexaDesk AI route: primary=${config.AI_PROVIDER} google=${getGoogleApiKey() ? 'configured' : 'missing'} model=${EFFECTIVE_GOOGLE_MODEL} groq=${hasGroqProvider() ? 'configured' : 'missing'} local=${config.AI_LOCAL_FALLBACK_ENABLED ? 'enabled' : 'disabled'}`);
+  console.log(`NexaDesk AI route: primary=${config.AI_PROVIDER} google=${getGoogleApiKey() ? 'configured' : 'missing'} model=${EFFECTIVE_GOOGLE_MODEL} tts=${getGoogleApiKey() ? config.GEMINI_TTS_MODEL : 'missing'} groq=${hasGroqProvider() ? 'configured' : 'missing'} local=${config.AI_LOCAL_FALLBACK_ENABLED ? 'enabled' : 'disabled'}`);
 
   if (config.AI_PROVIDER === 'google-ai-studio') {
     return createGoogleFallbackClient();
@@ -158,9 +158,34 @@ function createVoiceManager() {
 
   return new VoiceSessionManager({
     storage,
-    aiClient: createGroqFallbackClient(),
+    aiClient: createVoiceAiClient(),
+    ttsClient: createGeminiTtsClient(),
     visualAnalyzer,
     config
+  });
+}
+
+function createVoiceAiClient() {
+  const transcriptionClient = createGroqFallbackClient();
+  return {
+    generate: aiClient.generate.bind(aiClient),
+    transcribeAudio: transcriptionClient.transcribeAudio.bind(transcriptionClient),
+    synthesizeSpeech: transcriptionClient.synthesizeSpeech.bind(transcriptionClient)
+  };
+}
+
+function createGeminiTtsClient() {
+  const apiKey = getGoogleApiKey();
+  if (!apiKey) return null;
+  return new GoogleAiStudioClient({
+    apiKey,
+    model: EFFECTIVE_GOOGLE_MODEL,
+    ttsModel: config.GEMINI_TTS_MODEL,
+    ttsVoice: config.GEMINI_TTS_VOICE,
+    thinkingBudget: 0,
+    timeoutMs: config.GEMINI_TTS_TIMEOUT_MS,
+    ttsTimeoutMs: config.GEMINI_TTS_TIMEOUT_MS,
+    ttsMaxStreamMs: config.GEMINI_TTS_MAX_STREAM_MS
   });
 }
 
