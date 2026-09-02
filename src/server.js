@@ -924,7 +924,7 @@ export function createServer({ config, storage, bot, events }) {
     res.json({ record: serializeBlacklistWebRecord({ entry: savedEntry, evidence: savedEvidence }) });
   }));
 
-  app.post('/partners/api', requireGlobalAdmin, asyncHandler(async (req, res) => {
+  app.post('/partners/api', requirePartnerEditor(config), asyncHandler(async (req, res) => {
     if (!Array.isArray(req.body?.partners)) {
       res.status(400).json({ error: 'La lista de partners no es válida.' });
       return;
