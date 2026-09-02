@@ -2,12 +2,19 @@ export const GLOBAL_BLACKLIST_ADMIN_USER_ID = '1352652366330986526';
 export const GLOBAL_BAN_CODE_PREFIX = 'baneo-global-';
 export const SUPPORT_SERVER_URL = 'https://discord.gg/vVXbq7ePEZ';
 
+export function normalizeDiscordUserId(value) {
+  return String(value ?? '')
+    .normalize('NFKC')
+    .replace(/[\u0000-\u001F\u007F-\u009F\u200B-\u200D\u2060\uFEFF]/g, '')
+    .trim();
+}
+
 export function buildGlobalBanCode(userId) {
-  return `${GLOBAL_BAN_CODE_PREFIX}${String(userId ?? '').trim()}`;
+  return `${GLOBAL_BAN_CODE_PREFIX}${normalizeDiscordUserId(userId)}`;
 }
 
 export function normalizeBlacklistLookup(value) {
-  const raw = String(value ?? '').trim();
+  const raw = normalizeDiscordUserId(value);
   if (raw.startsWith(GLOBAL_BAN_CODE_PREFIX)) {
     return {
       userId: raw.slice(GLOBAL_BAN_CODE_PREFIX.length),
