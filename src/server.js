@@ -30,6 +30,7 @@ import { isTurnstileConfigured, verifyTurnstileToken } from './turnstile.js';
 import { buildTranscriptFileName, buildTranscriptText, verifyTranscriptAccessToken } from './transcripts.js';
 import { normalizeWelcomeConfig } from './welcome.js';
 import { normalizePartners, removeUnreferencedPartnerUploads, renderPartnersPage, savePartnerUpload } from './partners.js';
+import { buildBlacklistWebEntry, getBlacklistWebRecord, normalizeBlacklistWebEvidenceList, normalizeBlacklistWebLookup, renderBlacklistPage, serializeBlacklistWebRecord, saveBlacklistProofUpload } from './blacklist-web.js';
 
 const DISCORD_API = 'https://discord.com/api/v10';
 const MANAGE_GUILD = 0x20n;
@@ -113,6 +114,26 @@ export function createServer({ config, storage, bot, events }) {
       sections: buildPrivacySections()
     }));
   });
+
+  app.get('/blacklist', asyncHandler(async (req, res) => {
+    const query = String(req.query.q ?? '').trim().slice(0, 200);
+    const session = getSession(req);
+    let record = null;
+    let error = '';
+    if (query) {
+      try {
+        record = await getBlacklistWebRecord({ storage, value: query });
+      } catch (lookupError) {
+        error = lookupError?.message ?? 'La búsqueda no es válida.';
+      }
+    }
+    res.type('html').send(renderBlacklistPage({
+      query,
+      record,
+      error,
+      isOwner: session?.user?.id === GLOBAL_BLACKLIST_ADMIN_USER_ID
+    }));
+  }));
 
   app.get('/partners', asyncHandler(async (req, res) => {
     const settings = await storage.getGlobalSettings().catch(() => ({}));
@@ -719,6 +740,49 @@ export function createServer({ config, storage, bot, events }) {
       durationSeconds: req.get('x-media-duration')
     });
     res.json(upload);
+  }));
+
+  app.post('/blacklist/api/upload', requireGlobalAdmin, express.raw({
+    type: ['image/*'],
+    limit: '10mb'
+  }), asyncHandler(async (req, res) => {
+    if (!Buffer.isBuffer(req.body)) {
+      res.status(400).json({ error: 'No se recibió ninguna imagen.' });
+      return;
+    }
+    const upload = await saveBlacklistProofUpload({
+      buffer: req.body,
+      mimeType: req.get('content-type'),
+      fileName: req.get('x-file-name')
+    });
+    res.json(upload);
+  }));
+
+  app.put('/blacklist/api', requireGlobalAdmin, asyncHandler(async (req, res) => {
+    const lookup = normalizeBlacklistWebLookup(req.body?.userId);
+    const existing = await storage.getBlacklistEntry(lookup.userId);
+    const entry = buildBlacklistWebEntry(
+      { ...(req.body ?? {}), userId: lookup.userId },
+      existing,
+      req.session.user.username || req.session.user.id
+    );
+    const savedEntry = await storage.upsertBlacklistEntry(entry);
+    let savedEvidence;
+    if (Array.isArray(req.body?.evidence)) {
+      const evidence = normalizeBlacklistWebEvidenceList(req.body.evidence, {
+        userId: savedEntry.userId,
+        banCode: savedEntry.banCode,
+        createdBy: savedEntry.createdBy || req.session.user.username || req.session.user.id
+      });
+      savedEvidence = await storage.replaceBlacklistEvidence(savedEntry.userId, evidence);
+    } else {
+      savedEvidence = await storage.listBlacklistEvidence(savedEntry.userId);
+    }
+    events?.publish?.('blacklist.web.updated', {
+      userId: savedEntry.userId,
+      updatedBy: req.session.user.username || req.session.user.id
+    });
+    res.json({ record: serializeBlacklistWebRecord({ entry: savedEntry, evidence: savedEvidence }) });
   }));
 
   app.post('/partners/api', requireGlobalAdmin, asyncHandler(async (req, res) => {
@@ -5380,7 +5444,7 @@ function renderLogin(config, { error = '' } = {}) {
           <button class="login-button" id="loginButton" type="submit"${turnstileRequired ? ' disabled' : ''}>Continuar con Discord</button>
         </form>
       ` : `<p class="error">${escapeHtml(setupError)}</p>`}
-      <div class="legal-links"><a href="/terms">Terms and Conditions</a><a href="/privacy">Privacy Policy</a><a href="/partners">Partners</a></div>
+      <div class="legal-links"><a href="/terms">Terms and Conditions</a><a href="/privacy">Privacy Policy</a><a href="/partners">Partners</a><a href="/blacklist">Global Blacklist</a></div>
     </aside>
   </main>
   <script>
@@ -6408,7 +6472,7 @@ function renderDashboard({ session, guilds, tickets, stats, dashboardState = {},
       <a class="nav-link" href="#logs" data-view="logs"><span class="nav-icon">${renderDashboardEmoji('logs', 'Logs')}</span><span>Logs</span></a>
     </nav>
     <div class="nav-foot">
-      <div class="nav-legal"><a href="/partners" target="_blank" rel="noopener">Partners</a><a href="/terms" target="_blank" rel="noopener">Terms</a><a href="/privacy" target="_blank" rel="noopener">Privacy</a></div>
+      <div class="nav-legal"><a href="/partners" target="_blank" rel="noopener">Partners</a><a href="/blacklist" target="_blank" rel="noopener">Blacklist</a><a href="/terms" target="_blank" rel="noopener">Terms</a><a href="/privacy" target="_blank" rel="noopener">Privacy</a></div>
       <form method="post" action="/logout"><button class="secondary-button" type="submit">Cerrar sesion</button></form>
     </div>
   </aside>
