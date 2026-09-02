@@ -79,9 +79,21 @@ async function readEvidenceSource(evidence) {
     if (!response.ok) return null;
     const contentLength = Number(response.headers.get('content-length'));
     if (Number.isFinite(contentLength) && contentLength > MAX_SOURCE_BYTES) return null;
-    const buffer = Buffer.from(await response.arrayBuffer());
-    if (buffer.length > MAX_SOURCE_BYTES) return null;
-    return { buffer, kind: 'remote' };
+    if (!response.body) return null;
+    const reader = response.body.getReader();
+    const chunks = [];
+    let total = 0;
+    while (true) {
+      const part = await reader.read();
+      if (part.done) break;
+      total += part.value.byteLength;
+      if (total > MAX_SOURCE_BYTES) {
+        await reader.cancel().catch(() => {});
+        return null;
+      }
+      chunks.push(Buffer.from(part.value));
+    }
+    return { buffer: Buffer.concat(chunks, total), kind: 'remote' };
   } catch {
     return null;
   } finally {
