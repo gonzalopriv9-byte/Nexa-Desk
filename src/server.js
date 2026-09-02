@@ -279,7 +279,7 @@ export function createServer({ config, storage, bot, events }) {
     const session = getSession(req);
     res.type('html').send(renderPartnersPage({
       partners: settings.partners,
-      isOwner: session?.user?.id === GLOBAL_BLACKLIST_ADMIN_USER_ID,
+      isOwner: isPartnerEditorUser(session?.user?.id, config),
       session,
       dashboardUrl: config.DASHBOARD_PUBLIC_URL
     }));
