@@ -39,6 +39,7 @@ const schema = z.object({
   DOCS_SESSION_MINUTES: z.coerce.number().int().min(5).max(240).default(20),
   ADMIN_CODE_ROLE_ID: z.string().default('1499803857042280488'),
   ADMIN_CODE_SECRET: z.string().optional().default(''),
+  ADMIN_CODE_INTERNAL_URL: z.string().url().optional().or(z.literal('')).default(''),
   PAYPAL_CLIENT_ID: z.string().optional().default(''),
   PAYPAL_CLIENT_SECRET: z.string().optional().default(''),
   PAYPAL_MODE: z.enum(['sandbox', 'live']).default('sandbox'),
