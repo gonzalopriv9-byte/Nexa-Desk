@@ -65,10 +65,12 @@ server.listen(listenPort, '0.0.0.0', () => {
 });
 
 function sendFallback(req, res) {
-  res.statusCode = 503;
+  const path = String(req.url || '');
+  const wantsJson = (req.method !== 'GET' && req.method !== 'HEAD') || path.startsWith('/api/') || path.startsWith('/health');
+  res.statusCode = wantsJson ? 503 : 200;
   res.setHeader('retry-after', '3');
   res.setHeader('cache-control', 'no-store');
-  if (req.method !== 'GET' && req.method !== 'HEAD' || String(req.url || '').startsWith('/api/')) {
+  if (wantsJson) {
     res.setHeader('content-type', 'application/json; charset=utf-8');
     res.end(JSON.stringify({ error: 'NexaDesk is starting. Please retry shortly.' }));
     return;
