@@ -14,7 +14,8 @@
     "db:migrate:json": "node scripts/migrate-json-to-postgres.js",
     "db:backup": "bash scripts/backup-postgres.sh",
     "db:test": "node scripts/test-database.js",
-    "test:turnstile": "node scripts/test-turnstile.js"
+    "test:turnstile": "node scripts/test-turnstile.js",
+    "db:import-spagency-blacklist": "node scripts/import-spagency-blacklist.js"
   },
   "dependencies": {
     "@discordjs/voice": "^0.19.2",
