@@ -24,7 +24,7 @@ export class GoogleAiStudioClient {
     const generationConfig = {
       temperature: Number.isFinite(Number(temperature)) ? Number(temperature) : 0.25,
       maxOutputTokens: Math.max(1, Number(maxTokens) || 350),
-      thinkingConfig: { thinkingBudget: this.thinkingBudget }
+      ...buildThinkingConfig(this.model, this.thinkingBudget)
     };
 
     const data = await this.#request({ system, contents, generationConfig });
@@ -52,7 +52,7 @@ export class GoogleAiStudioClient {
       generationConfig: {
         temperature: 0.1,
         maxOutputTokens: 350,
-        thinkingConfig: { thinkingBudget: this.thinkingBudget }
+        ...buildThinkingConfig(this.model, this.thinkingBudget)
       }
     });
     return extractText(data);
@@ -158,6 +158,27 @@ async function imageToInlineData(image = {}) {
   } finally {
     clearTimeout(timeout);
   }
+}
+
+function buildThinkingConfig(model, thinkingBudget) {
+  const budget = Number(thinkingBudget);
+  if (!Number.isFinite(budget) || budget <= 0) return {};
+
+  if (isGemini3Model(model)) {
+    return { thinkingConfig: { thinkingLevel: budgetToThinkingLevel(budget) } };
+  }
+
+  return { thinkingConfig: { thinkingBudget: Math.floor(budget) } };
+}
+
+function isGemini3Model(model) {
+  return /^gemini-3(?:[.-]|$)/i.test(String(model ?? '').trim());
+}
+
+function budgetToThinkingLevel(budget) {
+  if (budget <= 2048) return 'low';
+  if (budget <= 8192) return 'medium';
+  return 'high';
 }
 
 function parseJson(value) {
