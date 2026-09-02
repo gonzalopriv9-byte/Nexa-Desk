@@ -29,6 +29,7 @@ import { normalizeSecurityConfig, summarizeSecurityConfig } from './security.js'
 import { isTurnstileConfigured, verifyTurnstileToken } from './turnstile.js';
 import { buildTranscriptFileName, buildTranscriptText, verifyTranscriptAccessToken } from './transcripts.js';
 import { normalizeWelcomeConfig } from './welcome.js';
+import { normalizePartners, removeUnreferencedPartnerUploads, renderPartnersPage, savePartnerUpload } from './partners.js';
 
 const DISCORD_API = 'https://discord.com/api/v10';
 const MANAGE_GUILD = 0x20n;
@@ -112,6 +113,17 @@ export function createServer({ config, storage, bot, events }) {
       sections: buildPrivacySections()
     }));
   });
+
+  app.get('/partners', asyncHandler(async (req, res) => {
+    const settings = await storage.getGlobalSettings().catch(() => ({}));
+    const session = getSession(req);
+    res.type('html').send(renderPartnersPage({
+      partners: settings.partners,
+      isOwner: session?.user?.id === GLOBAL_BLACKLIST_ADMIN_USER_ID,
+      session,
+      dashboardUrl: config.DASHBOARD_PUBLIC_URL
+    }));
+  }));
 
   app.get('/exam/:channelId', asyncHandler(async (req, res) => {
     const ticket = await storage.getTicket(req.params.channelId).catch(() => null);
@@ -690,6 +702,41 @@ export function createServer({ config, storage, bot, events }) {
       session: req.session,
       releaseState: buildReleaseState(settings.releaseControl, { isOwner: true })
     }));
+  }));
+
+  app.post('/partners/api/upload', requireGlobalAdmin, express.raw({
+    type: ['image/*', 'video/*'],
+    limit: '50mb'
+  }), asyncHandler(async (req, res) => {
+    if (!Buffer.isBuffer(req.body)) {
+      res.status(400).json({ error: 'No se recibió ningún fichero multimedia.' });
+      return;
+    }
+    const upload = await savePartnerUpload({
+      buffer: req.body,
+      mimeType: req.get('content-type'),
+      fileName: req.get('x-file-name'),
+      durationSeconds: req.get('x-media-duration')
+    });
+    res.json(upload);
+  }));
+
+  app.post('/partners/api', requireGlobalAdmin, asyncHandler(async (req, res) => {
+    if (!Array.isArray(req.body?.partners)) {
+      res.status(400).json({ error: 'La lista de partners no es válida.' });
+      return;
+    }
+    if (req.body.partners.length > 24) {
+      res.status(400).json({ error: 'No puedes publicar más de 24 partners.' });
+      return;
+    }
+    const settings = await storage.getGlobalSettings().catch(() => ({}));
+    const previous = normalizePartners(settings.partners);
+    const partners = normalizePartners(req.body.partners);
+    const saved = await storage.updateGlobalSettings({ partners });
+    await removeUnreferencedPartnerUploads(previous, partners);
+    events?.publish?.('partners.updated', { partners, updatedBy: req.session.user.username || req.session.user.id });
+    res.json({ partners: normalizePartners(saved.partners) });
   }));
 
   app.get('/owner/api/release', requireGlobalAdmin, asyncHandler(async (req, res) => {
@@ -5047,6 +5094,8 @@ function buildPrivacySections() {
       title: '7. Dashboard, archivos y pagos',
       items: [
         'La dashboard puede tratar configuraciones de paneles, componentes, prompts, información del servidor, funciones premium, estadísticas, feedback, imágenes que un administrador suba para paneles y registros de cambios.',
+        'El owner global puede publicar en /partners el nombre, biografía, enlace de Discord, icono y foto o vídeo que facilite sobre un partner. Ese material queda visible públicamente hasta que se modifique o retire.',
+        'Los vídeos de Partners se limitan a 30 segundos y los ficheros se guardan en la infraestructura de NexaDesk; el owner debe contar con derechos suficientes para publicar el material.',
         'Si se utiliza premium, NexaDesk puede tratar identificadores de pedido, estado de pago, importe, moneda, servidor, usuario solicitante, módulo activado y datos necesarios para conciliación.',
         'PayPal procesa los datos completos de pago conforme a su propia política; NexaDesk no debe recibir ni almacenar números completos de tarjeta.'
       ]
@@ -5331,7 +5380,7 @@ function renderLogin(config, { error = '' } = {}) {
           <button class="login-button" id="loginButton" type="submit"${turnstileRequired ? ' disabled' : ''}>Continuar con Discord</button>
         </form>
       ` : `<p class="error">${escapeHtml(setupError)}</p>`}
-      <div class="legal-links"><a href="/terms">Terms and Conditions</a><a href="/privacy">Privacy Policy</a></div>
+      <div class="legal-links"><a href="/terms">Terms and Conditions</a><a href="/privacy">Privacy Policy</a><a href="/partners">Partners</a></div>
     </aside>
   </main>
   <script>
@@ -6359,7 +6408,7 @@ function renderDashboard({ session, guilds, tickets, stats, dashboardState = {},
       <a class="nav-link" href="#logs" data-view="logs"><span class="nav-icon">${renderDashboardEmoji('logs', 'Logs')}</span><span>Logs</span></a>
     </nav>
     <div class="nav-foot">
-      <div class="nav-legal"><a href="/terms" target="_blank" rel="noopener">Terms</a><a href="/privacy" target="_blank" rel="noopener">Privacy</a></div>
+      <div class="nav-legal"><a href="/partners" target="_blank" rel="noopener">Partners</a><a href="/terms" target="_blank" rel="noopener">Terms</a><a href="/privacy" target="_blank" rel="noopener">Privacy</a></div>
       <form method="post" action="/logout"><button class="secondary-button" type="submit">Cerrar sesion</button></form>
     </div>
   </aside>
