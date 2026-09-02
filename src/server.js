@@ -1939,6 +1939,27 @@ function normalizeError(error) {
   }
 }
 
+function isPartnerEditorUser(userId, config) {
+  const normalizedUserId = String(userId ?? '').trim();
+  if (!normalizedUserId) return false;
+  if (normalizedUserId === GLOBAL_BLACKLIST_ADMIN_USER_ID) return true;
+  return String(config?.PARTNER_EDITOR_USER_IDS ?? '')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .includes(normalizedUserId);
+}
+
+function requirePartnerEditor(config) {
+  return (req, res, next) => {
+    if (!isPartnerEditorUser(req.session?.user?.id, config)) {
+      res.status(403).json({ error: 'Partner editor access required.' });
+      return;
+    }
+    next();
+  };
+}
+
 function requireGlobalAdmin(req, res, next) {
   if (req.session?.user?.id !== GLOBAL_BLACKLIST_ADMIN_USER_ID) {
     if (req.path === '/owner') {
