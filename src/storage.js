@@ -663,6 +663,26 @@ export class JsonStorage {
     return (allEvidence[userId] ?? []).map(normalizeBlacklistEvidence).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   }
 
+  async replaceBlacklistEvidence(value, evidence = []) {
+    const { userId, banCode } = normalizeBlacklistLookup(value);
+    const now = new Date().toISOString();
+    const saved = (Array.isArray(evidence) ? evidence : [])
+      .map(normalizeBlacklistEvidence)
+      .filter((item) => item.attachmentUrl)
+      .map((item) => ({
+        ...item,
+        id: item.id ?? `evidence-${Date.now()}-${crypto.randomUUID()}`,
+        userId,
+        banCode,
+        createdAt: item.createdAt ?? now
+      }));
+    const allEvidence = await this.#readJson(this.blacklistEvidenceFile);
+    allEvidence[userId] = saved;
+    await this.#writeJson(this.blacklistEvidenceFile, allEvidence);
+    this.events?.publish('blacklist.evidence.replaced', { userId, count: saved.length });
+    return saved.map(normalizeBlacklistEvidence);
+  }
+
   async #ensureJson(filePath, defaultValue) {
     try {
       await fs.access(filePath);
@@ -1367,6 +1387,39 @@ export class PostgresStorage {
     if (isMissingBlacklistTableError(error)) return [];
     if (error) throw error;
     return data.map(fromBlacklistEvidenceRow);
+  }
+
+  async replaceBlacklistEvidence(value, evidence = []) {
+    const { userId, banCode } = normalizeBlacklistLookup(value);
+    const normalized = (Array.isArray(evidence) ? evidence : [])
+      .map(normalizeBlacklistEvidence)
+      .filter((item) => item.attachmentUrl)
+      .map((item) => ({
+        ...item,
+        userId,
+        banCode,
+        createdAt: item.createdAt ?? new Date().toISOString()
+      }));
+
+    const { error: deleteError } = await this.client
+      .from('global_blacklist_evidence')
+      .delete()
+      .eq('user_id', userId);
+    if (isMissingBlacklistTableError(deleteError)) {
+      throw new Error('Falta global_blacklist_evidence en PostgreSQL. Ejecuta el SQL actualizado del esquema de PostgreSQL.');
+    }
+    if (deleteError) throw deleteError;
+    if (!normalized.length) return [];
+
+    const { data, error } = await this.client
+      .from('global_blacklist_evidence')
+      .insert(normalized.map(toBlacklistEvidenceRow))
+      .select('*');
+    if (isMissingBlacklistTableError(error)) {
+      throw new Error('Falta global_blacklist_evidence en PostgreSQL. Ejecuta el SQL actualizado del esquema de PostgreSQL.');
+    }
+    if (error) throw error;
+    return (data ?? []).map(fromBlacklistEvidenceRow);
   }
 
   async recordPremiumPurchase(purchase) {
