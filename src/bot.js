@@ -3021,8 +3021,11 @@ async function handleAdminCodeCommand({ interaction, storage, config }) {
 }
 
 async function requestAdminCodeFromDashboard({ interaction, config }) {
-  const baseUrl = String(config.DASHBOARD_PUBLIC_URL || PUBLIC_DASHBOARD_URL).replace(/\/+$/, '');
-  const endpoint = new URL('/internal/admin/code', baseUrl);
+  // El bot y el dashboard comparten proceso/almacenamiento. Usa el listener local
+  // para que Cloudflare Access/WAF no bloquee la emisión del código temporal.
+  const internalBaseUrl = String(config.ADMIN_CODE_INTERNAL_URL || `http://127.0.0.1:${config.PORT}`)
+    .replace(/\/+$/, '');
+  const endpoint = new URL('/internal/admin/code', internalBaseUrl);
   const token = String(config.ADMIN_CODE_SECRET || config.DISCORD_TOKEN || '').trim();
   if (!token) {
     throw new Error('Falta token interno para pedir codigos admin.');
