@@ -67,6 +67,7 @@ const schema = z.object({
   AI_SLOW_LOG_MS: z.coerce.number().int().min(1000).max(60000).default(8000),
   AI_LOCAL_FALLBACK_ENABLED: envBoolean.default(true),
   GOOGLE_AI_STUDIO_API_KEY: z.string().optional().default(''),
+  GOOGLE_AI_STUDIO_FALLBACK_API_KEYS: z.string().optional().default(''),
   GEMINI_API_KEY: z.string().optional().default(''),
   GOOGLE_AI_STUDIO_MODEL: z.string().default('gemini-3.5-flash-lite'),
   GOOGLE_AI_STUDIO_THINKING_BUDGET: z.coerce.number().int().min(0).max(24576).default(0),
