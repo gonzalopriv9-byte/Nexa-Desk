@@ -1612,7 +1612,53 @@ function claimsFakePremiumTermsRequirement(content) {
     || /\bnecesito\b.*\b(?:aceptes|aceptar)\b.*\bterminos?\b/.test(normalized);
 }
 
-function normalizeVoiceTranscript(content) {\n  let text = String(content ?? \n).replace(/\s+/g, ' ').trim();\n  if (!text) return '';\n\n  // Whisper can turn the product name into phonetic variants such as\n  // "nexadisk" or "hólver nexadisk". Correct only high-confidence wake\n  // phrase variants; leave the rest of the user sentence untouched.\n  text = text.replace(/\b(?:nexa\s*(?:desk|disk|des|dis|dex|d[eé]s|d[ií]s))\b/gi, 'NexaDesk');\n  text = text.replace(/\b(?:h[oó]l(?:a|ver|ber)|olver|holber)\s+nexadesk\b/gi, 'Hola NexaDesk');\n  return text;\n}\n\nfunction getDeterministicVoiceReply(transcript, displayName = '') {\n  const normalized = normalizeComparableText(transcript)\n    .replace(/[¿?¡!.,;:]+/g, ' ')\n    .replace(/\s+/g, ' ')\n    .trim();\n  if (!normalized) return null;\n\n  if (/^(?:hola(?: nexadesk)?|buenas(?: nexadesk)?|hey(?: nexadesk)?|nexadesk)$/.test(normalized)) {\n    return {\n      shouldEscalate: false,\n      mentionStaff: false,\n      publicAnswer: displayName ? `Hola, ${displayName}. ¿En qué puedo ayudarte?` : 'Hola, ¿en qué puedo ayudarte?'\n    };\n  }\n\n  if (/^(?:gracias|muchas gracias|thank you|thanks|perfecto|vale gracias|ok gracias|de nada)$/.test(normalized)) {\n    return {\n      shouldEscalate: false,\n      mentionStaff: false,\n      publicAnswer: 'De nada. Si necesitas algo más, aquí estoy.'\n    };\n  }\n\n  if (/^(?:me oyes|me escuchas|se oye|se escucha|prueba de micro|prueba de microfono|test)$/.test(normalized)) {\n    return {\n      shouldEscalate: false,\n      mentionStaff: false,\n      publicAnswer: 'Te escucho correctamente. Dime qué necesitas.'\n    };\n  }\n\n  return null;\n}\n\nfunction normalizeComparableText(content) {
+function normalizeVoiceTranscript(content) {
+  let text = String(content ?? '').replace(/\s+/g, ' ').trim();
+  if (!text) return '';
+
+  // Whisper can turn the product name into phonetic variants such as
+  // "nexadisk" or "hólver nexadisk". Correct only high-confidence wake
+  // phrase variants; leave the rest of the user sentence untouched.
+  text = text.replace(/\b(?:nexa\s*(?:desk|disk|des|dis|dex|d[eé]s|d[ií]s))\b/gi, 'NexaDesk');
+  text = text.replace(/\b(?:h[oó]l(?:a|ver|ber)|olver|holber)\s+nexadesk\b/gi, 'Hola NexaDesk');
+  return text;
+}
+
+function getDeterministicVoiceReply(transcript, displayName = '') {
+  const normalized = normalizeComparableText(transcript)
+    .replace(/[¿?¡!.,;:]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!normalized) return null;
+
+  if (/^(?:hola(?: nexadesk)?|buenas(?: nexadesk)?|hey(?: nexadesk)?|nexadesk)$/.test(normalized)) {
+    return {
+      shouldEscalate: false,
+      mentionStaff: false,
+      publicAnswer: displayName ? 'Hola, ' + displayName + '. ¿En qué puedo ayudarte?' : 'Hola, ¿en qué puedo ayudarte?'
+    };
+  }
+
+  if (/^(?:gracias|muchas gracias|thank you|thanks|perfecto|vale gracias|ok gracias|de nada)$/.test(normalized)) {
+    return {
+      shouldEscalate: false,
+      mentionStaff: false,
+      publicAnswer: 'De nada. Si necesitas algo más, aquí estoy.',
+    };
+  }
+
+  if (/^(?:me oyes|me escuchas|se oye|se escucha|prueba de micro|prueba de microfono|test)$/.test(normalized)) {
+    return {
+      shouldEscalate: false,
+      mentionStaff: false,
+      publicAnswer: 'Te escucho correctamente. Dime qué necesitas.',
+    };
+  }
+
+  return null;
+}
+
+function normalizeComparableText(content) {
   return sanitizeVoiceHistoryContent(content)
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
