@@ -304,12 +304,6 @@ export class VoiceSessionManager {
       });
       const transcriptNotice = session.textChannel.send(`**${member.displayName} por voz:** ${transcript.slice(0, 1_800)}`).catch(() => {});
 
-      void this.#recordVoiceAiQualitySignal(session, member, transcript).catch((error) => {
-        console.warn(`Voice AI quality signal capture failed for ${session.ticketChannelId}:`, error?.message ?? error);
-      });
-
-      await session.textChannel.send(`**${member.displayName} por voz:** ${transcript.slice(0, 1_800)}`).catch(() => {});
-
       if (isVoiceTicketCloseRequest(transcript)) {
         const closed = await this.#handleVoiceTicketClose(session, member, transcript);
         if (closed) return;
@@ -347,6 +341,12 @@ export class VoiceSessionManager {
           : `**NexaDesk por voz:** ${answer.publicAnswer.slice(0, 1_800)}`,
         allowedMentions: { roles: answer.mentionStaff && session.guildConfig.staffRoleId ? [session.guildConfig.staffRoleId] : [] }
       }).catch(() => {});
+
+      // Run quality classification after the user-visible response has been
+      // dispatched; it must never compete with the main voice answer.
+      void this.#recordVoiceAiQualitySignal(session, member, transcript).catch((error) => {
+        console.warn(`Voice AI quality signal capture failed for ${session.ticketChannelId}:`, error?.message ?? error);
+      });
 
       if (speakPromise) await speakPromise;
     } finally {
