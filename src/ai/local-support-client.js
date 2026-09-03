@@ -60,6 +60,8 @@ function buildSupportFallback({ system, messages, lastUser }) {
     return `[ESCALATE] ${reply.raid ?? getLocalizedReplies('en').raid}`;
   }
 
+  const channelLookupReply = buildChannelLookupFallback({ system, text, context, language });
+  if (channelLookupReply) return channelLookupReply;
   if (isAllianceInfoQuestion(text)) {
     return reply.allianceInfo;
   }
@@ -98,6 +100,69 @@ function buildSupportFallback({ system, messages, lastUser }) {
   return reply.generic;
 }
 
+function buildChannelLookupFallback({ system = '', text = '', context = '', language = 'es' } = {}) {
+  const combined = normalizeText(`${text} ${context}`);
+  const intent = detectChannelLookupIntent(combined);
+  if (!intent) return '';
+
+  const candidates = extractChannelCandidates(system);
+  const ranked = candidates
+    .map((candidate) => ({ ...candidate, score: scoreChannelCandidate(candidate, intent) }))
+    .sort((a, b) => b.score - a.score);
+  const best = ranked[0];
+
+  if (best && best.score >= 5) {
+    if (language === 'en') return `You can find ${intent.labelEn} in ${best.mention}.`;
+    if (language === 'zh') return `Discord channel: ${best.mention}`;
+    return `Puedes consultar ${intent.labelEs} en ${best.mention}.`;
+  }
+
+  if (language === 'en') return `I have not located a public Discord channel for ${intent.labelEn} in the available server context; that does not confirm that it does not exist.`;
+  if (language === 'zh') return `No public Discord channel was located for this request; that does not confirm that it does not exist.`;
+  return `No he localizado un canal publico de Discord para ${intent.labelEs} en el contexto disponible; eso no confirma que no exista.`;
+}
+
+function detectChannelLookupIntent(value = '') {
+  const normalized = normalizeText(value).normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  const asksLocation = /\b(?:donde|en\s+que|canal|canales|buscar|busca|buscalo|encuentra|localiza|ver|mirar|publica|publican|aparece|aparecen)\b/iu.test(normalized);
+  if (!asksLocation) return null;
+
+  if (/\b(?:alianza|alianzas|partner|partnership|partners|colaboracion|colaboraciones)\b/iu.test(normalized)) {
+    return { key: 'alliances', labelEs: 'las alianzas y solicitudes', labelEn: 'alliances and requests', labelZh: '联盟和申请', terms: ['alianza', 'alianzas', 'partner', 'partnership', 'colaboracion'] };
+  }
+  if (/\b(?:verific(?:acion|arme|arse|ado|ada|ados|adas)?|captcha|rol(?:es)?|verified|verify)\b/iu.test(normalized)) {
+    return { key: 'verification', labelEs: 'la verificacion', labelEn: 'verification', labelZh: '验证信息', terms: ['verificacion', 'verificar', 'captcha', 'rol', 'verified', 'verify'] };
+  }
+  if (/\b(?:estadistic(?:a|as)|m[eé]trica(?:s)?|stats|global(?:es)?|ranking|datos)\b/iu.test(normalized)) {
+    return { key: 'statistics', labelEs: 'las estadisticas globales', labelEn: 'global statistics', labelZh: '全局统计', terms: ['estadistica', 'estadisticas', 'metrica', 'metricas', 'stats', 'global', 'ranking', 'datos'] };
+  }
+  if (/\b(?:ejemplo(?:s)?|demo(?:s)?|tutorial(?:es)?|guia(?:s)?|documentacion|docs|funciona|funcionamiento)\b/iu.test(normalized)) {
+    return { key: 'examples', labelEs: 'ejemplos del funcionamiento del bot', labelEn: 'bot examples', labelZh: '机器人示例', terms: ['ejemplo', 'ejemplos', 'demo', 'tutorial', 'guia', 'documentacion', 'docs', 'funcionamiento'] };
+  }
+  return null;
+}
+
+function extractChannelCandidates(system = '') {
+  const candidates = [];
+  const pattern = /<#(\d{16,24})>/g;
+  let match;
+  while ((match = pattern.exec(String(system))) !== null) {
+    const id = match[1];
+    if (candidates.some((candidate) => candidate.id === id)) continue;
+    candidates.push({ id, mention: `<#${id}>`, context: String(system).slice(Math.max(0, match.index - 260), match.index + 340) });
+  }
+  return candidates;
+}
+
+function scoreChannelCandidate(candidate, intent) {
+  const context = normalizeText(candidate.context).normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  let score = 0;
+  for (const term of intent.terms) {
+    if (context.includes(term)) score += term.length >= 7 ? 3 : 2;
+  }
+  if (context.includes('mencion exacta para discord')) score += 2;
+  return score;
+}
 function buildGroundedSupportFallback({ lastUser = '', text = '', context = '', language = 'es' } = {}) {
   const signal = extractConcreteFailureSignal(lastUser);
   if (!signal) return '';
