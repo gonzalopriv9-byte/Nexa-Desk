@@ -8254,7 +8254,16 @@ async function sendTicketResponse(message, payload) {
 
 async function sendAiFailureNotice(message) {
   try {
-    return await sendTicketResponse(message, 'Sigo contigo, pero ahora mismo una parte del sistema esta tardando mas de lo normal. Dejo el ticket listo para que el staff lo revise si hace falta.');
+    const raw = String(message?.content ?? '').replace(/\s+/g, ' ').trim();
+    const excerpt = raw
+      .replace(/\bmfa\.[A-Za-z0-9_-]{20,}\b/giu, '[token oculto]')
+      .replace(/((?:token|secret|password|contrasena|contraseña|api[_\s-]?key|clave\s+api)\s*[:=]\s*)\S+/giu, '$1[oculto]')
+      .replace(/([?&](?:token|secret|password|key|api_key)=)[^&\s]+/giu, '$1[oculto]')
+      .slice(0, 360);
+    const fallback = excerpt
+      ? `He registrado el dato nuevo: [${excerpt}]. La respuesta automatica no esta disponible ahora mismo, pero ese dato ya es suficiente para orientar la revision; no voy a pedirte que repitas lo mismo. El owner o staff debe revisar el servicio y sus logs antes de repetir el paso.`
+      : 'La respuesta automatica no esta disponible ahora mismo. El ticket queda listo para que el owner o staff revise el servicio y sus logs.';
+    return await sendTicketResponse(message, fallback);
   } catch (error) {
     console.error('Failed to send AI fallback notice:', error);
     return null;
