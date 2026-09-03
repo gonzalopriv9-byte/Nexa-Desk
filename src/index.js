@@ -193,18 +193,31 @@ function createGeminiTtsClient() {
 
 function createGoogleFallbackClient() {
   const providers = [];
-  const googleApiKey = getGoogleApiKey();
-  if (googleApiKey) {
-    providers.push(createAiProvider('google-ai-studio-primary', new GoogleAiStudioClient({
-      apiKey: googleApiKey,
-      model: EFFECTIVE_GOOGLE_MODEL,
-      thinkingBudget: config.GOOGLE_AI_STUDIO_THINKING_BUDGET,
-      timeoutMs: config.AI_PROVIDER_TIMEOUT_MS
-    })));
-  }
+  addGoogleProviders(providers);
   addGroqProviders(providers);
   addSecondaryFallbacks(providers);
   return createFallbackClient(providers);
+}
+
+function addGoogleProviders(providers) {
+  const primaryKey = getGoogleApiKey();
+  const keys = [...new Set([
+    primaryKey,
+    ...parseFallbackKeys(config.GOOGLE_AI_STUDIO_FALLBACK_API_KEYS)
+  ].map((value) => String(value ?? '').trim()).filter((value) => value && value !== 'replace_me'))];
+
+  for (const [index, apiKey] of keys.entries()) {
+    const isPrimary = Boolean(primaryKey) && index === 0;
+    providers.push(createAiProvider(
+      isPrimary ? 'google-ai-studio-primary' : 'google-ai-studio-fallback-' + (isPrimary ? 0 : index + 1),
+      new GoogleAiStudioClient({
+        apiKey,
+        model: EFFECTIVE_GOOGLE_MODEL,
+        thinkingBudget: config.GOOGLE_AI_STUDIO_THINKING_BUDGET,
+        timeoutMs: config.AI_PROVIDER_TIMEOUT_MS
+      })
+    ));
+  }
 }
 
 function createGroqFallbackClient(options = {}) {
