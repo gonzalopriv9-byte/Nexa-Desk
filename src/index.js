@@ -113,7 +113,7 @@ if (config.BOT_HA_ENABLED) {
 }
 
 function createAiClient() {
-  console.log(`NexaDesk AI route: primary=${config.AI_PROVIDER} google=${getGoogleApiKey() ? 'configured' : 'missing'} model=${EFFECTIVE_GOOGLE_MODEL} tts=${getGoogleApiKey() ? config.GEMINI_TTS_MODEL : 'missing'} groq=${hasGroqProvider() ? 'configured' : 'missing'} local=${config.AI_LOCAL_FALLBACK_ENABLED ? 'enabled' : 'disabled'}`);
+  console.log(`NexaDesk AI route: primary=${config.AI_PROVIDER} google=${getGoogleApiKey() ? 'configured' : 'missing'} google_fallbacks=${parseFallbackKeys(config.GOOGLE_AI_STUDIO_FALLBACK_API_KEYS).length} model=${EFFECTIVE_GOOGLE_MODEL} tts=${getGoogleApiKey() ? config.GEMINI_TTS_MODEL : 'missing'} groq=${hasGroqProvider() ? 'configured' : 'missing'} local=${config.AI_LOCAL_FALLBACK_ENABLED ? 'enabled' : 'disabled'}`);
 
   if (config.AI_PROVIDER === 'google-ai-studio') {
     return createGoogleFallbackClient();
