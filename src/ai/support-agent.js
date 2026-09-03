@@ -92,7 +92,7 @@ export class SupportAgent {
           'If the latest message reports the result of a previous step, update the diagnosis instead of repeating the previous advice.',
           'Do not ask for an error, detail, screenshot or explanation that the user has already supplied in the latest message.',
           'Explain what the new fact means and give the most useful next step. Separate confirmed facts from hypotheses.',
-          'Never use filler such as “Sigo contigo” or restart the ticket with a generic request for details.'
+          'Never use filler such as "Sigo contigo" or restart the ticket with a generic request for details.'
         ].join('\n') : ''
       ].filter(Boolean).join('\n');
       answer = await this.aiClient.generate({
