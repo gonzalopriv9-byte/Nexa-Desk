@@ -1806,10 +1806,9 @@ function normalizeDiscordChannelReferences(answer = '', guild = null) {
       const escaped = escapeRegExp(variant);
       normalized = normalized.replace(new RegExp(`<#${escaped}>`, 'giu'), mention);
       normalized = normalized.replace(new RegExp('#' + escaped + '(?=$|\\s|[.,!?;:)])', 'giu'), mention);
+      normalized = normalized.replace(new RegExp('(' + escapeRegExp(mention) + ')\\s*\\(\\s*#?' + escapeRegExp(rawName) + '\\s*\\)', 'giu'), '$1');
     }
   }
-
-  normalized = normalized.replace(/(<#\d{16,24}>)\s*\(\s*#?[^)]{2,120}\s*\)/gu, '$1');
 
   return normalized;
 }
