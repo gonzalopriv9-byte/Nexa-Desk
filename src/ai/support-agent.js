@@ -1316,7 +1316,7 @@ function getServerKnowledgeSearchMode(content = '', intakeContext = '', history 
   const isCorrection = /\b(no|nope|nono|no\s+digo|me\s+refiero|digo\s+que|eso\s+no|ese\s+no|no\s+es\s+el\s+tema)\b/iu.test(latestText);
   const isUpdateQuestion = /\b(actualizacion|actualizaciones|version|versiones|changelog|novedad|novedades|cambios|update|updates|release|ultima\s+actualizacion|que\s+incluye|incluia|incluye\s+esta\s+version)\b/iu.test(latestText);
   const channelLookupIntent = getConversationChannelLookupIntent(latestText, history, intakeContext);
-  const isChannelLookup = Boolean(channelLookupIntent);
+  const isChannelLookup = isChannelLookupQuestion(latestText) || Boolean(channelLookupIntent);
   const isCapabilityQuestion = /\b(?:funciones|caracteristicas|features|que\s+haces|como\s+funcionas|como\s+funciona|ejemplos|demo|guia|tutorial|documentacion|docs)\b/iu.test(latestText);
   const isServerInfoQuestion = /\b(cuando|donde|quien|resultado|resultados|postulacion|postulaciones|staff|formulario|formularios|nota|notas|aprobar|aprobado|aprobacion|canal|canales|norma|normas|regla|reglas|precio|precios|horario|evento|eventos|anuncio|anuncios|alianza|alianzas|partner|partnership|partners|requisito|requisitos|soporte|dashboard|premium|owner|encargado|encargados|verific(?:acion(?:es)?|arme|ame|arte|ate|arse|ase|ado(?:s|as)?|ar)?|captcha|estadistic(?:a|as)|m[eé]trica(?:s)?|stats|global(?:es)?)\b/iu.test(combinedText);
   const hasChannelTopicInHistory = /\b(?:alianza(?:s)?|partner(?:ship)?s?|verific(?:acion(?:es)?|arme|ame|arte|ate|arse|ase|ado(?:s|as)?|ar)?|captcha|estadistic(?:a|as)|m[eé]trica(?:s)?|stats|global(?:es)?|ejemplo(?:s)?|demo(?:s)?|tutorial(?:es)?|guia(?:s)?|documentacion|docs)\b/iu.test(supportingText);
@@ -1502,7 +1502,10 @@ function getConversationChannelLookupIntent(latestText = '', history = [], intak
 }
 
 function isChannelLookupQuestion(normalizedText = '') {
-  return Boolean(getChannelLookupIntentFromText(normalizedText));
+  if (getChannelLookupIntentFromText(normalizedText)) return true;
+  const locationSignal = /\b(?:canal(?:es)?|donde|en\s+que|ubicacion|encontrar|encuentro|ver|ve|ven|publica|publican|aparece|aparecen|seccion|buscar|busca|localiza)\b/iu.test(normalizedText);
+  const subjectSignal = /\b(?:canal(?:es)?|informacion|info|norma(?:s)?|regla(?:s)?|pregunta(?:s)?|faq|ayuda|soporte|support|ejemplo(?:s)?|demo(?:s)?|tutorial(?:es)?|guia(?:s)?|documentacion|docs|funciona|funcionamiento|funciones|verific(?:acion(?:es)?|arme|ame|arte|ate|arse|ase|ado(?:s|as)?|ar)?|captcha|estadistic(?:a|as)|metrica(?:s)?|stats|global(?:es)?)\b/iu.test(normalizedText);
+  return locationSignal && subjectSignal;
 }
 
 function resolveChannelLookup({ message, guildConfig = {}, history = [], intakeContext = '' } = {}) {
