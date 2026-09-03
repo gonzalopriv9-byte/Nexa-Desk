@@ -101,6 +101,7 @@ export class SupportAgent {
         ...answerOptions
       });
     }
+    answer = normalizeDiscordChannelReferences(answer, message.guild);
     return answer;
   }
 
@@ -624,6 +625,8 @@ export class SupportAgent {
       'Si pregunta por tus funciones, explica NexaDesk con seguridad: IA en tickets, compatibilidad con bots externos, paneles, componentes, transcripciones, escalado a staff, seguridad, blacklist, reportes, voz/premium, modo examen, anuncios programados y dashboard. Ajusta la lista a lo que tenga sentido en el ticket.',
       'Si el usuario pregunta en que canal, donde encontrar algo, ejemplos, guias o documentacion, usa SOLO canales reales listados en "Contexto adicional" o "Canales importantes". Nunca inventes canales como #dudas, #faq o #soporte si no aparecen ahi.',
       'Si el contexto adicional muestra "Canal real del servidor", priorizalo como fuente de verdad para responder ubicaciones dentro del servidor.',
+      'Cuando recomiendes un canal, usa la mencion clicable exacta <#ID> que aparece en el contexto real. Nunca escribas <#nombre> ni inventes un ID; si no hay un ID real, no conviertas el nombre en mencion.',
+
       'Si el usuario pregunta por actualizaciones, version, changelog, novedades o "que incluye", busca esa informacion en el contexto adicional. No digas que la version es igual si no hay una fuente que lo confirme.',
       'Si el usuario corrige el tema con "no", "no digo eso" o "me refiero a", abandona el tema anterior inmediatamente y responde solo a la nueva intencion.',
       'No llames al servidor "NexaDashboard" salvo que el contexto real diga exactamente que ese es el nombre del servidor o que el usuario hable de la dashboard web.',
@@ -825,7 +828,7 @@ export class SupportAgent {
         if (score <= 0) continue;
 
         snippets.push({
-          source: `#${channel.name} (${item.author?.username ?? 'usuario'})`,
+          source: `<#${channel.id}> / #${channel.name} (${item.author?.username ?? 'usuario'})`,
           text: text.slice(0, 700),
           score,
           createdAt: item.createdTimestamp ?? 0
@@ -1396,8 +1399,9 @@ const SERVER_CONTEXT_PRIORITY_TERMS = new Set([
 ]);
 
 function isChannelLookupQuestion(normalizedText = '') {
-  return /\b(canal|canales|donde|en\s+que|encontrar|encuentro|ver|leer|mirar|ejemplo|ejemplos|demo|demos|tutorial|tutoriales|guia|guias|documentacion|docs|funciona|funcionas|funcionamiento|funciones)\b/iu.test(normalizedText)
-    && /\b(canal|canales|donde|encontrar|encuentro|ver|leer|mirar|ejemplo|ejemplos|demo|tutorial|guia|documentacion|docs|funciona|funcionas|funcionamiento)\b/iu.test(normalizedText);
+  const locationSignal = /\b(?:canal(?:es)?|donde|en\s+que|en\s+qué|ubicacion|ubicación|encontrar|encuentro|ver|ve|ven|publica|publican|aparece|aparecen|seccion|sección)\b/iu.test(normalizedText);
+  const subjectSignal = /\b(?:canal(?:es)?|alianza(?:s)?|partner(?:ship)?s?|informacion|información|info|norma(?:s)?|regla(?:s)?|ejemplo(?:s)?|demo(?:s)?|tutorial(?:es)?|guia(?:s)?|documentacion|documentación|docs|funciona|funcionamiento|funciones)\b/iu.test(normalizedText);
+  return locationSignal && subjectSignal;
 }
 
 function expandServerKnowledgeTerms(normalized = '', tokens = []) {
@@ -1460,7 +1464,8 @@ function buildChannelLookupSnippets({ guild, guildConfig, currentChannelId, term
       return {
         source: 'Mapa real de canales',
         text: [
-          `Canal real del servidor: #${channel.name}.`,
+          `Canal real del servidor: <#${channel.id}> (nombre visible: #${channel.name}).`,
+          `Mencion exacta para Discord: <#${channel.id}>. Copia este token literalmente si recomiendas este canal.`,
           topic ? `Descripcion/topic visible: ${String(channel.topic).replace(/\s+/g, ' ').slice(0, 220)}.` : null,
           matches.length ? `Coincidencias con la pregunta: ${matches.slice(0, 8).join(', ')}.` : null,
           'Usalo solo si responde directamente a la ubicacion que pide el usuario.'
@@ -1485,6 +1490,7 @@ function scoreChannelLookupCandidate(channel, terms = [], guildConfig = {}) {
   if (channel.id === guildConfig?.discovery?.supportChannelId) score += 18;
   if (channel.id === guildConfig?.discovery?.rulesChannelId) score += 18;
   if (channel.id === guildConfig?.announcementChannelId || channel.id === guildConfig?.discovery?.announcementChannelId) score += 14;
+  if (channel.id === guildConfig?.allianceChannelId || channel.id === guildConfig?.discovery?.allianceChannelId) score += 45;
 
   for (const term of terms) {
     if (!term) continue;
@@ -1524,13 +1530,17 @@ function selectServerKnowledgeChannels(guild, guildConfig, currentChannelId, ter
     })
     .map((channel) => {
       const name = normalizeKnowledgeText(channel.name ?? '');
+      const topic = normalizeKnowledgeText(channel.topic ?? '');
       let score = 0;
-      if (channel.id === guildConfig?.announcementChannelId || channel.id === guildConfig?.discovery?.announcementChannelId) score += 8;
-      if (channel.id === guildConfig?.allianceChannelId || channel.id === guildConfig?.discovery?.allianceChannelId) score += 6;
-      if (/(anuncio|avisos|news|novedad|changelog|update|actualiz|version|info|informacion|faq|dudas|ejemplo|ejemplos|demo|tutorial|guia|docs|documentacion|soporte|staff|postul|formulario|normas|reglas|alianza|partner|premium|dashboard)/iu.test(name)) score += 7;
+      if (channel.id === guildConfig?.announcementChannelId || channel.id === guildConfig?.discovery?.announcementChannelId) score += 14;
+      if (channel.id === guildConfig?.allianceChannelId || channel.id === guildConfig?.discovery?.allianceChannelId) score += 45;
+      if (/(anuncio|avisos|news|novedad|changelog|update|actualiz|version|info|informacion|faq|dudas|ejemplo|ejemplos|demo|tutorial|guia|docs|documentacion|soporte|staff|postul|formulario|normas|reglas|alianza|partner|premium|dashboard)/iu.test(name)) score += 12;
+      if (/(anuncio|avisos|news|novedad|changelog|update|actualiz|version|info|informacion|faq|dudas|ejemplo|ejemplos|demo|tutorial|guia|docs|documentacion|soporte|staff|postul|formulario|normas|reglas|alianza|partner|premium|dashboard)/iu.test(topic)) score += 8;
       for (const term of termSet) {
-        if (name.includes(term)) score += 4;
+        if (name.includes(term)) score += 6;
+        else if (topic.includes(term)) score += 3;
       }
+      if (/\b(alianza|alianzas|partner|partnership|partners)\b/iu.test(`${name} ${topic}`)) score += 18;
       return Object.assign(channel, { serverKnowledgeScore: score });
     })
     .filter((channel) => searchMode.fullScan || channel.serverKnowledgeScore > 0)
@@ -1576,6 +1586,26 @@ function scoreKnowledgeText(value = '', terms = []) {
   return score;
 }
 
+function normalizeDiscordChannelReferences(answer = '', guild = null) {
+  let normalized = String(answer ?? '');
+  const channels = [...(guild?.channels?.cache?.values?.() ?? [])]
+    .filter((channel) => channel?.id && channel?.name)
+    .sort((a, b) => String(b.name).length - String(a.name).length);
+
+  for (const channel of channels) {
+    const mention = `<#${channel.id}>`;
+    const rawName = String(channel.name);
+    const normalizedName = normalizeKnowledgeText(rawName);
+    const variants = [...new Set([rawName, normalizedName].filter((value) => value && value.length >= 2))];
+    for (const variant of variants) {
+      const escaped = escapeRegExp(variant);
+      normalized = normalized.replace(new RegExp(`<#${escaped}>`, 'giu'), mention);
+      normalized = normalized.replace(new RegExp('#' + escaped + '(?=$|\\s|[.,!?;:)])', 'giu'), mention);
+    }
+  }
+
+  return normalized;
+}
 function normalizeKnowledgeText(value = '') {
   return String(value ?? '')
     .normalize('NFKD')
