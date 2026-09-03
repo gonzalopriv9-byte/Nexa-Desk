@@ -151,7 +151,7 @@ function detectChannelLookupIntent(value = '') {
   if (/\b(?:alianza|alianzas|partner|partnership|partners|colaboracion|colaboraciones)\b/iu.test(normalized)) {
     return { key: 'alliances', labelEs: 'las alianzas y solicitudes', labelEn: 'alliances and requests', labelZh: '联盟和申请', terms: ['alianza', 'alianzas', 'partner', 'partnership', 'colaboracion'] };
   }
-  if (/\b(?:verific(?:acion|arme|arse|ado|ada|ados|adas)?|captcha|rol(?:es)?|verified|verify)\b/iu.test(normalized)) {
+  if (/\b(?:verific(?:acion(?:es)?|arme|ame|arte|ate|arse|ase|ado(?:s|as)?|ar)?|captcha|rol(?:es)?|verified|verify)\b/iu.test(normalized)) {
     return { key: 'verification', labelEs: 'la verificacion', labelEn: 'verification', labelZh: '验证信息', terms: ['verificacion', 'verificar', 'captcha', 'rol', 'verified', 'verify'] };
   }
   if (/\b(?:estadistic(?:a|as)|m[eé]trica(?:s)?|stats|global(?:es)?|ranking|datos)\b/iu.test(normalized)) {
