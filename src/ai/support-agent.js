@@ -1300,17 +1300,20 @@ function getServerKnowledgeSearchMode(content = '', intakeContext = '', history 
   const isUpdateQuestion = /\b(actualizacion|actualizaciones|version|versiones|changelog|novedad|novedades|cambios|update|updates|release|ultima\s+actualizacion|que\s+incluye|incluia|incluye\s+esta\s+version)\b/iu.test(latestText);
   const isChannelLookup = isChannelLookupQuestion(latestText);
   const isCapabilityQuestion = /\b(?:funciones|caracteristicas|features|que\s+haces|como\s+funcionas|como\s+funciona|ejemplos|demo|guia|tutorial|documentacion|docs)\b/iu.test(latestText);
-  const isServerInfoQuestion = /\b(cuando|donde|quien|resultado|resultados|postulacion|postulaciones|staff|formulario|formularios|nota|notas|aprobar|aprobado|aprobacion|canal|canales|norma|normas|regla|reglas|precio|precios|horario|evento|eventos|anuncio|anuncios|alianza|alianzas|partner|partnership|partners|requisito|requisitos|soporte|dashboard|premium|owner|encargado|encargados)\b/iu.test(combinedText);
+  const isServerInfoQuestion = /\b(cuando|donde|quien|resultado|resultados|postulacion|postulaciones|staff|formulario|formularios|nota|notas|aprobar|aprobado|aprobacion|canal|canales|norma|normas|regla|reglas|precio|precios|horario|evento|eventos|anuncio|anuncios|alianza|alianzas|partner|partnership|partners|requisito|requisitos|soporte|dashboard|premium|owner|encargado|encargados|verific(?:acion|arme|arse|ado|ada|ados|adas)?|captcha|estadistic(?:a|as)|m[eé]trica(?:s)?|stats|global(?:es)?)\b/iu.test(combinedText);
+  const hasChannelTopicInHistory = /\b(?:alianza(?:s)?|partner(?:ship)?s?|verific(?:acion|arme|arse|ado|ada|ados|adas)?|captcha|estadistic(?:a|as)|m[eé]trica(?:s)?|stats|global(?:es)?|ejemplo(?:s)?|demo(?:s)?|tutorial(?:es)?|guia(?:s)?|documentacion|docs)\b/iu.test(supportingText);
+  const isFollowUpLookup = /\b(?:busca|buscar|buscalo|búscalo|encuentra|encontrarlo|localiza|mira)\b/iu.test(latestText)
+    && hasChannelTopicInHistory;
   const isWeirdButContextual = latestText.length > 0
     && latestText.length <= 18
-    && history.slice(-6).some((item) => /\b(actualizacion|version|resultado|postulacion|alianza|canal|staff|norma|dashboard)\b/iu.test(normalizeKnowledgeText(item.content)));
+    && history.slice(-6).some((item) => /\b(actualizacion|version|resultado|postulacion|alianza|canal|staff|norma|dashboard|verific|estadistic|metrica|stats)\b/iu.test(normalizeKnowledgeText(item.content)));
 
   return {
-    enabled: isUpdateQuestion || isChannelLookup || isCapabilityQuestion || isServerInfoQuestion || isWeirdButContextual,
-    fullScan: isUpdateQuestion || isChannelLookup || isCapabilityQuestion || (isCorrection && isServerInfoQuestion),
+    enabled: isUpdateQuestion || isChannelLookup || isFollowUpLookup || isCapabilityQuestion || isServerInfoQuestion || isWeirdButContextual,
+    fullScan: isUpdateQuestion || isChannelLookup || isFollowUpLookup || isCapabilityQuestion || (isCorrection && isServerInfoQuestion),
     useHistoryTerms: !isUpdateQuestion && !isCorrection && !isCapabilityQuestion,
     latestOnly: isUpdateQuestion || isCorrection || isCapabilityQuestion,
-    channelLookup: isChannelLookup,
+    channelLookup: isChannelLookup || isFollowUpLookup,
     reason: isUpdateQuestion ? 'update_question' : isChannelLookup ? 'channel_lookup_question' : isCapabilityQuestion ? 'capability_question' : isServerInfoQuestion ? 'server_info_question' : 'contextual_short_message'
   };
 }
@@ -1448,7 +1451,7 @@ function expandServerKnowledgeTerms(normalized = '', tokens = []) {
 
 
   if (/\b(alianza|alianzas|partner|partnership|partners|colaboracion|colaboración)\b/iu.test(normalized)) {
-    expanded.push('alianza', 'alianzas', 'partner', 'partners', 'partnership', 'colaboracion', 'colaboracion');
+    expanded.push('alianza', 'alianzas', 'partner', 'partners', 'partnership', 'colaboracion', 'colaboraciones');
   }
 
   if (/\b(verific(?:acion|ación|arme|arse|ado|ada|ados|adas)?|captcha|rol(?:es)?|verified|verify)\b/iu.test(normalized)) {
@@ -1457,7 +1460,9 @@ function expandServerKnowledgeTerms(normalized = '', tokens = []) {
 
   if (/\b(estadistic(?:a|as)|m[eé]trica(?:s)?|stats|global(?:es)?|ranking|datos)\b/iu.test(normalized)) {
     expanded.push('estadistica', 'estadisticas', 'metrica', 'metricas', 'stats', 'global', 'globales', 'ranking', 'datos');
-  }  return expanded;
+  }
+
+  return expanded;
 }
 
 function buildChannelLookupSnippets({ guild, guildConfig, currentChannelId, terms = [], searchMode = {} }) {
