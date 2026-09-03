@@ -37,6 +37,12 @@ export class SupportAgent {
     const userLanguage = detectUserLanguage(message.content);
     const history = await this.#loadHistory(message.channel);
     const intakeContext = extractTicketIntakeContext(history);
+    const channelLookup = resolveChannelLookup({
+      message,
+      guildConfig: latestGuildConfig,
+      history,
+      intakeContext
+    });
     const visualContext = await this.#analyzeVisualContext({ message, guildConfig: latestGuildConfig });
     const serverKnowledgeContext = await withTimeout(
       this.#buildServerKnowledgeContext({
@@ -101,6 +107,7 @@ export class SupportAgent {
         ...answerOptions
       });
     }
+    answer = enforceChannelLookupGrounding({ answer, channelLookup, userLanguage });
     answer = normalizeDiscordChannelReferences(answer, message.guild);
     return answer;
   }
@@ -115,6 +122,12 @@ export class SupportAgent {
     const userLanguage = detectUserLanguage(message.content);
     const history = await this.#loadHistory(message.channel).catch(() => []);
     const intakeContext = extractTicketIntakeContext(history);
+    const channelLookup = resolveChannelLookup({
+      message,
+      guildConfig: effectiveGuildConfig,
+      history,
+      intakeContext
+    });
     const serverKnowledgeContext = await withTimeout(
       this.#buildServerKnowledgeContext({
         message,
@@ -141,10 +154,11 @@ export class SupportAgent {
       ...history,
       { role: 'user', content: formatHistoryMessage(message).slice(0, AI_HISTORY_MESSAGE_CHARS) }
     ].slice(-AI_HISTORY_MESSAGE_LIMIT - 1);
-    const answer = await this.localFallback.generate({
+    let answer = await this.localFallback.generate({
       system,
       messages: emergencyMessages
     });
+    answer = enforceChannelLookupGrounding({ answer, channelLookup, userLanguage });
     return normalizeDiscordChannelReferences(answer, message.guild);
   }
   async summarizeTicket({ ticket, guildConfig, messages = [] }) {
@@ -767,7 +781,10 @@ export class SupportAgent {
     const searchMode = getServerKnowledgeSearchMode(message.content, intakeContext, history);
     if (!searchMode.enabled) return '';
 
-    const latestTerms = buildServerKnowledgeTerms(message.content);
+    const latestTerms = [...new Set([
+      ...buildServerKnowledgeTerms(message.content),
+      ...(searchMode.channelLookupTerms ?? [])
+    ])];
     const supportingTerms = searchMode.useHistoryTerms
       ? buildServerKnowledgeTerms([
           intakeContext,
@@ -1295,15 +1312,16 @@ function getServerKnowledgeSearchMode(content = '', intakeContext = '', history 
     intakeContext,
     history.slice(-4).map((item) => item.content).join(' ')
   ].join(' '));
-  const combinedText = `${latestText} ${supportingText}`.trim();
+  const combinedText = latestText + ' ' + supportingText;
   const isCorrection = /\b(no|nope|nono|no\s+digo|me\s+refiero|digo\s+que|eso\s+no|ese\s+no|no\s+es\s+el\s+tema)\b/iu.test(latestText);
   const isUpdateQuestion = /\b(actualizacion|actualizaciones|version|versiones|changelog|novedad|novedades|cambios|update|updates|release|ultima\s+actualizacion|que\s+incluye|incluia|incluye\s+esta\s+version)\b/iu.test(latestText);
-  const isChannelLookup = isChannelLookupQuestion(latestText);
+  const channelLookupIntent = getConversationChannelLookupIntent(latestText, history, intakeContext);
+  const isChannelLookup = Boolean(channelLookupIntent);
   const isCapabilityQuestion = /\b(?:funciones|caracteristicas|features|que\s+haces|como\s+funcionas|como\s+funciona|ejemplos|demo|guia|tutorial|documentacion|docs)\b/iu.test(latestText);
   const isServerInfoQuestion = /\b(cuando|donde|quien|resultado|resultados|postulacion|postulaciones|staff|formulario|formularios|nota|notas|aprobar|aprobado|aprobacion|canal|canales|norma|normas|regla|reglas|precio|precios|horario|evento|eventos|anuncio|anuncios|alianza|alianzas|partner|partnership|partners|requisito|requisitos|soporte|dashboard|premium|owner|encargado|encargados|verific(?:acion|arme|arse|ado|ada|ados|adas)?|captcha|estadistic(?:a|as)|m[eé]trica(?:s)?|stats|global(?:es)?)\b/iu.test(combinedText);
   const hasChannelTopicInHistory = /\b(?:alianza(?:s)?|partner(?:ship)?s?|verific(?:acion|arme|arse|ado|ada|ados|adas)?|captcha|estadistic(?:a|as)|m[eé]trica(?:s)?|stats|global(?:es)?|ejemplo(?:s)?|demo(?:s)?|tutorial(?:es)?|guia(?:s)?|documentacion|docs)\b/iu.test(supportingText);
-  const isFollowUpLookup = /\b(?:busca|buscar|buscalo|búscalo|encuentra|encontrarlo|localiza|mira)\b/iu.test(latestText)
-    && hasChannelTopicInHistory;
+  const isFollowUpLookup = Boolean(channelLookupIntent?.inherited)
+    || (/\b(?:busca|buscar|buscalo|búscalo|encuentra|encontrarlo|localiza|mira)\b/iu.test(latestText) && hasChannelTopicInHistory);
   const isWeirdButContextual = latestText.length > 0
     && latestText.length <= 18
     && history.slice(-6).some((item) => /\b(actualizacion|version|resultado|postulacion|alianza|canal|staff|norma|dashboard|verific|estadistic|metrica|stats)\b/iu.test(normalizeKnowledgeText(item.content)));
@@ -1311,9 +1329,11 @@ function getServerKnowledgeSearchMode(content = '', intakeContext = '', history 
   return {
     enabled: isUpdateQuestion || isChannelLookup || isFollowUpLookup || isCapabilityQuestion || isServerInfoQuestion || isWeirdButContextual,
     fullScan: isUpdateQuestion || isChannelLookup || isFollowUpLookup || isCapabilityQuestion || (isCorrection && isServerInfoQuestion),
-    useHistoryTerms: !isUpdateQuestion && !isCorrection && !isCapabilityQuestion,
-    latestOnly: isUpdateQuestion || isCorrection || isCapabilityQuestion,
+    useHistoryTerms: !isUpdateQuestion && !isCorrection && !isCapabilityQuestion && !isChannelLookup,
+    latestOnly: (isUpdateQuestion || isCorrection || isCapabilityQuestion) && !isChannelLookup,
     channelLookup: isChannelLookup || isFollowUpLookup,
+    channelLookupKey: channelLookupIntent?.key ?? null,
+    channelLookupTerms: channelLookupIntent?.terms ?? [],
     reason: isUpdateQuestion ? 'update_question' : isChannelLookup ? 'channel_lookup_question' : isCapabilityQuestion ? 'capability_question' : isServerInfoQuestion ? 'server_info_question' : 'contextual_short_message'
   };
 }
@@ -1412,10 +1432,159 @@ const SERVER_CONTEXT_PRIORITY_TERMS = new Set([
   'release'
 ]);
 
+const CHANNEL_LOOKUP_INTENTS = [
+  {
+    key: 'alliances',
+    labelEs: 'las alianzas y solicitudes',
+    labelEn: 'alliances and requests',
+    terms: ['alianza', 'alianzas', 'partner', 'partners', 'partnership', 'colaboracion', 'colaboraciones'],
+    subjectPattern: /\b(?:alianza(?:s)?|partner(?:ship)?s?|colaboracion(?:es)?)\b/iu,
+    namePattern: /\b(?:alianza(?:s)?|partner(?:ship)?s?|colaboracion(?:es)?)\b/iu,
+    configKeys: ['allianceChannelId', 'discovery.allianceChannelId']
+  },
+  {
+    key: 'verification',
+    labelEs: 'el proceso de verificacion',
+    labelEn: 'the verification process',
+    terms: ['verificacion', 'verificaciones', 'verificar', 'verificado', 'verificada', 'captcha', 'rol', 'roles', 'verified', 'verify'],
+    subjectPattern: /\b(?:verificacion|verificar|verificado|verificada|captcha|rol(?:es)?|verified|verify)\b/iu,
+    namePattern: /\b(?:verificacion|verificar|verificado|verificada|captcha|rol(?:es)?|verified|verify)\b/iu,
+    configKeys: ['verificationChannelId', 'discovery.verificationChannelId', 'rolesChannelId', 'discovery.rolesChannelId']
+  },
+  {
+    key: 'statistics',
+    labelEs: 'las estadisticas globales',
+    labelEn: 'the global statistics',
+    terms: ['estadistica', 'estadisticas', 'metrica', 'metricas', 'stats', 'global', 'globales', 'ranking', 'datos'],
+    subjectPattern: /\b(?:estadistic(?:a|as)|metrica(?:s)?|stats|global(?:es)?|ranking|datos)\b/iu,
+    namePattern: /\b(?:estadistic(?:a|as)|metrica(?:s)?|stats|global(?:es)?|ranking|datos)\b/iu,
+    configKeys: ['statisticsChannelId', 'statsChannelId', 'discovery.statisticsChannelId', 'discovery.statsChannelId']
+  },
+  {
+    key: 'examples',
+    labelEs: 'los ejemplos del funcionamiento del bot',
+    labelEn: 'bot examples',
+    terms: ['ejemplo', 'ejemplos', 'demo', 'demos', 'tutorial', 'tutoriales', 'guia', 'guias', 'documentacion', 'docs', 'funcionamiento', 'funciones', 'prueba', 'pruebas', 'test'],
+    subjectPattern: /\b(?:ejemplo(?:s)?|demo(?:s)?|tutorial(?:es)?|guia(?:s)?|documentacion|docs|funcionamiento|funciones)\b/iu,
+    namePattern: /\b(?:ejemplo(?:s)?|demo(?:s)?|tutorial(?:es)?|guia(?:s)?|documentacion|docs|funcionamiento|funciones)\b/iu,
+    configKeys: ['examplesChannelId', 'discovery.examplesChannelId']
+  }
+];
+
+function getChannelLookupIntentFromText(value = '') {
+  const normalizedText = normalizeKnowledgeText(value);
+  const locationSignal = /\b(?:canal(?:es)?|donde|en\s+que|ubicacion|encontrar|encuentro|ver|ve|ven|publica|publican|aparece|aparecen|seccion|buscar|busca|localiza)\b/iu.test(normalizedText);
+  if (!locationSignal) return null;
+  return CHANNEL_LOOKUP_INTENTS.find((intent) => intent.subjectPattern.test(normalizedText)) ?? null;
+}
+
+function getConversationChannelLookupIntent(latestText = '', history = [], intakeContext = '') {
+  const direct = getChannelLookupIntentFromText(latestText);
+  if (direct) return direct;
+
+  const normalizedLatest = normalizeKnowledgeText(latestText);
+  const isFollowUp = /\b(?:busca|buscar|buscalo|encuentra|encontrarlo|localiza|mira)\b/iu.test(normalizedLatest)
+    || (/\b(?:digo|refiero|me\s+refiero|en\s+discord|canal\s+de\s+discord|ese\s+canal|ese)\b/iu.test(normalizedLatest)
+      && /\b(?:canal|discord|eso|ese)\b/iu.test(normalizedLatest));
+  if (!isFollowUp) return null;
+
+  const previousUserMessages = history
+    .filter((item) => item?.role === 'user')
+    .map((item) => String(item.content ?? ''))
+    .reverse();
+  for (const previous of previousUserMessages) {
+    const intent = getChannelLookupIntentFromText(previous);
+    if (intent) return { ...intent, inherited: true };
+  }
+
+  const intakeIntent = getChannelLookupIntentFromText(intakeContext);
+  return intakeIntent ? { ...intakeIntent, inherited: true } : null;
+}
+
 function isChannelLookupQuestion(normalizedText = '') {
-  const locationSignal = /\b(?:canal(?:es)?|donde|en\s+que|en\s+qué|ubicacion|ubicación|encontrar|encuentro|ver|ve|ven|publica|publican|aparece|aparecen|seccion|sección|buscar|busca|localiza)\b/iu.test(normalizedText);
-  const subjectSignal = /\b(?:canal(?:es)?|alianza(?:s)?|partner(?:ship)?s?|informacion|información|info|norma(?:s)?|regla(?:s)?|ejemplo(?:s)?|demo(?:s)?|tutorial(?:es)?|guia(?:s)?|documentacion|documentación|docs|funciona|funcionamiento|funciones|verific(?:acion|ación|arme|arse|ado|ada|ados|adas)?|captcha|estadistic(?:a|as)|m[eé]trica(?:s)?|stats|global(?:es)?)\b/iu.test(normalizedText);
-  return locationSignal && subjectSignal;
+  return Boolean(getChannelLookupIntentFromText(normalizedText));
+}
+
+function resolveChannelLookup({ message, guildConfig = {}, history = [], intakeContext = '' } = {}) {
+  const intent = getConversationChannelLookupIntent(message?.content ?? '', history, intakeContext);
+  const guild = message?.guild;
+  if (!intent || !guild?.channels?.cache) return null;
+
+  const config = guildConfig ?? {};
+  const me = guild.members?.me;
+  const configuredIds = intent.configKeys
+    .map((key) => key.split('.').reduce((value, part) => value?.[part], config))
+    .filter((value) => /^\d{16,24}$/.test(String(value ?? '')));
+
+  const ranked = [...guild.channels.cache.values()]
+    .filter((channel) => channel.type === ChannelType.GuildText || channel.type === ChannelType.GuildAnnouncement || channel.type === ChannelType.GuildForum)
+    .filter((channel) => channel.id !== message?.channelId)
+    .filter((channel) => !isSensitiveChannelName(channel.name))
+    .filter((channel) => {
+      const permissions = me ? channel.permissionsFor(me) : null;
+      return channel.viewable !== false && (!permissions || permissions.has(PermissionFlagsBits.ViewChannel));
+    })
+    .map((channel) => {
+      const configured = configuredIds.includes(channel.id);
+      return { channel, configured, score: scoreChannelDestination(channel, intent, configured) };
+    })
+    .filter((candidate) => candidate.score > 0)
+    .sort((a, b) => b.score - a.score);
+
+  const best = ranked[0];
+  if (!best) return { intent, highConfidence: false, candidates: [] };
+  const second = ranked[1];
+  const margin = best.score - (second?.score ?? 0);
+  const highConfidence = best.configured || (best.score >= 46 && (margin >= 12 || best.score >= 86));
+
+  return {
+    intent,
+    channel: best.channel,
+    score: best.score,
+    margin,
+    highConfidence,
+    candidates: ranked.slice(0, 4).map(({ channel, score, configured }) => ({ id: channel.id, name: channel.name, score, configured }))
+  };
+}
+
+function scoreChannelDestination(channel, intent, configured = false) {
+  const name = normalizeKnowledgeText(channel.name ?? '');
+  const topic = normalizeKnowledgeText(channel.topic ?? '');
+  const searchable = name + ' ' + topic;
+  const nameTokens = new Set(name.split(/\s+/).filter(Boolean));
+  let score = configured ? 120 : 0;
+
+  if (intent.namePattern.test(name)) score += 58;
+  if (intent.namePattern.test(topic)) score += 30;
+  for (const term of intent.terms) {
+    if (name === term || nameTokens.has(term)) score += 28;
+    else if (name.includes(term)) score += 15;
+    else if (topic.includes(term)) score += 9;
+  }
+  if (/\b(?:info|informacion|faq|dudas|ayuda|soporte|support)\b/iu.test(name) && intent.namePattern.test(topic)) score += 18;
+  if (searchable.includes('\\u200b')) score -= 1;
+  return score;
+}
+
+function buildChannelLookupReply({ channel, intent, userLanguage } = {}) {
+  const mention = '<#' + channel.id + '>';
+  if (userLanguage?.code === 'en') {
+    if (intent.key === 'statistics') return 'The global statistics are published in ' + mention + '.';
+    if (intent.key === 'verification') return 'You can find the verification process in ' + mention + '.';
+    if (intent.key === 'alliances') return 'You can find the alliances and requests in ' + mention + '.';
+    if (intent.key === 'examples') return 'You can find bot examples in ' + mention + '.';
+    return 'You can find that information in ' + mention + '.';
+  }
+  if (intent.key === 'statistics') return 'Las estadisticas globales se publican en ' + mention + '.';
+  if (intent.key === 'verification') return 'Puedes consultar el proceso de verificacion en ' + mention + '.';
+  if (intent.key === 'alliances') return 'Puedes ver las alianzas y solicitudes en ' + mention + '.';
+  if (intent.key === 'examples') return 'Puedes ver ejemplos del funcionamiento del bot en ' + mention + '.';
+  return 'Puedes consultar esa informacion en ' + mention + '.';
+}
+
+function enforceChannelLookupGrounding({ answer, channelLookup, userLanguage } = {}) {
+  if (!channelLookup?.highConfidence || !channelLookup.channel) return answer;
+  return buildChannelLookupReply({ channel: channelLookup.channel, intent: channelLookup.intent, userLanguage });
 }
 
 function expandServerKnowledgeTerms(normalized = '', tokens = []) {
@@ -1552,6 +1721,7 @@ function selectServerKnowledgeChannels(guild, guildConfig, currentChannelId, ter
   return [...guild.channels.cache.values()]
     .filter((channel) => channel.type === ChannelType.GuildText || channel.type === ChannelType.GuildAnnouncement)
     .filter((channel) => channel.id !== currentChannelId)
+    .filter((channel) => !isSensitiveChannelName(channel.name))
     .filter((channel) => typeof channel.messages?.fetch === 'function')
     .filter((channel) => {
       const permissions = me ? channel.permissionsFor(me) : null;
@@ -1635,6 +1805,8 @@ function normalizeDiscordChannelReferences(answer = '', guild = null) {
       normalized = normalized.replace(new RegExp('#' + escaped + '(?=$|\\s|[.,!?;:)])', 'giu'), mention);
     }
   }
+
+  normalized = normalized.replace(/(<#\d{16,24}>)\s*\(\s*#?[^)]{2,120}\s*\)/gu, '$1');
 
   return normalized;
 }
