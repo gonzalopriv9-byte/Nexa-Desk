@@ -1330,13 +1330,13 @@ function getServerKnowledgeSearchMode(content = '', intakeContext = '', history 
   const channelLookupIntent = getConversationChannelLookupIntent(latestText, history, intakeContext);
   const isChannelLookup = isChannelLookupQuestion(latestText) || Boolean(channelLookupIntent);
   const isCapabilityQuestion = /\b(?:funciones|caracteristicas|features|que\s+haces|como\s+funcionas|como\s+funciona|ejemplos|demo|guia|tutorial|documentacion|docs)\b/iu.test(latestText);
-  const isServerInfoQuestion = /\b(cuando|donde|quien|resultado|resultados|postulacion|postulaciones|staff|formulario|formularios|nota|notas|aprobar|aprobado|aprobacion|canal|canales|norma|normas|regla|reglas|precio|precios|horario|evento|eventos|anuncio|anuncios|alianza|alianzas|partner|partnership|partners|requisito|requisitos|soporte|dashboard|premium|owner|encargado|encargados|verific(?:acion(?:es)?|arme|ame|arte|ate|arse|ase|ado(?:s|as)?|ar)?|captcha|estadistic(?:a|as)|m[eé]trica(?:s)?|stats|global(?:es)?)\b/iu.test(combinedText);
-  const hasChannelTopicInHistory = /\b(?:alianza(?:s)?|partner(?:ship)?s?|verific(?:acion(?:es)?|arme|ame|arte|ate|arse|ase|ado(?:s|as)?|ar)?|captcha|estadistic(?:a|as)|m[eé]trica(?:s)?|stats|global(?:es)?|ejemplo(?:s)?|demo(?:s)?|tutorial(?:es)?|guia(?:s)?|documentacion|docs)\b/iu.test(supportingText);
+  const isServerInfoQuestion = /\b(cuando|donde|quien|resultado|resultados|postulacion|postulaciones|staff|formulario|formularios|nota|notas|aprobar|aprobado|aprobacion|canal|canales|norma|normas|regla|reglas|precio|precios|horario|evento|eventos|anuncio|anuncios|alianza|alianzas|partner|partnership|partners|requisito|requisitos|soporte|dashboard|premium|owner|encargado|encargados|verific(?:acion(?:es)?|arme|ame|arte|ate|arse|ase|ado(?:s|as)?|ar)?|captcha|estadistic(?:a|as)|m[eé]trica(?:s)?|stats|global(?:es)?|comando(?:s)?|command(?:s)?|slash|orden(?:es)?|uso(?:s)?)\b/iu.test(combinedText);
+  const hasChannelTopicInHistory = /\b(?:alianza(?:s)?|partner(?:ship)?s?|verific(?:acion(?:es)?|arme|ame|arte|ate|arse|ase|ado(?:s|as)?|ar)?|captcha|estadistic(?:a|as)|m[eé]trica(?:s)?|stats|global(?:es)?|ejemplo(?:s)?|demo(?:s)?|tutorial(?:es)?|guia(?:s)?|documentacion|docs|comando(?:s)?|command(?:s)?|slash|orden(?:es)?|uso(?:s)?)\b/iu.test(supportingText);
   const isFollowUpLookup = Boolean(channelLookupIntent?.inherited)
     || (/\b(?:busca|buscar|buscalo|búscalo|encuentra|encontrarlo|localiza|mira)\b/iu.test(latestText) && hasChannelTopicInHistory);
   const isWeirdButContextual = latestText.length > 0
     && latestText.length <= 18
-    && history.slice(-6).some((item) => /\b(actualizacion|version|resultado|postulacion|alianza|canal|staff|norma|dashboard|verific|estadistic|metrica|stats)\b/iu.test(normalizeKnowledgeText(item.content)));
+    && history.slice(-6).some((item) => /\b(actualizacion|version|resultado|postulacion|alianza|canal|staff|norma|dashboard|verific|estadistic|metrica|stats|comand|command|slash|orden|uso)\b/iu.test(normalizeKnowledgeText(item.content)));
 
   return {
     enabled: isUpdateQuestion || isChannelLookup || isFollowUpLookup || isCapabilityQuestion || isServerInfoQuestion || isWeirdButContextual,
@@ -1472,6 +1472,14 @@ const CHANNEL_LOOKUP_INTENTS = [
     namePattern: /\b(?:estadistic(?:a|as)|metrica(?:s)?|stats|global(?:es)?|ranking|datos)\b/iu,
     configKeys: ['statisticsChannelId', 'statsChannelId', 'discovery.statisticsChannelId', 'discovery.statsChannelId']
   },
+    key: 'commands',
+    labelEs: 'los comandos disponibles',
+    labelEn: 'the available commands',
+    terms: ['comando', 'comandos', 'command', 'commands', 'slash', 'orden', 'ordenes', 'uso', 'usos'],
+    subjectPattern: /\b(?:comando(?:s)?|command(?:s)?|slash|orden(?:es)?|uso(?:s)?)\b/iu,
+    namePattern: /\b(?:comando(?:s)?|command(?:s)?|slash|orden(?:es)?|uso(?:s)?)\b/iu,
+    configKeys: ['commandsChannelId', 'commandChannelId', 'botCommandsChannelId', 'discovery.commandsChannelId', 'discovery.commandChannelId', 'discovery.botCommandsChannelId']
+  },
   {
     key: 'examples',
     labelEs: 'los ejemplos del funcionamiento del bot',
@@ -1516,7 +1524,7 @@ function getConversationChannelLookupIntent(latestText = '', history = [], intak
 function isChannelLookupQuestion(normalizedText = '') {
   if (getChannelLookupIntentFromText(normalizedText)) return true;
   const locationSignal = /\b(?:canal(?:es)?|donde|en\s+que|ubicacion|encontrar|encuentro|ver|ve|ven|publica|publican|aparece|aparecen|seccion|buscar|busca|localiza)\b/iu.test(normalizedText);
-  const subjectSignal = /\b(?:canal(?:es)?|informacion|info|norma(?:s)?|regla(?:s)?|pregunta(?:s)?|faq|ayuda|soporte|support|ejemplo(?:s)?|demo(?:s)?|tutorial(?:es)?|guia(?:s)?|documentacion|docs|funciona|funcionamiento|funciones|verific(?:acion(?:es)?|arme|ame|arte|ate|arse|ase|ado(?:s|as)?|ar)?|captcha|estadistic(?:a|as)|metrica(?:s)?|stats|global(?:es)?)\b/iu.test(normalizedText);
+  const subjectSignal = /\b(?:canal(?:es)?|informacion|info|norma(?:s)?|regla(?:s)?|pregunta(?:s)?|faq|ayuda|soporte|support|ejemplo(?:s)?|demo(?:s)?|tutorial(?:es)?|guia(?:s)?|documentacion|docs|funciona|funcionamiento|funciones|verific(?:acion(?:es)?|arme|ame|arte|ate|arse|ase|ado(?:s|as)?|ar)?|captcha|estadistic(?:a|as)|metrica(?:s)?|stats|global(?:es)?|comando(?:s)?|command(?:s)?|slash|orden(?:es)?|uso(?:s)?)\b/iu.test(normalizedText);
   return locationSignal && subjectSignal;
 }
 
@@ -1587,6 +1595,8 @@ function buildChannelLookupReply({ channel, intent, userLanguage } = {}) {
     if (intent.key === 'statistics') return 'The global statistics are published in ' + mention + '.';
     if (intent.key === 'verification') return 'You can find the verification process in ' + mention + '.';
     if (intent.key === 'alliances') return 'You can find the alliances and requests in ' + mention + '.';
+    if (intent.key === 'commands') return `You can find the available commands in ${mention}.`;
+  if (intent.key === 'commands') return `Puedes consultar los comandos disponibles en ${mention}.`;
     if (intent.key === 'examples') return 'You can find bot examples in ' + mention + '.';
     return 'You can find that information in ' + mention + '.';
   }
@@ -1644,6 +1654,10 @@ function expandServerKnowledgeTerms(normalized = '', tokens = []) {
 
   if (/\b(estadistic(?:a|as)|m[eé]trica(?:s)?|stats|global(?:es)?|ranking|datos)\b/iu.test(normalized)) {
     expanded.push('estadistica', 'estadisticas', 'metrica', 'metricas', 'stats', 'global', 'globales', 'ranking', 'datos');
+  }
+
+  if (/\b(comando|comandos|command|commands|slash|orden|ordenes|uso|usos)\b/iu.test(normalized)) {
+    expanded.push('comando', 'comandos', 'command', 'commands', 'slash', 'orden', 'ordenes', 'uso', 'usos');
   }
 
   return expanded;
@@ -1717,6 +1731,7 @@ function scoreChannelLookupCandidate(channel, terms = [], guildConfig = {}) {
   if (/\b(alianza|alianzas|partner|partnership|partners|colaboracion|colaboración)\b/iu.test(`${name} ${topic}`)) score += 50;
   if (/\b(verific(?:acion|ación|arme|arse|ado|ada|ados|adas)?|captcha|verified|verify|rol(?:es)?)\b/iu.test(`${name} ${topic}`)) score += 42;
   if (/\b(estadistic(?:a|as)|m[eé]trica(?:s)?|stats|global(?:es)?|ranking|datos)\b/iu.test(`${name} ${topic}`)) score += 42;
+  if (/\b(comando(?:s)?|command(?:s)?|slash|orden(?:es)?|uso(?:s)?)\b/iu.test(`${name} ${topic}`)) score += 42;
   if (/\b(ejemplo(?:s)?|demo(?:s)?|tutorial(?:es)?|guia(?:s)?|documentacion|documentación|docs)\b/iu.test(`${name} ${topic}`)) score += 38;
   return score;
 }
@@ -1750,8 +1765,8 @@ function selectServerKnowledgeChannels(guild, guildConfig, currentChannelId, ter
       let score = 0;
       if (channel.id === guildConfig?.announcementChannelId || channel.id === guildConfig?.discovery?.announcementChannelId) score += 14;
       if (channel.id === guildConfig?.allianceChannelId || channel.id === guildConfig?.discovery?.allianceChannelId) score += 45;
-      if (/(anuncio|avisos|news|novedad|changelog|update|actualiz|version|info|informacion|faq|dudas|ejemplo|ejemplos|demo|tutorial|guia|docs|documentacion|soporte|staff|postul|formulario|normas|reglas|alianza|alianzas|partner|partnership|partners|colaboracion|colaboración|premium|dashboard|verific|captcha|verified|verify|estadistic|metrica|stats|global|ranking|datos)/iu.test(name)) score += 12;
-      if (/(anuncio|avisos|news|novedad|changelog|update|actualiz|version|info|informacion|faq|dudas|ejemplo|ejemplos|demo|tutorial|guia|docs|documentacion|soporte|staff|postul|formulario|normas|reglas|alianza|alianzas|partner|partnership|partners|colaboracion|colaboración|premium|dashboard|verific|captcha|verified|verify|estadistic|metrica|stats|global|ranking|datos)/iu.test(topic)) score += 8;
+      if (/(anuncio|avisos|news|novedad|changelog|update|actualiz|version|info|informacion|faq|dudas|ejemplo|ejemplos|demo|tutorial|guia|docs|documentacion|soporte|staff|postul|formulario|normas|reglas|alianza|alianzas|partner|partnership|partners|colaboracion|colaboración|premium|dashboard|verific|captcha|verified|verify|estadistic|metrica|stats|global|ranking|datos|comand|command|slash|orden|uso)/iu.test(name)) score += 12;
+      if (/(anuncio|avisos|news|novedad|changelog|update|actualiz|version|info|informacion|faq|dudas|ejemplo|ejemplos|demo|tutorial|guia|docs|documentacion|soporte|staff|postul|formulario|normas|reglas|alianza|alianzas|partner|partnership|partners|colaboracion|colaboración|premium|dashboard|verific|captcha|verified|verify|estadistic|metrica|stats|global|ranking|datos|comand|command|slash|orden|uso)/iu.test(topic)) score += 8;
       for (const term of termSet) {
         if (name.includes(term)) score += 6;
         else if (topic.includes(term)) score += 3;
