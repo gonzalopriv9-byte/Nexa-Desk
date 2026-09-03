@@ -37,6 +37,8 @@ export class SupportAgent {
     const userLanguage = detectUserLanguage(message.content);
     const history = await this.#loadHistory(message.channel);
     const intakeContext = extractTicketIntakeContext(history);
+    const publicResourceReply = buildPublicResourceReply({ text: message.content, userLanguage });
+    if (publicResourceReply) return publicResourceReply;
     const channelLookup = resolveChannelLookup({
       message,
       guildConfig: latestGuildConfig,
@@ -128,6 +130,8 @@ export class SupportAgent {
     const userLanguage = detectUserLanguage(message.content);
     const history = await this.#loadHistory(message.channel).catch(() => []);
     const intakeContext = extractTicketIntakeContext(history);
+    const publicResourceReply = buildPublicResourceReply({ text: message.content, userLanguage });
+    if (publicResourceReply) return publicResourceReply;
     const channelLookup = resolveChannelLookup({
       message,
       guildConfig: effectiveGuildConfig,
@@ -1588,6 +1592,17 @@ function scoreChannelDestination(channel, intent, configured = false) {
   if (/\b(?:info|informacion|faq|dudas|ayuda|soporte|support)\b/iu.test(name) && intent.namePattern.test(topic)) score += 18;
   if (searchable.includes('\\u200b')) score -= 1;
   return score;
+}
+
+function buildPublicResourceReply({ text = '', userLanguage = {} } = {}) {
+  const normalized = normalizeKnowledgeText(text);
+  const asksForBlacklist = /\b(?:blacklist|blacklists|lista\s+negra|baneos?\s+globales?|global\s+bans?|registros?\s+de\s+blacklist)\b/iu.test(normalized);
+  if (!asksForBlacklist) return '';
+
+  if (userLanguage?.code === 'en') {
+    return 'You can search the public NexaDesk blacklist at https://nexa-desk.com/blacklist. Enter the Discord user ID to see the public record available.';
+  }
+  return 'Puedes consultar la blacklist pública de NexaDesk en https://nexa-desk.com/blacklist. Introduce el ID de Discord para ver el registro público disponible.';
 }
 
 function buildChannelLookupReply({ channel, intent, userLanguage } = {}) {
