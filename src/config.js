@@ -152,8 +152,8 @@ const schema = z.object({
   EDGE_TTS_VOLUME: z.string().default('+0%'),
   VOICE_TTS_MAX_CHARS: z.coerce.number().int().min(120).max(900).default(220),
   VOICE_MAX_RECORDING_MS: z.coerce.number().int().min(2_000).max(30_000).default(12_000),
-  VOICE_MIN_RECORDING_MS: z.coerce.number().int().min(250).max(5_000).default(900),
-  VOICE_SILENCE_DURATION_MS: z.coerce.number().int().min(350).max(2_000).default(650),
+  VOICE_MIN_RECORDING_MS: z.coerce.number().int().min(250).max(5_000).default(450),
+  VOICE_SILENCE_DURATION_MS: z.coerce.number().int().min(350).max(2_000).default(450),
   FFMPEG_BIN: z.string().default('ffmpeg')
 });
 
