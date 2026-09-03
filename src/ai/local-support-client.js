@@ -143,13 +143,27 @@ function detectChannelLookupIntent(value = '') {
 }
 
 function extractChannelCandidates(system = '') {
+  const source = String(system ?? '');
   const candidates = [];
-  const pattern = /<#(\d{16,24})>/g;
+  const canonicalPattern = /Canal real del servidor:\s*<(?:#)(\d{16,24})>\s*\(nombre visible:\s*#([^)]{2,120})\)\.?/giu;
   let match;
-  while ((match = pattern.exec(String(system))) !== null) {
+  while ((match = canonicalPattern.exec(source)) !== null) {
     const id = match[1];
     if (candidates.some((candidate) => candidate.id === id)) continue;
-    candidates.push({ id, mention: `<#${id}>`, context: String(system).slice(Math.max(0, match.index - 260), match.index + 340) });
+    candidates.push({
+      id,
+      mention: `<#${id}>`,
+      name: normalizeText(match[2]),
+      context: match[0]
+    });
+  }
+  if (candidates.length) return candidates;
+
+  const pattern = /<#(\d{16,24})>/g;
+  while ((match = pattern.exec(source)) !== null) {
+    const id = match[1];
+    if (candidates.some((candidate) => candidate.id === id)) continue;
+    candidates.push({ id, mention: `<#${id}>`, context: source.slice(Math.max(0, match.index - 180), match.index + 220) });
   }
   return candidates;
 }
