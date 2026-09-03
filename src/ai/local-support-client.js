@@ -119,7 +119,7 @@ function buildGroundedSupportFallback({ lastUser = '', text = '', context = '', 
     return [
       `我已识别到最新的具体错误：${quoted}。`,
       previousVisual ? '之前的图片仍然是上下文，但这条错误信息代表当前状态。' : '',
-      '这看起来需要检查服务端配置或相关服务，而不是重复相同的操作。请把这段准确错误交给服务器管理员或工作人员处理。'
+      '这表明需要检查服务端配置，而不是重复相同的操作。请把准确错误交给服务器管理员或工作人员处理。'
     ].filter(Boolean).join(' ');
   }
 
@@ -163,7 +163,7 @@ function sanitizeFailureDisplay(value = '') {
 }
 
 function buildSpanishFailureMeaning(kind) {
-  if (kind === 'configuration') return 'La señal apunta a una configuracion ausente en el servicio, no a un fallo de tu cuenta ni de la verificacion de Cloudflare. Repetir la casilla no puede crear una variable que falta; el owner o staff debe revisar el entorno del bot.';
+  if (kind === 'configuration') return 'La señal apunta a una configuracion ausente en el servicio, no a un fallo de tu cuenta ni de la verificacion de Cloudflare. Repetir la casilla no puede crear una variable que falta.';
   if (kind === 'service') return 'La señal apunta a que el host o un servicio remoto no ha respondido correctamente. No implica por si sola que hayas hecho nada mal; hay que revisar disponibilidad, proxy y logs del servicio.';
   if (kind === 'access') return 'La señal apunta a que el servidor esta rechazando la peticion o no permite completar el acceso. Conviene revisar la autenticacion y la respuesta del servidor, no repetir la misma accion a ciegas.';
   if (kind === 'client') return 'La señal apunta a un fallo de carga o respuesta del cliente. Conviene conservar el texto exacto y revisar la peticion que falla antes de cambiar pasos sin evidencia.';
@@ -171,7 +171,7 @@ function buildSpanishFailureMeaning(kind) {
 }
 
 function buildEnglishFailureMeaning(kind) {
-  if (kind === 'configuration') return 'This points to missing service configuration, not a problem with your account or the Cloudflare verification. Repeating the checkbox cannot create a missing variable; the owner or staff should inspect the bot environment.';
+  if (kind === 'configuration') return 'This points to missing service configuration, not a problem with your account or the Cloudflare verification. Repeating the checkbox cannot create a missing variable.';
   if (kind === 'service') return 'This points to the host or a remote service failing to respond correctly. It does not by itself mean you did anything wrong; availability, proxy and service logs should be checked.';
   if (kind === 'access') return 'This points to the server rejecting the request or not allowing the access flow to complete. Authentication and the server response should be checked instead of repeating the same action blindly.';
   if (kind === 'client') return 'This points to a loading or client-response failure. Keep the exact text and inspect the failing request before changing steps without evidence.';
