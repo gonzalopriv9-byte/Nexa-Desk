@@ -342,13 +342,13 @@ export class VoiceSessionManager {
         allowedMentions: { roles: answer.mentionStaff && session.guildConfig.staffRoleId ? [session.guildConfig.staffRoleId] : [] }
       }).catch(() => {});
 
-      // Run quality classification after the user-visible response has been
-      // dispatched; it must never compete with the main voice answer.
+      if (speakPromise) await speakPromise;
+
+      // Run quality classification after playback; it must never compete
+      // with the user-facing answer for the AI provider.
       void this.#recordVoiceAiQualitySignal(session, member, transcript).catch((error) => {
         console.warn(`Voice AI quality signal capture failed for ${session.ticketChannelId}:`, error?.message ?? error);
       });
-
-      if (speakPromise) await speakPromise;
     } finally {
       if (this.#isCurrentVoiceTurn(session, turnId)) {
         session.processing = false;
