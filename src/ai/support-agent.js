@@ -115,6 +115,15 @@ export class SupportAgent {
     const userLanguage = detectUserLanguage(message.content);
     const history = await this.#loadHistory(message.channel).catch(() => []);
     const intakeContext = extractTicketIntakeContext(history);
+    const serverKnowledgeContext = await withTimeout(
+      this.#buildServerKnowledgeContext({
+        message,
+        guildConfig: effectiveGuildConfig,
+        history,
+        intakeContext
+      }),
+      Math.min(this.serverContextTimeoutMs, 700)
+    ).catch(() => '');
     const aiLearningContext = formatAiLearningContext(
       selectRelevantAiLearningLessons(effectiveGuildConfig.aiLearning, message.content, { limit: 6 })
     );
@@ -124,7 +133,7 @@ export class SupportAgent {
       userLanguage,
       intakeContext,
       visualContext: '',
-      serverKnowledgeContext: '',
+      serverKnowledgeContext,
       aiLearningContext
     });
 
@@ -627,6 +636,7 @@ export class SupportAgent {
       'Si el usuario pregunta en que canal, donde encontrar algo, ejemplos, guias o documentacion, usa SOLO canales reales listados en "Contexto adicional" o "Canales importantes". Nunca inventes canales como #dudas, #faq o #soporte si no aparecen ahi.',
       'Si el contexto adicional muestra "Canal real del servidor", priorizalo como fuente de verdad para responder ubicaciones dentro del servidor.',
       'Cuando recomiendes un canal, usa la mencion clicable exacta <#ID> que aparece en el contexto real. Nunca escribas <#nombre> ni inventes un ID; si no hay un ID real, no conviertas el nombre en mencion.',
+      'No repitas el nombre del canal entre parentesis despues de la mencion: Discord ya muestra el nombre y el enlace. Si el mapa real no contiene una coincidencia suficiente, di que no lo has localizado, no que el canal no existe.',
 
       'Si el usuario pregunta por actualizaciones, version, changelog, novedades o "que incluye", busca esa informacion en el contexto adicional. No digas que la version es igual si no hay una fuente que lo confirme.',
       'Si el usuario corrige el tema con "no", "no digo eso" o "me refiero a", abandona el tema anterior inmediatamente y responde solo a la nueva intencion.',
@@ -1400,8 +1410,8 @@ const SERVER_CONTEXT_PRIORITY_TERMS = new Set([
 ]);
 
 function isChannelLookupQuestion(normalizedText = '') {
-  const locationSignal = /\b(?:canal(?:es)?|donde|en\s+que|en\s+qué|ubicacion|ubicación|encontrar|encuentro|ver|ve|ven|publica|publican|aparece|aparecen|seccion|sección)\b/iu.test(normalizedText);
-  const subjectSignal = /\b(?:canal(?:es)?|alianza(?:s)?|partner(?:ship)?s?|informacion|información|info|norma(?:s)?|regla(?:s)?|ejemplo(?:s)?|demo(?:s)?|tutorial(?:es)?|guia(?:s)?|documentacion|documentación|docs|funciona|funcionamiento|funciones)\b/iu.test(normalizedText);
+  const locationSignal = /\b(?:canal(?:es)?|donde|en\s+que|en\s+qué|ubicacion|ubicación|encontrar|encuentro|ver|ve|ven|publica|publican|aparece|aparecen|seccion|sección|buscar|busca|localiza)\b/iu.test(normalizedText);
+  const subjectSignal = /\b(?:canal(?:es)?|alianza(?:s)?|partner(?:ship)?s?|informacion|información|info|norma(?:s)?|regla(?:s)?|ejemplo(?:s)?|demo(?:s)?|tutorial(?:es)?|guia(?:s)?|documentacion|documentación|docs|funciona|funcionamiento|funciones|verific(?:acion|ación|arme|arse|ado|ada|ados|adas)?|captcha|estadistic(?:a|as)|m[eé]trica(?:s)?|stats|global(?:es)?)\b/iu.test(normalizedText);
   return locationSignal && subjectSignal;
 }
 
@@ -1436,7 +1446,18 @@ function expandServerKnowledgeTerms(normalized = '', tokens = []) {
     expanded.push('canal', 'canales', 'info', 'informacion', 'ayuda');
   }
 
-  return expanded;
+
+  if (/\b(alianza|alianzas|partner|partnership|partners|colaboracion|colaboración)\b/iu.test(normalized)) {
+    expanded.push('alianza', 'alianzas', 'partner', 'partners', 'partnership', 'colaboracion', 'colaboracion');
+  }
+
+  if (/\b(verific(?:acion|ación|arme|arse|ado|ada|ados|adas)?|captcha|rol(?:es)?|verified|verify)\b/iu.test(normalized)) {
+    expanded.push('verificacion', 'verificaciones', 'verificado', 'verificada', 'verificar', 'captcha', 'rol', 'roles', 'verified', 'verify');
+  }
+
+  if (/\b(estadistic(?:a|as)|m[eé]trica(?:s)?|stats|global(?:es)?|ranking|datos)\b/iu.test(normalized)) {
+    expanded.push('estadistica', 'estadisticas', 'metrica', 'metricas', 'stats', 'global', 'globales', 'ranking', 'datos');
+  }  return expanded;
 }
 
 function buildChannelLookupSnippets({ guild, guildConfig, currentChannelId, terms = [], searchMode = {} }) {
@@ -1504,6 +1525,10 @@ function scoreChannelLookupCandidate(channel, terms = [], guildConfig = {}) {
 
   if (/\b(ejemplo|ejemplos|examples|demo|demos|tutorial|tutoriales|guia|guias|docs|documentacion|funcionamiento|como\s+funciona|pruebas|test)\b/iu.test(name)) score += 42;
   if (/\b(faq|dudas|preguntas|ayuda|info|informacion|soporte|support)\b/iu.test(name)) score += 16;
+  if (/\b(alianza|alianzas|partner|partnership|partners|colaboracion|colaboración)\b/iu.test(`${name} ${topic}`)) score += 50;
+  if (/\b(verific(?:acion|ación|arme|arse|ado|ada|ados|adas)?|captcha|verified|verify|rol(?:es)?)\b/iu.test(`${name} ${topic}`)) score += 42;
+  if (/\b(estadistic(?:a|as)|m[eé]trica(?:s)?|stats|global(?:es)?|ranking|datos)\b/iu.test(`${name} ${topic}`)) score += 42;
+  if (/\b(ejemplo(?:s)?|demo(?:s)?|tutorial(?:es)?|guia(?:s)?|documentacion|documentación|docs)\b/iu.test(`${name} ${topic}`)) score += 38;
   return score;
 }
 
@@ -1535,8 +1560,8 @@ function selectServerKnowledgeChannels(guild, guildConfig, currentChannelId, ter
       let score = 0;
       if (channel.id === guildConfig?.announcementChannelId || channel.id === guildConfig?.discovery?.announcementChannelId) score += 14;
       if (channel.id === guildConfig?.allianceChannelId || channel.id === guildConfig?.discovery?.allianceChannelId) score += 45;
-      if (/(anuncio|avisos|news|novedad|changelog|update|actualiz|version|info|informacion|faq|dudas|ejemplo|ejemplos|demo|tutorial|guia|docs|documentacion|soporte|staff|postul|formulario|normas|reglas|alianza|partner|premium|dashboard)/iu.test(name)) score += 12;
-      if (/(anuncio|avisos|news|novedad|changelog|update|actualiz|version|info|informacion|faq|dudas|ejemplo|ejemplos|demo|tutorial|guia|docs|documentacion|soporte|staff|postul|formulario|normas|reglas|alianza|partner|premium|dashboard)/iu.test(topic)) score += 8;
+      if (/(anuncio|avisos|news|novedad|changelog|update|actualiz|version|info|informacion|faq|dudas|ejemplo|ejemplos|demo|tutorial|guia|docs|documentacion|soporte|staff|postul|formulario|normas|reglas|alianza|alianzas|partner|partnership|partners|colaboracion|colaboración|premium|dashboard|verific|captcha|verified|verify|estadistic|metrica|stats|global|ranking|datos)/iu.test(name)) score += 12;
+      if (/(anuncio|avisos|news|novedad|changelog|update|actualiz|version|info|informacion|faq|dudas|ejemplo|ejemplos|demo|tutorial|guia|docs|documentacion|soporte|staff|postul|formulario|normas|reglas|alianza|alianzas|partner|partnership|partners|colaboracion|colaboración|premium|dashboard|verific|captcha|verified|verify|estadistic|metrica|stats|global|ranking|datos)/iu.test(topic)) score += 8;
       for (const term of termSet) {
         if (name.includes(term)) score += 6;
         else if (topic.includes(term)) score += 3;
