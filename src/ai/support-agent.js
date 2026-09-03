@@ -1459,8 +1459,8 @@ const CHANNEL_LOOKUP_INTENTS = [
     labelEs: 'el proceso de verificacion',
     labelEn: 'the verification process',
     terms: ['verificacion', 'verificaciones', 'verificar', 'verificado', 'verificada', 'captcha', 'rol', 'roles', 'verified', 'verify'],
-    subjectPattern: /\b(?:verificacion|verificar|verificado|verificada|captcha|rol(?:es)?|verified|verify)\b/iu,
-    namePattern: /\b(?:verificacion|verificar|verificado|verificada|captcha|rol(?:es)?|verified|verify)\b/iu,
+    subjectPattern: /\b(?:verific(?:acion(?:es)?|arme|ame|arte|ate|arse|ase|ado(?:s|as)?|ar)?|captcha|rol(?:es)?|verified|verify)\b/iu,
+    namePattern: /\b(?:verific(?:acion(?:es)?|arme|ame|arte|ate|arse|ase|ado(?:s|as)?|ar)?|captcha|rol(?:es)?|verified|verify)\b/iu,
     configKeys: ['verificationChannelId', 'discovery.verificationChannelId', 'rolesChannelId', 'discovery.rolesChannelId']
   },
   {
