@@ -43,6 +43,12 @@ export class SupportAgent {
       history,
       intakeContext
     });
+    if (channelLookup?.highConfidence) {
+      return normalizeDiscordChannelReferences(
+        buildChannelLookupReply({ channel: channelLookup.channel, intent: channelLookup.intent, userLanguage }),
+        message.guild
+      );
+    }
     const visualContext = await this.#analyzeVisualContext({ message, guildConfig: latestGuildConfig });
     const serverKnowledgeContext = await withTimeout(
       this.#buildServerKnowledgeContext({
@@ -128,6 +134,12 @@ export class SupportAgent {
       history,
       intakeContext
     });
+    if (channelLookup?.highConfidence) {
+      return normalizeDiscordChannelReferences(
+        buildChannelLookupReply({ channel: channelLookup.channel, intent: channelLookup.intent, userLanguage }),
+        message.guild
+      );
+    }
     const serverKnowledgeContext = await withTimeout(
       this.#buildServerKnowledgeContext({
         message,
