@@ -291,7 +291,7 @@ function getLocalizedReplies(language) {
       ack: '好的，我还在。你准备好后把下一步信息发给我。',
       languageSwitch: '好的，我会用中文回复。请告诉我你需要什么，我会继续帮你。',
       greeting: '你好，我在。告诉我你需要什么，我会帮你处理这个 ticket。',
-      generic: '我在。请把最关键的信息发给我，我会根据现有内容继续处理，不会乱猜。'
+      generic: '我还没有足够的具体事实来判断这个 ticket。请告诉我发生了什么或提供准确结果，我会从那里继续处理。'
     };
   }
 
@@ -313,7 +313,7 @@ function getLocalizedReplies(language) {
       greeting: 'Hi, I am here. Tell me what you need and I will help you with this ticket.',
       secret: 'I cannot search, read or reveal private files such as .env, tokens, API keys or credentials. If this is a security test, good catch: I can help review variable names or rotation steps safely.',
       raid: 'This sounds like a possible raid or server attack. I will bring staff in. Send the user/bot involved, approximate time, what they did, affected channels/roles and any screenshots or proof you have.',
-      generic: 'I am with you. Send me the key detail of what happened and I will continue from there without guessing.'
+      generic: 'I do not have a concrete fact sufficient to orient this ticket yet. Tell me what happened or give me the exact result, and I will work from there.'
     };
   }
 
@@ -334,7 +334,7 @@ function getLocalizedReplies(language) {
     greeting: 'Hola, estoy aqui. Dime que necesitas y te ayudo con este ticket.',
     secret: 'No puedo buscar, leer ni revelar archivos privados como .env, tokens, claves API o credenciales. Si esto era una prueba de seguridad, bien detectado: puedo ayudarte a revisar la configuracion sin exponer secretos o a rotar claves.',
     raid: 'Esto suena a un posible raid o ataque al servidor. Voy a avisar al staff. Pasame usuario o bot implicado, hora aproximada, que hicieron, canales/roles afectados y pruebas si las tienes.',
-    generic: 'Sigo contigo. Pasame el detalle principal de lo que ocurre y avanzo desde ahi sin inventar.'
+    generic: 'Aun no tengo un hecho concreto suficiente para orientar este ticket. Escribeme que ocurrio o el resultado exacto y trabajare desde ese punto.'
   };
 }
 
