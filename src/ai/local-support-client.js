@@ -157,6 +157,9 @@ function detectChannelLookupIntent(value = '') {
   if (/\b(?:estadistic(?:a|as)|m[eé]trica(?:s)?|stats|global(?:es)?|ranking|datos)\b/iu.test(normalized)) {
     return { key: 'statistics', labelEs: 'las estadisticas globales', labelEn: 'global statistics', labelZh: '全局统计', terms: ['estadistica', 'estadisticas', 'metrica', 'metricas', 'stats', 'global', 'ranking', 'datos'] };
   }
+  if (/\b(?:comando(?:s)?|command(?:s)?|slash|orden(?:es)?|uso(?:s)?)\b/iu.test(normalized)) {
+    return { key: 'commands', labelEs: 'los comandos disponibles', labelEn: 'the available commands', labelZh: '命令', terms: ['comando', 'comandos', 'command', 'commands', 'slash', 'orden', 'ordenes', 'uso', 'usos'] };
+  }
   if (/\b(?:ejemplo(?:s)?|demo(?:s)?|tutorial(?:es)?|guia(?:s)?|documentacion|docs|funciona|funcionamiento)\b/iu.test(normalized)) {
     return { key: 'examples', labelEs: 'ejemplos del funcionamiento del bot', labelEn: 'bot examples', labelZh: '机器人示例', terms: ['ejemplo', 'ejemplos', 'demo', 'tutorial', 'guia', 'documentacion', 'docs', 'funcionamiento'] };
   }
