@@ -1627,13 +1627,22 @@ function limitContextText(value = '', maxLength = 1000) {
 }
 
 function redactSensitiveContext(value = '') {
-  return String(value ?? '')
+  const channelMentions = [];
+  let safe = String(value ?? '').replace(/<#[0-9]{16,24}>/g, (mention) => {
+    const marker = `__NEXA_CHANNEL_MENTION_${channelMentions.length}__`;
+    channelMentions.push(mention);
+    return marker;
+  });
+
+  safe = safe
     .replace(/\bmfa\.[A-Za-z0-9_-]{20,}\b/g, '[token oculto]')
     .replace(/\b(?:gsk|sk|ak-live)-[A-Za-z0-9_-]{8,}\b/g, '[clave IA oculta]')
     .replace(/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g, '[jwt oculto]')
     .replace(/\b(?:service_role|database|client_secret|bot token|token|password|contraseña|contrasena)\s*[:=]\s*\S+/giu, '$1=[valor oculto]')
     .replace(/XN Protect globalban alert[^:]*:\s*.+/giu, 'Aviso de blacklist interno [oculto]')
     .replace(/\b\d{17,20}\b/g, '[id oculto]');
+
+  return safe.replace(/__NEXA_CHANNEL_MENTION_(\d+)__/g, (match, index) => channelMentions[Number(index)] ?? match);
 }
 
 function isLikelySensitiveContext(value = '') {
