@@ -132,10 +132,11 @@ export class SupportAgent {
       ...history,
       { role: 'user', content: formatHistoryMessage(message).slice(0, AI_HISTORY_MESSAGE_CHARS) }
     ].slice(-AI_HISTORY_MESSAGE_LIMIT - 1);
-    return this.localFallback.generate({
+    const answer = await this.localFallback.generate({
       system,
       messages: emergencyMessages
     });
+    return normalizeDiscordChannelReferences(answer, message.guild);
   }
   async summarizeTicket({ ticket, guildConfig, messages = [] }) {
     const transcript = messages
@@ -1596,7 +1597,8 @@ function normalizeDiscordChannelReferences(answer = '', guild = null) {
     const mention = `<#${channel.id}>`;
     const rawName = String(channel.name);
     const normalizedName = normalizeKnowledgeText(rawName);
-    const variants = [...new Set([rawName, normalizedName].filter((value) => value && value.length >= 2))];
+    const compactName = normalizedName.replace(/[^\p{L}\p{N}]+/gu, '');
+    const variants = [...new Set([rawName, normalizedName, compactName].filter((value) => value && value.length >= 2))];
     for (const variant of variants) {
       const escaped = escapeRegExp(variant);
       normalized = normalized.replace(new RegExp(`<#${escaped}>`, 'giu'), mention);
