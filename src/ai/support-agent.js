@@ -1596,13 +1596,13 @@ function buildChannelLookupReply({ channel, intent, userLanguage } = {}) {
     if (intent.key === 'verification') return 'You can find the verification process in ' + mention + '.';
     if (intent.key === 'alliances') return 'You can find the alliances and requests in ' + mention + '.';
     if (intent.key === 'commands') return `You can find the available commands in ${mention}.`;
-  if (intent.key === 'commands') return `Puedes consultar los comandos disponibles en ${mention}.`;
     if (intent.key === 'examples') return 'You can find bot examples in ' + mention + '.';
     return 'You can find that information in ' + mention + '.';
   }
   if (intent.key === 'statistics') return 'Las estadisticas globales se publican en ' + mention + '.';
   if (intent.key === 'verification') return 'Puedes consultar el proceso de verificacion en ' + mention + '.';
   if (intent.key === 'alliances') return 'Puedes ver las alianzas y solicitudes en ' + mention + '.';
+  if (intent.key === 'commands') return 'Puedes consultar los comandos disponibles en ' + mention + '.';
   if (intent.key === 'examples') return 'Puedes ver ejemplos del funcionamiento del bot en ' + mention + '.';
   return 'Puedes consultar esa informacion en ' + mention + '.';
 }
