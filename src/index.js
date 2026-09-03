@@ -166,7 +166,9 @@ function createVoiceManager() {
 }
 
 function createVoiceAiClient() {
-  const transcriptionClient = createGroqFallbackClient();
+  const transcriptionClient = createGroqFallbackClient({
+    transcribeAudioTimeoutMs: config.VOICE_STT_TIMEOUT_MS
+  });
   return {
     generate: aiClient.generate.bind(aiClient),
     transcribeAudio: transcriptionClient.transcribeAudio.bind(transcriptionClient),
@@ -205,11 +207,11 @@ function createGoogleFallbackClient() {
   return createFallbackClient(providers);
 }
 
-function createGroqFallbackClient() {
+function createGroqFallbackClient(options = {}) {
   const providers = [];
   addGroqProviders(providers);
   addSecondaryFallbacks(providers);
-  return createFallbackClient(providers);
+  return createFallbackClient(providers, options);
 }
 
 function addGroqProviders(providers) {
@@ -245,9 +247,10 @@ function addSecondaryFallbacks(providers) {
   }
 }
 
-function createFallbackClient(providers) {
+function createFallbackClient(providers, options = {}) {
   return new FallbackAiClient(providers, {
     generateTimeoutMs: config.AI_PROVIDER_TIMEOUT_MS,
+    ...options,
     providerCooldownMs: config.AI_PROVIDER_COOLDOWN_MS
   });
 }
