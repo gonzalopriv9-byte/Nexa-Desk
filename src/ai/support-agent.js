@@ -1472,6 +1472,7 @@ const CHANNEL_LOOKUP_INTENTS = [
     namePattern: /\b(?:estadistic(?:a|as)|metrica(?:s)?|stats|global(?:es)?|ranking|datos)\b/iu,
     configKeys: ['statisticsChannelId', 'statsChannelId', 'discovery.statisticsChannelId', 'discovery.statsChannelId']
   },
+  {
     key: 'commands',
     labelEs: 'los comandos disponibles',
     labelEn: 'the available commands',
