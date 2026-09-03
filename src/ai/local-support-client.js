@@ -111,7 +111,7 @@ function buildChannelLookupFallback({ system = '', text = '', context = '', lang
     .sort((a, b) => b.score - a.score);
   const best = ranked[0];
 
-  if (best && best.score >= 5) {
+  if (best && best.score >= 3) {
     if (language === 'en') return `You can find ${intent.labelEn} in ${best.mention}.`;
     if (language === 'zh') return `Discord channel: ${best.mention}`;
     return `Puedes consultar ${intent.labelEs} en ${best.mention}.`;
@@ -172,7 +172,7 @@ function scoreChannelCandidate(candidate, intent) {
   const context = normalizeText(candidate.context).normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
   let score = 0;
   for (const term of intent.terms) {
-    if (context.includes(term)) score += term.length >= 7 ? 3 : 2;
+    if (context.includes(term)) score += term.length >= 6 ? 4 : 2;
   }
   if (context.includes('mencion exacta para discord')) score += 2;
   return score;
