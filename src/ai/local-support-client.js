@@ -19,6 +19,7 @@ export class LocalSupportClient {
 
 function buildSupportFallback({ system, messages, lastUser }) {
   const text = normalizeText(lastUser);
+  const rawLastUser = String(lastUser ?? '').trim();
   const context = normalizeText(messages.map((message) => message.content).join('\n'));
   const language = detectFallbackLanguage(text, context);
   const reply = getLocalizedReplies(language);
@@ -71,6 +72,13 @@ function buildSupportFallback({ system, messages, lastUser }) {
     return reply.report;
   }
 
+  const groundedReply = buildGroundedSupportFallback({
+    lastUser: rawLastUser,
+    text,
+    context,
+    language
+  });
+  if (groundedReply) return groundedReply;
   if (/\b(error|fallo|problema|no\s+funciona|bug|issue)\b/iu.test(text)) {
     return reply.problem;
   }
@@ -90,6 +98,85 @@ function buildSupportFallback({ system, messages, lastUser }) {
   return reply.generic;
 }
 
+function buildGroundedSupportFallback({ lastUser = '', text = '', context = '', language = 'es' } = {}) {
+  const signal = extractConcreteFailureSignal(lastUser);
+  if (!signal) return '';
+
+  const previousVisual = /\b(?:imagen|captura|foto|screenshot|pantallazo|adjunto|image)\b/iu.test(context)
+    && !/\b(?:imagen|captura|foto|screenshot|pantallazo|adjunto|image)\b/iu.test(text);
+  const quoted = language === 'zh' ? `“${signal.display}”` : `«${signal.display}»`;
+
+  if (language === 'en') {
+    return [
+      `I understood the new concrete fact: the latest message contains this error: ${quoted}.`,
+      previousVisual ? 'The earlier image is still context, but this exact error is the current state.' : '',
+      buildEnglishFailureMeaning(signal.kind),
+      'The exact text is already actionable, so I will not ask you to repeat it. The owner or staff should review the service configuration or the failing dependency before trying the same step again.'
+    ].filter(Boolean).join(' ');
+  }
+
+  if (language === 'zh') {
+    return [
+      `我已识别到最新的具体错误：${quoted}。`,
+      previousVisual ? '之前的图片仍然是上下文，但这条错误信息代表当前状态。' : '',
+      '这看起来需要检查服务端配置或相关服务，而不是重复相同的操作。请把这段准确错误交给服务器管理员或工作人员处理。'
+    ].filter(Boolean).join(' ');
+  }
+
+  return [
+    `He entendido el dato nuevo: el ultimo mensaje contiene este error: ${quoted}.`,
+    previousVisual ? 'La imagen anterior queda como contexto, pero este error exacto marca el estado actual.' : '',
+    buildSpanishFailureMeaning(signal.kind),
+    'El texto exacto ya es accionable; no te voy a pedir que lo repitas. El owner o staff debe revisar el servicio, la configuracion o la dependencia que esta fallando antes de repetir el mismo paso.'
+  ].filter(Boolean).join(' ');
+}
+
+function extractConcreteFailureSignal(value = '') {
+  const raw = normalizeText(value);
+  if (raw.length < 6) return null;
+  const normalized = raw.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  const statusMatch = raw.match(/\b(?:http(?:\/\d(?:\.\d+)?)?\s*)?([45]\d{2})\b/iu);
+  const hasQuotedError = /["“«].{4,}["”»]/u.test(raw);
+  const hasFailureWord = /\b(?:error|fallo|problema|failed|failure|exception|issue|bug|falta|missing|undefined|not\s+defined|timeout|timed\s+out|forbidden|unauthorized|unreachable|bad\s+gateway|no\s+(?:me\s+)?(?:deja|permite)|no\s+funciona|no\s+responde|se\s+(?:rompe|cae))\b/iu.test(normalized);
+  if (!statusMatch && !hasQuotedError && !hasFailureWord) return null;
+
+  let kind = 'generic';
+  if (/\b(?:falta|missing|undefined|not\s+defined|environment|entorno|variable|configuraci[oó]n|configuration|credencial|credential)\b/iu.test(normalized)) {
+    kind = 'configuration';
+  } else if (statusMatch || /\b(?:timeout|timed\s+out|bad\s+gateway|origin\s+unreachable|connection|unreachable|servidor|server)\b/iu.test(normalized)) {
+    kind = 'service';
+  } else if (/\b(?:401|403|forbidden|unauthorized|acceso|entrar|acceder|login|no\s+(?:me\s+)?(?:deja|permite))\b/iu.test(normalized)) {
+    kind = 'access';
+  } else if (/\b(?:no\s+funciona|no\s+responde|se\s+(?:rompe|cae)|crash|carga|blank|pantalla)\b/iu.test(normalized)) {
+    kind = 'client';
+  }
+
+  return { kind, display: sanitizeFailureDisplay(raw) };
+}
+
+function sanitizeFailureDisplay(value = '') {
+  return normalizeText(value)
+    .replace(/\bmfa\.[A-Za-z0-9_-]{20,}\b/giu, '[token oculto]')
+    .replace(/((?:token|secret|password|contrasena|contraseña|api[_\s-]?key|clave\s+api)\s*[:=]\s*)\S+/giu, '$1[oculto]')
+    .replace(/([?&](?:token|secret|password|key|api_key)=)[^&\s]+/giu, '$1[oculto]')
+    .slice(0, 320);
+}
+
+function buildSpanishFailureMeaning(kind) {
+  if (kind === 'configuration') return 'La señal apunta a una configuracion ausente en el servicio, no a un fallo de tu cuenta ni de la verificacion de Cloudflare. Repetir la casilla no puede crear una variable que falta; el owner o staff debe revisar el entorno del bot.';
+  if (kind === 'service') return 'La señal apunta a que el host o un servicio remoto no ha respondido correctamente. No implica por si sola que hayas hecho nada mal; hay que revisar disponibilidad, proxy y logs del servicio.';
+  if (kind === 'access') return 'La señal apunta a que el servidor esta rechazando la peticion o no permite completar el acceso. Conviene revisar la autenticacion y la respuesta del servidor, no repetir la misma accion a ciegas.';
+  if (kind === 'client') return 'La señal apunta a un fallo de carga o respuesta del cliente. Conviene conservar el texto exacto y revisar la peticion que falla antes de cambiar pasos sin evidencia.';
+  return 'La señal aporta un fallo concreto. La respuesta debe partir de ese dato y separar lo confirmado de lo que aun hay que comprobar, en vez de reiniciar la conversacion.';
+}
+
+function buildEnglishFailureMeaning(kind) {
+  if (kind === 'configuration') return 'This points to missing service configuration, not a problem with your account or the Cloudflare verification. Repeating the checkbox cannot create a missing variable; the owner or staff should inspect the bot environment.';
+  if (kind === 'service') return 'This points to the host or a remote service failing to respond correctly. It does not by itself mean you did anything wrong; availability, proxy and service logs should be checked.';
+  if (kind === 'access') return 'This points to the server rejecting the request or not allowing the access flow to complete. Authentication and the server response should be checked instead of repeating the same action blindly.';
+  if (kind === 'client') return 'This points to a loading or client-response failure. Keep the exact text and inspect the failing request before changing steps without evidence.';
+  return 'This is a concrete failure signal. The response should start from that fact and separate what is confirmed from what still needs checking, rather than restarting the conversation.';
+}
 function buildJsonFallback({ system, lastUser }) {
   const compact = `${system}\n${lastUser}`;
   const text = normalizeText(compact);
