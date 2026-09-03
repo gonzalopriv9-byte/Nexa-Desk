@@ -196,54 +196,68 @@ export class VoiceSessionManager {
   async #captureSpeech(session, userId) {
     if (session.stopped || session.speakers.has(userId)) return;
 
-    const member = await session.voiceChannel.guild.members.fetch(userId).catch(() => null);
-    if (!member || member.user.bot) return;
-
+    // Subscribe before the Discord member lookup: the lookup can take hundreds
+    // of milliseconds and otherwise the first syllables of the user are lost.
     this.#interruptVoicePlayback(session);
-
     session.speakers.add(userId);
-    const opusStream = session.connection.receiver.subscribe(userId, {
-      end: {
-        behavior: EndBehaviorType.AfterSilence,
-        duration: this.config.VOICE_SILENCE_DURATION_MS
-      }
-    });
-    const decoder = new prism.opus.Decoder({
-      frameSize: 960,
-      channels: CHANNELS,
-      rate: SAMPLE_RATE
-    });
+    let opusStream = null;
+    try {
+      opusStream = session.connection.receiver.subscribe(userId, {
+        end: {
+          behavior: EndBehaviorType.AfterSilence,
+          duration: this.config.VOICE_SILENCE_DURATION_MS
+        }
+      });
+      const decoder = new prism.opus.Decoder({
+        frameSize: 960,
+        channels: CHANNELS,
+        rate: SAMPLE_RATE
+      });
+      const chunks = [];
+      let bytes = 0;
+      const maxBytes = Math.floor(SAMPLE_RATE * CHANNELS * BYTES_PER_SAMPLE * (this.config.VOICE_MAX_RECORDING_MS / 1000));
 
-    const chunks = [];
-    let bytes = 0;
-    const maxBytes = Math.floor(SAMPLE_RATE * CHANNELS * BYTES_PER_SAMPLE * (this.config.VOICE_MAX_RECORDING_MS / 1000));
+      decoder.on('data', (chunk) => {
+        if (bytes >= maxBytes) return;
+        chunks.push(chunk);
+        bytes += chunk.length;
+        if (bytes >= maxBytes) opusStream.destroy();
+      });
 
-    decoder.on('data', (chunk) => {
-      if (bytes >= maxBytes) return;
-      chunks.push(chunk);
-      bytes += chunk.length;
-      if (bytes >= maxBytes) opusStream.destroy();
-    });
-
-    await new Promise((resolve, reject) => {
-      decoder.once('end', resolve);
-      decoder.once('close', resolve);
-      decoder.once('error', reject);
-      opusStream.once('error', reject);
+      const decodePromise = new Promise((resolve, reject) => {
+        decoder.once('end', resolve);
+        decoder.once('close', resolve);
+        decoder.once('error', reject);
+        opusStream.once('error', reject);
+      });
       opusStream.pipe(decoder);
-    }).catch((error) => {
-      console.error('Discord voice decode failed:', error);
-    });
-    session.speakers.delete(userId);
 
-    const pcm = Buffer.concat(chunks);
-    const durationMs = pcm.length / (SAMPLE_RATE * CHANNELS * BYTES_PER_SAMPLE) * 1000;
-    if (session.stopped || durationMs < this.config.VOICE_MIN_RECORDING_MS || !pcm.length) return;
+      const cachedMember = session.voiceChannel.guild.members.cache.get(userId);
+      const member = cachedMember
+        ? cachedMember
+        : await session.voiceChannel.guild.members.fetch(userId).catch(() => null);
+      if (!member || member.user.bot) {
+        opusStream.destroy();
+        await decodePromise.catch(() => {});
+        return;
+      }
 
-    await this.#handleUtterance(session, member, pcm).catch((error) => {
-      console.error(`Voice utterance failed for ${session.voiceChannelId}:`, error);
-      session.textChannel.send('No pude procesar ese audio. Prueba a repetirlo un poco mas claro.').catch(() => {});
-    });
+      await decodePromise.catch((error) => {
+        console.error('Discord voice decode failed:', error);
+      });
+
+      const pcm = Buffer.concat(chunks);
+      const durationMs = pcm.length / (SAMPLE_RATE * CHANNELS * BYTES_PER_SAMPLE) * 1000;
+      if (session.stopped || durationMs < this.config.VOICE_MIN_RECORDING_MS || !pcm.length) return;
+
+      await this.#handleUtterance(session, member, pcm).catch((error) => {
+        console.error('Voice utterance failed for '+session.voiceChannelId+':', error);
+        session.textChannel.send('No pude procesar ese audio. Prueba a repetirlo un poco mas claro.').catch(() => {});
+      });
+    } finally {
+      session.speakers.delete(userId);
+      opusStream?.destroy?.();
+    }
   }
 
   async #handleUtterance(session, member, pcm) {
@@ -253,7 +267,7 @@ export class VoiceSessionManager {
 
     session.processing = true;
     try {
-      const preparedAudio = await prepareSpeechForTranscription(pcm);
+      const preparedAudio = await prepareSpeechForTranscription(pcm, this.config);
       if (!preparedAudio) {
         if (shouldSendUnclearVoiceNotice(session)) {
           await session.textChannel.send(`No he detectado voz suficientemente clara, ${member}. Prueba a hablar un poco mas cerca del micro.`).catch(() => {});
@@ -261,15 +275,21 @@ export class VoiceSessionManager {
         return;
       }
 
-      const transcript = await this.aiClient.transcribeAudio({
+      const sttStartedAt = Date.now();
+      const rawTranscript = await this.aiClient.transcribeAudio({
         audioBuffer: preparedAudio.wav,
         fileName: `nexadesk-${session.ticketChannelId}-${Date.now()}.wav`,
-        model: this.config.GROQ_STT_MODEL
+        model: this.config.GROQ_STT_MODEL,
+        language: this.config.VOICE_STT_LANGUAGE,
+        prompt: this.config.VOICE_STT_PROMPT
       });
+      const transcript = normalizeVoiceTranscript(rawTranscript);
+      console.log('Voice STT completed in '+(Date.now()-sttStartedAt)+'ms for '+session.voiceChannelId+'.');
 
       if (!this.#isCurrentVoiceTurn(session, turnId) || !transcript) return;
 
-      await this.storage.addTranscriptMessage({
+      // Persist and announce in parallel; neither should delay the AI request.
+      void this.storage.addTranscriptMessage({
         guildId: session.guildId,
         channelId: session.ticketChannelId,
         messageId: `voice-user-${randomUUID()}`,
@@ -279,7 +299,10 @@ export class VoiceSessionManager {
         role: 'user',
         content: `[Voz] ${transcript}`,
         createdAt: new Date().toISOString()
+      }).catch((error) => {
+        console.warn('Voice transcript persistence failed:', error?.message ?? error);
       });
+      const transcriptNotice = session.textChannel.send(`**${member.displayName} por voz:** ${transcript.slice(0, 1_800)}`).catch(() => {});
 
       void this.#recordVoiceAiQualitySignal(session, member, transcript).catch((error) => {
         console.warn(`Voice AI quality signal capture failed for ${session.ticketChannelId}:`, error?.message ?? error);
@@ -292,7 +315,8 @@ export class VoiceSessionManager {
         if (closed) return;
       }
 
-      const answer = await this.#answerVoiceTicket(session, transcript, member);
+      const answer = getDeterministicVoiceReply(transcript, member.displayName)
+        ?? await this.#answerVoiceTicket(session, transcript, member);
       if (!this.#isCurrentVoiceTurn(session, turnId) || !answer) return;
 
       const speakPromise = this.config.VOICE_TTS_ENABLED
@@ -316,6 +340,7 @@ export class VoiceSessionManager {
         createdAt: new Date().toISOString()
       });
 
+      await transcriptNotice.catch(() => {});
       await session.textChannel.send({
         content: answer.mentionStaff && session.guildConfig.staffRoleId
           ? `<@&${session.guildConfig.staffRoleId}> ${answer.publicAnswer.slice(0, 1_800)}`
@@ -672,20 +697,27 @@ export class VoiceSessionManager {
   }
 }
 
-async function prepareSpeechForTranscription(pcm) {
+async function prepareSpeechForTranscription(pcm, config = {}) {
   const stats = analyzePcm16(pcm);
   if (stats.rms < MIN_VOICE_RMS && stats.peak < 0.035) {
     return null;
   }
 
+  // Avoid spawning FFmpeg on every utterance. The in-memory conversion is
+  // materially faster; FFmpeg cleanup remains available as an opt-in switch
+  // for noisy microphones.
+  if (!config.VOICE_STT_CLEANUP_ENABLED) {
+    return { wav: buildFastSttWav(pcm), cleaned: false, fast: true, stats };
+  }
+
   try {
     const wav = await cleanPcmWithFfmpeg(pcm);
-    if (wav.length > 44) return { wav, cleaned: true, stats };
+    if (wav.length > 44) return { wav, cleaned: true, fast: false, stats };
   } catch (error) {
     console.error('Voice cleanup failed, falling back to raw WAV:', normalizeProcessError(error));
   }
 
-  return { wav: buildWavFromPcm(pcm), cleaned: false, stats };
+  return { wav: buildFastSttWav(pcm), cleaned: false, fast: true, stats };
 }
 
 function cleanPcmWithFfmpeg(pcm) {
@@ -720,10 +752,10 @@ function cleanPcmWithFfmpeg(pcm) {
   ], pcm);
 }
 
-function buildWavFromPcm(pcm) {
+function buildWavFromPcm(pcm, sampleRate = SAMPLE_RATE, channels = CHANNELS) {
   const header = Buffer.alloc(44);
-  const byteRate = SAMPLE_RATE * CHANNELS * BYTES_PER_SAMPLE;
-  const blockAlign = CHANNELS * BYTES_PER_SAMPLE;
+  const byteRate = sampleRate * channels * BYTES_PER_SAMPLE;
+  const blockAlign = channels * BYTES_PER_SAMPLE;
 
   header.write('RIFF', 0);
   header.writeUInt32LE(36 + pcm.length, 4);
@@ -731,8 +763,8 @@ function buildWavFromPcm(pcm) {
   header.write('fmt ', 12);
   header.writeUInt32LE(16, 16);
   header.writeUInt16LE(1, 20);
-  header.writeUInt16LE(CHANNELS, 22);
-  header.writeUInt32LE(SAMPLE_RATE, 24);
+  header.writeUInt16LE(channels, 22);
+  header.writeUInt32LE(sampleRate, 24);
   header.writeUInt32LE(byteRate, 28);
   header.writeUInt16LE(blockAlign, 32);
   header.writeUInt16LE(16, 34);
@@ -740,6 +772,29 @@ function buildWavFromPcm(pcm) {
   header.writeUInt32LE(pcm.length, 40);
 
   return Buffer.concat([header, pcm]);
+}
+
+function buildFastSttWav(pcm) {
+  const inputFrameBytes = CHANNELS * BYTES_PER_SAMPLE;
+  const inputFrames = Math.floor(pcm.length / inputFrameBytes);
+  const outputFrames = Math.floor(inputFrames * STT_SAMPLE_RATE / SAMPLE_RATE);
+  const mono = Buffer.alloc(outputFrames * BYTES_PER_SAMPLE);
+
+  for (let outputIndex = 0; outputIndex < outputFrames; outputIndex += 1) {
+    const firstInputFrame = Math.floor(outputIndex * SAMPLE_RATE / STT_SAMPLE_RATE);
+    const lastInputFrame = Math.min(inputFrames, firstInputFrame + 3);
+    let sum = 0;
+    let count = 0;
+    for (let inputFrame = firstInputFrame; inputFrame < lastInputFrame; inputFrame += 1) {
+      const offset = inputFrame * inputFrameBytes;
+      sum += pcm.readInt16LE(offset);
+      sum += pcm.readInt16LE(offset + BYTES_PER_SAMPLE);
+      count += 2;
+    }
+    mono.writeInt16LE(count ? Math.max(-32768, Math.min(32767, Math.round(sum / count))) : 0, outputIndex * BYTES_PER_SAMPLE);
+  }
+
+  return buildWavFromPcm(mono, STT_SAMPLE_RATE, STT_CHANNELS);
 }
 
 function decodeTtsToDiscordPcm(audioBuffer, config = {}) {
