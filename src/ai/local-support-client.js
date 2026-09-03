@@ -60,7 +60,7 @@ function buildSupportFallback({ system, messages, lastUser }) {
     return `[ESCALATE] ${reply.raid ?? getLocalizedReplies('en').raid}`;
   }
 
-  const channelLookupReply = buildChannelLookupFallback({ system, text, context, language });
+  const channelLookupReply = buildChannelLookupFallback({ system, text, context, language, messages });
   if (channelLookupReply) return channelLookupReply;
   if (isAllianceInfoQuestion(text)) {
     return reply.allianceInfo;
@@ -100,9 +100,8 @@ function buildSupportFallback({ system, messages, lastUser }) {
   return reply.generic;
 }
 
-function buildChannelLookupFallback({ system = '', text = '', context = '', language = 'es' } = {}) {
-  const combined = normalizeText(`${text} ${context}`);
-  const intent = detectChannelLookupIntent(combined);
+function buildChannelLookupFallback({ system = '', text = '', context = '', language = 'es', messages = [] } = {}) {
+  const intent = getConversationChannelLookupIntent(text, messages, context);
   if (!intent) return '';
 
   const candidates = extractChannelCandidates(system);
@@ -120,6 +119,28 @@ function buildChannelLookupFallback({ system = '', text = '', context = '', lang
   if (language === 'en') return `I have not located a public Discord channel for ${intent.labelEn} in the available server context; that does not confirm that it does not exist.`;
   if (language === 'zh') return `No public Discord channel was located for this request; that does not confirm that it does not exist.`;
   return `No he localizado un canal publico de Discord para ${intent.labelEs} en el contexto disponible; eso no confirma que no exista.`;
+}
+
+function getConversationChannelLookupIntent(latestText = '', messages = [], context = '') {
+  const direct = detectChannelLookupIntent(latestText);
+  if (direct) return direct;
+
+  const normalizedLatest = normalizeText(latestText);
+  const isFollowUp = /\b(?:busca|buscar|buscalo|encuentra|encontrarlo|localiza|mira)\b/iu.test(normalizedLatest)
+    || (/\b(?:digo|refiero|me\s+refiero|en\s+discord|canal\s+de\s+discord|ese\s+canal|ese)\b/iu.test(normalizedLatest)
+      && /\b(?:canal|discord|eso|ese)\b/iu.test(normalizedLatest));
+  if (!isFollowUp) return null;
+
+  const previousUsers = messages
+    .filter((message) => message?.role === 'user')
+    .map((message) => String(message.content ?? ''))
+    .reverse();
+  for (const previous of previousUsers) {
+    const intent = detectChannelLookupIntent(previous);
+    if (intent) return intent;
+  }
+
+  return detectChannelLookupIntent(context);
 }
 
 function detectChannelLookupIntent(value = '') {
