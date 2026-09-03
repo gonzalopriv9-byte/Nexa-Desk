@@ -32,6 +32,9 @@ function buildSupportFallback({ system, messages, lastUser }) {
     return reply.secret ?? getLocalizedReplies('en').secret;
   }
 
+  const publicResourceReply = buildPublicResourceReply({ text, language });
+  if (publicResourceReply) return publicResourceReply;
+
   if (isStaffRequest(text)) {
     return `[ESCALATE] ${reply.staff}`;
   }
@@ -98,6 +101,18 @@ function buildSupportFallback({ system, messages, lastUser }) {
   }
 
   return reply.generic;
+}
+
+function buildPublicResourceReply({ text = '', language = 'es' } = {}) {
+  const normalized = normalizeText(text);
+  const asksToLocate = /\b(?:donde|en\s+que|ver|buscar|busco|consultar|consulta|comprobar|comprobarlo|saber\s+si|aparece|registro|enlace|link|web|pagina|página|como\s+busco)\b/iu.test(normalized);
+  const mentionsBlacklist = /\b(?:blacklist|blacklists|lista\s+negra|baneo(?:s)?\s+global(?:es)?|global\s+bans?|registro(?:s)?\s+de\s+blacklist)\b/iu.test(normalized);
+  if (!mentionsBlacklist || !asksToLocate) return '';
+
+  if (language === 'en') {
+    return 'You can search the public NexaDesk blacklist at <https://nexa-desk.com/blacklist>. Enter the Discord user ID to see the public record available.';
+  }
+  return 'Puedes consultar la blacklist pública de NexaDesk en <https://nexa-desk.com/blacklist>. Introduce el ID de Discord para ver el registro público disponible.';
 }
 
 function buildChannelLookupFallback({ system = '', text = '', context = '', language = 'es', messages = [] } = {}) {
