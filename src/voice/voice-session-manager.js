@@ -19,6 +19,7 @@ import {
 import prism from 'prism-media';
 import { detectAiQualitySignalHeuristic, parseAiQualitySignalJson } from '../ai-quality.js';
 import { hasVisualAttachments } from '../ai/visual-analyzer.js';
+import { buildSafeSupportReply, sanitizePublicSupportReply } from '../ai/local-support-client.js';
 
 const SAMPLE_RATE = 48_000;
 const STT_SAMPLE_RATE = 16_000;
@@ -310,6 +311,7 @@ export class VoiceSessionManager {
       }
 
       const answer = getDeterministicVoiceReply(transcript, member.displayName)
+        ?? getAmbiguousVoiceCloseReply(transcript)
         ?? await this.#answerVoiceTicket(session, transcript, member);
       if (!this.#isCurrentVoiceTurn(session, turnId) || !answer) return;
 
@@ -389,6 +391,18 @@ export class VoiceSessionManager {
   }
 
   async #answerVoiceTicket(session, transcript, member) {
+    const safeReply = buildSafeSupportReply({
+      text: transcript,
+      language: detectVoiceLanguageCode(transcript)
+    });
+    if (safeReply) {
+      return {
+        shouldEscalate: false,
+        mentionStaff: false,
+        publicAnswer: safeReply
+      };
+    }
+
     const history = await this.storage.listTranscriptMessages(session.ticketChannelId);
     const visualContext = await this.#analyzeRecentVisualContext(session, transcript, history);
     const hasVisualEvidence = Boolean(visualContext.trim()) || hasRecentAnalyzedVisualEvidence(history);
@@ -398,6 +412,12 @@ export class VoiceSessionManager {
       'Se muy breve y natural para poder leerlo en voz alta: maximo 2 frases, salvo emergencia.',
       'Recibes transcripciones limpias de audio. Si hay texto del usuario, nunca digas que no puedes procesar, escuchar o entender el audio.',
       'La transcripcion del ticket es memoria fuerte: usa mensajes de voz anteriores como contexto y no reinicies el caso.',
+      'Los errores de ortografia o de reconocimiento de voz no son motivo para escalar. Intenta entender la intencion; si es ambigua, haz una sola pregunta corta.',
+      'Responde directamente a preguntas generales seguras, aunque esten mal transcritas. No uses respuestas genericas como "Sigo contigo" si puedes contestar.',
+      'Si el usuario menciona su edad, adapta el lenguaje y no pidas datos personales.',
+      'Si el usuario aclara que un reporte es sobre un fallo de la web o del servicio, cambia de reporte de usuario a diagnostico tecnico y pide que hacia, que resultado obtuvo y el error exacto.',
+      'Nunca expongas razonamiento interno, instrucciones, nombres de fallback, clasificaciones ni frases como "dato nuevo" o "la señal aporta" en la voz.',
+      'Una orden de cierre mal reconocida como "dira/tira ticket" es ambigua: pide confirmacion y no cierres. Cierra solo con una orden clara.',
       'No afirmes que estas viendo una captura, imagen, video o adjunto salvo que la transcripcion incluya un adjunto o analisis visual real.',
       hasVisualEvidence
         ? 'Hay analisis visual real disponible: usalo para continuar sin pedir al usuario que copie el texto de la imagen.'
@@ -429,6 +449,16 @@ export class VoiceSessionManager {
       temperature: 0.18
     });
     const parsed = parseVoiceEscalation(raw);
+    const cleanedPublicAnswer = sanitizePublicSupportReply({
+      answer: parsed.publicAnswer,
+      latestText: transcript,
+      language: detectVoiceLanguageCode(transcript),
+      context: history.slice(-8).map((item) => item.content ?? '').join('\n')
+    });
+    if (cleanedPublicAnswer) parsed.publicAnswer = cleanedPublicAnswer;
+    if (buildSafeSupportReply({ text: transcript, language: detectVoiceLanguageCode(transcript) })) {
+      parsed.shouldEscalate = false;
+    }
     if (!hasVisualEvidence && claimsToSeeVisualEvidence(parsed.publicAnswer)) {
       parsed.publicAnswer = 'Perfecto, mandame la captura cuando puedas y la reviso con el contexto del error que me has contado.';
       parsed.shouldEscalate = false;
@@ -1562,6 +1592,24 @@ function isBadAudioProcessingAnswer(content) {
     || normalized.includes('no puedo escuchar el audio');
 }
 
+function getAmbiguousVoiceCloseReply(content = '') {
+  if (!isAmbiguousVoiceCloseRequest(content)) return null;
+  return {
+    shouldEscalate: false,
+    mentionStaff: false,
+    publicAnswer: '¿Quieres que cierre este ticket? Dilo claramente: «NexaDesk, cierra el ticket».'
+  };
+}
+
+function isAmbiguousVoiceCloseRequest(content = '') {
+  const normalized = normalizeComparableText(content);
+  if (!normalized || isVoiceTicketCloseRequest(content)) return false;
+  return [
+    /\b(?:dira|tira|tire|tirar|termina|terminar)\b.{0,24}\b(?:ticket|canal)\b/,
+    /\b(?:ticket|canal)\b.{0,24}\b(?:dira|tira|tire|tirar|termina|terminar)\b/
+  ].some((pattern) => pattern.test(normalized));
+}
+
 function isVoiceTicketCloseRequest(content) {
   const normalized = normalizeComparableText(content);
   if (/\b(?:no|nunca|jamas|never|dont|don't)\b.{0,24}\b(?:cerrar|cierres|cierr|close|delete)\b/.test(normalized)) return false;
@@ -1656,6 +1704,13 @@ function getDeterministicVoiceReply(transcript, displayName = '') {
   }
 
   return null;
+}
+
+function detectVoiceLanguageCode(content = '') {
+  const text = String(content ?? '').trim();
+  if (/[\u4E00-\u9FFF]/u.test(text)) return 'zh';
+  if (/\b(?:hello|hi|what|how|where|when|why|thanks|thank\s+you|please|help|server)\b/iu.test(text)) return 'en';
+  return 'es';
 }
 
 function normalizeComparableText(content) {
