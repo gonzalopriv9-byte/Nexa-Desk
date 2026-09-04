@@ -3,7 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { PassThrough, Readable } from 'node:stream';
+import { PassThrough, Readable, Transform } from 'node:stream';
 import WebSocket from 'ws';
 import {
   AudioPlayerStatus,
@@ -19,6 +19,7 @@ import {
 import prism from 'prism-media';
 import { detectAiQualitySignalHeuristic, parseAiQualitySignalJson } from '../ai-quality.js';
 import { hasVisualAttachments } from '../ai/visual-analyzer.js';
+import { buildSafeSupportReply, sanitizePublicSupportReply } from '../ai/local-support-client.js';
 
 const SAMPLE_RATE = 48_000;
 const STT_SAMPLE_RATE = 16_000;
@@ -34,9 +35,10 @@ const EDGE_TTS_GEC_VERSION = `1-${EDGE_TTS_CHROMIUM_VERSION}`;
 const EDGE_TTS_USER_AGENT = `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${EDGE_TTS_CHROMIUM_MAJOR}.0.0.0 Safari/537.36 Edg/${EDGE_TTS_CHROMIUM_MAJOR}.0.0.0`;
 
 export class VoiceSessionManager {
-  constructor({ storage, aiClient, config, visualAnalyzer = null }) {
+  constructor({ storage, aiClient, ttsClient = null, config, visualAnalyzer = null }) {
     this.storage = storage;
     this.aiClient = aiClient;
+    this.ttsClient = ttsClient;
     this.config = config;
     this.visualAnalyzer = visualAnalyzer;
     this.ticketCloseHandler = null;
@@ -48,7 +50,7 @@ export class VoiceSessionManager {
   }
 
   async startTicketSession({ guild, textChannel, voiceChannel, ticket, guildConfig }) {
-    if (!this.aiClient?.transcribeAudio || !this.aiClient?.synthesizeSpeech) {
+    if (!this.aiClient?.transcribeAudio || (!this.aiClient?.synthesizeSpeech && !this.ttsClient?.synthesizeSpeech && !this.ttsClient?.createSpeechStream)) {
       return { started: false, reason: 'El cliente de IA no tiene STT/TTS disponible.' };
     }
 
@@ -195,54 +197,68 @@ export class VoiceSessionManager {
   async #captureSpeech(session, userId) {
     if (session.stopped || session.speakers.has(userId)) return;
 
-    const member = await session.voiceChannel.guild.members.fetch(userId).catch(() => null);
-    if (!member || member.user.bot) return;
-
+    // Subscribe before the Discord member lookup: the lookup can take hundreds
+    // of milliseconds and otherwise the first syllables of the user are lost.
     this.#interruptVoicePlayback(session);
-
     session.speakers.add(userId);
-    const opusStream = session.connection.receiver.subscribe(userId, {
-      end: {
-        behavior: EndBehaviorType.AfterSilence,
-        duration: this.config.VOICE_SILENCE_DURATION_MS
-      }
-    });
-    const decoder = new prism.opus.Decoder({
-      frameSize: 960,
-      channels: CHANNELS,
-      rate: SAMPLE_RATE
-    });
+    let opusStream = null;
+    try {
+      opusStream = session.connection.receiver.subscribe(userId, {
+        end: {
+          behavior: EndBehaviorType.AfterSilence,
+          duration: this.config.VOICE_SILENCE_DURATION_MS
+        }
+      });
+      const decoder = new prism.opus.Decoder({
+        frameSize: 960,
+        channels: CHANNELS,
+        rate: SAMPLE_RATE
+      });
+      const chunks = [];
+      let bytes = 0;
+      const maxBytes = Math.floor(SAMPLE_RATE * CHANNELS * BYTES_PER_SAMPLE * (this.config.VOICE_MAX_RECORDING_MS / 1000));
 
-    const chunks = [];
-    let bytes = 0;
-    const maxBytes = Math.floor(SAMPLE_RATE * CHANNELS * BYTES_PER_SAMPLE * (this.config.VOICE_MAX_RECORDING_MS / 1000));
+      decoder.on('data', (chunk) => {
+        if (bytes >= maxBytes) return;
+        chunks.push(chunk);
+        bytes += chunk.length;
+        if (bytes >= maxBytes) opusStream.destroy();
+      });
 
-    decoder.on('data', (chunk) => {
-      if (bytes >= maxBytes) return;
-      chunks.push(chunk);
-      bytes += chunk.length;
-      if (bytes >= maxBytes) opusStream.destroy();
-    });
-
-    await new Promise((resolve, reject) => {
-      decoder.once('end', resolve);
-      decoder.once('close', resolve);
-      decoder.once('error', reject);
-      opusStream.once('error', reject);
+      const decodePromise = new Promise((resolve, reject) => {
+        decoder.once('end', resolve);
+        decoder.once('close', resolve);
+        decoder.once('error', reject);
+        opusStream.once('error', reject);
+      });
       opusStream.pipe(decoder);
-    }).catch((error) => {
-      console.error('Discord voice decode failed:', error);
-    });
-    session.speakers.delete(userId);
 
-    const pcm = Buffer.concat(chunks);
-    const durationMs = pcm.length / (SAMPLE_RATE * CHANNELS * BYTES_PER_SAMPLE) * 1000;
-    if (session.stopped || durationMs < this.config.VOICE_MIN_RECORDING_MS || !pcm.length) return;
+      const cachedMember = session.voiceChannel.guild.members.cache.get(userId);
+      const member = cachedMember
+        ? cachedMember
+        : await session.voiceChannel.guild.members.fetch(userId).catch(() => null);
+      if (!member || member.user.bot) {
+        opusStream.destroy();
+        await decodePromise.catch(() => {});
+        return;
+      }
 
-    await this.#handleUtterance(session, member, pcm).catch((error) => {
-      console.error(`Voice utterance failed for ${session.voiceChannelId}:`, error);
-      session.textChannel.send('No pude procesar ese audio. Prueba a repetirlo un poco mas claro.').catch(() => {});
-    });
+      await decodePromise.catch((error) => {
+        console.error('Discord voice decode failed:', error);
+      });
+
+      const pcm = Buffer.concat(chunks);
+      const durationMs = pcm.length / (SAMPLE_RATE * CHANNELS * BYTES_PER_SAMPLE) * 1000;
+      if (session.stopped || durationMs < this.config.VOICE_MIN_RECORDING_MS || !pcm.length) return;
+
+      await this.#handleUtterance(session, member, pcm).catch((error) => {
+        console.error('Voice utterance failed for '+session.voiceChannelId+':', error);
+        session.textChannel.send('No pude procesar ese audio. Prueba a repetirlo un poco mas claro.').catch(() => {});
+      });
+    } finally {
+      session.speakers.delete(userId);
+      opusStream?.destroy?.();
+    }
   }
 
   async #handleUtterance(session, member, pcm) {
@@ -252,7 +268,7 @@ export class VoiceSessionManager {
 
     session.processing = true;
     try {
-      const preparedAudio = await prepareSpeechForTranscription(pcm);
+      const preparedAudio = await prepareSpeechForTranscription(pcm, this.config);
       if (!preparedAudio) {
         if (shouldSendUnclearVoiceNotice(session)) {
           await session.textChannel.send(`No he detectado voz suficientemente clara, ${member}. Prueba a hablar un poco mas cerca del micro.`).catch(() => {});
@@ -260,15 +276,21 @@ export class VoiceSessionManager {
         return;
       }
 
-      const transcript = await this.aiClient.transcribeAudio({
+      const sttStartedAt = Date.now();
+      const rawTranscript = await this.aiClient.transcribeAudio({
         audioBuffer: preparedAudio.wav,
         fileName: `nexadesk-${session.ticketChannelId}-${Date.now()}.wav`,
-        model: this.config.GROQ_STT_MODEL
+        model: this.config.GROQ_STT_MODEL,
+        language: this.config.VOICE_STT_LANGUAGE,
+        prompt: this.config.VOICE_STT_PROMPT
       });
+      const transcript = normalizeVoiceTranscript(rawTranscript);
+      console.log('Voice STT completed in '+(Date.now()-sttStartedAt)+'ms for '+session.voiceChannelId+'.');
 
       if (!this.#isCurrentVoiceTurn(session, turnId) || !transcript) return;
 
-      await this.storage.addTranscriptMessage({
+      // Persist and announce in parallel; neither should delay the AI request.
+      void this.storage.addTranscriptMessage({
         guildId: session.guildId,
         channelId: session.ticketChannelId,
         messageId: `voice-user-${randomUUID()}`,
@@ -278,20 +300,19 @@ export class VoiceSessionManager {
         role: 'user',
         content: `[Voz] ${transcript}`,
         createdAt: new Date().toISOString()
+      }).catch((error) => {
+        console.warn('Voice transcript persistence failed:', error?.message ?? error);
       });
-
-      void this.#recordVoiceAiQualitySignal(session, member, transcript).catch((error) => {
-        console.warn(`Voice AI quality signal capture failed for ${session.ticketChannelId}:`, error?.message ?? error);
-      });
-
-      await session.textChannel.send(`**${member.displayName} por voz:** ${transcript.slice(0, 1_800)}`).catch(() => {});
+      const transcriptNotice = session.textChannel.send(`**${member.displayName} por voz:** ${transcript.slice(0, 1_800)}`).catch(() => {});
 
       if (isVoiceTicketCloseRequest(transcript)) {
         const closed = await this.#handleVoiceTicketClose(session, member, transcript);
         if (closed) return;
       }
 
-      const answer = await this.#answerVoiceTicket(session, transcript, member);
+      const answer = getDeterministicVoiceReply(transcript, member.displayName)
+        ?? getAmbiguousVoiceCloseReply(transcript)
+        ?? await this.#answerVoiceTicket(session, transcript, member);
       if (!this.#isCurrentVoiceTurn(session, turnId) || !answer) return;
 
       const speakPromise = this.config.VOICE_TTS_ENABLED
@@ -315,6 +336,7 @@ export class VoiceSessionManager {
         createdAt: new Date().toISOString()
       });
 
+      await transcriptNotice.catch(() => {});
       await session.textChannel.send({
         content: answer.mentionStaff && session.guildConfig.staffRoleId
           ? `<@&${session.guildConfig.staffRoleId}> ${answer.publicAnswer.slice(0, 1_800)}`
@@ -323,6 +345,12 @@ export class VoiceSessionManager {
       }).catch(() => {});
 
       if (speakPromise) await speakPromise;
+
+      // Run quality classification after playback; it must never compete
+      // with the user-facing answer for the AI provider.
+      void this.#recordVoiceAiQualitySignal(session, member, transcript).catch((error) => {
+        console.warn(`Voice AI quality signal capture failed for ${session.ticketChannelId}:`, error?.message ?? error);
+      });
     } finally {
       if (this.#isCurrentVoiceTurn(session, turnId)) {
         session.processing = false;
@@ -363,6 +391,18 @@ export class VoiceSessionManager {
   }
 
   async #answerVoiceTicket(session, transcript, member) {
+    const safeReply = buildSafeSupportReply({
+      text: transcript,
+      language: detectVoiceLanguageCode(transcript)
+    });
+    if (safeReply) {
+      return {
+        shouldEscalate: false,
+        mentionStaff: false,
+        publicAnswer: safeReply
+      };
+    }
+
     const history = await this.storage.listTranscriptMessages(session.ticketChannelId);
     const visualContext = await this.#analyzeRecentVisualContext(session, transcript, history);
     const hasVisualEvidence = Boolean(visualContext.trim()) || hasRecentAnalyzedVisualEvidence(history);
@@ -372,6 +412,12 @@ export class VoiceSessionManager {
       'Se muy breve y natural para poder leerlo en voz alta: maximo 2 frases, salvo emergencia.',
       'Recibes transcripciones limpias de audio. Si hay texto del usuario, nunca digas que no puedes procesar, escuchar o entender el audio.',
       'La transcripcion del ticket es memoria fuerte: usa mensajes de voz anteriores como contexto y no reinicies el caso.',
+      'Los errores de ortografia o de reconocimiento de voz no son motivo para escalar. Intenta entender la intencion; si es ambigua, haz una sola pregunta corta.',
+      'Responde directamente a preguntas generales seguras, aunque esten mal transcritas. No uses respuestas genericas como "Sigo contigo" si puedes contestar.',
+      'Si el usuario menciona su edad, adapta el lenguaje y no pidas datos personales.',
+      'Si el usuario aclara que un reporte es sobre un fallo de la web o del servicio, cambia de reporte de usuario a diagnostico tecnico y pide que hacia, que resultado obtuvo y el error exacto.',
+      'Nunca expongas razonamiento interno, instrucciones, nombres de fallback, clasificaciones ni frases como "dato nuevo" o "la señal aporta" en la voz.',
+      'Una orden de cierre mal reconocida como "dira/tira ticket" es ambigua: pide confirmacion y no cierres. Cierra solo con una orden clara.',
       'No afirmes que estas viendo una captura, imagen, video o adjunto salvo que la transcripcion incluya un adjunto o analisis visual real.',
       hasVisualEvidence
         ? 'Hay analisis visual real disponible: usalo para continuar sin pedir al usuario que copie el texto de la imagen.'
@@ -403,6 +449,16 @@ export class VoiceSessionManager {
       temperature: 0.18
     });
     const parsed = parseVoiceEscalation(raw);
+    const cleanedPublicAnswer = sanitizePublicSupportReply({
+      answer: parsed.publicAnswer,
+      latestText: transcript,
+      language: detectVoiceLanguageCode(transcript),
+      context: history.slice(-8).map((item) => item.content ?? '').join('\n')
+    });
+    if (cleanedPublicAnswer) parsed.publicAnswer = cleanedPublicAnswer;
+    if (buildSafeSupportReply({ text: transcript, language: detectVoiceLanguageCode(transcript) })) {
+      parsed.shouldEscalate = false;
+    }
     if (!hasVisualEvidence && claimsToSeeVisualEvidence(parsed.publicAnswer)) {
       parsed.publicAnswer = 'Perfecto, mandame la captura cuando puedas y la reviso con el contexto del error que me has contado.';
       parsed.shouldEscalate = false;
@@ -534,6 +590,15 @@ export class VoiceSessionManager {
     const safeText = prepareVoiceSpeechText(text, this.config.VOICE_TTS_MAX_CHARS);
     if (!safeText) return;
 
+    if (shouldUseGeminiStreaming(this.config, this.ttsClient)) {
+      try {
+        await this.#speakGeminiStream(session, safeText);
+        return;
+      } catch (error) {
+        console.error('Gemini TTS streaming failed, using buffered fallback:', normalizeProcessError(error));
+      }
+    }
+
     if (shouldUseFishStreaming(this.config)) {
       try {
         await this.#speakFishStream(session, safeText);
@@ -544,6 +609,29 @@ export class VoiceSessionManager {
     }
 
     await this.#speakBuffered(session, safeText);
+  }
+
+  async #speakGeminiStream(session, text) {
+    const startedAt = Date.now();
+    const { audioStream, contentType } = await this.ttsClient.createSpeechStream({
+      text,
+      model: this.config.GEMINI_TTS_MODEL,
+      voice: this.config.GEMINI_TTS_VOICE,
+      timeoutMs: this.config.GEMINI_TTS_TIMEOUT_MS,
+      maxStreamMs: this.config.GEMINI_TTS_MAX_STREAM_MS
+    });
+    const pcmStream = convertGeminiPcmToDiscordPcm(audioStream);
+    session.currentAudioStream = audioStream;
+    session.currentPcmStream = pcmStream;
+
+    session.connection.subscribe(session.player);
+    await entersState(session.connection, VoiceConnectionStatus.Ready, 5_000);
+    const resource = createAudioResource(pcmStream, { inputType: StreamType.Raw, inlineVolume: true });
+    resource.volume?.setVolume(1.35);
+    session.player.play(resource);
+    await entersState(session.player, AudioPlayerStatus.Playing, 8_000);
+    console.log('Voice TTS streaming started using Gemini ' + (this.config.GEMINI_TTS_MODEL || 'gemini-3.1-flash-tts-preview') + ' (' + (contentType || 'audio stream') + ', ' + (Date.now() - startedAt) + 'ms to playback).');
+    await entersState(session.player, AudioPlayerStatus.Idle, 45_000).catch(() => {});
   }
 
   async #speakFishStream(session, text) {
@@ -587,6 +675,20 @@ export class VoiceSessionManager {
   async #synthesizeSpeechWithFallback(text) {
     const provider = this.config.VOICE_TTS_PROVIDER || 'auto';
 
+    if (provider === 'gemini') {
+      try {
+        if (!this.ttsClient?.synthesizeSpeech) throw new Error('Gemini TTS client is not configured.');
+        return await this.ttsClient.synthesizeSpeech({
+          text,
+          model: this.config.GEMINI_TTS_MODEL,
+          voice: this.config.GEMINI_TTS_VOICE
+        });
+      } catch (error) {
+        console.error('Gemini TTS failed, trying local TTS fallback:', normalizeProcessError(error));
+        return synthesizeLocalSpeech(text, this.config);
+      }
+    }
+
     if (provider === 'fish') {
       try {
         return await synthesizeWithFishAudio(text, this.config);
@@ -625,20 +727,27 @@ export class VoiceSessionManager {
   }
 }
 
-async function prepareSpeechForTranscription(pcm) {
+async function prepareSpeechForTranscription(pcm, config = {}) {
   const stats = analyzePcm16(pcm);
   if (stats.rms < MIN_VOICE_RMS && stats.peak < 0.035) {
     return null;
   }
 
+  // Avoid spawning FFmpeg on every utterance. The in-memory conversion is
+  // materially faster; FFmpeg cleanup remains available as an opt-in switch
+  // for noisy microphones.
+  if (!config.VOICE_STT_CLEANUP_ENABLED) {
+    return { wav: buildFastSttWav(pcm), cleaned: false, fast: true, stats };
+  }
+
   try {
     const wav = await cleanPcmWithFfmpeg(pcm);
-    if (wav.length > 44) return { wav, cleaned: true, stats };
+    if (wav.length > 44) return { wav, cleaned: true, fast: false, stats };
   } catch (error) {
     console.error('Voice cleanup failed, falling back to raw WAV:', normalizeProcessError(error));
   }
 
-  return { wav: buildWavFromPcm(pcm), cleaned: false, stats };
+  return { wav: buildFastSttWav(pcm), cleaned: false, fast: true, stats };
 }
 
 function cleanPcmWithFfmpeg(pcm) {
@@ -673,10 +782,10 @@ function cleanPcmWithFfmpeg(pcm) {
   ], pcm);
 }
 
-function buildWavFromPcm(pcm) {
+function buildWavFromPcm(pcm, sampleRate = SAMPLE_RATE, channels = CHANNELS) {
   const header = Buffer.alloc(44);
-  const byteRate = SAMPLE_RATE * CHANNELS * BYTES_PER_SAMPLE;
-  const blockAlign = CHANNELS * BYTES_PER_SAMPLE;
+  const byteRate = sampleRate * channels * BYTES_PER_SAMPLE;
+  const blockAlign = channels * BYTES_PER_SAMPLE;
 
   header.write('RIFF', 0);
   header.writeUInt32LE(36 + pcm.length, 4);
@@ -684,8 +793,8 @@ function buildWavFromPcm(pcm) {
   header.write('fmt ', 12);
   header.writeUInt32LE(16, 16);
   header.writeUInt16LE(1, 20);
-  header.writeUInt16LE(CHANNELS, 22);
-  header.writeUInt32LE(SAMPLE_RATE, 24);
+  header.writeUInt16LE(channels, 22);
+  header.writeUInt32LE(sampleRate, 24);
   header.writeUInt32LE(byteRate, 28);
   header.writeUInt16LE(blockAlign, 32);
   header.writeUInt16LE(16, 34);
@@ -693,6 +802,29 @@ function buildWavFromPcm(pcm) {
   header.writeUInt32LE(pcm.length, 40);
 
   return Buffer.concat([header, pcm]);
+}
+
+function buildFastSttWav(pcm) {
+  const inputFrameBytes = CHANNELS * BYTES_PER_SAMPLE;
+  const inputFrames = Math.floor(pcm.length / inputFrameBytes);
+  const outputFrames = Math.floor(inputFrames * STT_SAMPLE_RATE / SAMPLE_RATE);
+  const mono = Buffer.alloc(outputFrames * BYTES_PER_SAMPLE);
+
+  for (let outputIndex = 0; outputIndex < outputFrames; outputIndex += 1) {
+    const firstInputFrame = Math.floor(outputIndex * SAMPLE_RATE / STT_SAMPLE_RATE);
+    const lastInputFrame = Math.min(inputFrames, firstInputFrame + 3);
+    let sum = 0;
+    let count = 0;
+    for (let inputFrame = firstInputFrame; inputFrame < lastInputFrame; inputFrame += 1) {
+      const offset = inputFrame * inputFrameBytes;
+      sum += pcm.readInt16LE(offset);
+      sum += pcm.readInt16LE(offset + BYTES_PER_SAMPLE);
+      count += 2;
+    }
+    mono.writeInt16LE(count ? Math.max(-32768, Math.min(32767, Math.round(sum / count))) : 0, outputIndex * BYTES_PER_SAMPLE);
+  }
+
+  return buildWavFromPcm(mono, STT_SAMPLE_RATE, STT_CHANNELS);
 }
 
 function decodeTtsToDiscordPcm(audioBuffer, config = {}) {
@@ -712,6 +844,14 @@ function decodeTtsToDiscordPcm(audioBuffer, config = {}) {
     String(CHANNELS),
     'pipe:1'
   ], audioBuffer);
+}
+
+function shouldUseGeminiStreaming(config = {}, ttsClient = null) {
+  return Boolean(
+    config.VOICE_TTS_STREAMING_ENABLED
+      && String(config.VOICE_TTS_PROVIDER || '').trim() === 'gemini'
+      && typeof ttsClient?.createSpeechStream === 'function'
+  );
 }
 
 function shouldUseFishStreaming(config = {}) {
@@ -772,6 +912,66 @@ async function createFishAudioStream(text, config = {}) {
   } finally {
     clearTimeout(timeout);
   }
+}
+
+
+function convertGeminiPcmToDiscordPcm(audioStream) {
+  // Gemini TTS emits signed 16-bit, 24 kHz, mono PCM. Discord voice expects
+  // signed 16-bit, 48 kHz, stereo PCM. Duplicating samples is intentional:
+  // it starts playback immediately without waiting for an FFmpeg process.
+  let pendingByte = null;
+  let previousSample = null;
+  let peak = 0;
+
+  const output = new Transform({
+    highWaterMark: SAMPLE_RATE * CHANNELS * BYTES_PER_SAMPLE,
+    transform(chunk, _encoding, callback) {
+      try {
+        let input = chunk;
+        if (pendingByte !== null) {
+          input = Buffer.concat([Buffer.from([pendingByte]), chunk]);
+          pendingByte = null;
+        }
+        if (input.length % 2 === 1) {
+          pendingByte = input[input.length - 1];
+          input = input.subarray(0, input.length - 1);
+        }
+
+        const converted = Buffer.allocUnsafe((input.length / 2) * 8);
+        let outputOffset = 0;
+        for (let offset = 0; offset < input.length; offset += 2) {
+          const sample = input.readInt16LE(offset);
+          const normalized = Math.abs(sample) / 32768;
+          peak = Math.max(peak, normalized);
+          const boosted = Math.max(-32768, Math.min(32767, Math.round(sample * 1.25)));
+          // Two 48 kHz frames for each 24 kHz source sample; stereo duplicate.
+          for (let copy = 0; copy < 2; copy += 1) {
+            converted.writeInt16LE(boosted, outputOffset);
+            converted.writeInt16LE(boosted, outputOffset + 2);
+            outputOffset += 4;
+          }
+          previousSample = sample;
+        }
+        callback(null, converted.subarray(0, outputOffset));
+      } catch (error) {
+        callback(error);
+      }
+    },
+    flush(callback) {
+      if (pendingByte !== null) {
+        pendingByte = null;
+      }
+      if (previousSample !== null && peak < 0.0008) {
+        callback(new Error('Gemini TTS stream decoded as silence.'));
+        return;
+      }
+      callback();
+    }
+  });
+
+  audioStream.once('error', (error) => output.destroy(error));
+  audioStream.pipe(output);
+  return output;
 }
 
 function decodeTtsStreamToDiscordPcm(audioStream, config = {}) {
@@ -1392,6 +1592,24 @@ function isBadAudioProcessingAnswer(content) {
     || normalized.includes('no puedo escuchar el audio');
 }
 
+function getAmbiguousVoiceCloseReply(content = '') {
+  if (!isAmbiguousVoiceCloseRequest(content)) return null;
+  return {
+    shouldEscalate: false,
+    mentionStaff: false,
+    publicAnswer: '¿Quieres que cierre este ticket? Dilo claramente: «NexaDesk, cierra el ticket».'
+  };
+}
+
+function isAmbiguousVoiceCloseRequest(content = '') {
+  const normalized = normalizeComparableText(content);
+  if (!normalized || isVoiceTicketCloseRequest(content)) return false;
+  return [
+    /\b(?:dira|tira|tire|tirar|termina|terminar)\b.{0,24}\b(?:ticket|canal)\b/,
+    /\b(?:ticket|canal)\b.{0,24}\b(?:dira|tira|tire|tirar|termina|terminar)\b/
+  ].some((pattern) => pattern.test(normalized));
+}
+
 function isVoiceTicketCloseRequest(content) {
   const normalized = normalizeComparableText(content);
   if (/\b(?:no|nunca|jamas|never|dont|don't)\b.{0,24}\b(?:cerrar|cierres|cierr|close|delete)\b/.test(normalized)) return false;
@@ -1440,6 +1658,59 @@ function claimsFakePremiumTermsRequirement(content) {
   return /\bterminos?\b.*\bpremium\b/.test(normalized)
     || /\bpremium\b.*\b(?:aceptar|aceptes|aceptado|terminos?)\b/.test(normalized)
     || /\bnecesito\b.*\b(?:aceptes|aceptar)\b.*\bterminos?\b/.test(normalized);
+}
+
+function normalizeVoiceTranscript(content) {
+  let text = String(content ?? '').replace(/\s+/g, ' ').trim();
+  if (!text) return '';
+
+  // Whisper can turn the product name into phonetic variants such as
+  // "nexadisk" or "hólver nexadisk". Correct only high-confidence wake
+  // phrase variants; leave the rest of the user sentence untouched.
+  text = text.replace(/\b(?:nexa\s*(?:desk|disk|des|dis|dex|d[eé]s|d[ií]s))\b/gi, 'NexaDesk');
+  text = text.replace(/\b(?:h[oó]l(?:a|ver|ber)|olver|holber)\s+nexadesk\b/gi, 'Hola NexaDesk');
+  return text;
+}
+
+function getDeterministicVoiceReply(transcript, displayName = '') {
+  const normalized = normalizeComparableText(transcript)
+    .replace(/[¿?¡!.,;:]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!normalized) return null;
+
+  if (/^(?:hola(?: nexadesk)?|buenas(?: nexadesk)?|hey(?: nexadesk)?|nexadesk)$/.test(normalized)) {
+    return {
+      shouldEscalate: false,
+      mentionStaff: false,
+      publicAnswer: displayName ? 'Hola, ' + displayName + '. ¿En qué puedo ayudarte?' : 'Hola, ¿en qué puedo ayudarte?'
+    };
+  }
+
+  if (/^(?:gracias|muchas gracias|thank you|thanks|perfecto|vale gracias|ok gracias|de nada)$/.test(normalized)) {
+    return {
+      shouldEscalate: false,
+      mentionStaff: false,
+      publicAnswer: 'De nada. Si necesitas algo más, aquí estoy.',
+    };
+  }
+
+  if (/^(?:me oyes|me escuchas|se oye|se escucha|prueba de micro|prueba de microfono|test)$/.test(normalized)) {
+    return {
+      shouldEscalate: false,
+      mentionStaff: false,
+      publicAnswer: 'Te escucho correctamente. Dime qué necesitas.',
+    };
+  }
+
+  return null;
+}
+
+function detectVoiceLanguageCode(content = '') {
+  const text = String(content ?? '').trim();
+  if (/[\u4E00-\u9FFF]/u.test(text)) return 'zh';
+  if (/\b(?:hello|hi|what|how|where|when|why|thanks|thank\s+you|please|help|server)\b/iu.test(text)) return 'en';
+  return 'es';
 }
 
 function normalizeComparableText(content) {

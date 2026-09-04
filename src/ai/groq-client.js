@@ -60,18 +60,23 @@ export class GroqClient {
     return sanitizeModelOutput(completion.choices[0]?.message?.content);
   }
 
-  async transcribeAudio({ audioBuffer, fileName = 'nexadesk-voice.wav', model }) {
+  async transcribeAudio({ audioBuffer, fileName = 'nexadesk-voice.wav', model, language, prompt }) {
     if (!this.client) {
       throw new Error('Set GROQ_API_KEY in .env to use Groq speech-to-text.');
     }
 
-    const transcription = await this.client.audio.transcriptions.create({
+    const request = {
       file: new File([audioBuffer], fileName, { type: 'audio/wav' }),
       model: model || 'whisper-large-v3-turbo',
       response_format: 'json',
       temperature: 0
-    });
+    };
+    const normalizedLanguage = String(language ?? '').trim();
+    const normalizedPrompt = String(prompt ?? '').trim();
+    if (normalizedLanguage) request.language = normalizedLanguage;
+    if (normalizedPrompt) request.prompt = normalizedPrompt.slice(0, 900);
 
+    const transcription = await this.client.audio.transcriptions.create(request);
     return transcription.text?.trim() ?? '';
   }
 

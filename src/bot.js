@@ -61,17 +61,23 @@ import { SecurityManager, SECURITY_LEVELS, normalizeSecurityConfig, normalizeSec
 import { analyzeGuildChannelsForDiscovery, hasUsefulDiscovery, normalizeChannelNameForDiscovery, normalizeDiscoveryConfig } from './server-discovery.js';
 import { buildTranscriptReplayUrl } from './transcripts.js';
 import { hasVisualAttachments } from './ai/visual-analyzer.js';
+import { createWatermarkedEvidenceAttachment } from './blacklist-watermark.js';
+import { detectAiQualitySignalHeuristic } from './ai-quality.js';
+import { buildAiLearningLesson } from './ai/learning-memory.js';
 import { createTicketFlowCard } from './welcome-card.js';
 import { formatWelcomeTemplate as formatMemberWelcomeTemplate, normalizeWelcomeConfig } from './welcome.js';
 import { XNPROTECT_BLACKLIST_CREDIT, checkXnProtectGlobalBan } from './xnprotect-blacklist.js';
 
 const BOT_INVITE_PERMISSIONS = '1099780451478';
-const PUBLIC_DASHBOARD_URL = 'https://nexa-desk.onrender.com/';
+const PUBLIC_DASHBOARD_URL = 'https://nexa-desk.com/';
 const PREMIUM_ADMIN_USER_ID = '1352652366330986526';
 const ALLIANCE_MARKER = '[NexaDesk alliance]';
 const CRISIS_MARKER = '[NexaDesk crisis]';
 const STAFF_HANDOFF_MARKER = '[NexaDesk staff handoff]';
 const STAFF_ESCALATION_MARKER = '[NexaDesk staff escalation]';
+const REPORT_MARKER = '[NexaDesk report]';
+const AI_LEARNING_MARKER = '[NexaDesk AI learning]';
+const STAFF_ONLY_COMPONENT_MARKER = 'component:staff-only';
 const SCHEDULED_ANNOUNCEMENT_STATUS_LOG_MS = 5 * 60 * 1000;
 const scheduledAnnouncementStatusLogCache = new Map();
 
@@ -521,16 +527,16 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
     if (!guildId || !channelId) return;
     if (await maybeMirrorGlobalAnnouncement({ client, storage, config, message })) return;
 
-    const handledBySecurity = await securityManager.handleMessageCreate(message).catch((error) => {
-      console.error(`Security message guard failed in ${guildId}:`, error);
-      return false;
-    });
-    if (handledBySecurity) return;
-
     let [ticket, guildConfig] = await Promise.all([
       storage.getTicket(channelId),
       storage.getGuildConfig(guildId)
     ]);
+
+    const handledBySecurity = await securityManager.handleMessageCreate(message, guildConfig).catch((error) => {
+      console.error(`Security message guard failed in ${guildId}:`, error);
+      return false;
+    });
+    if (handledBySecurity) return;
 
     const externalTicketSource = (!ticket || !ticket.openedBy)
       ? await detectExternalTicketSource(message)
@@ -589,10 +595,16 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
     if (!ticket) return;
 
     await saveTranscript(storage, message, 'user');
+    if (isClosedTicket(ticket)) return;
+    if (isStaffOnlyTicket(ticket)) {
+      if (isTicketCloseRequest(message.content)) {
+        await handleNaturalCloseRequest({ client, storage, message, ticket, guildConfig, config });
+      }
+      return;
+    }
     void maybeRecordAiQualitySignal({ storage, supportAgent, message, ticket, guildConfig }).catch((error) => {
       console.warn(`AI quality signal capture failed in ${message.channelId}:`, error?.message ?? error);
     });
-    if (isClosedTicket(ticket)) return;
 
     // Always reload the latest server context before asking the AI.
     if (!guildConfig) return;
@@ -619,10 +631,18 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
       ticket = checkedTicket ?? ticket;
     }
 
-    if (isTicketCloseRequest(message.content)) {
-      await handleNaturalCloseRequest({ client, storage, message, ticket, guildConfig, config });
-      return;
-    }
+    const deterministicControl = await handleDeterministicTicketControl({
+      client,
+      storage,
+      message,
+      ticket,
+      guildConfig,
+      config
+    });
+    if (deterministicControl.handled) return;
+
+    const handledByReportFlow = await handleTicketReportMessage({ storage, message, ticket, guildConfig });
+    if (handledByReportFlow) return;
 
     const examHandled = await handleExamModeMessage({
       storage,
@@ -776,7 +796,7 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
         const latestTicket = await storage.getTicket(message.channel.id);
         if (!latestTicket || isClosedTicket(latestTicket) || isAiDisabledTicket(latestTicket)) return;
 
-        const escalation = parseEscalation(answer);
+        const escalation = parseEscalation(answer, message.content);
         const shouldMentionStaff = escalation.shouldEscalate
           ? await registerTicketEscalation({ storage, message, guildConfig, ticket, reason: escalation.reason })
           : false;
@@ -1363,6 +1383,11 @@ async function handleEnableAiCommand({ interaction, storage }) {
     return;
   }
 
+  if (isStaffOnlyTicket(ticket)) {
+    await interaction.reply({ content: 'Este ticket pertenece a un componente Solo staff (sin IA); el staff debe atenderlo manualmente.', ephemeral: true });
+    return;
+  }
+
   if (!isAiDisabledTicket(ticket)) {
     await interaction.reply({ content: 'La IA ya estaba activa en este ticket.', ephemeral: true });
     return;
@@ -1693,8 +1718,8 @@ async function handleVoiceCreateCommand({ interaction, storage, voiceManager = n
 
   if (!result.ready) {
     await interaction.editReply([
-      'La sala de voz no se pudo activar porque faltan columnas Pro Voice en CockroachDB.',
-      'Revisa que el esquema de CockroachDB esté actualizado y vuelve a intentarlo.'
+      'La sala de voz no se pudo activar porque faltan columnas Pro Voice en PostgreSQL.',
+      'Revisa que el esquema de PostgreSQL esté actualizado y vuelve a intentarlo.'
     ].join('\n'));
     return;
   }
@@ -1959,7 +1984,7 @@ async function handleNaturalVoiceRequest({ storage, message, ticket, guildConfig
       ].join('\n')
     : [
         'No pude crear la sala de voz automaticamente.',
-        'Revisa que tenga **Manage Channels**, **Connect**, **Speak** y que la migracion Pro Voice de CockroachDB este aplicada.'
+        'Revisa que tenga **Manage Channels**, **Connect**, **Speak** y que la migracion Pro Voice de PostgreSQL este aplicada.'
       ].join('\n');
 
   const reply = await message.channel.send({ content, allowedMentions: { parse: [] } }).catch(() => null);
@@ -2976,7 +3001,7 @@ async function handleAdminCodeCommand({ interaction, storage, config }) {
       `${EMOJIS.ban} No pude pedir el codigo a la web de NexaDesk.`,
       `Motivo: ${String(error?.message ?? error).slice(0, 500)}`,
       `Ruta admin: ${new URL('/admin', config.DASHBOARD_PUBLIC_URL || PUBLIC_DASHBOARD_URL).toString()}`,
-      'Mientras la web no emita el codigo, no genero codigos locales para evitar errores de expirado entre PI y Render.'
+      'Mientras la web no emita el codigo, no genero codigos locales para evitar errores de expirado entre la Pi y el dashboard local.'
     ].join('\n'));
     return;
   }
@@ -2996,8 +3021,11 @@ async function handleAdminCodeCommand({ interaction, storage, config }) {
 }
 
 async function requestAdminCodeFromDashboard({ interaction, config }) {
-  const baseUrl = String(config.DASHBOARD_PUBLIC_URL || PUBLIC_DASHBOARD_URL).replace(/\/+$/, '');
-  const endpoint = new URL('/internal/admin/code', baseUrl);
+  // El bot y el dashboard comparten proceso/almacenamiento. Usa el listener local
+  // para que Cloudflare Access/WAF no bloquee la emisión del código temporal.
+  const internalBaseUrl = String(config.ADMIN_CODE_INTERNAL_URL || `http://127.0.0.1:${config.PORT}`)
+    .replace(/\/+$/, '');
+  const endpoint = new URL('/internal/admin/code', internalBaseUrl);
   const token = String(config.ADMIN_CODE_SECRET || config.DISCORD_TOKEN || '').trim();
   if (!token) {
     throw new Error('Falta token interno para pedir codigos admin.');
@@ -3336,6 +3364,24 @@ async function handleGlobalBlacklistMemberJoin({ member, storage }) {
 
 async function sendGlobalBlacklistDm({ user, guild, entry, evidence = [] }) {
   const activeEvidence = evidence.filter((item) => item.attachmentUrl || item.proxyUrl);
+  const imageEvidence = activeEvidence.filter((item) => isImageEvidence(item)).slice(0, 4);
+  const watermarkedEvidence = [];
+
+  for (const [index, item] of imageEvidence.entries()) {
+    const attachment = await createWatermarkedEvidenceAttachment(item, index);
+    if (attachment) watermarkedEvidence.push({ item, attachment });
+    else console.warn(`Could not watermark blacklist evidence ${item.fileName || item.attachmentUrl || 'unknown'}.`);
+  }
+
+  const otherEvidence = activeEvidence
+    .filter((item) => !isImageEvidence(item) && (item.attachmentUrl || item.proxyUrl))
+    .slice(0, 8);
+  const proofStatus = watermarkedEvidence.length || otherEvidence.length
+    ? `${watermarkedEvidence.length} imagen(es) con marca de agua y ${otherEvidence.length} archivo(s) enlazado(s).`
+    : imageEvidence.length
+      ? 'Las imágenes de prueba no pudieron prepararse con marca de agua.'
+      : 'No hay pruebas por imagen adjuntas aun.';
+
   const mainEmbed = new EmbedBuilder()
     .setColor(0xffffff)
     .setTitle(`${EMOJIS.ban} Baneo global NexaDesk`)
@@ -3345,32 +3391,28 @@ async function sendGlobalBlacklistDm({ user, guild, entry, evidence = [] }) {
       { name: 'Duracion', value: entry.duration || 'permanente', inline: true },
       { name: 'Codigo de baneo', value: `\`${entry.banCode}\``, inline: true },
       { name: 'Apelacion', value: `Puedes apelar en el servidor de soporte: ${SUPPORT_SERVER_URL}` },
-      { name: 'Pruebas adjuntas', value: activeEvidence.length ? `${activeEvidence.length} archivo(s) adjunto(s) abajo.` : 'No hay pruebas por imagen adjuntas aun.' }
+      { name: 'Pruebas adjuntas', value: proofStatus }
     )
     .setFooter({ text: 'NexaDesk Global Safety' })
     .setTimestamp(new Date());
 
-  const evidenceEmbeds = activeEvidence
-    .filter((item) => isImageEvidence(item))
-    .slice(0, 4)
-    .map((item, index) => new EmbedBuilder()
-      .setColor(0xffffff)
-      .setTitle(`Prueba ${index + 1}`)
-      .setDescription(item.description || item.fileName || 'Imagen adjunta como prueba.')
-      .setImage(item.proxyUrl || item.attachmentUrl));
+  const evidenceEmbeds = watermarkedEvidence.map(({ item, attachment }, index) => new EmbedBuilder()
+    .setColor(0xffffff)
+    .setTitle(`Prueba ${index + 1} · Verificada por NexaDesk`)
+    .setDescription(item.description || item.fileName || 'Imagen adjunta como prueba.')
+    .setImage(`attachment://${attachment.name}`));
 
-  const links = activeEvidence
-    .filter((item) => !isImageEvidence(item))
-    .slice(0, 8)
-    .map((item, index) => `${index + 1}. ${item.fileName || 'Archivo'}: ${item.attachmentUrl}`)
+  const links = otherEvidence
+    .map((item, index) => `${index + 1}. ${item.fileName || 'Archivo'}: ${item.proxyUrl || item.attachmentUrl}`)
     .join('\n');
+  const files = watermarkedEvidence.map(({ attachment }) => new AttachmentBuilder(attachment.buffer, { name: attachment.name }));
 
   await user.send({
     content: links ? `Archivos de prueba no embebidos:\n${links}` : undefined,
-    embeds: [mainEmbed, ...evidenceEmbeds]
+    embeds: [mainEmbed, ...evidenceEmbeds],
+    files
   });
 }
-
 function buildBlacklistEntryEmbed(entry, evidence = []) {
   return new EmbedBuilder()
     .setColor(0xffffff)
@@ -3862,7 +3904,7 @@ function buildHelpEmbed({ view, config, guild }) {
         },
         {
           name: `${EMOJIS.global} Donde se guarda`,
-          value: 'En CockroachDB, para que la dashboard pueda mostrar historial, estadisticas y transcripciones por servidor.'
+          value: 'En PostgreSQL, para que la dashboard pueda mostrar historial, estadisticas y transcripciones por servidor.'
         },
         {
           name: `${EMOJIS.rightArrow} Quien puede verlo`,
@@ -4056,6 +4098,11 @@ async function createTicketFromConfiguredSource({ interaction, storage, guildCon
     return;
   }
 
+  if (ticketMode === 'staff' && !guildConfig?.staffRoleId) {
+    await interaction.reply({ content: 'Configura primero un rol de staff desde la dashboard para usar componentes Solo staff.', ephemeral: true });
+    return;
+  }
+
   if (ticketMode === 'voice' && !isVoiceSupportEnabled(guildConfig)) {
     await interaction.reply({
       content: [
@@ -4151,7 +4198,13 @@ async function createTicketFromConfiguredSource({ interaction, storage, guildCon
     channelId: channel.id,
     channelName: channel.name,
     categoryId: ticketCategory.id,
-    openedBy: interaction.user.id
+    openedBy: interaction.user.id,
+    ...(ticketMode === 'staff' ? {
+      status: 'ai_disabled',
+      aiDisabled: true,
+      aiDisabledBy: STAFF_ONLY_COMPONENT_MARKER,
+      aiDisabledAt: new Date().toISOString()
+    } : {})
   });
 
   if (ticket.alreadyExists) {
@@ -4159,7 +4212,19 @@ async function createTicketFromConfiguredSource({ interaction, storage, guildCon
     return;
   }
 
-  const welcome = await channel.send(buildTicketWelcomeMessage({
+  const welcomePayload = ticketMode === 'staff' ? {
+    content: buildStaffOnlyTicketWelcomeMessage({
+      answers,
+      userMention: `${interaction.user}`,
+      guildConfig,
+      serverName: interaction.guild.name,
+      channelName: channel.name
+    }),
+    allowedMentions: {
+      users: [interaction.user.id],
+      roles: guildConfig?.staffRoleId ? [guildConfig.staffRoleId] : []
+    }
+  } : buildTicketWelcomeMessage({
     panel: normalizedPanel,
     component: normalizedComponent,
     answers,
@@ -4167,7 +4232,8 @@ async function createTicketFromConfiguredSource({ interaction, storage, guildCon
     username: interaction.user.username,
     serverName: interaction.guild.name,
     channelName: channel.name
-  }));
+  });
+  const welcome = await channel.send(welcomePayload);
   await saveTranscript(storage, welcome, 'assistant');
   if (isExamTicketMode(ticketMode)) {
     const startedExamTicket = await startExamTicket({
@@ -4183,7 +4249,7 @@ async function createTicketFromConfiguredSource({ interaction, storage, guildCon
       voiceManager
     });
     ticket = startedExamTicket ?? ticket;
-  } else {
+  } else if (ticketMode !== 'staff') {
     await sendContextualTicketOpening({
       storage,
       supportAgent,
@@ -4231,11 +4297,11 @@ async function createTicketFromConfiguredSource({ interaction, storage, guildCon
         voiceStatus.push(`Sala de voz: ${result.channel}`);
       } else {
         const voiceNotice = await channel.send([
-          `${EMOJIS.wifi} No pude vincular la sala de voz porque CockroachDB no tiene las columnas Pro Voice aplicadas.`,
-          'Revisa que el esquema de CockroachDB esté actualizado y vuelve a publicar o crear el ticket.'
+          `${EMOJIS.wifi} No pude vincular la sala de voz porque PostgreSQL no tiene las columnas Pro Voice aplicadas.`,
+          'Revisa que el esquema de PostgreSQL esté actualizado y vuelve a publicar o crear el ticket.'
         ].join('\n'));
         await saveTranscript(storage, voiceNotice, 'assistant');
-        voiceStatus.push('Sala de voz pendiente: falta migracion de CockroachDB.');
+        voiceStatus.push('Sala de voz pendiente: falta migracion de PostgreSQL.');
       }
     } catch (error) {
       console.error('Panel voice ticket failed:', error);
@@ -5147,6 +5213,17 @@ function buildTicketComponentModal(component) {
   return modal;
 }
 
+function buildStaffOnlyTicketWelcomeMessage({ answers = [], userMention, guildConfig, serverName = 'este servidor', channelName = 'ticket' }) {
+  const staffMention = guildConfig?.staffRoleId ? `<@&${guildConfig.staffRoleId}>` : 'el staff';
+  const answerBlock = buildWelcomeAnswersBlock(answers);
+  return [
+    `${EMOJIS.nexalogo} Ticket creado para ${userMention}.`,
+    'Este ticket esta configurado como **solo staff (sin IA)**. NexaDesk no respondera automaticamente aqui.',
+    `${staffMention}, he dejado el contexto listo para que atendais manualmente el ticket en #${channelName} de ${serverName}.`,
+    answerBlock ? `Contexto inicial:\n${answerBlock}` : '',
+  ].filter(Boolean).join('\n').slice(0, 1950);
+}
+
 function buildTicketWelcomeMessage({ panel, component, answers = [], userMention, username = 'usuario', serverName = 'este servidor', channelName = 'ticket' }) {
   const rawTemplate = component?.welcomeMessage || panel?.welcomeMessage || '';
   const template = rawTemplate || (component
@@ -5750,6 +5827,23 @@ async function handleAiFeedbackButton({ interaction, storage }) {
     createdAt: new Date().toISOString()
   }).catch((error) => {
     console.error(`Failed to save AI feedback ${id}:`, error);
+  });
+
+  await persistAiLearningLesson({
+    storage,
+    guildId: ticket.guildId,
+    channelId,
+    authorId: interaction.user.id,
+    authorName: interaction.user.username,
+    sourceId: id,
+    sourceMessage: reason,
+    detection: {
+      detected: true,
+      category: positive ? 'general' : 'wrong_answer',
+      severity: positive ? 'low' : 'medium',
+      confidence: 100,
+      detectedBy: 'dm_feedback'
+    }
   });
 
   await storage.addGuildLog?.({
@@ -6717,8 +6811,13 @@ function splitDiscordText(content, maxLength = 1900) {
   return chunks;
 }
 
+function isStaffOnlyTicket(ticket) {
+  return ticket?.ticketMode === 'staff'
+    || String(ticket?.aiDisabledBy ?? '') === STAFF_ONLY_COMPONENT_MARKER;
+}
+
 function isAiDisabledTicket(ticket) {
-  return ticket?.aiDisabled || ticket?.status === 'ai_disabled';
+  return isStaffOnlyTicket(ticket) || ticket?.aiDisabled || ticket?.status === 'ai_disabled';
 }
 
 function isClosedTicket(ticket) {
@@ -6760,6 +6859,89 @@ async function shouldStaySilentInTicket({ storage, message, ticket, guildConfig,
   }
 
   return false;
+}
+
+function isDeterministicSilenceRequest(content) {
+  const normalized = normalizeText(content);
+  return [
+    /^\s*(?:ya\s+)?callate\b/,
+    /^\s*(?:deja\s+de\s+responder|deja\s+de\s+hablar|no\s+respondas|silencio|para\s+ya)\b/,
+    /\b(?:nexa|nexadesk)\b.{0,48}\b(?:callate|deja\s+de\s+responder|deja\s+de\s+hablar|no\s+respondas|quedate\s+en\s+silencio|silencio|para\s+ya)\b/
+  ].some((pattern) => pattern.test(normalized));
+}
+
+function isDeterministicTakeoverRequest(content) {
+  const normalized = normalizeText(content);
+  return [
+    /\b(?:nexa|nexadesk)\b.{0,48}\b(?:dejame\s+a\s+mi|yo\s+me\s+encargo|me\s+encargo\s+yo|yo\s+lo\s+llevo|lo\s+llevo\s+yo|yo\s+sigo|me\s+quedo\s+yo|no\s+necesito\s+tu\s+ayuda|no\s+hace\s+falta\s+tu\s+ayuda)\b/,
+    /^\s*(?:dejame\s+a\s+mi|yo\s+me\s+encargo|me\s+encargo\s+yo|yo\s+lo\s+llevo|lo\s+llevo\s+yo|yo\s+sigo)\b/
+  ].some((pattern) => pattern.test(normalized));
+}
+
+async function handleDeterministicTicketControl({ client, storage, message, ticket, guildConfig, config }) {
+  if (!ticket || isClosedTicket(ticket)) return { handled: false, ticket };
+
+  // Close always wins over any other interpretation and uses the existing permission/transcript flow.
+  if (isTicketCloseRequest(message.content)) {
+    await handleNaturalCloseRequest({ client, storage, message, ticket, guildConfig, config });
+    return { handled: true, ticket };
+  }
+
+  const isStaff = isConfiguredStaffMember(message.member, message.author, guildConfig);
+  const canControl = isStaff || isTicketOpener(message, ticket);
+  const isResumeRequest = isStaffHandoffFinish(message.content) && isAiDisabledTicket(ticket);
+
+  if (isResumeRequest) {
+    // Only the opener, the actor who paused the AI, or configured staff may resume it.
+    const canResume = isStaff
+      || isTicketOpener(message, ticket)
+      || String(ticket.aiDisabledBy ?? '') === String(message.author.id);
+    if (!canResume) return { handled: true, ticket };
+
+    await markStaffHandoffState(storage, message, 'finished', message.author.id);
+    const updatedTicket = await storage.updateTicket(ticket.channelId, {
+      status: 'open',
+      aiDisabled: false,
+      aiDisabledBy: null,
+      aiDisabledAt: null
+    }).catch((error) => {
+      console.error('Failed to resume AI from deterministic control in ' + ticket.channelId + ':', error);
+      return null;
+    });
+    const reply = await sendTicketResponse(message, {
+      content: EMOJIS.check + ' Perfecto, vuelvo a atender este ticket.',
+      allowedMentions: { parse: [], repliedUser: false }
+    });
+    await saveTranscript(storage, reply, 'assistant');
+    return { handled: true, ticket: updatedTicket ?? ticket };
+  }
+
+  const silenceRequested = isDeterministicSilenceRequest(message.content);
+  const takeoverRequested = isDeterministicTakeoverRequest(message.content);
+  if (!silenceRequested && !takeoverRequested) return { handled: false, ticket };
+
+  // An already paused ticket must not generate another acknowledgement or wake the AI.
+  if (isAiDisabledTicket(ticket)) return { handled: true, ticket };
+  if (!canControl) return { handled: false, ticket };
+
+  await pauseAiForHumanTakeover({
+    storage,
+    message,
+    ticket,
+    reason: takeoverRequested
+      ? 'El usuario solicito continuar el ticket sin respuestas automaticas.'
+      : 'El usuario solicito que NexaDesk dejara de responder.',
+    actorId: message.author.id
+  });
+
+  const reply = await sendTicketResponse(message, {
+    content: takeoverRequested
+      ? 'Vale, te dejo continuar. Escribe **Nexa, he terminado** cuando quieras que vuelva a atenderlo.'
+      : 'Entendido. Pauso la IA en este ticket y dejo que continues.',
+    allowedMentions: { parse: [], repliedUser: false }
+  });
+  await saveTranscript(storage, reply, 'assistant');
+  return { handled: true, ticket };
 }
 
 async function handleStaffHandoffMessage({ storage, message, ticket, guildConfig, client }) {
@@ -7230,11 +7412,23 @@ function refreshPanelSelectMenu(interaction, guildConfig, panel) {
   });
 }
 
-function parseEscalation(answer) {
+function parseEscalation(answer, latestContent = '') {
   const trimmed = cleanBotAnswer(answer);
   const escalateMatch = trimmed.match(/^\[ESCALATE\]\s*/i);
-  if (!escalateMatch && !looksLikeEscalation(trimmed)) {
+  const hasEscalationSignal = Boolean(escalateMatch || looksLikeEscalation(trimmed));
+  if (!hasEscalationSignal) {
     return { shouldEscalate: false, publicAnswer: trimmed };
+  }
+
+  // A model must not be able to escalate a harmless/general question merely
+  // because it produced a cautious sentence. Deterministic staff/security
+  // paths run before the model; here we only accept escalation when the latest
+  // user turn actually contains a human/security/manual-review signal.
+  if (!isLegitimateGeneratedEscalationContext(latestContent)) {
+    return {
+      shouldEscalate: false,
+      publicAnswer: trimmed.replace(/\[ESCALATE\]\s*/gi, '').trim()
+    };
   }
 
   const reason = trimmed.replace(/\[ESCALATE\]\s*/gi, '').trim();
@@ -7243,6 +7437,28 @@ function parseEscalation(answer) {
     reason: reason || 'El ticket requiere revision humana.',
     publicAnswer: reason || 'Voy a avisar al staff para que revise este ticket.'
   };
+}
+
+function isLegitimateGeneratedEscalationContext(content = '') {
+  const normalized = normalizeText(content);
+  if (!normalized) return false;
+  if (/\b(?:staff|moderador(?:es)?|humano|responsable|admin|owner|persona)\b/.test(normalized)
+    && /\b(?:quiero|necesito|puedes|podrias|hablar|avisar|llamar|mencionar|ayuda|asistencia|atencion|revisar)\b/.test(normalized)) {
+    return true;
+  }
+  if (/\b(?:raid|nuke|flood|spam\s+masivo|ataque|invadieron|canales\s+borrados|roles\s+borrados|amenaza|acoso|abuso|dox(?:xing)?)\b/.test(normalized)) {
+    return true;
+  }
+  if (/\b(?:sancion|baneo|banear|apelacion|pago|factura|privad[oa]|seguridad|clave|token|credencial)\b/.test(normalized)) {
+    return true;
+  }
+  if (/\b(?:permiso|permisos)\b/.test(normalized)
+    && /\b(?:no|falta|necesito|puedes|ayuda|configurar|eliminar|borrar|crear|revisar)\b/.test(normalized)) {
+    return true;
+  }
+  const report = /\b(?:reportar|reporte|denunciar|denuncia|queja)\b/.test(normalized);
+  const targetOrIncident = /<@!?\d{16,24}>|@(?:\w[\w-]{1,31})|\b(?:usuario|miembro|persona|alguien|insulto|amenaza|acoso|abuso|spam|estafa|phishing|racismo|discriminacion|chantaje|dox(?:xing)?)\b/.test(normalized);
+  return report && targetOrIncident && !/\b(?:web|pagina|sitio|dashboard|mal\s+funcionamiento|bug|error\s+de\s+la\s+web)\b/.test(normalized);
 }
 
 function looksLikeEscalation(answer) {
@@ -8072,7 +8288,16 @@ async function sendTicketResponse(message, payload) {
 
 async function sendAiFailureNotice(message) {
   try {
-    return await sendTicketResponse(message, 'Sigo contigo, pero ahora mismo una parte del sistema esta tardando mas de lo normal. Dejo el ticket listo para que el staff lo revise si hace falta.');
+    const raw = String(message?.content ?? '').replace(/\s+/g, ' ').trim();
+    const excerpt = raw
+      .replace(/\bmfa\.[A-Za-z0-9_-]{20,}\b/giu, '[token oculto]')
+      .replace(/((?:token|secret|password|contrasena|contraseña|api[_\s-]?key|clave\s+api)\s*[:=]\s*)\S+/giu, '$1[oculto]')
+      .replace(/([?&](?:token|secret|password|key|api_key)=)[^&\s]+/giu, '$1[oculto]')
+      .slice(0, 360);
+    const fallback = excerpt
+      ? `He registrado el dato nuevo: [${excerpt}]. La respuesta automatica no esta disponible ahora mismo, pero ese dato ya es suficiente para orientar la revision; no voy a pedirte que repitas lo mismo. El owner o staff debe revisar el servicio y sus logs antes de repetir el paso.`
+      : 'La respuesta automatica no esta disponible ahora mismo. El ticket queda listo para que el owner o staff revise el servicio y sus logs.';
+    return await sendTicketResponse(message, fallback);
   } catch (error) {
     console.error('Failed to send AI fallback notice:', error);
     return null;
@@ -8168,39 +8393,223 @@ async function notifyStaffRole(message, guildConfig, ticket, reason) {
   }
 }
 
-async function maybeRecordAiQualitySignal({ storage, supportAgent, message, ticket, guildConfig }) {
-  if (typeof storage.addAiQualitySignal !== 'function') return;
-  if (typeof supportAgent.detectAiQualitySignal !== 'function') return;
+async function handleTicketReportMessage({ storage, message, ticket, guildConfig }) {
+  if (!isUserReportMessage(message.content)) return false;
 
-  const transcript = await storage.listTranscriptMessages(message.channel.id).catch(() => []);
-  const previousAiMessage = findPreviousAssistantTranscriptMessage(transcript, message.id);
-  const detection = await supportAgent.detectAiQualitySignal({
-    message,
-    ticket,
-    guildConfig,
-    previousAiMessage
+  const transcript = await storage.listTranscriptMessages(message.channel.id, { limit: 36 }).catch(() => []);
+  const userMessages = transcript
+    .filter((entry) => entry.role === 'user' || (!entry.role && !entry.authorBot))
+    .map((entry) => String(entry.content ?? '').trim())
+    .filter(Boolean);
+  const combinedUserText = userMessages.concat([String(message.content ?? '')]).join('\n');
+  const targetUser = resolveReportedUser(message, userMessages);
+  const incident = extractReportedIncident(combinedUserText);
+  const targetLabel = targetUser?.id ? '<@' + targetUser.id + '>' : 'el usuario implicado';
+
+  if (!targetUser?.id || !incident) {
+    const missing = [];
+    if (!targetUser?.id) missing.push('la mención o ID del usuario implicado');
+    if (!incident) missing.push('qué ocurrió exactamente');
+    const prompt = missing.length === 2
+      ? 'Pásame la mención o ID del usuario implicado y qué ocurrió exactamente.'
+      : 'Solo me falta ' + missing[0] + '.';
+    const reply = await sendTicketResponse(message, {
+      content: [
+        '<@' + message.author.id + '>, entendido: te ayudo con el reporte.',
+        prompt,
+        'Si tienes la hora aproximada, una captura o un enlace al mensaje, añádelo también; no borres pruebas.'
+      ].join('\n'),
+      allowedMentions: { users: [message.author.id], roles: [] }
+    });
+    await saveTranscript(storage, reply, 'assistant');
+    await markTicketReportState({ storage, message, stage: 'collecting', targetUserId: targetUser?.id, incident });
+    await persistAiLearningLesson({
+      storage,
+      guildId: message.guild.id,
+      channelId: message.channel.id,
+      authorId: message.author.id,
+      authorName: message.author.username,
+      sourceId: message.id + '-report-collecting',
+      sourceMessage: message.content,
+      detection: { detected: true, category: 'report', severity: 'medium', confidence: 95, detectedBy: 'report_flow' }
+    });
+    return true;
+  }
+
+  const reason = 'Reporte de ' + targetLabel + ' por ' + incident + '.';
+  const mentionStaff = await registerTicketEscalation({ storage, message, guildConfig, ticket, reason });
+  const staffStatus = mentionStaff
+    ? 'He avisado al staff para que lo revise.'
+    : 'He dejado el reporte preparado para revisión del staff.';
+  const evidenceHint = hasReportEvidence(message, transcript)
+    ? 'Ya veo que hay pruebas adjuntas; el staff podrá revisarlas.'
+    : 'Si tienes la hora aproximada, una captura o un enlace al mensaje, envíalo aquí para que el staff tenga más contexto.';
+  const reply = await sendTicketResponse(message, {
+    content: [
+      '<@' + message.author.id + '>, he registrado el reporte de ' + targetLabel + ' por **' + incident + '**.',
+      staffStatus,
+      evidenceHint
+    ].join('\n'),
+    allowedMentions: {
+      users: [message.author.id, targetUser.id],
+      roles: mentionStaff && guildConfig.staffRoleId ? [guildConfig.staffRoleId] : []
+    }
   });
-  if (!detection?.detected) return;
-
-  await storage.addAiQualitySignal({
-    id: `ai-quality-${message.id}`,
+  await saveTranscript(storage, reply, 'assistant');
+  await markTicketReportState({ storage, message, stage: 'escalated', targetUserId: targetUser.id, incident });
+  await persistAiLearningLesson({
+    storage,
     guildId: message.guild.id,
-    guildName: guildConfig?.guildName ?? ticket.guildName ?? message.guild.name,
     channelId: message.channel.id,
-    channelName: message.channel.name ?? ticket.channelName,
-    messageId: message.id,
-    userId: message.author.id,
-    username: message.author.username,
-    category: detection.category,
-    severity: detection.severity,
-    sentiment: detection.sentiment,
-    confidence: detection.confidence,
-    reason: detection.reason,
-    userMessage: buildTranscriptMessageContent(message).slice(0, 2400),
-    previousAiMessage: previousAiMessage?.content?.slice(0, 2400),
-    detectedBy: detection.detectedBy ?? 'ai',
-    createdAt: message.createdAt?.toISOString?.() ?? new Date().toISOString()
+    authorId: message.author.id,
+    authorName: message.author.username,
+    sourceId: message.id + '-report-escalated',
+    sourceMessage: message.content,
+    detection: { detected: true, category: 'report', severity: 'high', confidence: 98, detectedBy: 'report_flow' }
   });
+  return true;
+}
+
+function isUserReportMessage(content = '') {
+  const text = normalizeText(content);
+  if (!text) return false;
+  const mentionsTarget = /<@!?\d{16,24}>|@(?:\w[\w-]{1,31})/u.test(text);
+  const hasTargetWord = /\b(?:usuario|user|miembro|member|persona|alguien|moderador|moderadora)\b/.test(text);
+  const webIssue = /\b(?:web|pagina|sitio|dashboard|panel\s+web)\b/.test(text)
+    && /\b(?:error|fallo|problema|bug|mal\s+funcionamiento|no\s+funciona|caida|caido|roto)\b/.test(text);
+  if (webIssue && !/\b(?:insult|amenaz|acoso|abus|spam|estafa|phishing|racismo|discriminacion|chantaje|dox(?:xing)?)\b/.test(text)) return false;
+  const aboutAi = /\b(?:nexa|nexadesk|ia|ai|bot|asistente|robot)\b/.test(text);
+  if (aboutAi && !hasTargetWord && !mentionsTarget) return false;
+
+  const reportVerb = /\b(?:reportar|reporte|reporto|denunciar|denuncia|denuncio|queja|quejarme)\b/.test(text);
+  const incident = /\b(?:insult(?:o|os|ar|ado|ada|aron)?|amenaz(?:a|as|ar|ado|aron)?|acoso|acosar|abuso|abusar|spam|estafa|phishing|racismo|discriminacion|chantaje|dox(?:xing)?)\b/.test(text);
+  const explicitTarget = hasTargetWord || mentionsTarget;
+  const firstPersonIncident = /\b(?:me|mi|nos|nuestro|nuestra)\b/.test(text);
+  return (reportVerb && explicitTarget) || (incident && (explicitTarget || firstPersonIncident));
+}
+
+function resolveReportedUser(message, userMessages = []) {
+  const mentioned = [...(message.mentions?.users?.values?.() ?? [])]
+    .find((user) => user.id !== message.client?.user?.id);
+  if (mentioned) return { id: mentioned.id, label: mentioned.tag ?? mentioned.username ?? mentioned.id };
+
+  const currentIds = extractRawIds(message.content)
+    .filter((id) => id !== message.author?.id && id !== message.guild?.id && id !== message.client?.user?.id);
+  if (currentIds.length) return { id: currentIds[0], label: currentIds[0] };
+
+  for (const text of [...userMessages].reverse()) {
+    const ids = [...String(text).matchAll(/<@!?(\d{16,24})>/g)].map((match) => match[1]);
+    if (ids.length) return { id: ids[0], label: ids[0] };
+  }
+  return null;
+}
+
+function extractReportedIncident(text = '') {
+  const normalized = normalizeText(text);
+  if (/\binsult/.test(normalized)) return 'insultos';
+  if (/\bamenaz/.test(normalized)) return 'amenazas';
+  if (/\bacos|\babus/.test(normalized)) return 'acoso o abuso';
+  if (/\b(?:estafa|phishing|chantaje|dox|racismo|discriminacion)/.test(normalized)) return 'conducta grave';
+  if (/\bspam/.test(normalized)) return 'spam';
+  return '';
+}
+
+function hasReportEvidence(message, transcript = []) {
+  if (message.attachments?.size) return true;
+  return transcript.some((entry) => /\[adjunto:|\[attachment:|captura|imagen|video|enlace al mensaje/i.test(String(entry.content ?? '')));
+}
+
+async function markTicketReportState({ storage, message, stage, targetUserId = null, incident = '' }) {
+  await Promise.resolve(storage.addTranscriptMessage?.({
+    guildId: message.guild.id,
+    channelId: message.channel.id,
+    messageId: REPORT_MARKER + '-' + message.id + '-' + stage,
+    authorId: message.client.user?.id,
+    authorName: message.client.user?.username ?? 'NexaDesk',
+    authorBot: true,
+    role: 'system',
+    content: REPORT_MARKER + ' stage=' + stage + ' target=' + (targetUserId ?? 'pending') + ' incident=' + (incident || 'pending'),
+    createdAt: new Date().toISOString()
+  })).catch((error) => {
+    console.warn('Could not persist report state in ' + message.channel.id + ':', error?.message ?? error);
+  });
+}
+
+async function persistAiLearningLesson({ storage, guildId, channelId, authorId = null, authorName = null, sourceId = null, sourceMessage = '', detection }) {
+  if (typeof storage.addAiLearningLesson !== 'function' || !detection?.detected) return null;
+
+  const lesson = buildAiLearningLesson({
+    message: sourceMessage,
+    category: detection.category,
+    confidence: detection.confidence,
+    severity: detection.severity,
+    source: detection.detectedBy ?? 'quality_signal'
+  });
+  const updatedGuild = await storage.addAiLearningLesson(guildId, lesson).catch((error) => {
+    console.warn('Could not persist AI lesson in guild ' + guildId + ':', error?.message ?? error);
+    return null;
+  });
+  if (!updatedGuild) return null;
+
+  await Promise.resolve(storage.addTranscriptMessage?.({
+    guildId,
+    channelId,
+    messageId: AI_LEARNING_MARKER + '-' + (sourceId ?? Date.now()),
+    authorId,
+    authorName: authorName ?? 'NexaDesk Quality Radar',
+    authorBot: true,
+    role: 'system',
+    content: AI_LEARNING_MARKER + ' category=' + lesson.category + ' source=' + lesson.source + ' confidence=' + lesson.confidence + ' occurrences=' + lesson.occurrences + ' guidance=' + lesson.guidance,
+    createdAt: new Date().toISOString()
+  })).catch((error) => {
+    console.warn('Could not persist AI lesson note in ' + channelId + ':', error?.message ?? error);
+  });
+  return lesson;
+}
+
+async function maybeRecordAiQualitySignal({ storage, message, ticket, guildConfig }) {
+  const heuristic = detectAiQualitySignalHeuristic(message.content);
+  if (!heuristic.detected) return;
+
+  const transcript = await storage.listTranscriptMessages(message.channel.id, { limit: 24 }).catch(() => []);
+  const previousAiMessage = findPreviousAssistantTranscriptMessage(transcript, message.id);
+  const detection = heuristic;
+
+  if (typeof storage.addAiQualitySignal === 'function') {
+    await storage.addAiQualitySignal({
+      id: 'ai-quality-' + message.id,
+      guildId: message.guild.id,
+      guildName: guildConfig?.guildName ?? ticket.guildName ?? message.guild.name,
+      channelId: message.channel.id,
+      channelName: message.channel.name ?? ticket.channelName,
+      messageId: message.id,
+      userId: message.author.id,
+      username: message.author.username,
+      category: detection.category,
+      severity: detection.severity,
+      sentiment: detection.sentiment,
+      confidence: detection.confidence,
+      reason: detection.reason,
+      userMessage: buildTranscriptMessageContent(message).slice(0, 2400),
+      previousAiMessage: previousAiMessage?.content?.slice(0, 2400),
+      detectedBy: detection.detectedBy ?? 'heuristic',
+      createdAt: message.createdAt?.toISOString?.() ?? new Date().toISOString()
+    });
+  }
+
+  const lesson = await persistAiLearningLesson({
+    storage,
+    guildId: message.guild.id,
+    channelId: message.channel.id,
+    authorId: message.author.id,
+    authorName: message.author.username,
+    sourceId: message.id,
+    sourceMessage: message.content,
+    detection
+  });
+  if (lesson) {
+    console.log('NexaDesk AI lesson recorded in guild ' + message.guild.id + ': ' + lesson.category + ' (' + lesson.occurrences + ')');
+  }
 }
 
 function findPreviousAssistantTranscriptMessage(transcript = [], currentMessageId = null) {
@@ -8296,7 +8705,7 @@ async function captureInstalledGuildBackups({ client, storage, source = 'schedul
     });
     if (saved) captured += 1;
     if (saved?.fallback) {
-      stoppedReason = 'CockroachDB no tiene guild_backups aplicado; detengo el barrido horario tras un snapshot fallback para proteger el lease HA.';
+      stoppedReason = 'PostgreSQL no tiene guild_backups aplicado; detengo el barrido horario tras un snapshot fallback para proteger el lease HA.';
     }
     if (stoppedReason) break;
     await sleep(250);
@@ -8328,7 +8737,7 @@ export async function restoreGuildBackup(client, storage, { backupId, targetGuil
     throw new Error('Discord gateway is not active on this NexaDesk instance.');
   }
   const backup = await storage.getGuildBackupSnapshot(backupId);
-  if (!backup) throw new Error('No encuentro ese backup en CockroachDB.');
+  if (!backup) throw new Error('No encuentro ese backup en PostgreSQL.');
   const targetGuild = await client.guilds.fetch(targetGuildId);
   const result = await restoreGuildBackupWithRest({
     rest: client.rest,

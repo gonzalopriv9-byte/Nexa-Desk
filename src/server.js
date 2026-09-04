@@ -1,4 +1,4 @@
-﻿import express from 'express';
+import express from 'express';
 import helmet from 'helmet';
 import morgan from 'morgan';
 import cookieParser from 'cookie-parser';
@@ -15,7 +15,7 @@ import {
   inspectAdminAccessCode
 } from './admin-code.js';
 import { GroqClient } from './ai/groq-client.js';
-import { GLOBAL_BLACKLIST_ADMIN_USER_ID, buildGlobalBanCode, isBlacklistEntryActive, parseBlacklistDuration } from './blacklist.js';
+import { GLOBAL_BLACKLIST_ADMIN_USER_ID, GLOBAL_BAN_CODE_PREFIX, buildGlobalBanCode, isBlacklistEntryActive, normalizeDiscordUserId, parseBlacklistDuration } from './blacklist.js';
 import { normalizeTotpSecret, verifyTotpCode } from './docs-auth.js';
 import { discordEmojiUrl } from './emojis.js';
 import { buildExamAnswerRecord, buildHeuristicExamEvaluation, formatExamEvaluation, normalizeExamState } from './exam-mode.js';
@@ -26,8 +26,12 @@ import { DEFAULT_PREMIUM_MODULES, PREMIUM_ADDONS, PREMIUM_SALES_FEATURES, getPre
 import { isPremiumEntitled, normalizePremiumConfig, summarizePremiumConfig } from './premium.js';
 import { addManualPendingItem, buildLaunchPatch, buildReleaseState } from './release-gates.js';
 import { normalizeSecurityConfig, summarizeSecurityConfig } from './security.js';
+import { isTurnstileConfigured, verifyTurnstileToken } from './turnstile.js';
 import { buildTranscriptFileName, buildTranscriptText, verifyTranscriptAccessToken } from './transcripts.js';
 import { normalizeWelcomeConfig } from './welcome.js';
+import { normalizePartners, removeUnreferencedPartnerUploads, renderPartnersPage, savePartnerUpload } from './partners.js';
+import { buildBlacklistWebEntry, getBlacklistWebRecord, normalizeBlacklistDiscordIdentity, normalizeBlacklistWebEvidenceList, normalizeBlacklistWebLookup, renderBlacklistPage, serializeBlacklistWebRecord, saveBlacklistProofUpload } from './blacklist-web.js';
+import { checkXnProtectGlobalBan } from './xnprotect-blacklist.js';
 
 const DISCORD_API = 'https://discord.com/api/v10';
 const MANAGE_GUILD = 0x20n;
@@ -39,9 +43,21 @@ const UPLOADS_DIR = path.resolve(process.cwd(), 'data', 'uploads');
 const docsAuthAttempts = new Map();
 const adminAuthAttempts = new Map();
 const ADMIN_CODE_REPLAY_GRACE_MS = 2 * 60 * 1000;
+const XNPROTECT_PROOF_HOSTS = new Set([
+  'cdn.discordapp.com',
+  'media.discordapp.net',
+  'images-ext-1.discordapp.net',
+  'images-ext-2.discordapp.net'
+]);
+const XNPROTECT_PROOF_CACHE_TTL_MS = 5 * 60 * 1000;
+const XNPROTECT_PROOF_TIMEOUT_MS = 3_500;
+const XNPROTECT_PROOF_MAX_BYTES = 10_000_000;
+const xnProtectProofCache = new Map();
 
-export function createServer({ config, storage, bot, events }) {
+export function createServer({ config, storage, bot, discordClient = null, events }) {
   const app = express();
+  const discordIdentityCache = new Map();
+  const discordUsernameCache = new Map();
 
   app.use(helmet({ contentSecurityPolicy: false }));
   app.use(morgan('tiny'));
@@ -93,10 +109,10 @@ export function createServer({ config, storage, bot, events }) {
   app.get('/terms', (_req, res) => {
     res.type('html').send(renderLegalPage({
       type: 'terms',
-      updatedAt: '14 de mayo de 2026',
-      title: 'Terms and Conditions',
+      updatedAt: '1 de septiembre de 2026',
+      title: 'Términos y condiciones',
       eyebrow: 'NexaDesk Legal',
-      intro: 'Estas condiciones explican como puede usarse NexaDesk, que responsabilidades mantiene cada servidor y que limites tiene el servicio.',
+      intro: 'Estas condiciones describen el uso actual de NexaDesk, las responsabilidades del servidor y los límites del servicio.',
       sections: buildTermsSections()
     }));
   });
@@ -104,13 +120,355 @@ export function createServer({ config, storage, bot, events }) {
   app.get('/privacy', (_req, res) => {
     res.type('html').send(renderLegalPage({
       type: 'privacy',
-      updatedAt: '14 de mayo de 2026',
-      title: 'Privacy Policy',
+      updatedAt: '1 de septiembre de 2026',
+      title: 'Política de privacidad',
       eyebrow: 'NexaDesk Privacy',
-      intro: 'Esta politica resume que datos procesa NexaDesk para funcionar como bot de soporte, seguridad, voz, dashboard y transcripciones.',
+      intro: 'Esta política describe los datos que NexaDesk procesa para funcionar como bot de soporte, seguridad, voz, dashboard, IA y transcripciones.',
       sections: buildPrivacySections()
     }));
   });
+
+  app.get('/blacklist', asyncHandler(async (req, res) => {
+    const query = String(req.query.q ?? '').trim().slice(0, 200);
+    const session = getSession(req);
+    let record = null;
+    let error = '';
+    if (query) {
+      try {
+        const lookup = await resolveBlacklistLookup(query);
+        const [localLookup, xnLookup] = await Promise.all([
+          getBlacklistWebRecord({ storage, value: lookup.userId, identity: lookup.identity })
+            .then((value) => ({ ok: true, value }))
+            .catch((lookupError) => ({ ok: false, error: lookupError })),
+          checkXnProtectGlobalBan(lookup.userId)
+            .then((value) => ({ ok: true, value }))
+            .catch((lookupError) => ({ ok: false, error: lookupError }))
+        ]);
+
+        if (xnLookup.ok && xnLookup.value?.checked && xnLookup.value.blacklisted) {
+          record = await buildXnProtectBlacklistWebRecord({
+            userId: lookup.userId,
+            result: xnLookup.value,
+            identity: lookup.identity
+          });
+        } else if (localLookup.ok && localLookup.value) {
+          record = localLookup.value;
+        } else if (localLookup.ok && xnLookup.ok && xnLookup.value?.checked) {
+          // Both sources were checked successfully and neither contains a record.
+          record = null;
+        } else if (localLookup.ok) {
+          const xnError = xnLookup.ok ? xnLookup.value?.error : xnLookup.error?.message;
+          console.warn('Public blacklist lookup could not verify XN Protect for ' + lookup.userId + ': ' + (xnError || 'unknown error'));
+          throw new Error('No se pudo comprobar XN Protect en este momento. Inténtalo de nuevo en unos minutos.');
+        } else {
+          throw localLookup.error || xnLookup.error || new Error('No se pudo consultar el registro.');
+        }
+      } catch (lookupError) {
+        error = lookupError?.message ?? 'La búsqueda no es válida.';
+      }
+    }
+    res.type('html').send(renderBlacklistPage({
+      query,
+      record,
+      error,
+      isOwner: session?.user?.id === GLOBAL_BLACKLIST_ADMIN_USER_ID
+    }));
+  }));
+
+  async function buildXnProtectBlacklistWebRecord({ userId, result, identity = null }) {
+    const banCode = buildGlobalBanCode(userId);
+    const createdAt = normalizeXnProtectBlacklistDate(result?.since);
+    const expiresAt = normalizeXnProtectBlacklistDate(result?.expires);
+    const proof = await cacheXnProtectProof(result?.proof);
+    const evidence = proof.url
+      ? [{
+          id: 'xnprotect-web-' + userId,
+          userId,
+          banCode,
+          attachmentUrl: proof.url,
+          description: 'Prueba proporcionada por XN Protect',
+          createdBy: 'XN Protect Database',
+          createdAt: createdAt || new Date().toISOString()
+        }]
+      : [];
+
+    return serializeBlacklistWebRecord({
+      entry: {
+        userId,
+        banCode,
+        reason: String(result?.reason ?? '').trim() || 'XN Protect no devolvió un motivo.',
+        duration: expiresAt ? 'Hasta la fecha indicada por XN Protect' : 'Permanente',
+        expiresAt,
+        active: true,
+        createdBy: 'XN Protect Database',
+        createdAt,
+        updatedAt: createdAt
+      },
+      evidence,
+      proofNote: proof.note,
+      identity
+    });
+  }
+
+  async function resolveBlacklistLookup(value) {
+    const raw = normalizeDiscordUserId(value);
+    const normalized = raw.toLowerCase();
+    if (normalized.startsWith(GLOBAL_BAN_CODE_PREFIX) || /^\d{15,21}$/.test(raw)) {
+      const userId = normalizeBlacklistWebLookup(raw).userId;
+      const identity = await resolveDiscordIdentityById(userId);
+      return { userId, identity };
+    }
+
+    const identity = await resolveDiscordIdentityByUsername(raw);
+    if (!identity?.id || !/^\d{15,21}$/.test(identity.id)) {
+      throw new Error('No pude localizar ese username. Prueba con el username exacto o con el ID de Discord.');
+    }
+    return { userId: identity.id, identity };
+  }
+
+  async function resolveDiscordIdentityById(userId) {
+    const normalizedId = normalizeDiscordUserId(userId);
+    const cachedResult = discordIdentityCache.get(normalizedId);
+    if (cachedResult && Date.now() - cachedResult.checkedAt < 5 * 60 * 1000) return cachedResult.identity;
+
+    const cached = findCachedDiscordIdentityById(normalizedId);
+    if (cached) {
+      discordIdentityCache.set(normalizedId, { checkedAt: Date.now(), identity: cached });
+      return cached;
+    }
+
+    const fetched = await fetchDiscordUserWithBot(config, normalizedId).catch(() => null);
+    const identity = normalizeBlacklistDiscordIdentity(fetched, normalizedId);
+    discordIdentityCache.set(normalizedId, { checkedAt: Date.now(), identity });
+    if (discordIdentityCache.size > 500) discordIdentityCache.delete(discordIdentityCache.keys().next().value);
+    return identity;
+  }
+
+  async function resolveDiscordIdentityByUsername(value) {
+    const query = normalizeDiscordSearchValue(value);
+    if (!query) return null;
+    const cachedUsername = discordUsernameCache.get(query);
+    if (cachedUsername && Date.now() - cachedUsername.checkedAt < 5 * 60 * 1000) return cachedUsername.identity;
+
+    const remember = (identity) => {
+      discordUsernameCache.set(query, { checkedAt: Date.now(), identity });
+      if (discordUsernameCache.size > 300) discordUsernameCache.delete(discordUsernameCache.keys().next().value);
+      return identity;
+    };
+    const cached = findCachedDiscordIdentities(query);
+    if (cached.length === 1) return remember(cached[0]);
+    if (cached.length > 1) {
+      throw new Error('Hay varias personas con ese nombre. Usa el username exacto o el ID de Discord.');
+    }
+
+    const blacklistEntries = await storage.listBlacklistEntries().catch(() => []);
+    const blacklistIdentities = uniqueDiscordIdentities(await Promise.all(
+      blacklistEntries
+        .slice(0, 100)
+        .map((entry) => resolveDiscordIdentityById(entry?.userId))
+    ));
+    const blacklistMatches = blacklistIdentities.filter((identity) => matchesDiscordIdentity(identity, query));
+    if (blacklistMatches.length === 1) return remember(blacklistMatches[0]);
+    if (blacklistMatches.length > 1) {
+      const exact = blacklistMatches.filter((identity) => isExactDiscordUsernameMatch(identity, query));
+      if (exact.length === 1) return remember(exact[0]);
+      throw new Error('Hay varias personas con ese nombre. Usa el username exacto o el ID de Discord.');
+    }
+
+    const configs = await storage.listGuildConfigs().catch(() => []);
+    const guildIds = await getInstalledGuildIds(bot, configs);
+    const discovered = await searchDiscordGuildMembers({ query, guildIds });
+    const unique = uniqueDiscordIdentities(discovered);
+    if (unique.length === 1) return remember(unique[0]);
+    if (unique.length > 1) {
+      const exact = unique.filter((identity) => isExactDiscordUsernameMatch(identity, query));
+      if (exact.length === 1) return remember(exact[0]);
+      throw new Error('Hay varias personas con ese nombre. Usa el username exacto o el ID de Discord.');
+    }
+
+    // Discord no ofrece una búsqueda global de usuarios por username. El bot solo puede
+    // resolver nombres que conoce por caché, por una guild conectada o por un registro previo.
+    return remember(null);
+  }
+
+  function findCachedDiscordIdentityById(userId) {
+    const target = normalizeDiscordUserId(userId);
+    const users = collectCachedDiscordUsers();
+    const user = users.find((candidate) => normalizeDiscordUserId(candidate?.id) === target);
+    return user ? normalizeBlacklistDiscordIdentity(user, target) : null;
+  }
+
+  function findCachedDiscordIdentities(query) {
+    const normalizedQuery = normalizeDiscordSearchValue(query);
+    const matches = collectCachedDiscordUsers()
+      .filter((user) => matchesDiscordIdentity(user, normalizedQuery))
+      .map((user) => normalizeBlacklistDiscordIdentity(user, user?.id));
+    return uniqueDiscordIdentities(matches);
+  }
+
+  function collectCachedDiscordUsers() {
+    const users = new Map();
+    const add = (user) => {
+      const id = normalizeDiscordUserId(user?.id);
+      if (id && user && typeof user === 'object') users.set(id, user);
+    };
+
+    for (const user of discordClient?.users?.cache?.values?.() ?? []) add(user);
+    for (const guild of discordClient?.guilds?.cache?.values?.() ?? []) {
+      for (const member of guild?.members?.cache?.values?.() ?? []) add(member?.user ?? member);
+    }
+    return [...users.values()];
+  }
+
+  async function searchDiscordGuildMembers({ query, guildIds }) {
+    const ids = [...guildIds].filter((id) => /^\d{15,21}$/.test(String(id))).slice(0, 40);
+    if (!ids.length || !config.DISCORD_TOKEN) return [];
+    const results = await Promise.all(ids.map((guildId) => fetchDiscordGuildMemberSearch(config, guildId, query)));
+    return results.flat();
+  }
+
+  function uniqueDiscordIdentities(identities) {
+    const unique = new Map();
+    for (const identity of identities) {
+      const id = normalizeDiscordUserId(identity?.id);
+      if (id && !unique.has(id)) unique.set(id, identity);
+    }
+    return [...unique.values()];
+  }
+
+  function isExactDiscordUsernameMatch(identity, query) {
+    const normalized = normalizeDiscordSearchValue(query);
+    return normalizeDiscordSearchValue(identity?.username) === normalized;
+  }
+
+  function matchesDiscordIdentity(user, query) {
+    const normalized = normalizeDiscordSearchValue(query);
+    const username = normalizeDiscordSearchValue(user?.username);
+    const globalName = normalizeDiscordSearchValue(user?.global_name ?? user?.globalName);
+    const displayName = normalizeDiscordSearchValue(user?.display_name ?? user?.displayName ?? user?.nick);
+    const legacyTag = user?.discriminator && user.discriminator !== '0'
+      ? normalizeDiscordSearchValue(String(user.username ?? '') + '#' + user.discriminator)
+      : '';
+    const tag = normalizeDiscordSearchValue(user?.tag);
+    return [username, globalName, displayName, legacyTag, tag].some((value) => value && value === normalized);
+  }
+
+  function normalizeDiscordSearchValue(value) {
+    return normalizeDiscordUserId(value).replace(/^@+/, '').toLowerCase();
+  }
+
+  async function fetchDiscordGuildMemberSearch(runtimeConfig, guildId, query) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 2_500);
+    try {
+      const url = new URL(DISCORD_API + '/guilds/' + encodeURIComponent(guildId) + '/members/search');
+      url.searchParams.set('query', String(query).slice(0, 100));
+      url.searchParams.set('limit', '25');
+      const response = await fetch(url, {
+        headers: {
+          authorization: 'Bot ' + runtimeConfig.DISCORD_TOKEN,
+          accept: 'application/json'
+        },
+        signal: controller.signal
+      });
+      if (!response.ok) return [];
+      const members = await response.json();
+      return (Array.isArray(members) ? members : [])
+        .map((member) => ({ ...(member?.user ?? {}), nick: member?.nick }))
+        .filter((user) => matchesDiscordIdentity(user, normalizeDiscordSearchValue(query)))
+        .map((user) => normalizeBlacklistDiscordIdentity(user, user.id));
+    } catch {
+      return [];
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  async function cacheXnProtectProof(value) {
+    const raw = String(value ?? '').trim();
+    if (!raw) return { url: '', note: '' };
+
+    let source;
+    try {
+      source = new URL(raw);
+    } catch {
+      return { url: '', note: 'XN Protect indicó una prueba, pero la URL no es válida.' };
+    }
+    if (source.protocol !== 'https:' || !XNPROTECT_PROOF_HOSTS.has(source.hostname.toLowerCase())) {
+      return { url: '', note: 'XN Protect indicó una prueba, pero su origen no está disponible para visualización segura.' };
+    }
+
+    const cacheKey = source.origin + source.pathname;
+    const cached = xnProtectProofCache.get(cacheKey);
+    if (cached && Date.now() - cached.checkedAt < XNPROTECT_PROOF_CACHE_TTL_MS) return cached.value;
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), XNPROTECT_PROOF_TIMEOUT_MS);
+    let valueToCache;
+    try {
+      const response = await fetch(source.toString(), {
+        headers: { accept: 'image/png,image/jpeg,image/webp,image/gif' },
+        signal: controller.signal
+      });
+      if (!response.ok) throw new Error('origin HTTP ' + response.status);
+      const declaredLength = Number(response.headers.get('content-length') || 0);
+      if (declaredLength > XNPROTECT_PROOF_MAX_BYTES) throw new Error('proof too large');
+      const buffer = Buffer.from(await response.arrayBuffer());
+      if (!buffer.length || buffer.length > XNPROTECT_PROOF_MAX_BYTES) throw new Error('invalid proof size');
+      const mimeType = inferXnProtectProofMimeType(response.headers.get('content-type'), source.pathname);
+      if (!mimeType) throw new Error('unsupported proof type');
+      const upload = await saveBlacklistProofUpload({
+        buffer,
+        mimeType,
+        fileName: path.basename(source.pathname)
+      });
+      valueToCache = { url: upload.url, note: '' };
+    } catch (error) {
+      console.warn('Could not cache XN Protect proof ' + cacheKey + ': ' + (error?.message ?? error));
+      valueToCache = { url: '', note: 'XN Protect indicó una prueba, pero la imagen ya no está disponible en su origen.' };
+    } finally {
+      clearTimeout(timeout);
+    }
+
+    xnProtectProofCache.set(cacheKey, { checkedAt: Date.now(), value: valueToCache });
+    if (xnProtectProofCache.size > 256) xnProtectProofCache.delete(xnProtectProofCache.keys().next().value);
+    return valueToCache;
+  }
+
+  function inferXnProtectProofMimeType(contentType, pathname) {
+    const header = String(contentType ?? '').toLowerCase().split(';')[0].trim();
+    if (['image/png', 'image/jpeg', 'image/jpg', 'image/webp', 'image/gif'].includes(header)) return header;
+    const extension = path.extname(pathname).toLowerCase();
+    return ({
+      '.png': 'image/png',
+      '.jpg': 'image/jpeg',
+      '.jpeg': 'image/jpeg',
+      '.webp': 'image/webp',
+      '.gif': 'image/gif'
+    })[extension] || '';
+  }
+
+  function normalizeXnProtectBlacklistDate(value) {
+    if (value === null || value === undefined || String(value).trim() === '') return null;
+    const numeric = Number(value);
+    if (Number.isFinite(numeric)) {
+      const date = new Date(numeric < 10_000_000_000 ? numeric * 1000 : numeric);
+      return Number.isFinite(date.getTime()) ? date.toISOString() : null;
+    }
+    const date = new Date(String(value));
+    return Number.isFinite(date.getTime()) ? date.toISOString() : null;
+  }
+
+  app.get('/partners', asyncHandler(async (req, res) => {
+    const settings = await storage.getGlobalSettings().catch(() => ({}));
+    const session = getSession(req);
+    res.type('html').send(renderPartnersPage({
+      partners: settings.partners,
+      isOwner: isPartnerEditorUser(session?.user?.id, config),
+      session,
+      dashboardUrl: config.DASHBOARD_PUBLIC_URL
+    }));
+  }));
 
   app.get('/exam/:channelId', asyncHandler(async (req, res) => {
     const ticket = await storage.getTicket(req.params.channelId).catch(() => null);
@@ -294,7 +652,30 @@ export function createServer({ config, storage, bot, events }) {
     res.type('html').send(renderLogin(config));
   });
 
-  app.get('/auth/discord', (req, res) => {
+  app.post('/auth/discord', asyncHandler(async (req, res) => {
+    if (!config.DISCORD_CLIENT_SECRET) {
+      res.status(500).type('html').send(renderLogin(config, {
+        error: 'DISCORD_CLIENT_SECRET is not configured.'
+      }));
+      return;
+    }
+
+    if (config.TURNSTILE_ENABLED) {
+      const verification = await verifyTurnstileToken({
+        config,
+        token: req.body['cf-turnstile-response'],
+        remoteIp: getRequestIp(req)
+      });
+
+      if (!verification.ok) {
+        console.warn(`Turnstile login verification failed: ${verification.reason}`);
+        res.status(403).type('html').send(renderLogin(config, {
+          error: turnstileErrorMessage(verification.reason)
+        }));
+        return;
+      }
+    }
+
     const state = crypto.randomBytes(18).toString('hex');
     res.cookie('nexadesk_oauth_state', state, {
       httpOnly: true,
@@ -311,6 +692,10 @@ export function createServer({ config, storage, bot, events }) {
     url.searchParams.set('scope', 'identify guilds');
     url.searchParams.set('state', state);
     res.redirect(url.toString());
+  }));
+
+  app.get('/auth/discord', (_req, res) => {
+    res.redirect('/login');
   });
 
   app.get('/auth/discord/complete', (req, res) => {
@@ -664,6 +1049,84 @@ export function createServer({ config, storage, bot, events }) {
     }));
   }));
 
+  app.post('/partners/api/upload', requirePartnerEditor(config), express.raw({
+    type: ['image/*', 'video/*'],
+    limit: '50mb'
+  }), asyncHandler(async (req, res) => {
+    if (!Buffer.isBuffer(req.body)) {
+      res.status(400).json({ error: 'No se recibió ningún fichero multimedia.' });
+      return;
+    }
+    const upload = await savePartnerUpload({
+      buffer: req.body,
+      mimeType: req.get('content-type'),
+      fileName: req.get('x-file-name'),
+      durationSeconds: req.get('x-media-duration')
+    });
+    res.json(upload);
+  }));
+
+  app.post('/blacklist/api/upload', requireGlobalAdmin, express.raw({
+    type: ['image/*'],
+    limit: '10mb'
+  }), asyncHandler(async (req, res) => {
+    if (!Buffer.isBuffer(req.body)) {
+      res.status(400).json({ error: 'No se recibió ninguna imagen.' });
+      return;
+    }
+    const upload = await saveBlacklistProofUpload({
+      buffer: req.body,
+      mimeType: req.get('content-type'),
+      fileName: req.get('x-file-name')
+    });
+    res.json(upload);
+  }));
+
+  app.put('/blacklist/api', requireGlobalAdmin, asyncHandler(async (req, res) => {
+    const lookup = normalizeBlacklistWebLookup(req.body?.userId);
+    const existing = await storage.getBlacklistEntry(lookup.userId);
+    const entry = buildBlacklistWebEntry(
+      { ...(req.body ?? {}), userId: lookup.userId },
+      existing,
+      req.session.user.username || req.session.user.id
+    );
+    const savedEntry = await storage.upsertBlacklistEntry(entry);
+    let savedEvidence;
+    if (Array.isArray(req.body?.evidence)) {
+      const evidence = normalizeBlacklistWebEvidenceList(req.body.evidence, {
+        userId: savedEntry.userId,
+        banCode: savedEntry.banCode,
+        createdBy: savedEntry.createdBy || req.session.user.username || req.session.user.id
+      });
+      savedEvidence = await storage.replaceBlacklistEvidence(savedEntry.userId, evidence);
+    } else {
+      savedEvidence = await storage.listBlacklistEvidence(savedEntry.userId);
+    }
+    events?.publish?.('blacklist.web.updated', {
+      userId: savedEntry.userId,
+      updatedBy: req.session.user.username || req.session.user.id
+    });
+    res.json({ record: serializeBlacklistWebRecord({ entry: savedEntry, evidence: savedEvidence }) });
+  }));
+
+  app.post('/partners/api', requirePartnerEditor(config), asyncHandler(async (req, res) => {
+    if (!Array.isArray(req.body?.partners)) {
+      res.status(400).json({ error: 'La lista de partners no es válida.' });
+      return;
+    }
+    if (req.body.partners.length > 24) {
+      res.status(400).json({ error: 'No puedes publicar más de 24 partners.' });
+      return;
+    }
+    const settings = await storage.getGlobalSettings().catch(() => ({}));
+    const previous = normalizePartners(settings.partners);
+    const partners = normalizePartners(req.body.partners);
+    const saved = await storage.updateGlobalSettings({ partners });
+    await removeUnreferencedPartnerUploads(previous, partners);
+    events?.publish?.('partners.updated', { partners, updatedBy: req.session.user.username || req.session.user.id });
+    res.json({ partners: normalizePartners(saved.partners) });
+  }));
+
   app.get('/owner/api/release', requireGlobalAdmin, asyncHandler(async (req, res) => {
     const settings = await storage.getGlobalSettings().catch(() => ({}));
     res.json({ release: buildReleaseState(settings.releaseControl, { isOwner: true }) });
@@ -841,7 +1304,7 @@ export function createServer({ config, storage, bot, events }) {
   app.post('/api/premium/checkout', asyncHandler(async (req, res) => {
     const checkoutConfig = getPremiumCheckoutConfig(config);
     if (!checkoutConfig.configured) {
-      res.status(503).json({ error: 'PayPal no esta configurado todavia. Anade PAYPAL_CLIENT_ID/PAYPAL_CLIENT_SECRET o PREMIUM_PAYMENT_URL en Render.' });
+      res.status(503).json({ error: 'PayPal no esta configurado todavia. Anade PAYPAL_CLIENT_ID/PAYPAL_CLIENT_SECRET o PREMIUM_PAYMENT_URL en el .env de la Raspberry Pi.' });
       return;
     }
 
@@ -1647,10 +2110,10 @@ function getPayPalApprovalUrl(order = {}) {
 function normalizeError(error) {
   const message = error instanceof Error ? error.message : String(error ?? '');
   if (/Expected token to be set/i.test(message)) {
-    return 'Falta DISCORD_TOKEN en Render. Pon el token actual del bot en Environment y redeploy para cargar roles, canales y paneles.';
+    return 'Falta DISCORD_TOKEN en la Raspberry Pi. Configura el token actual en el .env local y reinicia PM2 para cargar roles, canales y paneles.';
   }
   if (/401|Unauthorized|Invalid Form Body|TOKEN_INVALID|invalid token/i.test(message)) {
-    return 'El DISCORD_TOKEN configurado en Render no es valido o fue reseteado. Actualizalo con el token actual del bot y redeploy.';
+    return 'El DISCORD_TOKEN configurado en la Raspberry Pi no es valido o fue reseteado. Actualiza el .env y reinicia PM2.';
   }
   if (error instanceof Error) return error.message;
   if (typeof error === 'string') return error;
@@ -1659,6 +2122,27 @@ function normalizeError(error) {
   } catch {
     return 'Unknown error';
   }
+}
+
+function isPartnerEditorUser(userId, config) {
+  const normalizedUserId = String(userId ?? '').trim();
+  if (!normalizedUserId) return false;
+  if (normalizedUserId === GLOBAL_BLACKLIST_ADMIN_USER_ID) return true;
+  return String(config?.PARTNER_EDITOR_USER_IDS ?? '')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .includes(normalizedUserId);
+}
+
+function requirePartnerEditor(config) {
+  return (req, res, next) => {
+    if (!isPartnerEditorUser(req.session?.user?.id, config)) {
+      res.status(403).json({ error: 'Partner editor access required.' });
+      return;
+    }
+    next();
+  };
 }
 
 function requireGlobalAdmin(req, res, next) {
@@ -1825,6 +2309,19 @@ async function discordFetch(path, accessToken) {
 
 function getRedirectUri(config) {
   return `${config.DASHBOARD_PUBLIC_URL.replace(/\/$/, '')}/auth/discord/callback`;
+}
+
+function turnstileErrorMessage(reason) {
+  switch (reason) {
+    case 'missing-token':
+      return 'Completa la verificación de seguridad antes de continuar.';
+    case 'timeout':
+      return 'La verificación tardó demasiado. Recarga la página e inténtalo de nuevo.';
+    case 'not_configured':
+      return 'La protección anti-bots no está configurada correctamente.';
+    default:
+      return 'No hemos podido validar la verificación de seguridad. Inténtalo de nuevo.';
+  }
 }
 
 function canManageGuild(guild) {
@@ -2301,7 +2798,7 @@ function defaultStatusComponents() {
     { name: 'Bot Discord', state: 'operational', detail: 'Atendiendo tickets y comandos.' },
     { name: 'Dashboard', state: 'operational', detail: 'Panel web disponible.' },
     { name: 'IA de soporte', state: 'operational', detail: 'Respuestas y contexto activos.' },
-    { name: 'CockroachDB', state: 'operational', detail: 'Datos y transcripciones sincronizados.' },
+    { name: 'PostgreSQL', state: 'operational', detail: 'Datos y transcripciones sincronizados.' },
     { name: 'Voz Pro', state: 'operational', detail: 'STT/TTS disponible segun plan.' }
   ];
 }
@@ -2592,7 +3089,7 @@ async function buildDashboardAssistantReply({ config, message, guild, stats, act
         'Posicionamiento clave: NexaDesk no sustituye sistemas de tickets; actua como capa IA compatible con Ticket King, XN Tickets, Guild Manager y paneles propios.',
         'En Configuracion se elige categoria, rol staff, prompt del servidor, informacion del servidor, canal/plantilla de alianzas y Security Guard.',
         'Descubrimiento inteligente escanea canales y detecta anuncios, normas, FAQ, soporte y categorias aunque usen tipografias raras.',
-        'En Componentes se crean, editan y eliminan opciones del menu con preguntas previas, primer mensaje y modo Texto, Voz Pro o Modo examen.',
+        'En Componentes se crean, editan y eliminan opciones del menu con preguntas previas, primer mensaje y modo Texto, Voz Pro, Modo examen o Solo staff (sin IA).',
         'En Paneles se publica, edita y elimina el embed, boton o menu en un canal de Discord; los botones tambien pueden abrir tickets de voz Pro o examenes.',
         'Para borrar paneles: Paneles > Paneles de este servidor > Eliminar panel. Para borrar componentes: Componentes > Componentes activos > Eliminar.',
         'Las imagenes de panel se suben desde el dispositivo en Paneles > Embed > Subir thumbnail/Subir imagen grande.',
@@ -3091,7 +3588,7 @@ function renderDocsDisabled(config) {
         <img src="/assets/nexadesk-logo.svg" alt="NexaDesk" class="gate-logo">
         <p class="kicker">NexaDesk internal vault</p>
         <h1>Docs aun no esta configurado.</h1>
-        <p>Define <code>DOCS_TOTP_SECRET</code> en Render y en la Pi para activar el acceso con Google Authenticator.</p>
+        <p>Define <code>DOCS_TOTP_SECRET</code> en el .env de la Raspberry Pi para activar el acceso con Google Authenticator.</p>
         <div class="notice">
           <strong>Setup recomendado</strong>
           <span>Genera un secreto base32 privado, guardalo como variable de entorno y anadelo manualmente a Google Authenticator con issuer <code>${escapeHtml(config.DOCS_TOTP_ISSUER)}</code>.</span>
@@ -3166,7 +3663,7 @@ function renderAdminGate({ config, error = '', codeStatus = null }) {
         <img src="/assets/nexadesk-logo.svg" alt="NexaDesk" class="gate-logo">
         <p class="kicker">Panel oculto</p>
         <h1>Introduce el codigo de rotacion</h1>
-        <p>Pide un codigo temporal con <code>/code</code> en Discord. La web lo emite y el bot solo lo solicita, asi evitamos codigos creados en la PI que Render no pueda validar. Esta sesion caduca en ${escapeHtml(String(config.DOCS_SESSION_MINUTES))} minutos.</p>
+        <p>Pide un codigo temporal con <code>/code</code> en Discord. La web lo emite y el bot solo lo solicita, asi mantenemos la validacion en la misma Raspberry Pi. Esta sesion caduca en ${escapeHtml(String(config.DOCS_SESSION_MINUTES))} minutos.</p>
         <div class="notice">
           <strong>${escapeHtml(status.label)}</strong>
           <span>${escapeHtml(statusText)}</span>
@@ -3690,7 +4187,7 @@ function renderDocsVault({ config, session }) {
           <div>
             <p class="kicker">NexaDesk confidential</p>
             <h1>Documentacion sensible del bot</h1>
-            <p>Arquitectura, secretos, despliegue, seguridad, IA, voz, CockroachDB y playbooks operativos. Valores criticos redacted por seguridad.</p>
+            <p>Arquitectura, secretos, despliegue, seguridad, IA, voz, PostgreSQL y playbooks operativos. Valores criticos redacted por seguridad.</p>
           </div>
           <aside>
             <strong>Sesion protegida</strong>
@@ -3770,7 +4267,7 @@ function buildDocsSections(config) {
     ['DISCORD_CLIENT_SECRET', secretState(config.DISCORD_CLIENT_SECRET), 'OAuth Discord para login de dashboard.'],
     ['SESSION_SECRET', secretState(config.SESSION_SECRET), 'Firma sesiones dashboard y docs. Debe ser largo y privado.'],
     ['DOCS_TOTP_SECRET', secretState(config.DOCS_TOTP_SECRET), 'Secreto base32 para Google Authenticator. No subir a GitHub.'],
-    ['DATABASE_URL', secretState(config.DATABASE_URL), 'Conexión privada a CockroachDB/PostgreSQL. Nunca exponer al cliente.'],
+    ['DATABASE_URL', secretState(config.DATABASE_URL), 'Conexión privada a PostgreSQL. Nunca exponer al cliente.'],
     ['GROQ_API_KEY', secretState(config.GROQ_API_KEY), 'Cuenta IA primaria.'],
     ['GROQ_FALLBACK_API_KEYS', secretState(config.GROQ_FALLBACK_API_KEYS), 'Cuentas IA backup separadas por coma.'],
     ['AKIOMAE_API_KEY', secretState(config.AKIOMAE_API_KEY), 'Fallback externo cuando Groq agote limites.'],
@@ -3796,9 +4293,9 @@ function buildDocsSections(config) {
       summary: 'Vision global de como esta dividido NexaDesk y que piezas no deben filtrarse.',
       blocks: [
         { type: 'list', items: [
-          'Render sirve la dashboard publica y puede actuar como standby HA con RUN_BOT=true + BOT_HA_ENABLED=true.',
+          'La Raspberry Pi sirve la dashboard publica y ejecuta el worker del bot con PM2.',
           'La Raspberry Pi mantiene el liderazgo principal del bot con BOT_INSTANCE_ID=pi-main.',
-          'CockroachDB guarda configuracion, paneles, componentes, tickets, transcripciones, feedback de tickets y blacklist interna.',
+          'PostgreSQL guarda configuracion, paneles, componentes, tickets, transcripciones, feedback de tickets y blacklist interna.',
           'Quality Radar guarda senales en ai_quality_signals cuando el usuario se queja de que NexaDesk/IA funciona mal, se equivoca, repite, no ve imagenes, falla en voz o genera enfado.',
           'Groq procesa soporte IA, vision, STT y parte de TTS; Akiomae queda como fallback final.',
           'XN Protect aporta blacklist global, Automod textual ofensivo/malicioso y Antiscam de imagenes. NexaDesk acredita la fuente y no banea automaticamente por blacklist externa.',
@@ -3834,10 +4331,10 @@ function buildDocsSections(config) {
       summary: 'Donde corre cada parte y como recuperarla si se cae.',
       blocks: [
         { type: 'table', headers: ['Pieza', 'Ubicacion', 'Notas'], rows: [
-          ['Dashboard web + standby', 'Render Web Service', 'Puede correr RUN_BOT=true con BOT_HA_ENABLED=true como backup del worker.'],
+          ['Dashboard web + worker', 'Raspberry Pi + PM2', 'Ejecuta la dashboard y el worker en el mismo equipo.'],
           ['Bot worker principal', 'Raspberry Pi /home/pi/nexadesk', 'PM2 NexaDesk con BOT_INSTANCE_ID=pi-main; health local en puerto 3010.'],
-          ['Repositorio', 'github.com/gonzalopriv9-byte/Nexa-Desk', 'main despliega Render si auto-deploy esta activo.'],
-          ['Dominio dashboard', 'https://nexa-desk.onrender.com/', 'OAuth redirect debe apuntar a /auth/discord/callback.']
+          ['Repositorio', 'github.com/gonzalopriv9-byte/Nexa-Desk', 'main contiene la version que se actualiza en la Raspberry Pi.'],
+          ['Dominio dashboard', 'https://nexa-desk.com/', 'OAuth redirect debe apuntar a /auth/discord/callback.']
         ] },
         { type: 'code', value: 'systemctl status nexadesk\njournalctl -u nexadesk -n 80 --no-pager\ncurl -fsS http://127.0.0.1:3010/health' }
       ]
@@ -3869,7 +4366,7 @@ function buildDocsSections(config) {
           ['Otros bots/categorias', 'Nuevo canal en categoria configurada por /setup o dashboard.', 'Registra ticket si encaja, guarda transcript y atiende segun prompt del servidor.'],
           ['Staff humano', 'Staff escribe, responde o toma el ticket.', 'NexaDesk pregunta si se encargan; si aceptan, IA queda en modo silencio salvo mencion directa.'],
           ['Cierre propio', '/ticket cerrar o cierre por intencion clara del usuario.', 'Guarda transcripcion, intenta enviar MD al opener, pide rating y actualiza dashboard.'],
-          ['Cierre de terceros', 'Canal eliminado por otro bot.', 'El bot intenta capturar transcript previo con mensajes guardados, manda MD con feedback y deja registro en CockroachDB si la tabla esta aplicada.'],
+          ['Cierre de terceros', 'Canal eliminado por otro bot.', 'El bot intenta capturar transcript previo con mensajes guardados, manda MD con feedback y deja registro en PostgreSQL si la tabla esta aplicada.'],
           ['Growth Engine', 'Usuario pulsa rating en el MD post-ticket.', 'Guarda ticket_feedback, actualiza estadisticas, publica review si Premium lo permite o avisa Churn Radar si rating bajo.']
         ] },
         { type: 'list', items: [
@@ -3882,7 +4379,7 @@ function buildDocsSections(config) {
       ]
     },
     {
-      title: 'CockroachDB y datos guardados',
+      title: 'PostgreSQL y datos guardados',
       classification: 'Data model',
       summary: 'Tablas, contenido guardado y decisiones de privacidad.',
       blocks: [
@@ -3896,7 +4393,7 @@ function buildDocsSections(config) {
           ['global_blacklist_evidence', 'URLs de pruebas y adjuntos.', 'Alto: evidencias privadas.']
         ] },
         { type: 'list', items: [
-          'Produccion debe mostrar "NexaDesk storage backend: CockroachDB" al arrancar.',
+          'Produccion debe mostrar "NexaDesk storage backend: PostgreSQL" al arrancar.',
           'El service_role solo vive en backend. Nunca se manda al navegador.',
           'La dashboard filtra servidores por OAuth: owner, Administrator o Manage Server.'
         ] }
@@ -3945,7 +4442,7 @@ function buildDocsSections(config) {
           'La seccion Premium usa paleta dorada y solo abre si el usuario tiene al menos un servidor con premium activo.',
           'Premium no se ralentiza durante mantenimiento global; los servidores Free reciben aviso al abrir ticket.',
           'El antiguo modulo de musica fue retirado para centrar el producto en soporte, seguridad, voz, alianzas y transcripciones.',
-          'Premium se activa con /activarpremium servidor:<ID> por el owner autorizado o manualmente en CockroachDB.'
+          'Premium se activa con /activarpremium servidor:<ID> por el owner autorizado o manualmente en PostgreSQL.'
         ] }
       ]
     },
@@ -3972,12 +4469,12 @@ function buildDocsSections(config) {
       summary: 'Que hacer cuando algo se rompe o hay riesgo.',
       blocks: [
         { type: 'table', headers: ['Incidente', 'Accion inmediata', 'Despues'], rows: [
-          ['Token Discord reseteado', 'Actualizar DISCORD_TOKEN en Pi y Render; reiniciar nexadesk.', 'Revisar logs de reconnect y evitar loops.'],
+          ['Token Discord reseteado', 'Actualizar DISCORD_TOKEN en el .env de la Pi y reiniciar PM2.', 'Revisar logs de reconnect y evitar loops.'],
           ['Bot offline', 'systemctl restart nexadesk; revisar journalctl.', 'Verificar intents, token y conectividad.'],
-          ['Render dashboard falla', 'Revisar env vars y logs de Render.', 'Confirmar token, CockroachDB y estado del lease HA si RUN_BOT=true.'],
-          ['CockroachDB missing column/table', 'Revisar el esquema migrado en CockroachDB.', 'Verificar tablas, índices y permisos SQL.'],
+          ['Dashboard de la Pi falla', 'Revisar el .env y los logs de PM2.', 'Confirmar token, PostgreSQL y estado del servicio.'],
+          ['PostgreSQL missing column/table', 'Revisar el esquema migrado en PostgreSQL.', 'Verificar tablas, índices y permisos SQL.'],
           ['Groq sin creditos', 'Confirmar GROQ_FALLBACK_API_KEYS y AKIOMAE_API_KEY.', 'Reducir modelo o limits si hay costes.'],
-          ['Leak de secreto', 'Rotar secreto inmediatamente.', 'Actualizar Pi, Render y revocar claves antiguas.']
+          ['Leak de secreto', 'Rotar secreto inmediatamente.', 'Actualizar la Pi y revocar claves antiguas.']
         ] }
       ]
     },
@@ -3987,9 +4484,9 @@ function buildDocsSections(config) {
       summary: 'Antes de vender o anunciar NexaDesk.',
       blocks: [
         { type: 'list', items: [
-          'Render actualizado desde main y /health operativo.',
+          'Raspberry Pi actualizada desde main y /health operativo.',
           'Pi activa con NexaDesk online y presencia actualizada.',
-          'CockroachDB schema aplicado y transcripciones guardando.',
+          'PostgreSQL schema aplicado y transcripciones guardando.',
           'OAuth Discord con redirect correcto.',
           'DOCS_TOTP_SECRET configurado y probado desde Google Authenticator.',
           'No hay tokens ni service_role keys en commits, screenshots ni mensajes publicos.',
@@ -4609,7 +5106,7 @@ function renderBackupsPage({ session, guilds = [], backups = [], restores = [], 
     <section class="hero">
       <p class="kicker">Security Recovery Center</p>
       <h1>Backups de servidor, listos para un mal dia.</h1>
-      <p>NexaDesk indexa roles, categorias, canales y permisos cada hora. Si un raid destruye el servidor, invita el bot a un servidor nuevo, entra aqui y recrea la estructura desde CockroachDB.</p>
+      <p>NexaDesk indexa roles, categorias, canales y permisos cada hora. Si un raid destruye el servidor, invita el bot a un servidor nuevo, entra aqui y recrea la estructura desde PostgreSQL.</p>
       <div class="stat-row">
         <div class="stat"><strong id="statBackups">${backups.length}</strong><span>Snapshots</span></div>
         <div class="stat"><strong id="statGuilds">${guilds.filter((guild) => guild.installed).length}</strong><span>Destinos instalados</span></div>
@@ -4698,7 +5195,7 @@ function renderBackupsPage({ session, guilds = [], backups = [], restores = [], 
       render();
     }
     $('refreshBtn').addEventListener('click', async () => { state.busy = true; render(); try { await reload(); toast('Backups actualizados.'); } catch (error) { toast(error.message); } finally { state.busy = false; render(); } });
-    $('captureBtn').addEventListener('click', async () => { state.busy = true; render(); try { const payload = await api('/api/backups/capture', { guildId:$('captureGuild').value }); state.backups.unshift(payload.backup); state.selectedBackupId = payload.backup.id; toast('Backup creado y guardado en CockroachDB.'); await reload(); } catch (error) { toast(error.message); } finally { state.busy = false; render(); } });
+    $('captureBtn').addEventListener('click', async () => { state.busy = true; render(); try { const payload = await api('/api/backups/capture', { guildId:$('captureGuild').value }); state.backups.unshift(payload.backup); state.selectedBackupId = payload.backup.id; toast('Backup creado y guardado en PostgreSQL.'); await reload(); } catch (error) { toast(error.message); } finally { state.busy = false; render(); } });
     $('restoreBtn').addEventListener('click', async () => {
       const backup = selectedBackup();
       const targetGuildId = $('targetGuild').value;
@@ -4783,59 +5280,161 @@ function renderLegalPage({ title, eyebrow, intro, updatedAt, sections }) {
 function buildTermsSections() {
   return [
     {
-      title: '1. Aceptacion del servicio',
-      body: 'Al invitar NexaDesk a un servidor, iniciar sesion en la dashboard o usar sus comandos, aceptas estas condiciones en nombre propio o del servidor que administras.'
-    },
-    {
-      title: '2. Que ofrece NexaDesk',
+      title: '1. Identidad y objeto',
       items: [
-        'Bot de Discord para tickets de soporte con IA, escalado a staff, paneles, menus, componentes, transcripciones y configuracion por servidor.',
-        'Compatibilidad con sistemas externos de tickets como Ticket King y canales creados en categorias configuradas.',
-        'Dashboard web con OAuth de Discord para administrar servidores donde tengas permisos.',
-        'Funciones de seguridad como anti-flood, analisis de links, XN Protect Automod, avisos de blacklist global, Anti-bots Top.gg, anti-alts y anti-nuke.',
-        'Funciones premium por servidor como voz con STT/TTS, Modo examen supervisado, IA prioritaria, transcripciones inteligentes, Growth Engine, reviews, Churn Radar, branding e informes.'
+        'NexaDesk es un servicio de soporte para comunidades de Discord que combina un bot, una dashboard web y funciones de automatizacion para tickets.',
+        'El operador del servicio es [PENDIENTE], con domicilio en [PENDIENTE], NIF o identificador fiscal [PENDIENTE] y contacto [PENDIENTE].',
+        'Estos Términos regulan el acceso a la dashboard, el inicio de sesión mediante Discord, la instalación o uso del bot, sus comandos y las funciones de tickets, seguridad, transcripciones, IA, voz y servicios premium.'
       ]
     },
     {
-      title: '3. Responsabilidades del servidor',
+      title: '2. Aceptación y autoridad',
       items: [
-        'El owner o administradores del servidor son responsables de configurar roles, permisos, prompts, paneles y canales adecuados.',
-        'El staff humano debe revisar escalados, avisos de seguridad, blacklist externa y decisiones sensibles antes de tomar medidas definitivas.',
-        'No debes usar NexaDesk para acosar, vigilar indebidamente, extraer datos privados, automatizar abuso o infringir las normas de Discord.',
-        'Debes informar a tus usuarios si usas transcripciones, IA, analisis visual, voz o sistemas de moderacion automatizada en tus tickets.'
+        'Al iniciar sesión, invitar NexaDesk a un servidor, usar sus comandos o utilizar la dashboard, aceptas estos Términos en la medida permitida por la ley aplicable.',
+        'Si actúas en nombre de un servidor, una comunidad o una organización, declaras que tienes autorización suficiente para configurarlo y para impartir instrucciones sobre los datos y contenidos que se introduzcan en NexaDesk.',
+        'Debes cumplir las normas de Discord, la legislación aplicable, los derechos de las personas afectadas y las reglas internas del servidor.',
+        'La edad mínima y las reglas específicas para menores deben completarse según la jurisdicción aplicable: [PENDIENTE].'
       ]
     },
     {
-      title: '4. IA y moderacion',
+      title: '3. Qué ofrece NexaDesk',
       items: [
-        'NexaDesk usa IA para responder tickets, resumir, analizar enlaces, interpretar pruebas visuales cuando este activado y ayudar en la dashboard.',
-        'La IA puede equivocarse, omitir contexto o generar respuestas incompletas. Las decisiones importantes deben ser revisadas por staff humano.',
-        'En casos de autolesion, amenazas, acoso, abuso legal o seguridad critica, NexaDesk intenta escalar a staff, pero no sustituye servicios profesionales o emergencias reales.'
+        'Detectar y gestionar tickets propios o creados por sistemas externos como Ticket King, XN Tickets, Guild Manager u otros paneles compatibles.',
+        'Responder mensajes de tickets mediante IA, mantener contexto, resumir conversaciones, generar informes y escalar asuntos al staff.',
+        'Permitir takeover humano, pausa determinista de la IA, reanudación y cierre de tickets.',
+        'Crear categorías, paneles, menús, componentes y formularios configurados por el servidor.',
+        'Guardar transcripciones, feedback, señales de calidad y aprendizajes operativos asociados a un servidor.',
+        'Analizar texto, enlaces, imágenes o archivos cuando la función correspondiente esté activada.',
+        'Ofrecer funciones de voz, incluida transcripción de voz (STT) y síntesis de voz (TTS), cuando estén activadas y disponibles.',
+        'Ofrecer controles de seguridad como anti-flood, análisis de enlaces, XN Protect, avisos de blacklist, comprobaciones de Top.gg, anti-alt y protecciones anti-nuke.',
+        'Ofrecer dashboard, estadísticas, funciones de crecimiento y módulos premium.',
+        'Proteger el acceso web con Discord OAuth y Cloudflare Turnstile.'
       ]
     },
     {
-      title: '5. Seguridad y servicios externos',
+      title: '4. Discord, permisos y responsabilidad del servidor',
       items: [
-        'XN Protect se usa para blacklist global y automod ofensivo/malicioso. NexaDesk muestra fuente, motivo y pruebas cuando estan disponibles.',
-        'Top.gg se usa como referencia para Anti-bots. NexaDesk solo banea bots por esta capa si Top.gg confirma que no estan listados.',
-        'Groq u otros proveedores compatibles pueden procesar mensajes, imagenes, audio o contexto necesario para prestar funciones de IA.'
+        'NexaDesk opera dentro de Discord y necesita los permisos e intents que el servidor le conceda.',
+        'El owner y los administradores del servidor son responsables de revisar permisos, categorías, roles, canales y configuración, así como de informar a sus usuarios.',
+        'El servidor debe revisar las respuestas de IA, los informes, los avisos de seguridad, los falsos positivos y cualquier acción que pueda afectar a una persona.',
+        'NexaDesk no sustituye al owner, a los administradores ni al staff humano. El servidor mantiene el control sobre usuarios, canales, permisos, moderación y decisiones finales.'
       ]
     },
     {
-      title: '6. Disponibilidad y cambios',
+      title: '5. IA, automatización y revisión humana',
       items: [
-        'NexaDesk se ofrece tal como esta y puede cambiar, pausar funciones, entrar en mantenimiento o modificar limites para proteger estabilidad y costes.',
-        'Las funciones premium pueden activarse o desactivarse por servidor segun plan, configuracion o incidencias tecnicas.',
-        'Podemos actualizar estas condiciones cuando el producto cambie. La version publicada en esta pagina sera la referencia vigente.'
+        'La IA de NexaDesk puede utilizar Google AI Studio como proveedor principal, Groq como fallback y mecanismos locales de emergencia, además de otros proveedores configurados para funciones concretas.',
+        'La ruta efectiva puede cambiar por disponibilidad, límites, errores, tiempo de respuesta o configuración.',
+        'Las respuestas generadas pueden ser incorrectas, incompletas, descontextualizadas, repetitivas o inadecuadas. Las señales de calidad y los aprendizajes operativos no garantizan exactitud.',
+        'No debes basarte exclusivamente en NexaDesk para decisiones médicas, legales, financieras, laborales, de emergencia, de seguridad personal, de expulsión o de sanción.',
+        'Las decisiones importantes deben revisarse por una persona autorizada. En una emergencia real, contacta con servicios de emergencia o moderadores humanos.',
+        'Los controles deterministas de silencio, takeover, reanudación y cierre tienen prioridad frente a una respuesta ordinaria de IA, pero dependen de permisos, conectividad y estado válido del ticket.'
       ]
     },
     {
-      title: '7. Contacto y soporte',
-      body: 'Para dudas, soporte, apelaciones o incidencias, utiliza el servidor oficial de soporte: https://discord.gg/vVXbq7ePEZ'
+      title: '6. Seguridad y moderación',
+      items: [
+        'NexaDesk puede consultar XN Protect, Top.gg y otros servicios para detectar riesgos, bots no listados, abuso, fraude, enlaces sospechosos, alts, flood, cambios peligrosos de configuración o actividad anti-nuke.',
+        'Los resultados de terceros pueden ser incompletos, erróneos, estar desactualizados o no estar disponibles.',
+        'Las acciones automáticas, incluidos avisos, bloqueos, silencios, escalados o baneos, solo deben habilitarse después de revisar la configuración y los permisos.',
+        'El staff debe comprobar los hechos antes de adoptar medidas definitivas. NexaDesk no garantiza que detecte todos los abusos ni que evite todos los falsos positivos.'
+      ]
+    },
+    {
+      title: '7. Contenidos del servidor',
+      items: [
+        'El servidor y sus usuarios conservan sus derechos sobre mensajes, archivos, imágenes, audio y demás contenidos que introduzcan.',
+        'Concedes a NexaDesk únicamente los permisos necesarios para alojar, reproducir, transformar, analizar, transcribir, resumir y transmitir esos contenidos con el fin de prestar las funciones solicitadas.',
+        'No debes introducir información que no tengas derecho a procesar ni enviar datos sensibles innecesarios.',
+        'El owner o administrador debe informar a los usuarios cuando el servidor utilice IA, transcripciones, análisis visual, voz, seguridad automatizada o transcripciones compartidas con staff.'
+      ]
+    },
+    {
+      title: '8. Proveedores externos y transferencias',
+      items: [
+        'Para prestar las funciones, NexaDesk puede comunicarse con Discord, Cloudflare Turnstile, Google AI Studio, Groq, XN Protect, Top.gg, PayPal y otros proveedores configurados.',
+        'Cada proveedor puede aplicar sus propios términos, medidas de seguridad, ubicaciones y políticas de privacidad.',
+        'Algunos proveedores pueden estar fuera del Espacio Económico Europeo. Las transferencias internacionales, garantías aplicables y acuerdos de encargo deben verificarse para la versión definitiva.'
+      ]
+    },
+    {
+      title: '9. Funciones premium y pagos',
+      items: [
+        'NexaDesk puede ofrecer planes, packs o módulos premium por servidor. La dashboard mostrará, cuando corresponda, precio, moneda, impuestos y condiciones de la oferta aplicable.',
+        'El pago puede procesarse mediante PayPal o mediante un enlace de pago manual configurado por el operador.',
+        'NexaDesk puede guardar identificadores de pedido, estado de la compra, servidor asociado, usuario que la solicita, importe, moneda y datos necesarios para validar el acceso premium.',
+        'Los datos completos de tarjeta se procesan por el proveedor de pago y no deben introducirse en NexaDesk.',
+        'Las reglas detalladas de contratación, renovación, cancelación, reembolsos, desistimiento, impuestos y facturación son: [PENDIENTE].'
+      ]
+    },
+    {
+      title: '10. Uso prohibido',
+      items: [
+        'Infringir la ley, las normas de Discord o los derechos de terceros.',
+        'Acosar, amenazar, discriminar, doxxear, vigilar indebidamente o perseguir a personas.',
+        'Procesar o divulgar datos personales sin base legítima o autorización.',
+        'Automatizar abuso, spam, fraude, phishing, malware o extracción masiva de datos.',
+        'Manipular informes, señales de calidad, listas de bloqueo o transcripciones.',
+        'Eludir permisos, límites, protecciones anti-bot o medidas de seguridad.',
+        'Tomar decisiones sensibles exclusivamente mediante IA.',
+        'Usar el servicio para emergencias o como sustituto de profesionales.'
+      ]
+    },
+    {
+      title: '11. Disponibilidad, cambios y mantenimiento',
+      items: [
+        'NexaDesk se ofrece según disponibilidad y puede experimentar errores, latencia, límites de proveedores, mantenimiento, pérdida de conectividad de Discord, fallos de PostgreSQL, indisponibilidad de terceros o cambios de API.',
+        'Podemos modificar, retirar, pausar o sustituir funciones, proveedores, modelos, límites y planes.',
+        'Procuraremos mantener actualizada la información publicada y comunicar cambios relevantes cuando sea razonable.'
+      ]
+    },
+    {
+      title: '12. Transcripciones, datos y eliminación',
+      items: [
+        'Las transcripciones y registros se conservan conforme a la Política de privacidad.',
+        'En la infraestructura de producción basada en PostgreSQL no existe actualmente un plazo fijo automático para borrar todo el historial; puede conservarse mientras sea necesario para prestar el servicio, resolver incidencias, investigar abuso o incidentes de seguridad, atender reclamaciones y cumplir obligaciones legales.',
+        'También puede haber purgas técnicas por capacidad. La retención por investigación o por una posible infracción no autoriza a conservar indiscriminadamente todos los datos sin necesidad ni controles.',
+        'Las solicitudes de revisión o eliminación se tramitan a través del contacto indicado en la Política de privacidad, sin perjuicio de las obligaciones legales y de las instrucciones del servidor responsable.',
+        'Los plazos o criterios objetivos de conservación por categoría están pendientes de completar: [PENDIENTE].'
+      ]
+    },
+    {
+      title: '13. Propiedad intelectual',
+      items: [
+        'NexaDesk, su código, marca, diseño, documentación y componentes propios pertenecen al operador o a sus licenciantes.',
+        'Estos Términos no transfieren propiedad intelectual al usuario.',
+        'Discord, Cloudflare, Google, Groq, XN Protect, Top.gg, PayPal y las demás marcas pertenecen a sus respectivos titulares. NexaDesk no afirma estar afiliado a ellos salvo que se indique expresamente.'
+      ]
+    },
+    {
+      title: '14. Responsabilidad',
+      items: [
+        'En la máxima medida permitida por la ley, NexaDesk no garantiza que el servicio sea ininterrumpido, exacto, seguro o adecuado para una finalidad concreta.',
+        'No respondemos de decisiones del owner o del staff, contenidos de usuarios, permisos mal configurados, indisponibilidad de Discord o terceros, ni daños derivados de utilizar respuestas de IA sin revisión humana.',
+        'Nada de esta cláusula limita los derechos imperativos de consumidores ni la responsabilidad que no pueda excluirse legalmente en España o en la jurisdicción aplicable.'
+      ]
+    },
+    {
+      title: '15. Ley aplicable y contacto',
+      items: [
+        'Estos Términos se interpretan conforme al derecho español, sin perjuicio de las normas imperativas que protejan a consumidores de otros Estados miembros de la Unión Europea.',
+        'Para soporte, incidencias, apelaciones o consultas sobre el servicio, utiliza el servidor oficial: https://discord.gg/vVXbq7ePEZ',
+        'Para consultas legales, contratación, facturación o protección de datos, el contacto del operador será [PENDIENTE] hasta completar la información legal obligatoria.'
+      ]
+    },
+    {
+      title: '16. Cambios de estos Términos',
+      items: [
+        'La versión publicada en /terms indicará la fecha de última actualización.',
+        'Si un cambio es material, procuraremos comunicarlo por un canal razonable antes de que resulte aplicable, cuando la ley lo exija.'
+      ]
     },
     {
       title: 'Nota legal',
-      body: 'Este documento es una politica operativa del proyecto NexaDesk y no constituye asesoramiento legal profesional. Si necesitas cumplimiento legal especifico, revisalo con un especialista.',
+      items: [
+        'Este documento es una política operativa del proyecto NexaDesk y no constituye asesoramiento legal profesional.',
+        'La identidad del operador, contacto formal, reglas comerciales, plazos de conservación y condiciones de proveedores deben completarse y revisarse antes de tratarlo como texto legal definitivo.'
+      ],
       notice: true
     }
   ];
@@ -4844,80 +5443,196 @@ function buildTermsSections() {
 function buildPrivacySections() {
   return [
     {
-      title: '1. Datos que podemos procesar',
+      title: '1. Responsable y alcance',
       items: [
-        'Datos de Discord necesarios para funcionar: IDs de usuario, servidor, canal, mensaje, rol, nombres visibles, avatar y permisos de servidores gestionables.',
-        'Configuracion por servidor: categoria de tickets, rol staff, prompt del servidor, informacion del servidor, paneles, componentes, seguridad, alianzas, crecimiento y premium.',
-        'Contenido de tickets: mensajes, respuestas de formularios, adjuntos enlazados, transcripciones, resumenes, estado del ticket y datos de cierre.',
-        'Datos de voz premium: transcripciones STT, mensajes de voz convertidos a texto, respuestas TTS y metadatos de sala/canal cuando la funcion esta activa.',
-        'Eventos de seguridad: flood, links analizados, resultados de XN Protect Automod, avisos de blacklist, checks de Top.gg, acciones anti-nuke y logs de moderacion.'
+        'El responsable del tratamiento de los datos gestionados por NexaDesk es [PENDIENTE], con domicilio en [PENDIENTE], NIF o identificador fiscal [PENDIENTE] y contacto de privacidad [PENDIENTE].',
+        'NexaDesk es un servicio de soporte para Discord formado por un bot, una dashboard y funciones de IA, transcripción, seguridad, voz y módulos premium.',
+        'Cuando un servidor usa NexaDesk para gestionar mensajes, tickets y usuarios, el owner u organización del servidor puede determinar las finalidades y medios de ese tratamiento. El servidor puede actuar como responsable y NexaDesk como proveedor o encargado, según el caso y el acuerdo aplicable.',
+        'NexaDesk también trata determinados datos como responsable propio para gestionar cuentas de dashboard, seguridad, facturación, prevención del abuso, soporte y funcionamiento del servicio. Esta distribución debe confirmarse jurídicamente para cada modalidad de uso.'
       ]
     },
     {
-      title: '2. Para que usamos los datos',
+      title: '2. Datos de cuenta y Discord OAuth',
       items: [
-        'Responder tickets con IA y mantener contexto conversacional.',
-        'Avisar a staff con resumen cuando la IA detecta que hace falta asistencia humana.',
-        'Guardar transcripciones y valoraciones post-ticket para consulta en dashboard, envio por MD, mejora del soporte y trazabilidad.',
-        'Crear paneles, categorias, menus y componentes configurados por el servidor.',
-        'Proteger servidores con sistemas anti-flood, anti-scam, automod, anti-bots, anti-alts y anti-nuke.',
-        'Mejorar la experiencia de dashboard, estadisticas globales, diagnosticos y funciones premium.'
+        'Al iniciar sesión, NexaDesk puede recibir de Discord el ID de usuario, nombre de usuario, avatar y datos básicos de identidad.',
+        'También puede recibir la lista de servidores comunicada mediante el alcance OAuth guilds y filtrarla para mostrar aquellos en los que puedes gestionar o configurar NexaDesk.',
+        'Puede tratar identificadores, nombres, iconos y datos de titularidad de esos servidores, además de información técnica necesaria para validar OAuth, prevenir fraude y mantener la sesión.',
+        'NexaDesk no recibe tu contraseña de Discord. La autenticación depende de Discord y de sus propios términos y política de privacidad.'
       ]
     },
     {
-      title: '3. Donde se guardan',
+      title: '3. Tickets y contenido de la comunidad',
       items: [
-        'La configuracion, tickets y transcripciones se guardan en CockroachDB desde el backend de NexaDesk.',
-        'La dashboard usa cookies de sesion firmadas para mantener login con Discord OAuth.',
-        'Los tokens, claves de servicio y secretos se mantienen como variables de entorno del backend y no deben exponerse al cliente.',
-        'Si faltan variables de CockroachDB en desarrollo, NexaDesk puede usar almacenamiento JSON local.'
+        'El bot puede tratar IDs y nombres de servidores, categorías, canales, mensajes, usuarios y roles.',
+        'Puede tratar autor, fecha, estado, apertura, cierre, escalado, takeover y pausa de IA de un ticket.',
+        'Puede tratar mensajes de usuarios y respuestas del bot o del staff, respuestas de formularios, adjuntos, enlaces, imágenes, archivos, resúmenes e informes.',
+        'Puede tratar transcripciones y enlaces de reproducción o descarga de transcripciones.',
+        'Puede tratar información necesaria para detectar tickets externos y asociarlos a su opener cuando sea posible.',
+        'El contenido enviado por usuarios puede incluir datos personales o categorías especiales que NexaDesk no solicita de forma intencionada. Los administradores deben evitar pedir o conservar datos sensibles innecesarios.'
       ]
     },
     {
-      title: '4. Servicios externos',
+      title: '4. IA, calidad y aprendizaje operativo',
       items: [
-        'Discord proporciona OAuth, datos de servidor, mensajes y acciones del bot.',
-        'Groq u otros proveedores IA pueden recibir fragmentos necesarios para generar respuestas, analizar imagenes, transcribir voz o revisar enlaces.',
-        'XN Protect puede recibir contenido textual o IDs para automod y blacklist global.',
-        'Top.gg puede recibir IDs de bots para comprobar si estan listados antes de aplicar Anti-bots.',
-        'Render aloja la dashboard publica y la Raspberry Pi ejecuta el worker del bot.'
+        'Para generar respuestas, resúmenes, análisis o acciones sugeridas, NexaDesk puede enviar a proveedores de IA fragmentos del mensaje, historial reciente, instrucciones del servidor, contexto del ticket, enlaces y, cuando la función está activa, imágenes, audio u otros archivos.',
+        'NexaDesk puede registrar señales de calidad de IA, como categoría, severidad, confianza, motivo, mensaje que originó la señal y respuesta anterior.',
+        'También puede guardar aprendizajes operativos agregados o asociados a la configuración del servidor para reducir respuestas repetitivas y mejorar el flujo de soporte.',
+        'Las señales y aprendizajes no deben utilizarse como única base para decisiones con efectos jurídicos o efectos igualmente significativos sobre una persona.'
       ]
     },
     {
-      title: '5. Retencion y control',
+      title: '5. Voz y análisis visual',
       items: [
-        'Las transcripciones se conservan para soporte y auditoria hasta que el owner del proyecto o administradores autorizados las eliminen o se aplique una politica de limpieza.',
-        'Los servidores pueden ajustar prompts, paneles, seguridad y funciones premium desde la dashboard.',
-        'Si quieres pedir revision o eliminacion de datos asociados a un servidor, contacta con soporte aportando ID de servidor y contexto.'
+        'Si un servidor activa las funciones correspondientes, NexaDesk puede tratar audio o mensajes de voz para generar transcripciones STT.',
+        'Puede tratar texto para producir respuestas TTS, imágenes, vídeos, capturas y metadatos necesarios para análisis visual.',
+        'Puede tratar IDs de sala, canal, ticket y participantes necesarios para la función de voz.',
+        'Estas funciones solo deben activarse cuando el servidor tenga una base válida para tratar y comunicar ese contenido.'
       ]
     },
     {
-      title: '6. Seguridad',
+      title: '6. Seguridad y moderación',
       items: [
-        'NexaDesk limita el acceso a dashboard a usuarios con permisos de gestion en el servidor.',
-        'La vault interna requiere codigo dinamico TOTP y no aparece enlazada desde la dashboard normal.',
-        'Las acciones de seguridad intentan evitar baneos automaticos sin certeza cuando dependen de APIs externas.',
-        'Ningun sistema es perfecto: los administradores deben revisar logs, permisos y escalados importantes.'
+        'NexaDesk puede tratar datos relacionados con flood, spam, enlaces sospechosos, imágenes potencialmente maliciosas y señales de abuso.',
+        'Puede tratar resultados de XN Protect Automod y consultas de blacklist global, incluidos IDs de usuario, motivo, duración, estado, evidencias y registros de una entrada.',
+        'Puede consultar Top.gg sobre bots o aplicaciones y registrar el resultado.',
+        'Puede registrar eventos anti-alt, anti-bots, webhooks, cambios de permisos, canales, roles, integraciones y protecciones anti-nuke.',
+        'Puede registrar logs operativos de moderación, alertas, acciones y fallos. Los resultados externos pueden ser incorrectos o no estar disponibles.'
       ]
     },
     {
-      title: '7. Menores, contenido sensible y emergencias',
-      body: 'NexaDesk puede procesar mensajes sensibles dentro de tickets. No debe usarse como sustituto de ayuda profesional, legal, medica o de emergencia. En situaciones de riesgo real, contacta con servicios de emergencia o moderadores humanos inmediatamente.'
+      title: '7. Dashboard, archivos y pagos',
+      items: [
+        'La dashboard puede tratar configuraciones de paneles, componentes, prompts, información del servidor, funciones premium, estadísticas, feedback, imágenes que un administrador suba para paneles y registros de cambios.',
+        'El owner global puede publicar en /partners el nombre, biografía, enlace de Discord, icono y foto o vídeo que facilite sobre un partner. Ese material queda visible públicamente hasta que se modifique o retire.',
+        'Los vídeos de Partners se limitan a 30 segundos y los ficheros se guardan en la infraestructura de NexaDesk; el owner debe contar con derechos suficientes para publicar el material.',
+        'Si se utiliza premium, NexaDesk puede tratar identificadores de pedido, estado de pago, importe, moneda, servidor, usuario solicitante, módulo activado y datos necesarios para conciliación.',
+        'PayPal procesa los datos completos de pago conforme a su propia política; NexaDesk no debe recibir ni almacenar números completos de tarjeta.'
+      ]
     },
     {
-      title: '8. Contacto',
-      body: 'Para consultas de privacidad, soporte o apelaciones, usa el servidor oficial: https://discord.gg/vVXbq7ePEZ'
+      title: '8. Datos técnicos y cookies',
+      items: [
+        'El servicio puede tratar temporalmente IP, fecha y hora, ruta, navegador, errores y metadatos técnicos para seguridad, Turnstile, rate limiting, diagnóstico y funcionamiento.',
+        'nexadesk_oauth_state se utiliza para proteger el flujo OAuth durante aproximadamente diez minutos.',
+        'nexadesk_session es una cookie firmada y HttpOnly de sesión web, con una duración aproximada de doce horas.',
+        'Las áreas de documentación o administración pueden utilizar cookies firmadas adicionales con la duración configurada para ellas.',
+        'Estas cookies son necesarias para prestar las funciones solicitadas, mantener la sesión y proteger el servicio. No se describen cookies publicitarias o analíticas porque no forman parte de la configuración actual revisada.',
+        'Cloudflare Turnstile puede utilizar sus propios mecanismos técnicos de seguridad.'
+      ]
+    },
+    {
+      title: '9. Finalidades y bases jurídicas propuestas',
+      items: [
+        'Cuenta de dashboard: tratar identidad Discord, servidores gestionables y sesión para ejecutar la relación solicitada o contractual; base propuesta: artículo 6.1.b RGPD.',
+        'Bot, tickets, transcripciones y funciones configuradas: tratar mensajes, tickets, configuración, usuarios y canales según las instrucciones del servidor y la prestación del servicio; la modalidad de responsable/encargado debe confirmarse.',
+        'IA y resúmenes: tratar mensajes, contexto y archivos necesarios para ejecutar el servicio y, cuando corresponda, el interés legítimo; la base y la transparencia deben confirmarse.',
+        'Seguridad, antiabuso, blacklist, diagnóstico y prevención de fraude: tratar IDs, eventos, IP técnica, logs y evidencias por interés legítimo en seguridad y continuidad u obligación legal cuando corresponda.',
+        'Calidad y aprendizajes operativos: tratar señales, respuesta previa, contexto limitado y configuración por interés legítimo o ejecución del servicio, sujeto a minimización y revisión.',
+        'Pagos y premium: tratar pedido, pago, usuario, servidor, importe y estado para ejecutar el contrato y cumplir obligaciones legales.',
+        'Soporte, reclamaciones y derechos: tratar los datos incluidos en la solicitud y los registros necesarios por ejecución del servicio, obligación legal o interés legítimo.',
+        'Cuando el tratamiento se base en consentimiento, podrás retirarlo en cualquier momento sin afectar a la licitud del tratamiento anterior. Retirar un consentimiento puede impedir una función concreta.'
+      ]
+    },
+    {
+      title: '10. Proveedores y destinatarios',
+      items: [
+        'Discord: OAuth, identidad, servidores, bot y operaciones de Discord; pueden tratarse IDs, nombres, servidores, canales, mensajes, permisos y eventos necesarios.',
+        'Cloudflare Turnstile y Cloudflare Tunnel: protección anti-bot y transporte o proxy de la web; pueden tratarse IP, señales técnicas, navegador, solicitudes y datos necesarios para seguridad.',
+        'Google AI Studio: proveedor primario de generación y, si se configura, análisis multimodal; pueden enviarse prompts, contexto, instrucciones, mensajes, imágenes o archivos necesarios.',
+        'Groq: fallback de generación, visión, STT o TTS; pueden enviarse prompts, contexto, imágenes, audio y texto necesarios.',
+        'XN Protect: blacklist global y automod; pueden enviarse IDs, señales, texto o metadatos necesarios para la consulta.',
+        'Top.gg: comprobación de bots listados; pueden enviarse IDs de bots y el resultado de la consulta.',
+        'PayPal: checkout y captura de pagos premium; pueden tratarse datos de pedido, importe, moneda, estado y cuenta de pago según PayPal.',
+        'PostgreSQL autogestionado por el operador: almacenamiento principal de configuración, tickets y transcripciones.',
+        'Los proveedores pueden cambiar por disponibilidad, seguridad, costes o evolución del producto. La versión definitiva debe verificar cada acuerdo, subencargo, ubicación, política, conservación y transferencia.'
+      ]
+    },
+    {
+      title: '11. Transferencias internacionales',
+      items: [
+        'Algunos proveedores pueden tratar datos fuera del Espacio Económico Europeo.',
+        'No debe afirmarse que una transferencia está cubierta por adecuación, cláusulas contractuales tipo u otra garantía hasta comprobar la documentación vigente del proveedor y el contrato aplicable.',
+        'La versión final deberá identificar, cuando sea necesario, las garantías utilizadas y cómo obtener información adicional.'
+      ]
+    },
+    {
+      title: '12. Conservación',
+      items: [
+        'En producción, NexaDesk utiliza PostgreSQL para configuración, tickets, transcripciones, señales de calidad, aprendizajes operativos, seguridad, feedback y funciones premium.',
+        'La tabla de transcripciones no aplica actualmente un plazo fijo automático ni un límite global de antigüedad. El almacenamiento JSON de fallback conserva como máximo los últimos 500 mensajes por canal, pero no es el backend principal de producción.',
+        'Los datos se conservarán mientras sean necesarios para prestar y proteger el servicio, mantener el contexto del ticket, investigar abuso o incidentes de seguridad, resolver reclamaciones, ejercer o defender derechos y cumplir obligaciones legales.',
+        'El operador puede ejecutar purgas técnicas por capacidad de la base de datos.',
+        'Una investigación concreta o una obligación legal puede justificar conservar determinados registros limitados durante más tiempo, con acceso restringido. La posibilidad abstracta de que un dato pueda servir para investigar un delito no justifica conservar indiscriminadamente todos los datos.',
+        'Los plazos o criterios objetivos de conservación por categoría están pendientes de completar: [PENDIENTE].'
+      ]
+    },
+    {
+      title: '13. Acceso y control dentro del servicio',
+      items: [
+        'El acceso a la dashboard se limita mediante Discord OAuth y la comprobación de servidores que el usuario puede gestionar.',
+        'Las transcripciones y datos de tickets se exponen a usuarios autorizados por el servidor y a los enlaces firmados o mecanismos de acceso previstos por NexaDesk.',
+        'Los administradores del servidor deben controlar permisos, informar a sus usuarios y solicitar la eliminación de datos que ya no sean necesarios.',
+        'NexaDesk puede conservar una parte limitada cuando exista obligación legal, investigación de seguridad, reclamación o necesidad de defender derechos.'
+      ]
+    },
+    {
+      title: '14. Derechos de las personas',
+      items: [
+        'Según la base jurídica y el papel de cada parte, puedes solicitar acceso, rectificación, supresión, limitación del tratamiento, oposición, portabilidad cuando sea aplicable y retirada del consentimiento.',
+        'También tienes derecho a no quedar sujeto a una decisión basada únicamente en tratamiento automatizado cuando produzca efectos jurídicos o efectos igualmente significativos, salvo las excepciones legales.',
+        'Para ejercer derechos, utiliza temporalmente el servidor oficial de soporte de NexaDesk: https://discord.gg/vVXbq7ePEZ e indica que se trata de una solicitud de privacidad.',
+        'El contacto formal de privacidad será [PENDIENTE]. Si el tratamiento corresponde principalmente a un servidor cliente, podremos pedir que la solicitud se dirija también a su owner o administrador.',
+        'También puedes presentar una reclamación ante la Agencia Española de Protección de Datos (AEPD) o ante la autoridad de control competente.'
+      ]
+    },
+    {
+      title: '15. Seguridad',
+      items: [
+        'NexaDesk aplica medidas técnicas y organizativas proporcionales al servicio, que pueden incluir cookies firmadas y HttpOnly, control de acceso por servidor, protección Turnstile, variables de entorno para secretos, permisos de base de datos, registros de seguridad y controles antiabuso.',
+        'Ningún sistema conectado a Internet es completamente seguro. No envíes secretos ni credenciales en tickets.',
+        'Si detectas una vulnerabilidad o una exposición de datos, comunícala por el canal oficial y evita divulgarla públicamente mientras se investiga.'
+      ]
+    },
+    {
+      title: '16. Menores y contenido sensible',
+      items: [
+        'NexaDesk no solicita intencionadamente categorías especiales de datos ni está diseñado para sustituir a servicios médicos, legales, psicológicos, financieros o de emergencia.',
+        'Los owners y administradores deben establecer reglas adecuadas para sus comunidades y cumplir las restricciones de edad y protección de menores que les sean aplicables.',
+        'La edad mínima y el procedimiento específico para solicitudes relacionadas con menores son: [PENDIENTE].'
+      ]
+    },
+    {
+      title: '17. Cambios y contacto',
+      items: [
+        'Podemos actualizar esta Política cuando cambien el producto, los proveedores, las finalidades o las obligaciones legales.',
+        'La versión publicada en /privacy mostrará la fecha de última actualización. Cuando el cambio sea material, procuraremos comunicarlo por un medio razonable cuando sea necesario.',
+        'Soporte temporal y solicitudes de privacidad: servidor oficial de NexaDesk, https://discord.gg/vVXbq7ePEZ.',
+        'Responsable del tratamiento: [PENDIENTE]. Contacto de privacidad: [PENDIENTE].',
+        'Autoridad de control española: Agencia Española de Protección de Datos, https://www.aepd.es/.'
+      ]
     },
     {
       title: 'Nota legal',
-      body: 'Esta politica es una descripcion operativa de privacidad para NexaDesk y no sustituye asesoramiento legal profesional.',
+      items: [
+        'Esta política es una descripción operativa de privacidad para NexaDesk y no sustituye asesoramiento legal profesional.',
+        'La identidad del responsable, el contacto formal, los roles de responsable/encargado, los proveedores, las transferencias y los plazos de conservación deben verificarse antes de tratarla como política definitiva.'
+      ],
       notice: true
     }
   ];
 }
 
-function renderLogin(config) {
-  const isReady = Boolean(config.DISCORD_CLIENT_SECRET);
+function renderLogin(config, { error = '' } = {}) {
+  const turnstileEnabled = Boolean(config.TURNSTILE_ENABLED);
+  const turnstileConfigured = isTurnstileConfigured(config);
+  const turnstileRequired = turnstileEnabled && turnstileConfigured;
+  const isReady = Boolean(config.DISCORD_CLIENT_SECRET)
+    && (!turnstileEnabled || turnstileConfigured);
+  const setupError = !config.DISCORD_CLIENT_SECRET
+    ? 'Falta DISCORD_CLIENT_SECRET en el entorno.'
+    : turnstileEnabled && !turnstileConfigured
+      ? 'Falta configurar TURNSTILE_SITE_KEY y TURNSTILE_SECRET_KEY en el entorno.'
+      : '';
 
   return `<!doctype html>
 <html lang="es">
@@ -4927,6 +5642,7 @@ function renderLogin(config) {
   <title>NexaDesk Login</title>
   <link rel="icon" type="image/svg+xml" href="/assets/nexadesk-logo.svg">
   <link rel="apple-touch-icon" href="/assets/nexadesk-logo.svg">
+  ${turnstileRequired ? '<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>' : ''}
   <style>
     :root { color-scheme: dark; --bg:#050505; --panel:#101010; --panel-2:#181818; --line:#343434; --text:#ffffff; --muted:#a8a8a8; --ink:#050505; --paper:#ffffff; --danger:#ff5f57; --ok:#ffffff; }
     * { box-sizing: border-box; }
@@ -4978,7 +5694,10 @@ function renderLogin(config) {
     .status-line { display:flex; justify-content:space-between; gap:12px; color:var(--muted); border-bottom:1px solid rgba(255,255,255,.08); padding:11px 0; }
     .status-line strong { color:var(--text); }
     .dash-emoji { width:18px; height:18px; object-fit:contain; margin-right:7px; vertical-align:-4px; }
-    a.login-button { display:block; text-align:center; width:100%; border-radius:6px; background:#fff; color:#050505; padding:13px; font-weight:900; text-decoration:none; margin-top:22px; }
+    .login-button { display:block; text-align:center; width:100%; border:0; border-radius:6px; background:#fff; color:#050505; padding:13px; font:inherit; font-weight:900; text-decoration:none; margin-top:22px; cursor:pointer; }
+    .login-button:disabled { opacity:.5; cursor:not-allowed; }
+    .turnstile-wrap { margin-top:18px; min-height:66px; }
+    .turnstile-help { color:var(--muted); font-size:12px; margin:8px 0 0; }
     .legal-links { display:flex; flex-wrap:wrap; gap:10px; margin-top:16px; font-size:13px; }
     .legal-links a { color:#fff; text-decoration:none; border:1px solid rgba(255,255,255,.18); border-radius:999px; padding:8px 10px; background:rgba(255,255,255,.045); }
     .loading { position:fixed; inset:0; z-index:10; display:none; place-items:center; background:rgba(5,8,10,.88); backdrop-filter:blur(12px); }
@@ -5061,10 +5780,16 @@ function renderLogin(config) {
       <h2>Entrar con Discord</h2>
       <p>Solo veras servidores donde tengas permisos de gestion.</p>
       <div class="status-line"><span>${renderDashboardEmoji('rightArrow', 'OAuth')}OAuth</span><strong>Discord</strong></div>
-      <div class="status-line"><span>${renderDashboardEmoji('server', 'Datos')}Datos</span><strong>CockroachDB</strong></div>
+      <div class="status-line"><span>${renderDashboardEmoji('server', 'Datos')}Datos</span><strong>PostgreSQL</strong></div>
       <div class="status-line"><span>${renderDashboardEmoji('check', 'Realtime')}Realtime</span><strong>Activo</strong></div>
-      ${isReady ? '<a class="login-button" id="loginButton" href="/auth/discord">Continuar con Discord</a>' : '<p class="error">Falta DISCORD_CLIENT_SECRET en el entorno.</p>'}
-      <div class="legal-links"><a href="/terms">Terms and Conditions</a><a href="/privacy">Privacy Policy</a></div>
+      ${error ? `<p class="error" role="alert">${escapeHtml(error)}</p>` : ''}
+      ${isReady ? `
+        <form class="login-form" id="loginForm" method="post" action="/auth/discord">
+          ${turnstileRequired ? `<div class="turnstile-wrap"><div class="cf-turnstile" data-sitekey="${escapeHtml(config.TURNSTILE_SITE_KEY)}" data-theme="dark" data-action="login" data-callback="nexaTurnstileSuccess" data-expired-callback="nexaTurnstileExpired" data-error-callback="nexaTurnstileError"></div><p class="turnstile-help" id="turnstileHelp">Completa la verificación para continuar.</p></div>` : ''}
+          <button class="login-button" id="loginButton" type="submit"${turnstileRequired ? ' disabled' : ''}>Continuar con Discord</button>
+        </form>
+      ` : `<p class="error">${escapeHtml(setupError)}</p>`}
+      <div class="legal-links"><a href="/terms">Terms and Conditions</a><a href="/privacy">Privacy Policy</a><a href="/partners">Partners</a><a href="/blacklist">Global Blacklist</a></div>
     </aside>
   </main>
   <script>
@@ -5102,7 +5827,44 @@ function renderLogin(config) {
       if (phrase) phrase.textContent = loadingCards[phraseIndex].quote;
       if (tip) tip.textContent = loadingCards[phraseIndex].tip;
     }, 1500);
-    document.querySelector('#loginButton')?.addEventListener('click', () => {
+    const turnstileRequired = ${turnstileRequired ? 'true' : 'false'};
+    const loginForm = document.querySelector('#loginForm');
+    const loginButton = document.querySelector('#loginButton');
+    const turnstileHelp = document.querySelector('#turnstileHelp');
+
+    const setTurnstileState = (ready, message) => {
+      if (loginButton && turnstileRequired) {
+        loginButton.disabled = !ready;
+      }
+      if (turnstileHelp && message) {
+        turnstileHelp.textContent = message;
+      }
+    };
+
+    window.nexaTurnstileSuccess = (token) => {
+      if (token) {
+        setTurnstileState(true, 'Verificación completada.');
+      }
+    };
+
+    window.nexaTurnstileExpired = () => {
+      setTurnstileState(false, 'La verificación ha caducado. Complétala de nuevo.');
+    };
+
+    window.nexaTurnstileError = () => {
+      setTurnstileState(false, 'No se pudo cargar la verificación. Recarga la página.');
+    };
+
+    loginForm?.addEventListener('submit', (event) => {
+      const response = loginForm.querySelector('input[name="cf-turnstile-response"]')?.value || '';
+
+      if (turnstileRequired && !response) {
+        event.preventDefault();
+        setTurnstileState(false, 'Completa la verificación antes de continuar.');
+        return;
+      }
+
+      loginButton?.setAttribute('disabled', '');
       document.querySelector('#loading')?.classList.add('is-active');
     });
   </script>
@@ -5132,7 +5894,7 @@ function renderError(message) {
     <h1>No se pudo cargar el dashboard</h1>
     <p>La sesion de Discord funciona, pero fallo una dependencia del dashboard.</p>
     <code>${escapeHtml(message)}</code>
-    <p>Revisa variables de CockroachDB o ejecuta el schema si el error menciona tablas.</p>
+    <p>Revisa variables de PostgreSQL o ejecuta el schema si el error menciona tablas.</p>
     <a href="/logout" onclick="event.preventDefault(); document.querySelector('form').submit()">Cerrar sesion</a>
     <form method="post" action="/logout"></form>
   </main>
@@ -6055,7 +6817,7 @@ function renderDashboard({ session, guilds, tickets, stats, dashboardState = {},
       <a class="nav-link" href="#logs" data-view="logs"><span class="nav-icon">${renderDashboardEmoji('logs', 'Logs')}</span><span>Logs</span></a>
     </nav>
     <div class="nav-foot">
-      <div class="nav-legal"><a href="/terms" target="_blank" rel="noopener">Terms</a><a href="/privacy" target="_blank" rel="noopener">Privacy</a></div>
+      <div class="nav-legal"><a href="/partners" target="_blank" rel="noopener">Partners</a><a href="/blacklist" target="_blank" rel="noopener">Blacklist</a><a href="/terms" target="_blank" rel="noopener">Terms</a><a href="/privacy" target="_blank" rel="noopener">Privacy</a></div>
       <form method="post" action="/logout"><button class="secondary-button" type="submit">Cerrar sesion</button></form>
     </div>
   </aside>
@@ -6298,6 +7060,7 @@ function renderDashboard({ session, guilds, tickets, stats, dashboardState = {},
               <option value="text">Texto + IA</option>
               <option value="voice">Voz Pro + STT/TTS</option>
               <option value="exam">Modo examen</option>
+              <option value="staff">Solo staff (sin IA)</option>
             </select></label>
             <label class="span-2">Preguntas antes de crear el ticket<textarea id="componentQuestions" placeholder="Una pregunta por linea. Maximo 5.&#10;Ej: Cual es tu nick?&#10;Describe el problema"></textarea></label>
             <div class="span-2 form-section compact is-hidden" id="componentExamSettings" data-release-feature="v15-web-exam-mode" data-release-lock-mode="disabled">
@@ -6348,6 +7111,7 @@ Antes de empezar, he guardado tus respuestas para que el staff tenga contexto.
                   <option value="text">Texto + IA</option>
                   <option value="voice">Voz Pro + STT/TTS</option>
                   <option value="exam">Modo examen</option>
+              <option value="staff">Solo staff (sin IA)</option>
                 </select></label>
               </div>
               <div class="form-section is-hidden" id="panelExamSettings" data-release-feature="v15-web-exam-mode" data-release-lock-mode="disabled">
@@ -6556,7 +7320,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
             <p id="premiumHeroText">Premium desbloquea voz natural, examenes supervisados, IA mas proactiva, transcripciones accionables, seguridad reforzada, branding propio, Growth Engine, SLA Radar y afiliados para que el owner vea valor real.</p>
             <div class="premium-lock" id="premiumLockNotice">
               <strong>Plan no activo todavia</strong>
-              <p>Activalo con <code>/activarpremium servidor:&lt;ID&gt;</code> o poniendo <code>plan = pro</code> / <code>voice_support_enabled = true</code> en CockroachDB. Las preferencias se pueden dejar preparadas.</p>
+              <p>Activalo con <code>/activarpremium servidor:&lt;ID&gt;</code> o poniendo <code>plan = pro</code> / <code>voice_support_enabled = true</code> en PostgreSQL. Las preferencias se pueden dejar preparadas.</p>
             </div>
             <div class="premium-feature-grid">
               <div class="premium-feature"><strong>Voz Pro</strong><span>Tickets con sala privada, STT/TTS y transcripcion en el canal.</span></div>
@@ -7135,7 +7899,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
           ? checkout.apiConfigured
             ? 'Pago seguro con PayPal Checkout. NexaDesk solo recibe confirmacion del pago y los slots.'
             : 'Pago manual activo: tras pagar, abre ticket de soporte para validar y activar slots.'
-          : 'Faltan PAYPAL_CLIENT_ID/PAYPAL_CLIENT_SECRET o PREMIUM_PAYMENT_URL en Render para activar pagos reales.';
+          : 'Faltan PAYPAL_CLIENT_ID/PAYPAL_CLIENT_SECRET o PREMIUM_PAYMENT_URL en el .env de la Raspberry Pi para activar pagos reales.';
       }
 
       const target = document.querySelector('#premiumActivationList');
@@ -7590,11 +8354,11 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
       const guild = getGuildConfig(guildId) || {};
       setConfigurationDisabled(true);
       document.querySelector('#installBanner').hidden = false;
-      document.querySelector('#installTitle').textContent = 'Render necesita el token del bot.';
+      document.querySelector('#installTitle').textContent = 'La Pi necesita el token del bot.';
       document.querySelector('#installText').textContent = message;
-      document.querySelector('#installLink').href = 'https://dashboard.render.com/';
+      document.querySelector('#installLink').href = 'https://nexa-desk.com/';
       document.querySelector('#installLink').target = '_blank';
-      document.querySelector('#installLink').textContent = 'Abrir Render';
+      document.querySelector('#installLink').textContent = 'Abrir dashboard';
       document.querySelector('#ticketCategoryId').innerHTML = '<option>No se pudieron cargar categorias</option>';
       document.querySelector('#ticketCategoryId2').innerHTML = '<option>No se pudieron cargar categorias</option>';
       document.querySelector('#staffRoleId').innerHTML = '<option>No se pudieron cargar roles</option>';
@@ -8049,6 +8813,7 @@ Cuentame que necesitas y te ayudare con este ticket. Si hace falta, avisare al s
     function formatTicketMode(mode) {
       if (mode === 'voice') return 'Voz Pro + STT/TTS';
       if (mode === 'exam') return 'Modo examen';
+      if (mode === 'staff') return 'Solo staff (sin IA)';
       return 'Texto + IA';
     }
     function updateComponentMode() {
@@ -9019,11 +9784,18 @@ async function hydrateReplayUsersFromDiscord({ config, users }) {
 }
 
 async function fetchDiscordUserWithBot(config, userId) {
-  const response = await fetch(`${DISCORD_API}/users/${encodeURIComponent(userId)}`, {
-    headers: { authorization: `Bot ${config.DISCORD_TOKEN}` }
-  });
-  if (!response.ok) return null;
-  return response.json();
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 2_500);
+  try {
+    const response = await fetch(`${DISCORD_API}/users/${encodeURIComponent(userId)}`, {
+      headers: { authorization: `Bot ${config.DISCORD_TOKEN}` },
+      signal: controller.signal
+    });
+    if (!response.ok) return null;
+    return response.json();
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 function buildDiscordAvatarUrl(user) {

@@ -6,6 +6,7 @@ import os from 'node:os';
 import { AkiomaeClient } from './ai/akiomae-client.js';
 import { FallbackAiClient, createAiProvider } from './ai/fallback-ai-client.js';
 import { GroqClient } from './ai/groq-client.js';
+import { GoogleAiStudioClient } from './ai/google-ai-studio-client.js';
 import { LocalSupportClient } from './ai/local-support-client.js';
 import { OllamaClient } from './ai/ollama-client.js';
 import { OpenAICompatibleClient } from './ai/openai-compatible-client.js';
@@ -16,6 +17,21 @@ import { captureGuildBackup, createBot, createTicketCategory, createTicketPanel,
 import { createServer } from './server.js';
 import { createDiscordRestActions } from './discord-rest-actions.js';
 
+const LEGACY_GROQ_MODEL = 'llama-3.1-8b-instant';
+const EFFECTIVE_GROQ_MODEL = String(config.GROQ_MODEL).trim() === LEGACY_GROQ_MODEL
+  ? 'openai/gpt-oss-20b'
+  : config.GROQ_MODEL;
+const LEGACY_GOOGLE_MODEL = 'gemini-2.5-flash-lite';
+const EFFECTIVE_GOOGLE_MODEL = String(config.GOOGLE_AI_STUDIO_MODEL).trim() === LEGACY_GOOGLE_MODEL
+  ? 'gemini-3.5-flash-lite'
+  : config.GOOGLE_AI_STUDIO_MODEL;
+if (EFFECTIVE_GROQ_MODEL !== config.GROQ_MODEL) {
+  console.warn(`Deprecated GROQ_MODEL detected; using ${EFFECTIVE_GROQ_MODEL} instead.`);
+}
+if (EFFECTIVE_GOOGLE_MODEL !== config.GOOGLE_AI_STUDIO_MODEL) {
+  console.warn(`Deprecated GOOGLE_AI_STUDIO_MODEL detected; using ${EFFECTIVE_GOOGLE_MODEL} instead.`);
+}
+
 process.on('unhandledRejection', (reason) => {
   console.error('Unhandled rejection:', reason);
 });
@@ -25,7 +41,27 @@ process.on('uncaughtException', (error) => {
 });
 
 const events = new AppEvents();
+const runtime = {
+  storage: null,
+  botActions: null,
+  discordClient: null
+};
+const app = createServer({
+  config,
+  storage: createDeferredRuntimeTarget(runtime, 'storage'),
+  bot: createDeferredRuntimeTarget(runtime, 'botActions'),
+  discordClient: createDeferredRuntimeTarget(runtime, 'discordClient'),
+  events
+});
+const httpServer = app.listen(config.PORT, () => {
+  console.log(`NexaDesk dashboard listener bound on http://localhost:${config.PORT}`);
+});
+httpServer.on('error', (error) => {
+  console.error('NexaDesk dashboard listener error:', error);
+});
+
 const storage = await createInitializedStorage(config, events);
+runtime.storage = storage;
 
 const aiClient = createAiClient();
 const visualAnalyzer = createVisualAnalyzer();
@@ -35,11 +71,13 @@ const supportAgent = new SupportAgent({
   aiClient,
   storage,
   maxHistoryMessages: config.AI_MAX_HISTORY_MESSAGES,
+  serverContextTimeoutMs: config.AI_SERVER_CONTEXT_TIMEOUT_MS,
   visualAnalyzer
 });
 
 const botGatewayEligible = config.RUN_BOT || config.BOT_HA_ENABLED;
 const bot = createBot({ config, storage, supportAgent, voiceManager });
+runtime.discordClient = bot;
 const botActions = botGatewayEligible && !config.BOT_HA_ENABLED
   ? {
       createTicketCategory: (input) => createTicketCategory(bot, storage, input),
@@ -57,16 +95,9 @@ const botActions = botGatewayEligible && !config.BOT_HA_ENABLED
     }
   : createDiscordRestActions({ config, storage });
 
-const app = createServer({
-  config,
-  storage,
-  bot: botActions,
-  events
-});
-app.listen(config.PORT, () => {
-  console.log(`NexaDesk dashboard listening on http://localhost:${config.PORT}`);
-  console.log(`NexaDesk runtime: RUN_BOT=${config.RUN_BOT} BOT_HA_ENABLED=${config.BOT_HA_ENABLED} BOT_GATEWAY_ELIGIBLE=${botGatewayEligible} BOT_INSTANCE_ID=${config.BOT_INSTANCE_ID || 'auto'} KEEPALIVE_ENABLED=${config.KEEPALIVE_ENABLED}`);
-});
+runtime.botActions = botActions;
+console.log(`NexaDesk dashboard ready on http://localhost:${config.PORT}`);
+console.log(`NexaDesk runtime: RUN_BOT=${config.RUN_BOT} BOT_HA_ENABLED=${config.BOT_HA_ENABLED} BOT_GATEWAY_ELIGIBLE=${botGatewayEligible} BOT_INSTANCE_ID=${config.BOT_INSTANCE_ID || 'auto'} KEEPALIVE_ENABLED=${config.KEEPALIVE_ENABLED}`);
 
 startKeepAliveLoop(config);
 
@@ -85,6 +116,14 @@ if (config.BOT_HA_ENABLED) {
 }
 
 function createAiClient() {
+  const googlePrimaryConfigured = Boolean(getGoogleApiKey());
+  const googleFallbackCount = parseFallbackKeys(config.GOOGLE_AI_STUDIO_FALLBACK_API_KEYS).length;
+  console.log(`NexaDesk AI route: primary=${config.AI_PROVIDER} google=${googlePrimaryConfigured || googleFallbackCount ? 'configured' : 'missing'} google_primary=${googlePrimaryConfigured ? 'configured' : 'missing'} google_fallbacks=${googleFallbackCount} model=${EFFECTIVE_GOOGLE_MODEL} tts=${googlePrimaryConfigured ? config.GEMINI_TTS_MODEL : 'missing'} groq=${hasGroqProvider() ? 'configured' : 'missing'} local=${config.AI_LOCAL_FALLBACK_ENABLED ? 'enabled' : 'disabled'}`);
+
+  if (config.AI_PROVIDER === 'google-ai-studio') {
+    return createGoogleFallbackClient();
+  }
+
   if (config.AI_PROVIDER === 'groq') {
     return createGroqFallbackClient();
   }
@@ -105,10 +144,12 @@ function createAiClient() {
 }
 
 function createVisualAnalyzer() {
-  if (!config.AI_VISUAL_ANALYSIS || !hasGroqProvider()) return null;
+  if (!config.AI_VISUAL_ANALYSIS || (!getGoogleApiKey() && !hasGroqProvider())) return null;
 
   return new VisualAnalyzer({
-    visionClient: createGroqFallbackClient(),
+    visionClient: config.AI_PROVIDER === 'google-ai-studio'
+      ? createGoogleFallbackClient()
+      : createGroqFallbackClient(),
     enabled: config.AI_VISUAL_ANALYSIS,
     videoFrameCount: config.AI_VIDEO_FRAME_COUNT,
     videoMaxBytes: config.AI_VIDEO_MAX_BYTES
@@ -116,36 +157,100 @@ function createVisualAnalyzer() {
 }
 
 function createVoiceManager() {
-  if (!config.VOICE_STT_ENABLED || config.AI_PROVIDER !== 'groq' || !hasGroqProvider()) {
+  if (!config.VOICE_STT_ENABLED || !hasGroqProvider()) {
     return null;
   }
 
   return new VoiceSessionManager({
     storage,
-    aiClient: createGroqFallbackClient(),
+    aiClient: createVoiceAiClient(),
+    ttsClient: createGeminiTtsClient(),
     visualAnalyzer,
     config
   });
 }
 
-function createGroqFallbackClient() {
+function createVoiceAiClient() {
+  const transcriptionClient = createGroqFallbackClient({
+    transcribeAudioTimeoutMs: config.VOICE_STT_TIMEOUT_MS
+  });
+  return {
+    generate: aiClient.generate.bind(aiClient),
+    transcribeAudio: transcriptionClient.transcribeAudio.bind(transcriptionClient),
+    synthesizeSpeech: transcriptionClient.synthesizeSpeech.bind(transcriptionClient)
+  };
+}
+
+function createGeminiTtsClient() {
+  const apiKey = getGoogleApiKey();
+  if (!apiKey) return null;
+  return new GoogleAiStudioClient({
+    apiKey,
+    model: EFFECTIVE_GOOGLE_MODEL,
+    ttsModel: config.GEMINI_TTS_MODEL,
+    ttsVoice: config.GEMINI_TTS_VOICE,
+    thinkingBudget: 0,
+    timeoutMs: config.GEMINI_TTS_TIMEOUT_MS,
+    ttsTimeoutMs: config.GEMINI_TTS_TIMEOUT_MS,
+    ttsMaxStreamMs: config.GEMINI_TTS_MAX_STREAM_MS
+  });
+}
+
+function createGoogleFallbackClient() {
   const providers = [];
+  addGoogleProviders(providers);
+  addGroqProviders(providers);
+  addSecondaryFallbacks(providers);
+  return createFallbackClient(providers);
+}
+
+function addGoogleProviders(providers) {
+  const primaryKey = getGoogleApiKey();
+  const keys = [...new Set([
+    primaryKey,
+    ...parseFallbackKeys(config.GOOGLE_AI_STUDIO_FALLBACK_API_KEYS)
+  ].map((value) => String(value ?? '').trim()).filter((value) => value && value !== 'replace_me'))];
+
+  for (const [index, apiKey] of keys.entries()) {
+    const isPrimary = Boolean(primaryKey) && index === 0;
+    providers.push(createAiProvider(
+      isPrimary ? 'google-ai-studio-primary' : 'google-ai-studio-fallback-' + (isPrimary ? 0 : index + 1),
+      new GoogleAiStudioClient({
+        apiKey,
+        model: EFFECTIVE_GOOGLE_MODEL,
+        thinkingBudget: config.GOOGLE_AI_STUDIO_THINKING_BUDGET,
+        timeoutMs: config.AI_PROVIDER_TIMEOUT_MS
+      })
+    ));
+  }
+}
+
+function createGroqFallbackClient(options = {}) {
+  const providers = [];
+  addGroqProviders(providers);
+  addSecondaryFallbacks(providers);
+  return createFallbackClient(providers, options);
+}
+
+function addGroqProviders(providers) {
   if (config.GROQ_API_KEY) {
     providers.push(createAiProvider('groq-primary', new GroqClient({
       apiKey: config.GROQ_API_KEY,
-      model: config.GROQ_MODEL,
+      model: EFFECTIVE_GROQ_MODEL,
       visionModel: config.GROQ_VISION_MODEL
     })));
   }
 
   for (const [index, apiKey] of parseFallbackKeys(config.GROQ_FALLBACK_API_KEYS).entries()) {
-    providers.push(createAiProvider(`groq-backup-${index + 1}`, new GroqClient({
+    providers.push(createAiProvider('groq-backup-' + (index + 1), new GroqClient({
       apiKey,
-      model: config.GROQ_MODEL,
+      model: EFFECTIVE_GROQ_MODEL,
       visionModel: config.GROQ_VISION_MODEL
     })));
   }
+}
 
+function addSecondaryFallbacks(providers) {
   if (config.AKIOMAE_API_KEY) {
     providers.push(createAiProvider('akiomae', new AkiomaeClient({
       apiKey: config.AKIOMAE_API_KEY,
@@ -158,12 +263,20 @@ function createGroqFallbackClient() {
       enabled: config.AI_LOCAL_FALLBACK_ENABLED
     })));
   }
+}
 
+function createFallbackClient(providers, options = {}) {
   return new FallbackAiClient(providers, {
-    generateTimeoutMs: config.AI_PROVIDER_TIMEOUT_MS
+    generateTimeoutMs: config.AI_PROVIDER_TIMEOUT_MS,
+    ...options,
+    providerCooldownMs: config.AI_PROVIDER_COOLDOWN_MS
   });
 }
 
+function getGoogleApiKey() {
+  const value = String(config.GOOGLE_AI_STUDIO_API_KEY || config.GEMINI_API_KEY || '').trim();
+  return value && value !== 'replace_me' ? value : '';
+}
 function parseFallbackKeys(value) {
   return String(value ?? '')
     .split(',')
@@ -177,7 +290,7 @@ function hasGroqProvider() {
 
 async function createInitializedStorage(config, events) {
   const storage = createStorage(config, events);
-  const databaseUrl = config.COCKROACH_DATABASE_URL || config.DATABASE_URL;
+  const databaseUrl = config.DATABASE_URL;
   try {
     await storage.init();
     if (databaseUrl) {
@@ -191,7 +304,7 @@ async function createInitializedStorage(config, events) {
   } catch (error) {
     if (!databaseUrl) throw error;
 
-    console.error('CockroachDB/PostgreSQL is unavailable during startup. Falling back to local JSON storage so NexaDesk can keep running.', compactStartupError(error));
+    console.error('PostgreSQL is unavailable during startup. Falling back to local JSON storage so NexaDesk can keep running.', compactStartupError(error));
     const fallback = new JsonStorage(config.DATA_DIR, events);
     await fallback.init();
     return fallback;
@@ -464,6 +577,25 @@ function startKeepAliveLoop(config) {
   setTimeout(ping, 10_000).unref?.();
   const timer = setInterval(ping, config.KEEPALIVE_INTERVAL_MS);
   timer.unref?.();
+}
+
+function createDeferredRuntimeTarget(runtime, key) {
+  return new Proxy({}, {
+    get(_target, property) {
+      if (property === 'then' || typeof property === 'symbol') return undefined;
+      const target = runtime[key];
+      if (target && !(property in target)) return undefined;
+      if (target) {
+        const value = target[property];
+        return typeof value === 'function' ? value.bind(target) : value;
+      }
+      return (...args) => {
+        const error = new Error(`NexaDesk runtime target '${key}' is not ready.`);
+        error.code = 'runtime_not_ready';
+        return Promise.reject(error);
+      };
+    }
+  });
 }
 
 function wait(ms) {

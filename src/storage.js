@@ -10,6 +10,7 @@ import {
   normalizeAffiliateRedemption
 } from './affiliates.js';
 import { normalizeAiQualitySignal } from './ai-quality.js';
+import { mergeAiLearningLesson, normalizeAiLearning } from './ai/learning-memory.js';
 import { normalizeGuildBackupSnapshot } from './backups.js';
 import { normalizeBlacklistEntry, normalizeBlacklistEvidence, normalizeBlacklistLookup } from './blacklist.js';
 import { buildFeedbackStats, normalizeGrowthConfig, normalizeTicketFeedback } from './growth.js';
@@ -97,7 +98,7 @@ export class JsonStorage {
 
     tickets[ticket.channelId] = {
       ...ticket,
-      status: 'open',
+      status: ticket.status ?? 'open',
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()
     };
@@ -162,9 +163,13 @@ export class JsonStorage {
     return saved;
   }
 
-  async listTranscriptMessages(channelId) {
+  async listTranscriptMessages(channelId, { limit = null } = {}) {
     const transcripts = await this.#readJson(this.transcriptsFile);
-    return transcripts[channelId] ?? [];
+    const messages = transcripts[channelId] ?? [];
+    const normalizedLimit = Number.parseInt(limit, 10);
+    return Number.isInteger(normalizedLimit) && normalizedLimit > 0
+      ? messages.slice(-normalizedLimit)
+      : messages;
   }
 
   async searchGuildTranscriptMessages(guildId, terms = [], { limit = 10, scanLimit = 400 } = {}) {
@@ -250,6 +255,18 @@ export class JsonStorage {
     return signals
       .filter((item) => !guildIdSet.size || guildIdSet.has(item.guildId))
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+
+  async addAiLearningLesson(guildId, lesson) {
+    const guild = await this.getGuildConfig(guildId);
+    if (!guild) return null;
+    const aiLearning = mergeAiLearningLesson(guild.aiLearning, lesson);
+    return this.upsertGuildConfig(guildId, { aiLearning });
+  }
+
+  async listAiLearningLessons(guildId) {
+    const guild = await this.getGuildConfig(guildId);
+    return normalizeAiLearning(guild?.aiLearning);
   }
 
   async addGuildLog(entry) {
@@ -646,6 +663,26 @@ export class JsonStorage {
     return (allEvidence[userId] ?? []).map(normalizeBlacklistEvidence).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   }
 
+  async replaceBlacklistEvidence(value, evidence = []) {
+    const { userId, banCode } = normalizeBlacklistLookup(value);
+    const now = new Date().toISOString();
+    const saved = (Array.isArray(evidence) ? evidence : [])
+      .map(normalizeBlacklistEvidence)
+      .filter((item) => item.attachmentUrl)
+      .map((item) => ({
+        ...item,
+        id: item.id ?? `evidence-${Date.now()}-${crypto.randomUUID()}`,
+        userId,
+        banCode,
+        createdAt: item.createdAt ?? now
+      }));
+    const allEvidence = await this.#readJson(this.blacklistEvidenceFile);
+    allEvidence[userId] = saved;
+    await this.#writeJson(this.blacklistEvidenceFile, allEvidence);
+    this.events?.publish('blacklist.evidence.replaced', { userId, count: saved.length });
+    return saved.map(normalizeBlacklistEvidence);
+  }
+
   async #ensureJson(filePath, defaultValue) {
     try {
       await fs.access(filePath);
@@ -917,14 +954,19 @@ export class PostgresStorage {
     return saved;
   }
 
-  async listTranscriptMessages(channelId) {
-    const { data, error } = await this.client
+  async listTranscriptMessages(channelId, { limit = null } = {}) {
+    const normalizedLimit = Number.parseInt(limit, 10);
+    const hasLimit = Number.isInteger(normalizedLimit) && normalizedLimit > 0;
+    const query = this.client
       .from('transcript_messages')
       .select('*')
       .eq('channel_id', channelId)
-      .order('created_at', { ascending: true });
+      .order('created_at', { ascending: !hasLimit });
+    if (hasLimit) query.limit(normalizedLimit);
+    const { data, error } = await query;
     if (error) throw error;
-    return data.map(fromTranscriptRow);
+    const messages = data.map(fromTranscriptRow);
+    return hasLimit ? messages.reverse() : messages;
   }
 
   async searchGuildTranscriptMessages(guildId, terms = [], { limit = 10, scanLimit = 400 } = {}) {
@@ -997,7 +1039,7 @@ export class PostgresStorage {
       .select()
       .single();
     if (isMissingFeedbackTableError(error)) {
-      console.warn('ticket_feedback table missing; feedback not persisted. Run el esquema de CockroachDB.');
+      console.warn('ticket_feedback table missing; feedback not persisted. Run el esquema de PostgreSQL.');
       return { ...normalized, notPersisted: true };
     }
     if (error) throw error;
@@ -1038,7 +1080,7 @@ export class PostgresStorage {
       .select()
       .single();
     if (isMissingAiQualitySignalTableError(error)) {
-      console.warn('ai_quality_signals table missing; quality signal not persisted. Run el esquema de CockroachDB.');
+      console.warn('ai_quality_signals table missing; quality signal not persisted. Run el esquema de PostgreSQL.');
       return { ...normalized, notPersisted: true };
     }
     if (error) throw error;
@@ -1060,6 +1102,18 @@ export class PostgresStorage {
     return data.map(fromAiQualitySignalRow);
   }
 
+  async addAiLearningLesson(guildId, lesson) {
+    const guild = await this.getGuildConfig(guildId);
+    if (!guild) return null;
+    const aiLearning = mergeAiLearningLesson(guild.aiLearning, lesson);
+    return this.upsertGuildConfig(guildId, { aiLearning });
+  }
+
+  async listAiLearningLessons(guildId) {
+    const guild = await this.getGuildConfig(guildId);
+    return normalizeAiLearning(guild?.aiLearning);
+  }
+
   async addGuildLog(entry) {
     const normalized = normalizeGuildLog(entry);
     const { data, error } = await this.client
@@ -1068,7 +1122,7 @@ export class PostgresStorage {
       .select()
       .single();
     if (isMissingGuildLogsTableError(error)) {
-      console.warn('guild_logs table missing; persisting server log in CockroachDB fallback store. Run el esquema de CockroachDB for full indexes.');
+      console.warn('guild_logs table missing; persisting server log in PostgreSQL fallback store. Run el esquema de PostgreSQL for full indexes.');
       return this.#addGuildLogFallback(normalized);
     }
     if (error) throw error;
@@ -1131,7 +1185,7 @@ export class PostgresStorage {
       .select()
       .single();
     if (isMissingGuildBackupsTableError(error)) {
-      console.warn('guild_backups table missing; persisting backup in CockroachDB fallback store. Run el esquema de CockroachDB for indexed backups.');
+      console.warn('guild_backups table missing; persisting backup in PostgreSQL fallback store. Run el esquema de PostgreSQL for indexed backups.');
       return this.#saveGuildBackupSnapshotFallback(normalized);
     }
     if (error) throw error;
@@ -1176,7 +1230,7 @@ export class PostgresStorage {
       .select()
       .single();
     if (isMissingGuildBackupsTableError(error)) {
-      console.warn('guild_backup_restores table missing; persisting restore record in CockroachDB fallback store. Run el esquema de CockroachDB.');
+      console.warn('guild_backup_restores table missing; persisting restore record in PostgreSQL fallback store. Run el esquema de PostgreSQL.');
       return this.#recordGuildBackupRestoreFallback(normalized);
     }
     if (error) throw error;
@@ -1289,7 +1343,7 @@ export class PostgresStorage {
       .select()
       .single();
     if (isMissingBlacklistTableError(error)) {
-      throw new Error('Faltan tablas de blacklist en CockroachDB. Ejecuta el SQL actualizado de el esquema de CockroachDB.');
+      throw new Error('Faltan tablas de blacklist en PostgreSQL. Ejecuta el SQL actualizado del esquema de PostgreSQL.');
     }
     if (error) throw error;
     const saved = fromBlacklistRow(data);
@@ -1315,7 +1369,7 @@ export class PostgresStorage {
       .select()
       .single();
     if (isMissingBlacklistTableError(error)) {
-      throw new Error('Falta global_blacklist_evidence en CockroachDB. Ejecuta el SQL actualizado de el esquema de CockroachDB.');
+      throw new Error('Falta global_blacklist_evidence en PostgreSQL. Ejecuta el SQL actualizado del esquema de PostgreSQL.');
     }
     if (error) throw error;
     const saved = fromBlacklistEvidenceRow(data);
@@ -1333,6 +1387,39 @@ export class PostgresStorage {
     if (isMissingBlacklistTableError(error)) return [];
     if (error) throw error;
     return data.map(fromBlacklistEvidenceRow);
+  }
+
+  async replaceBlacklistEvidence(value, evidence = []) {
+    const { userId, banCode } = normalizeBlacklistLookup(value);
+    const normalized = (Array.isArray(evidence) ? evidence : [])
+      .map(normalizeBlacklistEvidence)
+      .filter((item) => item.attachmentUrl)
+      .map((item) => ({
+        ...item,
+        userId,
+        banCode,
+        createdAt: item.createdAt ?? new Date().toISOString()
+      }));
+
+    const { error: deleteError } = await this.client
+      .from('global_blacklist_evidence')
+      .delete()
+      .eq('user_id', userId);
+    if (isMissingBlacklistTableError(deleteError)) {
+      throw new Error('Falta global_blacklist_evidence en PostgreSQL. Ejecuta el SQL actualizado del esquema de PostgreSQL.');
+    }
+    if (deleteError) throw deleteError;
+    if (!normalized.length) return [];
+
+    const { data, error } = await this.client
+      .from('global_blacklist_evidence')
+      .insert(normalized.map(toBlacklistEvidenceRow))
+      .select('*');
+    if (isMissingBlacklistTableError(error)) {
+      throw new Error('Falta global_blacklist_evidence en PostgreSQL. Ejecuta el SQL actualizado del esquema de PostgreSQL.');
+    }
+    if (error) throw error;
+    return (data ?? []).map(fromBlacklistEvidenceRow);
   }
 
   async recordPremiumPurchase(purchase) {
@@ -2068,9 +2155,9 @@ export class PostgresStorage {
 }
 
 export function createStorage(config, events) {
-  const databaseUrl = config.COCKROACH_DATABASE_URL || config.DATABASE_URL;
+  const databaseUrl = config.DATABASE_URL;
   if (databaseUrl) {
-    console.log('NexaDesk storage backend: CockroachDB/PostgreSQL');
+    console.log('NexaDesk storage backend: PostgreSQL');
     return new PostgresStorage({
       connectionString: databaseUrl,
       poolMax: config.DATABASE_POOL_MAX,
@@ -2079,7 +2166,7 @@ export function createStorage(config, events) {
     });
   }
 
-  console.warn('NexaDesk storage backend: local JSON. Set COCKROACH_DATABASE_URL or DATABASE_URL to persist data in CockroachDB/PostgreSQL.');
+  console.warn('NexaDesk storage backend: local JSON. Set DATABASE_URL to persist data in PostgreSQL.');
   return new JsonStorage(config.DATA_DIR, events);
 }
 
@@ -2140,6 +2227,7 @@ function fromGuildRow(row) {
     }),
     ticketClosePolicy: panelStore.ticketClosePolicy,
     scheduledAnnouncements: panelStore.scheduledAnnouncements,
+    aiLearning: panelStore.aiLearning,
     panels: panelStore.panels,
     components: panelStore.components,
     security: panelStore.security,
@@ -2162,7 +2250,8 @@ function toGuildPanelStore(guild) {
     discovery: normalizeDiscoveryConfig(guild.discovery ?? guild),
     watchedTicketCategories: normalizeWatchedTicketCategories(guild.watchedTicketCategories, guild),
     ticketClosePolicy: normalizeTicketClosePolicy(guild.ticketClosePolicy),
-    scheduledAnnouncements: normalizeScheduledAnnouncements(guild.scheduledAnnouncements)
+    scheduledAnnouncements: normalizeScheduledAnnouncements(guild.scheduledAnnouncements),
+    aiLearning: normalizeAiLearning(guild.aiLearning)
   };
 }
 
@@ -2182,7 +2271,8 @@ function fromGuildPanelStore(value) {
       discovery: normalizeDiscoveryConfig(),
       watchedTicketCategories: normalizeWatchedTicketCategories(),
       ticketClosePolicy: normalizeTicketClosePolicy(),
-      scheduledAnnouncements: normalizeScheduledAnnouncements()
+      scheduledAnnouncements: normalizeScheduledAnnouncements(),
+      aiLearning: normalizeAiLearning()
     };
   }
 
@@ -2201,7 +2291,8 @@ function fromGuildPanelStore(value) {
       discovery: normalizeDiscoveryConfig(value.discovery),
       watchedTicketCategories: normalizeWatchedTicketCategories(value.watchedTicketCategories),
       ticketClosePolicy: normalizeTicketClosePolicy(value.ticketClosePolicy),
-      scheduledAnnouncements: normalizeScheduledAnnouncements(value.scheduledAnnouncements)
+      scheduledAnnouncements: normalizeScheduledAnnouncements(value.scheduledAnnouncements),
+      aiLearning: normalizeAiLearning(value.aiLearning)
     };
   }
 
@@ -2219,7 +2310,8 @@ function fromGuildPanelStore(value) {
     discovery: normalizeDiscoveryConfig(),
     watchedTicketCategories: normalizeWatchedTicketCategories(),
     ticketClosePolicy: normalizeTicketClosePolicy(),
-    scheduledAnnouncements: normalizeScheduledAnnouncements()
+    scheduledAnnouncements: normalizeScheduledAnnouncements(),
+    aiLearning: normalizeAiLearning()
   };
 }
 

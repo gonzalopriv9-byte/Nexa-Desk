@@ -218,10 +218,10 @@ export class SecurityManager {
     return runtime.security;
   }
 
-  async handleMessageCreate(message) {
+  async handleMessageCreate(message, guildConfigOverride = null) {
     if (!message.guild || message.author?.id === this.client.user?.id) return false;
 
-    const guildConfig = await this.storage.getGuildConfig(message.guild.id);
+    const guildConfig = guildConfigOverride ?? await this.storage.getGuildConfig(message.guild.id);
     const security = this.getRuntimeSecurity(guildConfig, message.guild);
     if (!security.enabled) return false;
 
@@ -1707,7 +1707,7 @@ export class SecurityManager {
     if (!owner) return;
     const latestBackups = await this.storage.listGuildBackupSnapshots?.([guild.id], { limit: 1 }).catch(() => []);
     const latest = latestBackups?.[0] ?? null;
-    const dashboardUrl = String(this.config.DASHBOARD_PUBLIC_URL ?? 'https://nexa-desk.onrender.com').replace(/\/$/, '');
+    const dashboardUrl = String(this.config.DASHBOARD_PUBLIC_URL ?? 'https://nexa-desk.com').replace(/\/$/, '');
     const backupUrl = `${dashboardUrl}/backups`;
     const summary = latest?.summary ?? {};
     const embed = new EmbedBuilder()
@@ -1716,7 +1716,7 @@ export class SecurityManager {
       .setDescription([
         'NexaDesk ha detectado un posible raid destructivo o acciones sensibles en masa.',
         latest
-          ? `Tengo un backup reciente guardado en Supabase: **${summary.roles ?? 0} roles**, **${summary.channels ?? 0} canales** y **${summary.categories ?? 0} categorias**.`
+          ? `Tengo un backup reciente guardado en PostgreSQL: **${summary.roles ?? 0} roles**, **${summary.channels ?? 0} canales** y **${summary.categories ?? 0} categorias**.`
           : 'Todavia no encuentro un backup reciente para este servidor. Revisa /backups por si hay snapshots anteriores.',
         '',
         `Abre ${backupUrl}, selecciona **${guild.name}** como servidor raideado y elige un servidor nuevo donde recrear la estructura.`,

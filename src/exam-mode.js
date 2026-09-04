@@ -216,7 +216,7 @@ function scoreExamAnswer(item, index) {
   const positiveSignals = [
     /\b(staff|moderador|humano|superior|owner)\b/u,
     /\b(prueba|captura|evidencia|contexto|detalle|transcripcion)\b/u,
-    /\b(permiso|rol|categoria|configuracion|dashboard|supabase)\b/u,
+    /\b(permiso|rol|categoria|configuracion|dashboard|postgresql)\b/u,
     /\b(escalar|avisar|mencionar|revisar|calmar|resolver)\b/u,
     /\b(seguridad|blacklist|xn protect|link|malicioso|sospechoso)\b/u,
     /\b(privacidad|contrasena|datos|sensible|bancario)\b/u,
@@ -246,7 +246,7 @@ function scoreTargetedExamAnswer({ question, answer }) {
   if (/\blink\b/u.test(question) && /\b(no\s+se\s+debe\s+abrir|sospechoso|seguridad|reportarlo|staff)\b/u.test(answer)) return 7.8;
   if (/\bcaptura|imagen\b/u.test(question) && /\b(analizar|extraer|error|informacion|solucion|escalar)\b/u.test(answer)) return 7.7;
   if (/\bblacklist|xn protect\b/u.test(question) && /\b(riesgo|staff|superior|revis|aviso)\b/u.test(answer)) return 7.5;
-  if (/\bsupabase\b/u.test(question) && /\b(ticket|mensaje|configuracion|transcripcion|servidor)\b/u.test(answer)) return 7.2;
+  if (/\bpostgresql\b/u.test(question) && /\b(ticket|mensaje|configuracion|transcripcion|servidor)\b/u.test(answer)) return 7.2;
   if (/\bticket king\b/u.test(question) && /\b(permiso|categoria|configuracion|ia|ticket|estado|limitacion)\b/u.test(answer)) return 7.1;
   if (/\bcanales privados\b/u.test(question) && /\b(permiso|rol|categoria|configuracion|restriccion)\b/u.test(answer)) return 7.6;
   if (/\bescalar\b/u.test(question) && /\b(staff|superior|informacion|contexto|resolver)\b/u.test(answer)) return 7.4;
@@ -271,7 +271,7 @@ function inferExamStrengths(answers) {
   if (/\b(prueba|captura|evidencia|contexto|transcripcion)\b/u.test(text)) strengths.push('pide pruebas y contexto antes de actuar');
   if (/\b(contrasena|datos bancarios|documentos|informacion sensible|privacidad)\b/u.test(text)) strengths.push('reconoce datos sensibles que no se deben pedir');
   if (/\b(emergencia|profesional|confianza|peligro|suicid)\b/u.test(text)) strengths.push('trata casos de crisis con prudencia');
-  if (/\b(permiso|rol|categoria|dashboard|configuracion|supabase)\b/u.test(text)) strengths.push('conoce partes importantes de configuracion de NexaDesk');
+  if (/\b(permiso|rol|categoria|dashboard|configuracion|postgresql)\b/u.test(text)) strengths.push('conoce partes importantes de configuracion de NexaDesk');
   return strengths.slice(0, 5);
 }
 
@@ -290,7 +290,7 @@ function looksLikeGenericAnswer(normalized, words) {
   if (words < 18) return false;
   let score = 0;
   if (/\b(es importante|se debe|hay que|correctamente|adecuadamente)\b/u.test(normalized)) score += 1;
-  if (/\b(usuario|staff|servidor)\b/u.test(normalized) && !/\b(captura|rol|categoria|ticket king|supabase|xn protect|emergencia)\b/u.test(normalized)) score += 1;
+  if (/\b(usuario|staff|servidor)\b/u.test(normalized) && !/\b(captura|rol|categoria|ticket king|postgresql|xn protect|emergencia)\b/u.test(normalized)) score += 1;
   return score >= 2;
 }
 

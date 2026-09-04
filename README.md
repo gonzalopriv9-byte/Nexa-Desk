@@ -13,14 +13,14 @@ NexaDesk is not trying to replace every ticket bot. Its strongest position is be
 - Dashboard actions to create ticket categories and publish ticket panels.
 - Ticket panel button that creates private ticket channels.
 - AI replies inside ticket channels.
-- Discord OAuth dashboard/API ready for Render.
+- Discord OAuth dashboard/API ready for the Raspberry Pi.
 - Direct bot invite flow from the server selector when NexaDesk is not installed yet.
 - Staff escalation with `/desactivar ia`, `/activar ia`, ticket status, AI summaries, and saved transcripts per server.
 - Transcript delivery by DM with `/transcripcion enviar`.
 - Professional ticket close flow with `/ticket cerrar`.
 - Owner onboarding DM when NexaDesk joins a new server.
 - Interactive `/ayuda` guide with buttons for users, staff, setup and data.
-- Pro voice support rooms with `/voz crear` or dashboard panels/components, gated per server from Supabase.
+- Pro voice support rooms with `/voz crear` or dashboard panels/components, gated per server from PostgreSQL.
 - Voice tickets can use Groq STT/TTS to transcribe users, answer in voice, and save the conversation in transcripts.
 - Automatic transcript delivery when another ticket bot closes a ticket by deleting the channel.
 - Global bot metrics with `/globalstats`.
@@ -77,13 +77,13 @@ The dashboard can:
 Public status page:
 
 ```text
-https://your-render-service.onrender.com/status
+https://nexa-desk.com/status
 ```
 
 Owner release center:
 
 ```text
-https://your-render-service.onrender.com/owner
+https://nexa-desk.com/owner
 ```
 
 New public-facing work should be declared in `src/release-gates.js`. Until the owner launches the update from `/owner`, matching commands stay restricted to the global owner and dashboard sections tagged with `data-release-feature="<feature-id>"` render a work-in-progress screen for normal users.
@@ -92,78 +92,34 @@ The V1.5 launch pack is declared as `v15-launch-pack`. Before launch, only the g
 
 `/status` shows bot health, Discord/runtime metrics, HA leader state, components, and owner messages in real time. It is public for users, but only the global owner through Discord OAuth or an active `/admin` rotating-code session can edit the status and publish messages. Status edits are stored in global settings and broadcast through Server-Sent Events.
 
-For production on Render, set the same env vars in the web service settings. For the Raspberry Pi worker, keep `/home/pi/nexadesk/.env` updated separately.
+For production, keep the environment variables in `/home/pi/Nexa-Desk-Nuevo/.env` on the Raspberry Pi. PM2 and Nginx serve the dashboard from the same local deployment.
 
 Visual analysis uses Groq vision models for images. Video support samples frames through `ffmpeg`; install `ffmpeg` on the worker machine if you want videos to be interpreted instead of only recorded as attachments.
 
 Voice support uses Groq speech-to-text and text-to-speech, plus `ffmpeg` to play generated audio in Discord voice channels. Install `ffmpeg` on the worker machine and keep only one AI voice room active per Discord server at a time.
 
-If you only want Render to serve the dashboard, set:
+The Raspberry Pi runs the dashboard and worker together. If you temporarily need dashboard-only mode, set `RUN_BOT=false`; the dashboard still needs `DISCORD_TOKEN` to read roles/channels and create categories or panels. If Discord resets the token, update the .env and restart PM2.
 
-```text
-RUN_BOT=false
-```
+## Producci?n en Raspberry Pi
 
-Render still needs `DISCORD_TOKEN` even with `RUN_BOT=false`, because the dashboard uses the bot token to read roles/channels and create categories or panels. If Discord resets the token, update it both on the Pi and in Render.
+NexaDesk se ejecuta en la Raspberry Pi con Node.js, PM2, Nginx y Cloudflare Tunnel. La dashboard y el worker usan el mismo `.env` y la misma base PostgreSQL local. No se mantiene un standby externo ni un workflow de keepalive de otro proveedor.
 
-## High availability worker
+Para comprobar el servicio: `pm2 status`, `pm2 logs Nexa-Desk --lines 100`, `curl -I http://127.0.0.1:3000` y `curl -I https://nexa-desk.com/health`. Si se necesita alta disponibilidad real, se debe a?adir una segunda Pi o un servidor controlado con el mismo PostgreSQL; no se activa autom?ticamente.
 
-NexaDesk can run a safe active/standby worker pair. Keep one instance on the Raspberry Pi and a second instance in Render with the same Discord/Supabase environment. Enable the lease so only one gateway session responds at a time:
-
-```text
-RUN_BOT=true
-BOT_HA_ENABLED=true
-BOT_INSTANCE_ID=pi-main
-BOT_LEASE_TTL_MS=12000
-BOT_LEASE_RENEW_MS=4000
-BOT_FAILOVER_POLL_MS=2500
-```
-
-Use a different `BOT_INSTANCE_ID` on the standby, for example `oci-standby`. The lease is stored in Supabase global settings. This avoids active-active duplicate Discord replies while allowing a standby worker to take over within seconds if the Pi loses power.
-
-Preferred standby target for this repo: the Render dashboard service. Set `RUN_BOT=true`, `BOT_HA_ENABLED=true`, and `BOT_INSTANCE_ID=render-dashboard-standby` there. Keep the Raspberry Pi as `BOT_INSTANCE_ID=pi-main`.
-
-Render Free web services can sleep after idle time, so the standby must receive periodic HTTP traffic or the Discord gateway will not be alive when the Pi drops. For the Render standby, set:
-
-```text
-KEEPALIVE_ENABLED=true
-KEEPALIVE_URL=https://your-render-service.onrender.com/health
-KEEPALIVE_INTERVAL_MS=300000
-```
-
-Verify standby readiness from:
-
-```text
-https://your-render-service.onrender.com/health/ha
-```
-
-When the Pi is leader, this endpoint should show `leader.ownerId = pi-main`. After unplugging the Pi, it should change to `render-dashboard-standby` after the lease expires.
-
-The repository also includes `.github/workflows/render-keepalive.yml`, which pings Render every 5 minutes from GitHub Actions. Keep Actions enabled on GitHub so the standby stays awake even when the Pi is healthy.
-
-If `/health/ha` shows `runtime.botGatewayEligible = "false"` or `runtime.haEnabled = "false"` on Render, the standby is disabled regardless of `render.yaml`. Set these Render environment variables manually and redeploy:
-
-```text
-BOT_HA_ENABLED=true
-BOT_INSTANCE_ID=render-dashboard-standby
-KEEPALIVE_ENABLED=true
-KEEPALIVE_URL=https://nexa-desk.onrender.com/health
-```
-
-`RUN_BOT=true` is still recommended on Render for clarity, but HA standby now starts whenever `BOT_HA_ENABLED=true`.
+El lease HA sigue disponible para una segunda instancia controlada: usa `BOT_HA_ENABLED=true`, `BOT_INSTANCE_ID=pi-main` y `BOT_PRIMARY_INSTANCE_ID=pi-main`. La instancia ?nica no necesita un keepalive externo.
 
 ## Private docs vault
 
 Open the private internal docs manually at:
 
 ```text
-https://your-render-service.onrender.com/docs
+https://nexa-desk.com/docs
 ```
 
 Open the hidden admin command room manually at:
 
 ```text
-https://your-render-service.onrender.com/admin
+https://nexa-desk.com/admin
 ```
 
 Both routes are intentionally not linked from the dashboard. `/docs` contains the internal vault and requires the Google Authenticator compatible TOTP secret. `/admin` shows global live data plus maintenance controls and uses a rotating one-time code generated with `/code` in Discord by users with the configured admin-code role.
@@ -174,21 +130,21 @@ Generate a secret:
 npm run docs:totp-secret
 ```
 
-Set the printed `DOCS_TOTP_SECRET` in Render and in the Raspberry Pi `.env`, then add the printed `otpauth_uri` manually to Google Authenticator. Docs use no-cache headers, noindex, short signed sessions, anti-copy/print guards, and persistent watermarks. Admin uses the same security headers but authenticates through `/code`, stored hashed, encrypted for same-user reuse while active, and invalidated after first use. Set the same `ADMIN_CODE_SECRET` in Render and Pi for the cleanest setup; if it is missing, NexaDesk falls back to shared bot secrets so Pi-generated codes still validate on Render. Browser code cannot fully prevent operating-system screenshots, so treat the watermark, TOTP, and rotating admin codes as defense-in-depth, not magic DRM.
+Set the printed `DOCS_TOTP_SECRET` in the Raspberry Pi `.env`, then add the printed `otpauth_uri` manually to Google Authenticator. Docs use no-cache headers, noindex, short signed sessions, anti-copy/print guards, and persistent watermarks. Admin uses the same security headers and authenticates through `/code`, stored hashed, encrypted for same-user reuse while active, and invalidated after first use. Keep `ADMIN_CODE_SECRET` in the Pi `.env`. Browser code cannot fully prevent operating-system screenshots, so treat the watermark, TOTP, and rotating admin codes as defense-in-depth, not magic DRM.
 
 ## Discord OAuth
 
 Add this redirect URL in the Discord Developer Portal:
 
 ```text
-https://your-render-service.onrender.com/auth/discord/callback
+https://nexa-desk.com/auth/discord/callback
 ```
 
 Set:
 
 ```text
 DISCORD_CLIENT_SECRET=...
-DASHBOARD_PUBLIC_URL=https://your-render-service.onrender.com
+DASHBOARD_PUBLIC_URL=https://nexa-desk.com
 SESSION_SECRET=long_random_secret
 ```
 
@@ -206,31 +162,51 @@ DISCORD_MESSAGE_CONTENT_INTENT=true
 DISCORD_GUILD_MEMBERS_INTENT=true
 ```
 
-## Supabase
+## PostgreSQL local
 
-Run [supabase/schema.sql](./supabase/schema.sql) in the Supabase SQL editor, then set:
+NexaDesk usa PostgreSQL local como almacenamiento de producción en la Raspberry Pi. No depende de créditos, Request Units ni límites mensuales de un proveedor externo; el límite práctico es el disco y los recursos de la propia Pi.
 
-```text
-SUPABASE_URL=...
-SUPABASE_SERVICE_ROLE_KEY=...
-```
-
-If Supabase vars are missing, NexaDesk falls back to local JSON storage for development.
-
-The current schema includes `ticket_feedback` for Growth Engine and `ai_quality_signals` for Quality Radar complaints/frustration detected during AI conversations. If ratings or AI quality signals do not appear in Supabase/admin, rerun `supabase/schema.sql`.
-
-The bot logs the active storage backend on startup. Production should say:
-
-```text
-NexaDesk storage backend: Supabase
-```
-
-If the Pi previously ran without Supabase vars, migrate the local JSON data after setting the Supabase env vars:
+Instala PostgreSQL y aplica el esquema desde la raíz del repositorio:
 
 ```bash
-npm run migrate:supabase
+npm run db:setup
 ```
 
+El instalador crea la base de datos `nexadesk`, el usuario `nexa`, aplica [postgres/schema.sql](./postgres/schema.sql) y muestra la variable de conexión. Déjala en el `.env` de la Raspberry Pi:
+
+```text
+DATABASE_URL=postgresql://nexa:TU_PASSWORD@127.0.0.1:5432/nexadesk?sslmode=disable
+DATABASE_POOL_MAX=5
+DATABASE_CONNECT_TIMEOUT_MS=8000
+```
+
+Comprueba la instalación con:
+
+```bash
+npm run test:database
+```
+
+Si NexaDesk tenía datos en el almacenamiento JSON de fallback, mígralos antes de retirar esos archivos:
+
+```bash
+npm run db:migrate:json
+```
+
+El arranque correcto debe mostrar:
+
+```text
+NexaDesk storage backend: PostgreSQL
+```
+
+Si `DATABASE_URL` falta o PostgreSQL no está disponible, NexaDesk conserva un fallback JSON para desarrollo y arranque de emergencia; no lo uses como almacenamiento de producción con varios procesos.
+
+Crea backups periódicos con:
+
+```bash
+npm run db:backup
+```
+
+El backup usa `pg_dump` en formato comprimido y conserva por defecto 14 días. Cambia `BACKUP_DIR` o `BACKUP_RETENTION_DAYS` si necesitas otra ubicación o retención.
 ## Top.gg Anti-Bots
 
 Security Guard can use Top.gg as a safe-list before banning new bots. Get the token from your Top.gg bot dashboard under `Integrations & API`, then set it on the Pi:
@@ -343,9 +319,9 @@ DISCORD_GUILD_ID=your_server_id npm run register -- --clear-guild
 
 `/ticket resumen` gives staff a concise AI handoff, `/ticket prioridad` calculates risk, SLA and next action, `/ticket estado` shows the operational state of the current ticket, and `/ticket cerrar` closes the ticket, sends the transcript by DM, and deletes the channel after a short delay.
 
-Premium monetization is built into the dashboard. Configure `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET`, `PAYPAL_MODE=live`, `PREMIUM_PACK_PRICE_CENTS=300`, `PREMIUM_PACK_SLOTS=3`, and `PREMIUM_PACK_CURRENCY=eur` for automatic PayPal Checkout. If you need to start selling before PayPal API verification is complete, set `PREMIUM_PAYMENT_URL` to a manual PayPal/payment link; the dashboard will open that link and record a pending manual intent in Supabase for validation through support. Users can run `/premium` to see the price, features, dashboard checkout, and support link.
+Premium monetization is built into the dashboard. Configure `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET`, `PAYPAL_MODE=live`, `PREMIUM_PACK_PRICE_CENTS=300`, `PREMIUM_PACK_SLOTS=3`, and `PREMIUM_PACK_CURRENCY=eur` for automatic PayPal Checkout. If you need to start selling before PayPal API verification is complete, set `PREMIUM_PAYMENT_URL` to a manual PayPal/payment link; the dashboard will open that link and record a pending manual intent in PostgreSQL for validation through support. Users can run `/premium` to see the price, features, dashboard checkout, and support link.
 
-Voice support is a Pro feature activated by Premium slots, `/activarpremium`, or manually from Supabase. For a server, set either `plan = 'pro'` or `voice_support_enabled = true` in `guild_configs`. Optional columns `voice_category_id` and `voice_category_name` let you choose where Pro voice rooms should be created. In the dashboard, set a panel button or menu component to `Voz Pro + STT/TTS` to open a normal private text ticket with a linked private voice room.
+Voice support is a Pro feature activated by Premium slots, `/activarpremium`, or manually from PostgreSQL. For a server, set either `plan = 'pro'` or `voice_support_enabled = true` in `guild_configs`. Optional columns `voice_category_id` and `voice_category_name` let you choose where Pro voice rooms should be created. In the dashboard, set a panel button or menu component to `Voz Pro + STT/TTS` to open a normal private text ticket with a linked private voice room.
 
 When a ticket channel registered by NexaDesk is deleted by another ticket bot, NexaDesk marks the ticket as closed, keeps the transcript available in the dashboard, and tries to DM the transcript to the opener automatically.
 
@@ -369,3 +345,15 @@ Your ticket bot opens the channel. NexaDesk handles the conversation.
 Growth Engine asks for a rating by DM when a ticket closes. Free servers get internal ratings and dashboard metrics. Premium servers can publish high ratings to a configured review channel and alert staff when low ratings indicate a user may leave.
 
 When NexaDesk joins a new server, it sends the owner a private onboarding message with setup steps, staff instructions, data/transcript details, dashboard link, and the official support server.
+## Cloudflare Turnstile
+
+NexaDesk protects the Discord login with Cloudflare Turnstile. Create a Managed widget for `nexa-desk.com` and `www.nexa-desk.com`, then configure these variables privately on the production host:
+
+```text
+TURNSTILE_ENABLED=true
+TURNSTILE_SITE_KEY=your_public_site_key
+TURNSTILE_SECRET_KEY=your_private_rotated_secret
+TURNSTILE_VERIFY_TIMEOUT_MS=5000
+```
+
+Keep `TURNSTILE_SECRET_KEY` only in the private `.env` file. It must never be committed, printed in logs, or sent through chat. Direct GET requests to `/auth/discord` return to `/login`; OAuth starts only after the server validates the Turnstile response.

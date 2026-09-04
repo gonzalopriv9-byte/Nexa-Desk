@@ -1,3 +1,7 @@
+-- NexaDesk PostgreSQL schema
+-- Run this file on the PostgreSQL instance owned by NexaDesk.
+-- It contains no provider-specific extensions.
+
 create table if not exists public.guild_configs (
   guild_id text primary key,
   guild_name text,
@@ -52,7 +56,12 @@ create table if not exists public.transcript_messages (
 );
 
 create index if not exists transcript_messages_channel_id_idx on public.transcript_messages (channel_id);
+create index if not exists transcript_messages_guild_id_idx on public.transcript_messages (guild_id);
 create index if not exists transcript_messages_created_at_idx on public.transcript_messages (created_at);
+
+create unique index if not exists transcript_messages_channel_message_idx
+  on public.transcript_messages (channel_id, message_id)
+  where message_id is not null;
 
 alter table public.guild_configs add column if not exists staff_role_id text;
 alter table public.guild_configs add column if not exists server_prompt text;
@@ -96,11 +105,15 @@ create table if not exists public.global_blacklist_evidence (
   content_type text,
   description text,
   created_by text,
+  source_key text,
   created_at timestamptz not null default now()
 );
 
+alter table public.global_blacklist_evidence add column if not exists source_key text;
+
 create index if not exists global_blacklist_evidence_user_id_idx on public.global_blacklist_evidence (user_id);
 create index if not exists global_blacklist_evidence_ban_code_idx on public.global_blacklist_evidence (ban_code);
+create unique index if not exists global_blacklist_evidence_source_key_idx on public.global_blacklist_evidence (source_key);
 
 create table if not exists public.ticket_feedback (
   id text primary key,

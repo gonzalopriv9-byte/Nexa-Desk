@@ -9,7 +9,13 @@
     "dev": "node --watch src/index.js",
     "register": "node src/register-commands.js",
     "docs:totp-secret": "node scripts/generate-docs-totp-secret.js",
-    "test:database": "node scripts/test-database.js"
+    "test:database": "node scripts/test-database.js",
+    "db:setup": "bash scripts/setup-postgres.sh",
+    "db:migrate:json": "node scripts/migrate-json-to-postgres.js",
+    "db:backup": "bash scripts/backup-postgres.sh",
+    "db:test": "node scripts/test-database.js",
+    "test:turnstile": "node scripts/test-turnstile.js",
+    "db:import-spagency-blacklist": "node scripts/import-spagency-blacklist.js"
   },
   "dependencies": {
     "@discordjs/voice": "^0.19.2",
