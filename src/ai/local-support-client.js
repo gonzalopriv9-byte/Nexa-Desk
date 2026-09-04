@@ -174,6 +174,13 @@ function detectChannelLookupIntent(value = '') {
   const asksLocation = /\b(?:donde|en\s+que|canal|canales|buscar|busca|buscalo|encuentra|localiza|ver|mirar|publica|publican|aparece|aparecen)\b/iu.test(normalized);
   if (!asksLocation) return null;
 
+  if (/\b(?:norma(?:s)?|regla(?:s)?|normativa|reglamento|rule(?:s)?)\b/iu.test(normalized)) {
+    return { key: 'rules', labelEs: 'las normas del servidor', labelEn: 'the server rules', labelZh: '服务器规则', terms: ['norma', 'normas', 'regla', 'reglas', 'normativa', 'reglamento', 'rule', 'rules'] };
+  }
+  if (/\b(?:bienvenid(?:a|as)?|welcome(?:s)?|onboarding|presentaci(?:on|ones)?|introducci(?:on|ones)?)\b/iu.test(normalized)) {
+    return { key: 'welcome', labelEs: 'las bienvenidas y presentaciones', labelEn: 'welcome and introduction information', labelZh: '欢迎和介绍信息', terms: ['bienvenida', 'bienvenidas', 'welcome', 'welcomes', 'onboarding', 'presentacion', 'presentaciones', 'introduccion', 'introducciones'] };
+  }
+
   if (/\b(?:alianza|alianzas|partner|partnership|partners|colaboracion|colaboraciones)\b/iu.test(normalized)) {
     return { key: 'alliances', labelEs: 'las alianzas y solicitudes', labelEn: 'alliances and requests', labelZh: '联盟和申请', terms: ['alianza', 'alianzas', 'partner', 'partnership', 'colaboracion'] };
   }
@@ -220,10 +227,16 @@ function extractChannelCandidates(system = '') {
 
 function scoreChannelCandidate(candidate, intent) {
   const context = normalizeText(candidate.context).normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  const name = normalizeText(candidate.name ?? '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
   let score = 0;
   for (const term of intent.terms) {
     if (context.includes(term)) score += term.length >= 6 ? 4 : 2;
+    if (name === term) score += 8;
+    else if (name.includes(term)) score += 3;
   }
+  if (intent.key === 'rules' && /\b(?:norma|normas|regla|reglas|rule|rules)\b/iu.test(name)) score += 5;
+  if (intent.key === 'welcome' && /\b(?:bienvenid|welcome|onboarding|presentaci|introducci)\b/iu.test(name)) score += 5;
+  if (intent.key !== 'alliances' && /\b(?:alianza|partner|partnership|colaboracion)\b/iu.test(name)) score -= 3;
   if (context.includes('mencion exacta para discord')) score += 2;
   return score;
 }
