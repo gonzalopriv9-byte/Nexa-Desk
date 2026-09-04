@@ -47,6 +47,39 @@ for (const testCase of cases) {
   assert.doesNotMatch(output, /Sigo contigo|no tengo un hecho concreto|dato nuevo|la señal aporta|owner o staff/i, testCase.name);
 }
 
+const channelContext = [
+  'Mapa real de canales:',
+  'Canal real del servidor: <#100000000000000001> (nombre visible: #🤝〢Alliance (📃〢Rules)).',
+  'Mencion exacta para Discord: <#100000000000000001>.',
+  'Canal real del servidor: <#100000000000000002> (nombre visible: #👋〢Bienvenidas).',
+  'Mencion exacta para Discord: <#100000000000000002>.'
+].join('\n');
+
+const rulesReply = await client.generate({
+  system: channelContext,
+  messages: [{ role: 'user', content: 'Hola, donde puedo ver las normas?' }]
+});
+assert.match(rulesReply, /<#100000000000000001>/i);
+assert.doesNotMatch(rulesReply, /<#100000000000000002>|welcome|bienvenida/i);
+
+const welcomeReply = await client.generate({
+  system: channelContext,
+  messages: [
+    { role: 'user', content: 'Hola, donde puedo ver las normas?' },
+    { role: 'assistant', content: 'Puedes consultar las normas en <#100000000000000001>.' },
+    { role: 'user', content: 'Donde puedo ver las bienvenidas?' }
+  ]
+});
+assert.match(welcomeReply, /<#100000000000000002>/i);
+assert.doesNotMatch(welcomeReply, /<#100000000000000001>|#(?:welcome|bienvenida|soporte)\b/i);
+
+const noWelcomeReply = await client.generate({
+  system: channelContext.split('\n').filter((line) => !line.includes('100000000000000002')).join('\n'),
+  messages: [{ role: 'user', content: 'Donde puedo ver las bienvenidas?' }]
+});
+assert.match(noWelcomeReply, /No he localizado un canal publico de Discord/i);
+assert.doesNotMatch(noWelcomeReply, /<#100000000000000001>|#(?:welcome|bienvenida|soporte)\b/i);
+
 const leaked = 'He entendido el dato nuevo: el ultimo mensaje contiene este error. La señal aporta un fallo concreto. La respuesta debe partir de ese dato.';
 const sanitized = sanitizePublicSupportReply({
   answer: leaked,
@@ -56,4 +89,4 @@ const sanitized = sanitizePublicSupportReply({
 assert.match(sanitized, /De nada/i);
 assert.doesNotMatch(sanitized, /dato nuevo|señal aporta|respuesta debe/i);
 
-console.log(`AI transcript regressions passed: ${cases.length + 1}`);
+console.log(`AI transcript regressions passed: ${cases.length + 4}`);
