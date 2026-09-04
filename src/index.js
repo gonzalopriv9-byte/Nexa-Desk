@@ -43,12 +43,14 @@ process.on('uncaughtException', (error) => {
 const events = new AppEvents();
 const runtime = {
   storage: null,
-  botActions: null
+  botActions: null,
+  discordClient: null
 };
 const app = createServer({
   config,
   storage: createDeferredRuntimeTarget(runtime, 'storage'),
   bot: createDeferredRuntimeTarget(runtime, 'botActions'),
+  discordClient: createDeferredRuntimeTarget(runtime, 'discordClient'),
   events
 });
 const httpServer = app.listen(config.PORT, () => {
@@ -75,6 +77,7 @@ const supportAgent = new SupportAgent({
 
 const botGatewayEligible = config.RUN_BOT || config.BOT_HA_ENABLED;
 const bot = createBot({ config, storage, supportAgent, voiceManager });
+runtime.discordClient = bot;
 const botActions = botGatewayEligible && !config.BOT_HA_ENABLED
   ? {
       createTicketCategory: (input) => createTicketCategory(bot, storage, input),
