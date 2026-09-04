@@ -2001,3 +2001,100 @@ function redactSensitiveContext(value = '') {
     .replace(/\bmfa\.[A-Za-z0-9_-]{20,}\b/g, '[token oculto]')
     .replace(/\b(?:gsk|sk|ak-live)-[A-Za-z0-9_-]{8,}\b/g, '[clave IA oculta]')
     .replace(/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g, '[jwt oculto]')
+    .replace(/\b(?:service_role|database|client_secret|bot token|token|password|contraseña|contrasena)\s*[:=]\s*\S+/giu, '$1=[valor oculto]')
+    .replace(/XN Protect globalban alert[^:]*:\s*.+/giu, 'Aviso de blacklist interno [oculto]')
+    .replace(/\b\d{17,20}\b/g, '[id oculto]');
+
+  return safe.replace(/__NEXA_CHANNEL_MENTION_(\d+)__/g, (match, index) => channelMentions[Number(index)] ?? match);
+}
+
+function isLikelySensitiveContext(value = '') {
+  return /\b(token|service_role|client_secret|password|contraseña|contrasena|blacklist|globalban|sancion|ban|api key|apikey|secret)\b/iu.test(value)
+    || /\b(?:gsk|sk|ak-live)-[A-Za-z0-9_-]{8,}\b/.test(value)
+    || /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/.test(value);
+}
+
+function isInternalNexaDeskNotice(value = '') {
+  return /\[NexaDesk\b|NexaDesk staff handoff|XN Protect globalban alert|Aviso de blacklist global|Revision manual recomendada/iu.test(value);
+}
+
+function shouldRetryForGrounding(answer = '', latestContent = '') {
+  const answerText = normalizeKnowledgeText(answer);
+  const latest = normalizeKnowledgeText(latestContent);
+  if (!answerText || latest.length < 8 || isLikelyPoliteSignoff(latestContent)) return false;
+
+  const hasConcreteSignal = /\b(?:error|fallo|failed|failure|exception|http\s*[45]\d{2}|status\s*[45]\d{2}|codigo|falta|missing|undefined|not\s+defined|no\s+(?:me\s+)?(?:deja|permite)|no\s+funciona|bug|issue|timeout|bad\s+gateway|forbidden|unauthorized|unreachable|se\s+(?:rompe|cae))\b/iu.test(latest)
+    || /[""«].{4,}[""»]/u.test(String(latestContent));
+  if (!hasConcreteSignal) return false;
+
+  const genericLoop = /\b(?:sigo\s+contigo|estoy\s+contigo|pasame\s+el\s+(?:dato\s+clave|detalle\s+principal)|send\s+me\s+the\s+key\s+detail)\b/iu.test(answerText);
+  const asksToRepeat = /\b(?:dime|indica|pasame|envia|manda|describe|explica|aclara|que)\b.{0,80}\b(?:error|detalle|informacion|mensaje|problema|captura)\b/iu.test(answerText);
+  const acknowledgesState = /\b(?:error|fallo|mensaje|codigo|indica|significa|configur\w*|bloque\w*|aparece|resultado|paso|siguiente|servicio)\b/iu.test(answerText);
+
+  return genericLoop || asksToRepeat || !acknowledgesState;
+}
+function shouldRetryForNaturalness(answer = '', latestContent = '') {
+  const text = String(answer ?? '').trim();
+  if (!text) return false;
+  const latest = normalizeKnowledgeText(latestContent);
+
+  const questionCount = (text.match(/[?？]/g) ?? []).length;
+  const asksForTooMuch = /\b(podrias proporcionar|puedes proporcionar|mas detalles|m[aá]s informaci[oó]n|necesito que me digas|qu[eé] resultado esperas|en qu[eé] idioma quieres)\b/iu.test(text);
+  const refusalNoise = /\b(no puedo ayudarte con eso|no puedo entender tu mensaje|repite(?:lo)?|idioma quieres)\b/iu.test(text);
+  const staleTopicAnswer = /\b(no\s+especificaste|estabas\s+buscando\s+ayuda|la\s+version\s+actual\s+.*\bmisma\b|la\s+version\s+actual\s+.*\bigual\b)\b/iu.test(normalizeKnowledgeText(text))
+    && /\b(actualizacion|actualizaciones|version|changelog|novedades|incluye|incluia|update|release)\b/iu.test(latest);
+  const normalizedAnswer = normalizeKnowledgeText(text);
+  const genericLoop = /\b(i\s+am\s+with\s+you|estoy\s+contigo|sigo\s+contigo|send\s+me\s+the\s+key\s+detail|pasame\s+el\s+(?:dato\s+clave|detalle\s+principal))\b/iu.test(normalizedAnswer);
+  const internalReasoningLeak = /\b(?:he\s+entendido\s+el\s+dato\s+nuevo|la\s+senal\s+aporta|la\s+respuesta\s+debe\s+partir|el\s+texto\s+exacto\s+ya\s+es\s+accionable|i\s+understood\s+the\s+new\s+concrete\s+fact|the\s+response\s+should\s+start\s+from)\b/iu.test(normalizedAnswer);
+  const latestIsTiny = latest.split(/\s+/).filter(Boolean).length <= 3;
+
+  return staleTopicAnswer || genericLoop || internalReasoningLeak || refusalNoise || questionCount >= 3 || (asksForTooMuch && (questionCount >= 1 || latestIsTiny));
+}
+
+function isLikelyPoliteSignoff(value = '') {
+  const normalized = normalizeKnowledgeText(value);
+  if (!normalized || /[?¿]/u.test(String(value))) return false;
+  const hasThanks = /\b(?:gracias|muchas\s+gracias|thanks|thank\s+you)\b/iu.test(normalized);
+  const hasClosure = /\b(?:vale|ok|okay|perfecto|bueno|pues|nada|no\s+pasa\s+nada|de\s+nada|hasta\s+luego|adios|bye)\b/iu.test(normalized);
+  const hasActiveRequest = /\b(?:reportar|reporte|ayuda|necesito|quiero|puedes|podrias|no\s+funciona|no\s+responde|fallo|problema|bug|issue|captura|screenshot|sigue|continua|aparece|se\s+rompe|cerrar|cierra)\b/iu.test(normalized);
+  return hasThanks && hasClosure && !hasActiveRequest;
+}
+
+function buildServerKnowledgeCacheKey(guildId, terms = [], searchMode = {}) {
+  return [
+    guildId,
+    searchMode.fullScan ? 'full' : 'focused',
+    searchMode.reason ?? 'generic',
+    terms.slice(0, 12).join(',')
+  ].join(':');
+}
+
+function pruneServerKnowledgeCache(cache) {
+  if (cache.size <= 40) return;
+  const now = Date.now();
+  for (const [key, value] of cache.entries()) {
+    if (now - value.createdAt > SERVER_CONTEXT_CACHE_TTL_MS) cache.delete(key);
+  }
+  while (cache.size > 40) {
+    const firstKey = cache.keys().next().value;
+    if (!firstKey) break;
+    cache.delete(firstKey);
+  }
+}
+
+async function mapWithConcurrency(items, concurrency, mapper) {
+  const workers = Array.from({ length: Math.min(concurrency, items.length) }, async (_, workerIndex) => {
+    for (let index = workerIndex; index < items.length; index += concurrency) {
+      await mapper(items[index], index);
+    }
+  });
+  await Promise.all(workers);
+}
+
+function withTimeout(promise, timeoutMs) {
+  let timeoutId;
+  const timeout = new Promise((_, reject) => {
+    timeoutId = setTimeout(() => reject(new Error('server context fetch timeout')), timeoutMs);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timeoutId));
+}
