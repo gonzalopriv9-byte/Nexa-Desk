@@ -796,7 +796,7 @@ export function createBot({ config, storage, supportAgent, voiceManager = null }
         const latestTicket = await storage.getTicket(message.channel.id);
         if (!latestTicket || isClosedTicket(latestTicket) || isAiDisabledTicket(latestTicket)) return;
 
-        const escalation = parseEscalation(answer);
+        const escalation = parseEscalation(answer, message.content);
         const shouldMentionStaff = escalation.shouldEscalate
           ? await registerTicketEscalation({ storage, message, guildConfig, ticket, reason: escalation.reason })
           : false;
@@ -7412,11 +7412,23 @@ function refreshPanelSelectMenu(interaction, guildConfig, panel) {
   });
 }
 
-function parseEscalation(answer) {
+function parseEscalation(answer, latestContent = '') {
   const trimmed = cleanBotAnswer(answer);
   const escalateMatch = trimmed.match(/^\[ESCALATE\]\s*/i);
-  if (!escalateMatch && !looksLikeEscalation(trimmed)) {
+  const hasEscalationSignal = Boolean(escalateMatch || looksLikeEscalation(trimmed));
+  if (!hasEscalationSignal) {
     return { shouldEscalate: false, publicAnswer: trimmed };
+  }
+
+  // A model must not be able to escalate a harmless/general question merely
+  // because it produced a cautious sentence. Deterministic staff/security
+  // paths run before the model; here we only accept escalation when the latest
+  // user turn actually contains a human/security/manual-review signal.
+  if (!isLegitimateGeneratedEscalationContext(latestContent)) {
+    return {
+      shouldEscalate: false,
+      publicAnswer: trimmed.replace(/\[ESCALATE\]\s*/gi, '').trim()
+    };
   }
 
   const reason = trimmed.replace(/\[ESCALATE\]\s*/gi, '').trim();
@@ -7425,6 +7437,28 @@ function parseEscalation(answer) {
     reason: reason || 'El ticket requiere revision humana.',
     publicAnswer: reason || 'Voy a avisar al staff para que revise este ticket.'
   };
+}
+
+function isLegitimateGeneratedEscalationContext(content = '') {
+  const normalized = normalizeText(content);
+  if (!normalized) return false;
+  if (/\b(?:staff|moderador(?:es)?|humano|responsable|admin|owner|persona)\b/.test(normalized)
+    && /\b(?:quiero|necesito|puedes|podrias|hablar|avisar|llamar|mencionar|ayuda|asistencia|atencion|revisar)\b/.test(normalized)) {
+    return true;
+  }
+  if (/\b(?:raid|nuke|flood|spam\s+masivo|ataque|invadieron|canales\s+borrados|roles\s+borrados|amenaza|acoso|abuso|dox(?:xing)?)\b/.test(normalized)) {
+    return true;
+  }
+  if (/\b(?:sancion|baneo|banear|apelacion|pago|factura|privad[oa]|seguridad|clave|token|credencial)\b/.test(normalized)) {
+    return true;
+  }
+  if (/\b(?:permiso|permisos)\b/.test(normalized)
+    && /\b(?:no|falta|necesito|puedes|ayuda|configurar|eliminar|borrar|crear|revisar)\b/.test(normalized)) {
+    return true;
+  }
+  const report = /\b(?:reportar|reporte|denunciar|denuncia|queja)\b/.test(normalized);
+  const targetOrIncident = /<@!?\d{16,24}>|@(?:\w[\w-]{1,31})|\b(?:usuario|miembro|persona|alguien|insulto|amenaza|acoso|abuso|spam|estafa|phishing|racismo|discriminacion|chantaje|dox(?:xing)?)\b/.test(normalized);
+  return report && targetOrIncident && !/\b(?:web|pagina|sitio|dashboard|mal\s+funcionamiento|bug|error\s+de\s+la\s+web)\b/.test(normalized);
 }
 
 function looksLikeEscalation(answer) {
@@ -8441,6 +8475,9 @@ function isUserReportMessage(content = '') {
   if (!text) return false;
   const mentionsTarget = /<@!?\d{16,24}>|@(?:\w[\w-]{1,31})/u.test(text);
   const hasTargetWord = /\b(?:usuario|user|miembro|member|persona|alguien|moderador|moderadora)\b/.test(text);
+  const webIssue = /\b(?:web|pagina|sitio|dashboard|panel\s+web)\b/.test(text)
+    && /\b(?:error|fallo|problema|bug|mal\s+funcionamiento|no\s+funciona|caida|caido|roto)\b/.test(text);
+  if (webIssue && !/\b(?:insult|amenaz|acoso|abus|spam|estafa|phishing|racismo|discriminacion|chantaje|dox(?:xing)?)\b/.test(text)) return false;
   const aboutAi = /\b(?:nexa|nexadesk|ia|ai|bot|asistente|robot)\b/.test(text);
   if (aboutAi && !hasTargetWord && !mentionsTarget) return false;
 
