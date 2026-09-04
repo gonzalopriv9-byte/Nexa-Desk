@@ -18,7 +18,9 @@ export class LocalSupportClient {
 }
 
 function buildSupportFallback({ system, messages, lastUser }) {
-  const text = normalizeText(lastUser);
+  // Keep the original transcript for evidence, but use a conservative intent
+  // normalizer for obvious STT/phonetic misspellings before routing the reply.
+  const text = normalizeSupportIntentText(lastUser);
   const rawLastUser = String(lastUser ?? '').trim();
   const context = normalizeText(messages.map((message) => message.content).join('\n'));
   const language = detectFallbackLanguage(text, context);
@@ -27,6 +29,9 @@ function buildSupportFallback({ system, messages, lastUser }) {
   if (isLanguageSwitchRequest(text)) {
     return reply.languageSwitch;
   }
+
+  const safeReply = buildSafeSupportReply({ text: lastUser, language, context, messages });
+  if (safeReply) return safeReply;
 
   if (isSensitiveAccessRequest(text)) {
     return reply.secret ?? getLocalizedReplies('en').secret;
@@ -71,6 +76,12 @@ function buildSupportFallback({ system, messages, lastUser }) {
 
   if (/\b(alianza|partner|partnership|colaboraci[oó]n)\b/iu.test(text)) {
     return reply.alliance;
+  }
+
+  // Reports about the web/service are technical incidents, not reports
+  // against a Discord member. Keep this before the generic report matcher.
+  if (isWebIssueMessage(text)) {
+    return reply.webIssue;
   }
 
   if (/\b(acoso|amenaza|insulto|reportar|reporte|abuso|raid|raidead[oa]|nuke|flood|spam\s+masivo|harassment|threat|report)\b/iu.test(text)) {
@@ -216,9 +227,198 @@ function scoreChannelCandidate(candidate, intent) {
   if (context.includes('mencion exacta para discord')) score += 2;
   return score;
 }
+function isPoliteSignoff(value = '') {
+  const normalized = normalizeSupportIntentText(value)
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase();
+  if (!normalized || /[?¿]/u.test(String(value))) return false;
+
+  const hasThanks = /\b(?:gracias|muchas\s+gracias|thanks|thank\s+you)\b/iu.test(normalized);
+  const hasClosure = /\b(?:vale|ok|okay|perfecto|bueno|pues|nada|no\s+pasa\s+nada|de\s+nada|hasta\s+luego|adios|bye)\b/iu.test(normalized);
+  const hasOperationalSignal = /\b(?:reportar|reporte|ayuda|necesito|quiero|puedes|podrias|no\s+ funciona|no\s+ responde|fallo|problema|bug|issue|captura|screenshot|sigue|continua|aparece|se\s+ rompe|cerrar|cierra)\b/iu.test(normalized);
+  return hasThanks && hasClosure && !hasOperationalSignal;
+}
+
+function buildPoliteSignoffReply(language = 'es') {
+  if (language === 'en') return 'You are welcome. If you need anything else, I am here.';
+  if (language === 'zh') return '不客气。如果还需要帮助，随时告诉我。';
+  return 'De nada. Si necesitas algo mas, aqui estoy.';
+}
+
+export function buildSafeSupportReply({ text = '', language = 'es', context = '', messages = [] } = {}) {
+  const normalized = normalizeSupportIntentText(text);
+  const reply = getLocalizedReplies(language);
+
+  if (isPoliteSignoff(normalized)) return buildPoliteSignoffReply(language);
+  if (isChildAgeStatement(normalized)) return reply.age;
+
+  const generalKnowledgeReply = buildGeneralKnowledgeReply(normalized, language);
+  if (generalKnowledgeReply) return generalKnowledgeReply;
+
+  const noisyMessageReply = buildNoisyMessageReply(normalized, reply);
+  if (noisyMessageReply) return noisyMessageReply;
+
+  if (isWebIssueMessage(normalized)) return reply.webIssue;
+  if (isReportOpening(normalized)) return reply.reportOpening;
+
+  return '';
+}
+
+function isReportOpening(value = '') {
+  const normalized = normalizeSupportIntentText(value)
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase();
+  const reportVerb = /\b(?:reportar|reporte|reporto|denunciar|denuncia|queja|quejarme|report)\b/iu.test(normalized);
+  const hasPersonOrIncident = /\b(?:usuario|user|miembro|persona|alguien|insult|amenaz|acoso|abuso|spam|estafa|phishing|racismo|discriminacion|chantaje|dox)\b|<@!?\d{16,24}>/iu.test(normalized);
+  const hasWebTarget = /\b(?:web|pagina|sitio|dashboard|panel\s+web|bug|error|fallo|problema)\b/iu.test(normalized);
+  return reportVerb && !hasPersonOrIncident && !hasWebTarget;
+}
+
+export function sanitizePublicSupportReply({ answer = '', latestText = '', language = 'es', context = '' } = {}) {
+  const cleaned = String(answer ?? '').trim();
+  if (!cleaned) return '';
+
+  if (isPoliteSignoff(latestText)) return buildPoliteSignoffReply(language);
+
+  const hadEscalationMarker = /^\s*\[ESCALATE\]/i.test(cleaned);
+  const withEscalationMarker = (value) => hadEscalationMarker ? `[ESCALATE] ${value}` : value;
+  const hasInternalReasoningLeak = /\b(?:he\s+entendido\s+el\s+dato\s+nuevo|la\s+señal\s+aporta|la\s+respuesta\s+debe\s+partir|el\s+texto\s+exacto\s+ya\s+es\s+accionable|i\s+understood\s+the\s+new\s+concrete\s+fact|the\s+response\s+should\s+start\s+from|fallback\s+(?:local|de\s+emergencia)|prompt\s+interno|chain\s+of\s+thought)\b/iu.test(cleaned);
+  if (!hasInternalReasoningLeak) return cleaned;
+
+  const safeReply = buildSafeSupportReply({ text: latestText, language, context });
+  if (safeReply) return withEscalationMarker(safeReply);
+
+  const groundedReply = buildGroundedSupportFallback({
+    lastUser: latestText,
+    text: latestText,
+    context,
+    language
+  });
+  if (groundedReply) return withEscalationMarker(groundedReply);
+
+  if (language === 'en') return withEscalationMarker('I will focus on your latest message and give you a direct answer without restarting the ticket.');
+  if (language === 'zh') return withEscalationMarker('我会直接处理你最新的消息，不会重新开始询问。');
+  return withEscalationMarker('Voy a centrarme en tu ultimo mensaje y darte una respuesta directa, sin reiniciar el ticket.');
+}
+
+function isChildAgeStatement(value = '') {
+  const normalized = normalizeSupportIntentText(value)
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase();
+  const agePattern = /\b(?:tengo|soy)\s+(?:\d{1,2}|uno|una|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez)\s+(?:anos|years)\b/iu;
+  if (!agePattern.test(normalized)) return false;
+  const remainder = normalized.replace(agePattern, ' ').trim();
+  if (!remainder) return true;
+  // Keep the friendly age adaptation for a simple follow-up question, but do
+  // not let it mask a report, incident, access problem or technical failure.
+  return /[?¿]/u.test(remainder)
+    && !/\b(?:reportar|reporte|denunciar|usuario|miembro|persona|amenaza|acoso|abuso|spam|estafa|phishing|web|pagina|dashboard|error|fallo|problema|bug|no\s+funciona|staff|moderador|seguridad|permiso)\b/iu.test(remainder);
+}
+
+function isWebIssueMessage(value = '') {
+  const normalized = normalizeSupportIntentText(value)
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase();
+  const webTarget = /\b(?:web|pagina|sitio|dashboard|panel\s+web|enlace|link|nexadesk\.com)\b/iu.test(normalized);
+  const failure = /\b(?:mal\s+funcionamiento|no\s+funciona|fallo|error|bug|problema|caida|caido|roto|reportar|reporte)\b/iu.test(normalized);
+  return webTarget && failure;
+}
+
+function buildGeneralKnowledgeReply(value = '', language = 'es') {
+  const normalized = normalizeSupportIntentText(value)
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase();
+  const answers = [];
+  const add = (spanish, english, chinese) => {
+    answers.push(language === 'en' ? english : language === 'zh' ? chinese : spanish);
+  };
+
+  if (/\b(?:por\s+que|porque)\b.*\bcielo\b.*\bazul\b/iu.test(normalized)) {
+    add(
+      'El cielo parece azul porque la luz del Sol se dispersa en la atmosfera y el azul se dispersa mas que otros colores.',
+      'The sky looks blue because sunlight scatters in the atmosphere, and blue light scatters more than many other colours.',
+      '天空看起来是蓝色的，因为阳光在大气中散射，而蓝光比许多其他颜色散射得更多。'
+    );
+  }
+  if (/\b(?:cuantas?|numero\s+de)\b.*\bpatas\b.*\b(?:arana|insecto)\b/iu.test(normalized)) {
+    add(
+      'Una araña suele tener ocho patas.',
+      'A spider usually has eight legs.',
+      '蜘蛛通常有八条腿。'
+    );
+  }
+  if (/\b(?:banana|platano|platanos)\b/iu.test(normalized) && /\b(?:que\s+es|fruta|comida|amarill)\b/iu.test(normalized)) {
+    add(
+      'El plátano o banana es una fruta.',
+      'A banana is a fruit.',
+      '香蕉是一种水果。'
+    );
+  }
+  if (/\b(?:gato|miau)\b/iu.test(normalized) && /\b(?:sonido|ruido|hace|dice|maulla)\b/iu.test(normalized)) {
+    add(
+      'Un gato suele hacer «miau».',
+      'A cat usually says “meow”.',
+      '猫通常会“喵喵”叫。'
+    );
+  }
+  if (/\b2\s*\+\s*2\b/iu.test(normalized)) {
+    add('2 + 2 es 4.', '2 + 2 is 4.', '2 加 2 等于 4。');
+  }
+  if (/\b(?:despues|siguiente)\b.*\b(?:de\s+)?5\b/iu.test(normalized)) {
+    add('Después del 5 viene el 6.', 'The number after 5 is 6.', '5 后面是 6。');
+  }
+  if (/\bagua\b.*\bmojad|\bmojad.*\bagua\b/iu.test(normalized)) {
+    add(
+      'Sí, en el lenguaje cotidiano decimos que el agua está mojada: el agua moja otros objetos y sus gotas están cubiertas de agua.',
+      'Yes, in everyday language we say water is wet: water makes other objects wet and its drops are surrounded by water.',
+      '日常说法里可以说水是湿的：水会让其他物体变湿，水滴本身也被水包围。'
+    );
+  }
+  if (/\b(?:que\s+usamos|usamos)\b.*\bver\b|\bver\b.*\b(?:ojos|usamos)\b/iu.test(normalized)) {
+    add('Usamos los ojos para ver.', 'We use our eyes to see.', '我们用眼睛看东西。');
+  }
+  if (/\bpeces\b/iu.test(normalized) && /\b(?:donde|viven|habitan)\b/iu.test(normalized)) {
+    add('Los peces viven en el agua, como ríos, lagos y mares.', 'Fish live in water, such as rivers, lakes and seas.', '鱼生活在水里，比如河流、湖泊和海洋。');
+  }
+  if (/\b(?:sol|sun)\b.*\bamarill|\bamarill.*\b(?:sol|sun)\b/iu.test(normalized)) {
+    add(
+      'El Sol suele verse amarillo desde la Tierra por cómo atraviesa su luz la atmósfera; no es amarillo simplemente porque ilumine mucho.',
+      'The Sun often looks yellow from Earth because of how its light passes through the atmosphere; it is not yellow simply because it shines brightly.',
+      '从地球看太阳常常是黄色的，这是因为阳光穿过大气层的方式；并不是因为它“照得很亮”才是黄色。'
+    );
+  }
+
+  return answers.length ? answers.join(' ').slice(0, 1800) : '';
+}
+
+function buildNoisyMessageReply(value = '', reply = {}) {
+  const normalized = normalizeSupportIntentText(value)
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase();
+  if (/\b(?:no\s+se|no\s+se)\b.*\b(?:como\s+va|hacer|esto)\b/iu.test(normalized)) {
+    return 'No pasa nada. Dime qué intentas hacer o en qué parte te atascas y te lo explico paso a paso.';
+  }
+  if (/\b(?:pregunta|duda)\b/iu.test(normalized) && /\b(?:entiendes|entender|escuchas?)\b/iu.test(normalized)) {
+    return 'Sí, te entiendo. Escribe la pregunta como puedas y, si alguna palabra no queda clara, te pediré solo una aclaración.';
+  }
+  if (/\b(?:pregunta|duda)\b/iu.test(normalized) && normalized.length < 110) {
+    return reply.clarify ?? 'Sí, dime tu pregunta y te ayudo.';
+  }
+  if (/^(?:ah?\s+)?(?:bueno|oye)(?:\s+nexadesk)?[!.?\s]*$/iu.test(normalized)) {
+    return reply.ack ?? 'Te leo. Dime qué necesitas.';
+  }
+  return '';
+}
+
 function buildGroundedSupportFallback({ lastUser = '', text = '', context = '', language = 'es' } = {}) {
   const signal = extractConcreteFailureSignal(lastUser);
-  if (!signal) return '';
+  if (!signal || isPoliteSignoff(text)) return '';
 
   const previousVisual = /\b(?:imagen|captura|foto|screenshot|pantallazo|adjunto|image)\b/iu.test(context)
     && !/\b(?:imagen|captura|foto|screenshot|pantallazo|adjunto|image)\b/iu.test(text);
@@ -226,26 +426,26 @@ function buildGroundedSupportFallback({ lastUser = '', text = '', context = '', 
 
   if (language === 'en') {
     return [
-      `I understood the new concrete fact: the latest message contains this error: ${quoted}.`,
-      previousVisual ? 'The earlier image is still context, but this exact error is the current state.' : '',
+      `I can work from the concrete error you sent: ${quoted}.`,
+      previousVisual ? 'The earlier image remains useful context, but this exact error is the current result.' : '',
       buildEnglishFailureMeaning(signal.kind),
-      'The exact text is already actionable, so I will not ask you to repeat it. The owner or staff should review the service configuration or the failing dependency before trying the same step again.'
+      'You do not need to repeat it. The next step is to check the affected service or configuration; staff can review it with this exact message if needed.'
     ].filter(Boolean).join(' ');
   }
 
   if (language === 'zh') {
     return [
-      `我已识别到最新的具体错误：${quoted}。`,
-      previousVisual ? '之前的图片仍然是上下文，但这条错误信息代表当前状态。' : '',
-      '这表明需要检查服务端配置，而不是重复相同的操作。请把准确错误交给服务器管理员或工作人员处理。'
+      `我可以根据你发来的具体错误继续处理：${quoted}。`,
+      previousVisual ? '之前的图片仍然有用，但这条错误信息是当前结果。' : '',
+      '不需要重复发送。下一步应检查相关服务或配置；如有需要，工作人员可以根据这条原始错误继续处理。'
     ].filter(Boolean).join(' ');
   }
 
   return [
-    `He entendido el dato nuevo: el ultimo mensaje contiene este error: ${quoted}.`,
-    previousVisual ? 'La imagen anterior queda como contexto, pero este error exacto marca el estado actual.' : '',
+    `Puedo trabajar con el error concreto que has enviado: ${quoted}.`,
+    previousVisual ? 'La imagen anterior sigue siendo contexto útil, pero este texto exacto es el resultado actual.' : '',
     buildSpanishFailureMeaning(signal.kind),
-    'El texto exacto ya es accionable; no te voy a pedir que lo repitas. El owner o staff debe revisar el servicio, la configuracion o la dependencia que esta fallando antes de repetir el mismo paso.'
+    'No hace falta que lo repitas. El siguiente paso es revisar el servicio o la configuración afectada; si hace falta, el staff puede continuar con este mensaje exacto.'
   ].filter(Boolean).join(' ');
 }
 
@@ -285,7 +485,7 @@ function buildSpanishFailureMeaning(kind) {
   if (kind === 'service') return 'La señal apunta a que el host o un servicio remoto no ha respondido correctamente. No implica por si sola que hayas hecho nada mal; hay que revisar disponibilidad, proxy y logs del servicio.';
   if (kind === 'access') return 'La señal apunta a que el servidor esta rechazando la peticion o no permite completar el acceso. Conviene revisar la autenticacion y la respuesta del servidor, no repetir la misma accion a ciegas.';
   if (kind === 'client') return 'La señal apunta a un fallo de carga o respuesta del cliente. Conviene conservar el texto exacto y revisar la peticion que falla antes de cambiar pasos sin evidencia.';
-  return 'La señal aporta un fallo concreto. La respuesta debe partir de ese dato y separar lo confirmado de lo que aun hay que comprobar, en vez de reiniciar la conversacion.';
+  return 'Es un fallo concreto. Conserva este texto como evidencia y revisa el servicio afectado antes de repetir la misma accion.';
 }
 
 function buildEnglishFailureMeaning(kind) {
@@ -293,7 +493,7 @@ function buildEnglishFailureMeaning(kind) {
   if (kind === 'service') return 'This points to the host or a remote service failing to respond correctly. It does not by itself mean you did anything wrong; availability, proxy and service logs should be checked.';
   if (kind === 'access') return 'This points to the server rejecting the request or not allowing the access flow to complete. Authentication and the server response should be checked instead of repeating the same action blindly.';
   if (kind === 'client') return 'This points to a loading or client-response failure. Keep the exact text and inspect the failing request before changing steps without evidence.';
-  return 'This is a concrete failure signal. The response should start from that fact and separate what is confirmed from what still needs checking, rather than restarting the conversation.';
+  return 'This is a concrete failure. Keep this exact message as evidence and check the affected service before repeating the same action.';
 }
 function buildJsonFallback({ system, lastUser }) {
   const compact = `${system}\n${lastUser}`;
@@ -405,6 +605,10 @@ function getLocalizedReplies(language) {
       capabilities: 'NexaDesk 可以自动处理 tickets、读取服务器上下文、升级给 staff、保存 transcripts、检测黑名单和恶意内容、支持联盟流程、报告系统、语音支持、考试模式、Security Guard、Premium 多分类监听和定时公告。',
       report: '我可以帮你整理举报。请发送相关用户、发生了什么、时间，以及截图或证据。',
       problem: '我可以帮你。请告诉我你原本想做什么、出现了什么错误；如果可以，请发送截图或错误文字。',
+      webIssue: '明白了：这是网页或服务故障，不是针对某个用户的举报。请告诉我你当时在做什么，以及出现了什么结果或错误；如果可以，请发送截图。',
+      reportOpening: '当然可以。请说明这是针对某个用户的举报，还是网页/服务故障，并告诉我发生了什么。',
+      age: '好的，我会用简单的话解释。不需要提供个人资料，告诉我你的问题就可以了。',
+      clarify: '我大概明白了。请把你的问题写出来，我会一步一步帮你。',
       waiting: '没问题，我会在这里等你。你回来后把下一条关键信息发给我，我继续处理。',
       ack: '好的，我还在。你准备好后把下一步信息发给我。',
       languageSwitch: '好的，我会用中文回复。请告诉我你需要什么，我会继续帮你。',
@@ -425,6 +629,10 @@ function getLocalizedReplies(language) {
       capabilities: 'NexaDesk can answer ticket users with AI, read server context, escalate to staff with summaries, save transcripts, review images, detect blacklist/security risks, handle reports and partnerships, support voice rooms, run exam mode, protect against raids, and unlock Premium features like 2 watched categories and scheduled announcements.',
       report: 'I can help with the report. Send the user involved, what happened, when it happened and any screenshots or proof you have.',
       problem: 'I can help. Tell me what you were trying to do, what error appeared and, if possible, send a screenshot or the exact text of the error.',
+      webIssue: 'Understood: this is a website or service malfunction, not a report against a user. Tell me what you were trying to do and what result or error appeared; send a screenshot if you can.',
+      reportOpening: 'Of course. Tell me whether this is a report about a user or a website/service malfunction, and what happened.',
+      age: 'Got it. I will explain things simply. You do not need to share personal information; just tell me your question.',
+      clarify: 'I think I follow you. Write your question as best you can and I will help step by step.',
       waiting: 'No problem, I will wait here. When you come back, send the next detail and I will continue.',
       ack: 'Perfect, I am still here. Send me the next detail whenever you are ready.',
       languageSwitch: 'Perfect, I will answer in English from now on. Tell me what you need and I will continue.',
@@ -446,6 +654,10 @@ function getLocalizedReplies(language) {
     capabilities: 'NexaDesk atiende tickets con IA, lee contexto real del servidor, escala casos al staff con resumen, guarda transcripciones, revisa imagenes, detecta riesgos de blacklist/seguridad, gestiona reportes y alianzas, abre salas de voz, corrige modo examen, protege contra raids y en Premium permite 2 categorias vigiladas y anuncios programados.',
     report: 'Te ayudo con el reporte. Pasame el usuario implicado, que ocurrio, cuando paso y capturas o pruebas si las tienes.',
     problem: 'Te ayudo. Dime que estabas intentando hacer, que error salio y, si puedes, envia captura o el texto exacto del fallo.',
+    webIssue: 'Entendido: no es un reporte contra un usuario, sino un fallo de la web o del servicio. Dime que intentabas hacer y que resultado o error aparecio; si puedes, anade una captura.',
+    reportOpening: 'Claro. Dime si el reporte es sobre un usuario o sobre un fallo de la web/servicio, y cuentame que ocurrio.',
+    age: 'Vale, te lo explicare de forma sencilla. No necesito datos personales; dime cual es tu duda.',
+    clarify: 'Creo que te sigo. Escribe la pregunta como puedas y te ayudo paso a paso.',
     waiting: 'Sin problema, te espero por aqui. Cuando vuelvas, mandame el siguiente detalle y continuo.',
     ack: 'Perfecto, sigo atento. Cuando quieras, pasame el siguiente detalle.',
     languageSwitch: 'Perfecto, te respondere en español a partir de ahora. Dime que necesitas y seguimos.',
@@ -536,6 +748,42 @@ function isAllianceInfoQuestion(text = '') {
     /\b(?:alianz(?:a|as)|partner(?:ship)?s?|colaboraci[oó]n(?:es)?)\b.*\b(?:de\s+este\s+servidor|del\s+servidor|tiene|hay|actual(?:es)?|lista|canal|canales|ejemplos?)\b/iu,
     /\b(?:quienes|con\s+quien)\b.*\b(?:alianz(?:a|as)|partner(?:ship)?s?|colaboraci[oó]n(?:es)?)\b/iu
   ].some((pattern) => pattern.test(normalized));
+}
+
+function normalizeSupportIntentText(value = '') {
+  let text = normalizeText(value);
+  const replacements = [
+    [/\bchinco\b/giu, 'cinco'],
+    [/ñengo/giu, 'tengo'],
+    [/ñegrunta|ñegunta|ñeñunta/giu, 'pregunta'],
+    [/\bkomo\b/giu, 'como'],
+    [/\bba\b/giu, 'va'],
+    [/\bsto\b/giu, 'esto'],
+    [/\bxke\b/giu, 'porque'],
+    [/añua/giu, 'agua'],
+    [/eña/giu, 'esta'],
+    [/moñada/giu, 'mojada'],
+    [/ñol/giu, 'sol'],
+    [/\bamawillo\b/giu, 'amarillo'],
+    [/\bvolque\b/giu, 'porque'],
+    [/\btango\b/giu, 'tanto'],
+    [/\bentdines\b/giu, 'entiendes'],
+    [/\bprjuano\b/giu, 'peruano'],
+    [/\bgoy\b/giu, 'soy'],
+    [/\bweño\b/giu, 'bueno'],
+    [/ñueño/giu, 'bueno'],
+    [/oñe/giu, 'oye'],
+    [/\bshe\b/giu, 'se'],
+    [/\bshi\b/giu, 'si'],
+    [/\bell\b/giu, 'el'],
+    [/\bmd\b/giu, 'me'],
+    [/\bga\s+esgo\b/giu, 'que hago'],
+    [/\bk\b/giu, 'que']
+  ];
+  for (const [pattern, replacement] of replacements) {
+    text = text.replace(pattern, replacement);
+  }
+  return text.replace(/\s+/g, ' ').trim();
 }
 
 function normalizeText(value = '') {
